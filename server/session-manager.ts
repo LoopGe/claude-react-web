@@ -5382,6 +5382,9 @@ export class SessionManager {
     const t = this.getOrCreateTranscript(s.id)
     t.reconciled = true
     t.store.reset()
+    // Record the compact reset in the cached history so the client-facing
+    // epochs (clearEpoch / lastFullResetGeneration) reflect it immediately.
+    t.generationHistory = [...(t.generationHistory ?? []), { generation: t.store.generation, reason: 'compact', contentPolicy: 'preserve' }]
     s.history = []
     s.subagentHistory = []
     s.promptUuids = []
@@ -8202,6 +8205,7 @@ export class SessionManager {
           // Derive the subscribe-capability requirement from the committed
           // generation history (survives restarts — spec §8.3).
           t.hasOrderedRebuild = folded.history.some((h) => h.reason === 'ordered-rebuild')
+          t.generationHistory = folded.history
         } else {
           // No committed v2 generation yet (incl. a crash before the first
           // commit): fall back to the intact v1 projection, ignoring any
@@ -8360,18 +8364,25 @@ export class SessionManager {
       for (const a of ordered[i].aliases) t.store.registerUuidAlias(a, i)
     }
     t.hasOrderedRebuild = true
+    // Record the new generation in the cached history so the client-facing
+    // epochs (rebaseEpoch) reflect this rebuild immediately.
+    t.generationHistory = [...(t.generationHistory ?? []), { generation: t.store.generation, reason: 'ordered-rebuild', contentPolicy: 'preserve' }]
     // Ordered-rebase reset signal (spec §8.3): a control envelope on the
     // PRIMARY message FIFO, so every attached connection receives the reset
     // before any new-generation frame. Pushed synchronously right after the
     // store swap — no live append can interleave between swap and push.
     const live = this.sessions.get(id)
     if (live) {
+      const epochs = this.transcriptEpochs(id)
       const envelope: WsTranscriptRebased = {
         kind: 'transcript-rebased',
         sessionId: id,
         reason: 'ordered-rebuild',
         generation: t.store.generation,
         headSeq: t.store.headSeq,
+        lastFullResetGeneration: epochs.lastFullResetGeneration,
+        rebaseEpoch: epochs.rebaseEpoch,
+        clearEpoch: epochs.clearEpoch,
       }
       for (const sub of live.subscribers.values()) sub.push(envelope)
     }
@@ -8748,6 +8759,28 @@ export class SessionManager {
     const t = this.transcriptStores.get(id)
     if (!t) return null
     return { generation: t.store.generation, headSeq: t.store.headSeq }
+  }
+
+  /** Client-facing seq-space epochs (spec §8.3), derived from the committed
+   *  generation history + the store's durable tombstone counter. clearEpoch
+   *  counts clear/compact resets; rebaseEpoch counts ordered-rebuild/recovery;
+   *  lastFullResetGeneration is the newest clear/compact/recovery generation
+   *  (the client full-resets when a rebase reports one above its local floor).
+   *  Sync read of cached state — no reconcile, no I/O. */
+  transcriptEpochs(id: string): { tombstoneEpoch: number; rebaseEpoch: number; clearEpoch: number; lastFullResetGeneration?: number } {
+    const t = this.transcriptStores.get(id)
+    const history = t?.generationHistory ?? []
+    let rebaseEpoch = 0
+    let clearEpoch = 0
+    let lastFullResetGeneration: number | undefined
+    for (const h of history) {
+      if (h.reason === 'ordered-rebuild' || h.reason === 'recovery') rebaseEpoch++
+      if (h.reason === 'clear' || h.reason === 'compact') clearEpoch++
+      if (h.reason === 'clear' || h.reason === 'compact' || h.reason === 'recovery') {
+        lastFullResetGeneration = lastFullResetGeneration === undefined ? h.generation : Math.max(lastFullResetGeneration, h.generation)
+      }
+    }
+    return { tombstoneEpoch: t?.store.tombstoneEpoch ?? 0, rebaseEpoch, clearEpoch, lastFullResetGeneration }
   }
 
   /** Tombstone the given message uuids in the session's seq store and

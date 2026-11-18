@@ -142,6 +142,15 @@ export class SessionSynchronizer {
   // Paging snapshot (owned here, NOT in the store reducer).
   private paging: TranscriptPagingSnapshot = { loadingOlder: false, olderError: null, recovery: null }
   private readonly post: SessionSyncPost
+  /** Monotonic local floor of the last full reset (clear/compact/recovery) the
+   *  client has applied (spec §8.3). A rebase whose lastFullResetGeneration is
+   *  above this floor missed a clear → full reset (wipe pre-clear intent).
+   *  Never lowered; max'd with every clearedGeneration / rebase floor. */
+  private lastFullResetGeneration = -1
+  /** Last adopted durable tombstoneEpoch (spec §8.3). An attached frame at the
+   *  SAME generation with a higher epoch means an eviction was missed while
+   *  disconnected → TRANSCRIPT_RESYNC (full-projection reconcile, intent kept). */
+  private adoptedTombstoneEpoch: number | null = null
   private taskBaselineId: string | null = null
   private taskChunks: string[] = []
   private taskChunksReceived = 0
@@ -443,11 +452,23 @@ export class SessionSynchronizer {
         // an empty page would paint the empty state and lose a terminated
         // session's replayReady-gated turn-end sweep.
         if (!snap.replayReady) break
+        // Track the durable tombstoneEpoch (spec §8.3): an advance at the SAME
+        // generation means an eviction was missed while disconnected.
+        const tombstoneAdvanced = frame.tombstoneEpoch != null
+          && this.adoptedTombstoneEpoch != null
+          && frame.tombstoneEpoch > this.adoptedTombstoneEpoch
+        if (frame.tombstoneEpoch != null) this.adoptedTombstoneEpoch = frame.tombstoneEpoch
         if (frame.generation !== snap.generation) {
           // Dead universe (/clear or a server-side reset): the seq space is
           // gone, so re-fetch the new tail.
           store.dispatch({ type: 'WINDOW_BUMP', generation: frame.generation, headSeq: frame.headSeq })
           run.minGeneration = frame.generation
+          void this.refetchTail(run)
+        } else if (tombstoneAdvanced) {
+          // Same generation, durable tombstoneEpoch advanced → full-projection
+          // resync (TRANSCRIPT_RESYNC preserves intent, unlike WINDOW_BUMP),
+          // then refetch to converge the missed evictions.
+          store.dispatch({ type: 'TRANSCRIPT_RESYNC', generation: frame.generation, headSeq: frame.headSeq, tombstoneEpoch: frame.tombstoneEpoch })
           void this.refetchTail(run)
         } else if (snap.newestSeq == null) {
           // Post-open recovery with an empty window. A front hole (parked
@@ -505,18 +526,20 @@ export class SessionSynchronizer {
       }
       case 'transcript-rebased': {
         // Ordered rebuild committed (spec §8.3): reset the seq window to the
-        // new generation, PRESERVE ClientIntent (REBASE, not WINDOW_BUMP),
-        // and refetch the tail. The generation floor makes any in-flight
-        // old-generation page retry. `lastFullResetGeneration` (a missed
-        // clear/compact forcing a full reset) is not emitted by the server
-        // yet — in-place reset batches arrive with the lifecycle rewiring;
-        // until then no missed clear can precede a rebase, so fullReset is
-        // false.
+        // new generation and refetch the tail. PRESERVE ClientIntent unless a
+        // missed clear/compact forces a full reset: lastFullResetGeneration
+        // above the local floor means a full reset happened before this rebase
+        // (even if the independent clear notification was missed) → wipe
+        // pre-clear intent. The floor is monotonic (never lowered).
+        const fullReset = frame.lastFullResetGeneration != null && frame.lastFullResetGeneration > this.lastFullResetGeneration
+        if (frame.lastFullResetGeneration != null) {
+          this.lastFullResetGeneration = Math.max(this.lastFullResetGeneration, frame.lastFullResetGeneration)
+        }
         store.dispatch({
           type: 'REBASE_TRANSCRIPT',
           generation: frame.generation,
           headSeq: frame.headSeq,
-          fullReset: false,
+          fullReset,
         })
         run.minGeneration = frame.generation
         void this.refetchTail(run)
@@ -694,6 +717,14 @@ export class SessionSynchronizer {
         break
       }
       case 'session-cleared': {
+        // Monotonic full-reset floor (spec §8.3): a repeat/late clear at or
+        // below the last applied full reset is ignored — a rebase may already
+        // have forced the full reset before this independent notification
+        // arrived. The floor never lowers.
+        if (frame.clearedGeneration != null && frame.clearedGeneration <= this.lastFullResetGeneration) break
+        if (frame.clearedGeneration != null) {
+          this.lastFullResetGeneration = Math.max(this.lastFullResetGeneration, frame.clearedGeneration)
+        }
         // SDK-emitted `cleared` control event (forwarded at server/ws.ts).
         // The local `/clear` command mints a fresh session under a new id
         // and the client swaps panels, so there is no in-place transcript

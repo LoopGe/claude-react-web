@@ -66,6 +66,10 @@ export interface TranscriptHolder {
    *  orderedRebaseV1. Derived from the sidecar fold on hydrate, so it
    *  survives restarts. */
   hasOrderedRebuild?: boolean
+  /** Committed generation/reset history (spec §8.3), cached from the sidecar
+   *  fold on hydrate and extended on rebuild. Source for the client-facing
+   *  epochs (clearEpoch/rebaseEpoch) and lastFullResetGeneration. */
+  generationHistory?: GenerationRecord[]
 }
 
 export class TranscriptSidecar {

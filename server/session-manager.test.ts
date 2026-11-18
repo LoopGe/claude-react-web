@@ -3024,6 +3024,23 @@ describe('SessionManager', () => {
       }
     })
 
+    it('Task 5: compact advances clearEpoch + lastFullResetGeneration; rebuild advances rebaseEpoch', async () => {
+      const info = await sm.create({ cwd: dir })
+      await sm.send(info.id, 'seed turn')
+      const h = mockHandles.at(-1)!
+      h.emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
+      h.emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      const live = liveSession(info.id)
+      live.handle.compactInPlace = vi.fn(async () => {})
+      await callAutoCompact(live, { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 })
+      const genAfter = sm.transcriptHead(info.id)!.generation
+      const epochs = sm.transcriptEpochs(info.id)
+      expect(epochs.clearEpoch).toBe(1)
+      expect(epochs.lastFullResetGeneration).toBe(genAfter)
+      expect(epochs.rebaseEpoch).toBe(0)
+    })
+
     it('crash after provider compact before reset commit: restart completes reset, no pre-clear republish', async () => {
       const prevConfigDir = process.env.CLAUDE_CONFIG_DIR
       process.env.CLAUDE_CONFIG_DIR = dir

@@ -472,7 +472,19 @@ export class SessionConnection {
   private sendAttached(sessionId: string): void {
     const head = this.sm.transcriptHead?.(sessionId)
     if (head) {
-      this.sink.send({ kind: 'attached', sessionId, generation: head.generation, headSeq: head.headSeq })
+      // Carry the durable epochs (spec §8.3) so a reconnecting client can
+      // detect a missed eviction (tombstoneEpoch advance at same generation →
+      // TRANSCRIPT_RESYNC) even when generation/headSeq are unchanged.
+      const epochs = this.sm.transcriptEpochs?.(sessionId)
+      this.sink.send({
+        kind: 'attached',
+        sessionId,
+        generation: head.generation,
+        headSeq: head.headSeq,
+        tombstoneEpoch: epochs?.tombstoneEpoch,
+        rebaseEpoch: epochs?.rebaseEpoch,
+        clearEpoch: epochs?.clearEpoch,
+      })
     }
   }
 

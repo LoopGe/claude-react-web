@@ -999,6 +999,10 @@ export interface SessionBroadcaster {
    *  broadcaster fixtures without a seq store stay valid — the frame bridge
    *  treats absence as "no attached frame". */
   transcriptHead?(sessionId: string): { generation: number; headSeq: number } | null
+  /** Client-facing seq-space epochs (spec §8.3) for the attached handshake:
+   *  durable tombstoneEpoch + history-derived rebaseEpoch/clearEpoch +
+   *  lastFullResetGeneration. Optional for fixtures without a seq store. */
+  transcriptEpochs?(sessionId: string): { tombstoneEpoch: number; rebaseEpoch: number; clearEpoch: number; lastFullResetGeneration?: number }
   /** Transcript seq of one live message object (the manager's WeakMap
    *  accessor), or undefined when the message is not part of the durable
    *  transcript. Backs the seq field on live `message` frames. Optional for

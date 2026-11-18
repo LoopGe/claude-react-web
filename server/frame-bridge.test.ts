@@ -330,6 +330,10 @@ class FakeBroadcaster implements SessionBroadcaster {
   transcriptHead(id: string): { generation: number; headSeq: number } | null {
     return this.heads.get(id) ?? null
   }
+  epochs = new Map<string, { tombstoneEpoch: number; rebaseEpoch: number; clearEpoch: number; lastFullResetGeneration?: number }>()
+  transcriptEpochs(id: string) {
+    return this.epochs.get(id) ?? { tombstoneEpoch: 0, rebaseEpoch: 0, clearEpoch: 0 }
+  }
   seqs = new WeakMap<object, number>()
   transcriptSeqOf(_sessionId: string, message: object): number | undefined {
     return this.seqs.get(message)
@@ -1498,6 +1502,23 @@ describe('session-cleared clearedGeneration forwarding (spec §8.3)', () => {
     await waitForFrame(sink, (f) => f.kind === 'session-cleared')
     expect(sink.kinds('session-cleared')).toEqual([
       { kind: 'session-cleared', sessionId: 's1', clearedGeneration: 7 },
+    ])
+    conn.close()
+  })
+})
+
+describe('attached epoch carriage (spec §8.3, Task 5)', () => {
+  it('attached carries tombstoneEpoch/rebaseEpoch/clearEpoch from transcriptEpochs', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    sm.heads.set('s1', { generation: 5, headSeq: 10 })
+    sm.epochs.set('s1', { tombstoneEpoch: 3, rebaseEpoch: 2, clearEpoch: 1, lastFullResetGeneration: 4 })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1', orderedRebase: true })
+    await waitForFrame(sink, (f) => f.kind === 'attached' && f.sessionId === 's1')
+    expect(sink.kinds('attached')).toEqual([
+      { kind: 'attached', sessionId: 's1', generation: 5, headSeq: 10, tombstoneEpoch: 3, rebaseEpoch: 2, clearEpoch: 1 },
     ])
     conn.close()
   })

@@ -1186,3 +1186,86 @@ describe('SessionSynchronizer session-cleared clearedGeneration (spec §8.3)', (
     sync.stop()
   })
 })
+
+describe('SessionSynchronizer epoch convergence (spec §8.3, Task 5)', () => {
+  beforeEach(() => {
+    currentSessionListeners = new Map()
+    transcripts.clear()
+    staleNext = null
+    deferredFetches = []
+    mockSubscribe.mockClear()
+    mockApiGet.mockReset()
+    mockApiGet.mockImplementation(defaultApiGetImpl)
+    mockApiPost.mockReset()
+    mockApiPost.mockImplementation(async (_path: string, _body?: unknown) => ({ ok: true }))
+    void sessionStoreRegistry.clear()
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('rebase with lastFullResetGeneration above the local floor forces full reset (missed clear)', async () => {
+    const sid = 'epoch-fullreset'
+    const t = transcript(sid)
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    store.dispatch({ type: 'ERROR', message: 'pre-clear intent' })
+    // Server rebuilt to gen 7; a clear at gen 6 was missed (lastFullResetGeneration 6 > floor -1).
+    t.generation = 7
+    t.msgs = [{ seq: 0, msg: fakeMsg(sid, 100) }]
+    t.headSeq = 1
+    dispatchToSession(sid, { kind: 'transcript-rebased', sessionId: sid, reason: 'ordered-rebuild', generation: 7, headSeq: 1, lastFullResetGeneration: 6 })
+    await vi.waitFor(() => expect(store.getSnapshot().generation).toBe(7))
+    // fullReset wiped the pre-clear intent.
+    expect(store.getSnapshot().error).toBeNull()
+    sync.stop()
+  })
+
+  it('rebase without a missed clear preserves intent (fullReset false)', async () => {
+    const sid = 'epoch-rebase-keep'
+    const t = transcript(sid)
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    store.dispatch({ type: 'ERROR', message: 'keep me' })
+    t.generation = 7
+    t.msgs = [{ seq: 0, msg: fakeMsg(sid, 100) }]
+    t.headSeq = 1
+    dispatchToSession(sid, { kind: 'transcript-rebased', sessionId: sid, reason: 'ordered-rebuild', generation: 7, headSeq: 1 })
+    await vi.waitFor(() => expect(store.getSnapshot().generation).toBe(7))
+    expect(store.getSnapshot().error).toBe('keep me')
+    sync.stop()
+  })
+
+  it('attached tombstoneEpoch advance at same generation triggers TRANSCRIPT_RESYNC (intent preserved)', async () => {
+    const sid = 'epoch-resync'
+    const t = transcript(sid)
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    t.generation = 5
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    expect(store.getSnapshot().generation).toBe(5)
+    store.dispatch({ type: 'ERROR', message: 'keep me' })
+    // First attached establishes the tombstoneEpoch baseline (no resync yet).
+    dispatchToSession(sid, { kind: 'attached', sessionId: sid, generation: 5, headSeq: 1, tombstoneEpoch: 1 })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(store.getSnapshot().error).toBe('keep me')
+    mockApiGet.mockClear()
+    // A second attached at the SAME generation with an advanced tombstoneEpoch
+    // (a missed eviction while disconnected) → TRANSCRIPT_RESYNC + refetch,
+    // intent kept (unlike WINDOW_BUMP which wipes intent).
+    dispatchToSession(sid, { kind: 'attached', sessionId: sid, generation: 5, headSeq: 1, tombstoneEpoch: 2 })
+    await vi.waitFor(() => expect(mockApiGet.mock.calls.some((c) => String(c[0]).includes('limit=200'))).toBe(true))
+    expect(store.getSnapshot().generation).toBe(5)
+    expect(store.getSnapshot().error).toBe('keep me')
+    sync.stop()
+  })
+})
