@@ -6,7 +6,7 @@ import type { SessionMemorySettings, ThinkingSetting } from '../../shared/sessio
 import type { ProviderProfile } from '../config.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../shared/structured.js'
 import type { SandboxSetting } from '../../shared/sandbox.js'
-import type { InProcessHookForward, InProcessSubagentStop, InProcessTaskSnapshot } from './claude/inprocess-hooks.js'
+import type { InProcessHookForward, InProcessSubagentStop, InProcessTaskSnapshot } from './hook-types.js'
 import type { SessionToolProfile } from '../../shared/tool-profile.js'
 import type { SupplementOutcome } from './steering-format.js'
 import type { NativeFileAttachment } from './attachment-types.js'
