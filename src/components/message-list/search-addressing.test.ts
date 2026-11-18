@@ -75,6 +75,26 @@ describe('rowSearchMatchCount', () => {
     expect(rowSearchMatchCount(msg, undefined, results, 'needle')).toBe(2)
   })
 
+  it("counts a non-head member's Edit diff matches on the folded group row", () => {
+    const head = toolUseMsg('m1', [{ id: 'g1', name: 'Grep', input: { pattern: 'haystack' } }])
+    const second = toolUseMsg('m2', [
+      { id: 'e1', name: 'Edit', input: { old_string: 'alpha needle', new_string: 'beta needle' } },
+    ])
+    // No results landed; the needle lives ONLY in the second member's diff
+    // (del + add lines, one each). The folded row renders that member, so its
+    // matches belong to the row's match space.
+    expect(rowSearchMatchCount(head, [head, second], new Map(), 'needle')).toBe(2)
+  })
+
+  it("counts the head's own segments exactly once when members are provided", () => {
+    const head = toolUseMsg('m1', [
+      { id: 'e1', name: 'Edit', input: { old_string: 'alpha needle', new_string: 'beta needle' } },
+    ])
+    const second = toolUseMsg('m2', [{ id: 'g1', name: 'Grep', input: { pattern: 'haystack' } }])
+    // The head IS members[0]; its 2 diff matches must not be added twice.
+    expect(rowSearchMatchCount(head, [head, second], new Map(), 'needle')).toBe(2)
+  })
+
   it('sums every tool_use block of one member in block order', () => {
     const msg = toolUseMsg('m1', [
       { id: 'a', name: 'Grep', input: { pattern: 'haystack' } },
