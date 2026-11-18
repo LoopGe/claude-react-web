@@ -127,6 +127,15 @@ function renderPreview(
   return { ...utils, onBack }
 }
 
+// Orphan bubbles render ToolResultDetails bare; a merged result renders it
+// inside the owning card's .tool-card-result-inner. A consumed result must
+// never surface as a standalone bubble next to its card.
+function expectAllResultsMerged(container: HTMLElement) {
+  for (const el of container.querySelectorAll('.tool-result-details')) {
+    expect(el.closest('.tool-card-result-inner')).not.toBeNull()
+  }
+}
+
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
   Element.prototype.scrollTo = vi.fn()
@@ -170,7 +179,7 @@ describe('SessionSearchPreview', () => {
     expect(container.querySelector('mark.search-hl-active')).toBeTruthy()
   })
 
-  it('keeps the matched tool result visible and highlighted', () => {
+  it('keeps a consumed result merged into its owning card and seeks the owner row', () => {
     const { container } = renderPreview(
       { page: TOOL_PAGE as MessagePreviewState['page'] },
       {
@@ -182,8 +191,17 @@ describe('SessionSearchPreview', () => {
       },
     )
 
-    expect(container.textContent).toContain('clean tree')
-    expect(container.querySelector('mark.search-hl-active')).toBeTruthy()
+    // The matched result stays merged: its ToolResultDetails renders inside
+    // the owning Bash card, never as a standalone orphan bubble.
+    expectAllResultsMerged(container)
+    const inner = container.querySelector('.tool-card-result-inner')
+    expect(inner).toBeTruthy()
+    expect(inner!.textContent).toContain('clean tree')
+    expect(inner!.querySelector('mark.search-hl-active')?.textContent).toBe('clean')
+    // The scroll/active target is the owning card row (the group head), not
+    // the consumed result row — that row no longer exists in the transcript.
+    expect(container.querySelector('[data-message-id="a5"] mark.search-hl-active')).toBeTruthy()
+    expect(container.querySelector('[data-message-id="u6"]')).toBeNull()
   })
 
   it('settles a subagent summary without inlining its replayed result', () => {
@@ -293,7 +311,7 @@ describe('SessionSearchPreview', () => {
     expect(container.textContent).toContain('agent output')
   })
 
-  it('keeps a child tool result active after drilling into its sidechain', () => {
+  it('keeps a child tool result merged into its card after drilling into its sidechain', () => {
     const agentPage = {
       ...PAGE,
       messages: [
@@ -337,11 +355,23 @@ describe('SessionSearchPreview', () => {
 
     fireEvent.click(container.querySelector('.subagent-card-details')!)
 
-    expect(container.textContent).toContain('child output')
-    expect(container.querySelector('mark.search-hl-active')).toBeTruthy()
+    // Drill-in navigation still lands in the sidechain conversation.
+    expect(screen.getByText('Review')).toBeTruthy()
+    // The child result stays merged into its Bash card: no standalone orphan
+    // bubble in the sidechain view, and the consumed result row is gone.
+    expectAllResultsMerged(container)
+    expect(container.querySelector('[data-message-id="c7"]')).toBeNull()
+    const inner = container.querySelector('.tool-card-result-inner')
+    expect(inner).toBeTruthy()
+    expect(inner!.textContent).toContain('child output')
+    expect(inner!.querySelector('mark.search-hl')).toBeTruthy()
+    // The active-mark assertion is deferred to Task 4 (search merged-result
+    // addressing plan): sidechain children render via MessageView, and its
+    // assistant-side consumed-result ordinal walk — which lights the active
+    // mark inside the merged card — lands there.
   })
 
-  it('keeps an async launch acknowledgement visible when it is the search target', () => {
+  it('keeps an async launch ack consumed by its subagent card when it is the search target', () => {
     const agentPage = {
       ...PAGE,
       messages: [
@@ -383,7 +413,11 @@ describe('SessionSearchPreview', () => {
       },
     )
 
-    expect(container.textContent).toContain('Async agent launched successfully')
+    // The ack stays merged into the subagent lifecycle: no standalone result
+    // bubble, and the launch metadata is not inlined into the main view.
+    expectAllResultsMerged(container)
+    expect(container.querySelector('.subagent-card')).toBeTruthy()
+    expect(container.textContent).not.toContain('Async agent launched successfully')
   })
 
   it('uses the reducer-selected canonical result in the sidechain detail', () => {
@@ -442,6 +476,11 @@ describe('SessionSearchPreview', () => {
       },
     )
 
+    // Main view: the canonical result stays consumed by the settled record —
+    // no standalone bubble alongside the card.
+    expectAllResultsMerged(container)
+    expect(container.querySelector('.subagent-card-done')).toBeTruthy()
+
     fireEvent.click(container.querySelector('.subagent-card-details')!)
 
     expect(container.textContent).toContain('canonical output')
@@ -490,6 +529,11 @@ describe('SessionSearchPreview', () => {
         toolGroupCards: false,
       },
     )
+
+    // Main view: the errored result stays consumed by the interrupted record —
+    // no standalone bubble alongside the card.
+    expectAllResultsMerged(container)
+    expect(container.querySelector('.subagent-card-interrupted')).toBeTruthy()
 
     fireEvent.click(container.querySelector('.subagent-card-details')!)
 

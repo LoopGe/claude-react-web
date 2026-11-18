@@ -118,64 +118,29 @@ export function SessionSearchPreview({
   // Replay the same index pipelines the live reducer runs: generic tool
   // statuses, merged results, plan/question lifecycle, and the sidechain
   // (Agent / Workflow / forked Skill) records. MessageList expects these maps;
-  // a page fetched around an old hit is not present in the live store.
-  const lifecycles = useMemo(() => {
+  // a page fetched around an old hit is not present in the live store. The
+  // hit's result stays merged exactly as the live transcript renders it —
+  // both the main view and the sidechain detail read this one lifecycle.
+  const lifecycle = useMemo(() => {
     let base = createInitialServerMirror()
     for (const item of items) base = updateIndexesMirror(base, item.msg)
-    base = drainPendingResults(base)
-
-    // The hit must stay highlightable. If it is a tool_result, keep that
-    // result standalone only in the main preview. The detail view retains the
-    // reducer-selected canonical result instead of reconstructing it with a
-    // second set of precedence rules.
-    const resultId = targetInfo.resultId
-    if (!resultId) return { base, transcript: base }
-    const toolResults = new Map(base.toolResults)
-    toolResults.delete(resultId)
-    const activeSubagents = new Map(base.activeSubagents)
-    const subagent = activeSubagents.get(resultId)
-    if (subagent) {
-      activeSubagents.set(resultId, {
-        ...subagent,
-        // background/pending/dismissed records consume their ack even without
-        // a captured result. Marking the record settled-and-result-less is
-        // what keeps that ack visible as the matched bubble.
-        status:
-          subagent.status === 'background' || subagent.status === 'pending' || subagent.status === 'dismissed'
-            ? 'done'
-            : subagent.status,
-        result: undefined,
-        resultOrigin: undefined,
-      })
-    }
-    const activeWorkflows = new Map(base.activeWorkflows)
-    const workflow = activeWorkflows.get(resultId)
-    if (workflow?.result) activeWorkflows.set(resultId, { ...workflow, result: undefined })
-    const activeSkills = new Map(base.activeSkills)
-    const skill = activeSkills.get(resultId)
-    if (skill?.result) activeSkills.set(resultId, { ...skill, result: undefined })
-    return {
-      base,
-      transcript: { ...base, toolResults, activeSubagents, activeWorkflows, activeSkills },
-    }
-  }, [items, targetInfo.resultId])
-  const lifecycle = lifecycles.transcript
-  const detailLifecycle = lifecycles.base
-  const contentLifecycle = sidechainId && targetInfo.resultId && targetInfo.resultId !== sidechainId
-    ? lifecycle
-    : sidechainId
-      ? detailLifecycle
-      : lifecycle
+    return drainPendingResults(base)
+  }, [items])
 
   const messages = useMemo(() => items.map((item) => item.msg), [items])
 
   const targetItemIndex = useMemo(() => {
     const resultId = targetInfo.resultId
     if (!resultId) return targetInfo.index
-    // Plan/question results stay merged into their cards: rewriting their
-    // lifecycle would falsify the snapshot. Seek the owning card instead of
-    // the consumed result row.
-    if (lifecycle.planStatus.has(resultId) || lifecycle.questionAnswers.has(resultId)) {
+    // Consumed results stay merged into their cards (generic tool cards as
+    // well as plan/question cards): rewriting their lifecycle would falsify
+    // the snapshot. Seek the owning card row instead of the consumed result
+    // row, which no longer renders on its own.
+    if (
+      lifecycle.planStatus.has(resultId) ||
+      lifecycle.questionAnswers.has(resultId) ||
+      lifecycle.toolResults.has(resultId)
+    ) {
       const owner = items.findIndex((candidate) =>
         getBlocks(candidate.msg).some(
           (block) => block.type === 'tool_use' && extractToolUseId(block) === resultId,
@@ -204,11 +169,11 @@ export function SessionSearchPreview({
       items={items}
       sessionId={sessionId}
       cwd={cwd}
-      toolStatus={contentLifecycle.toolStatus}
-      toolResults={contentLifecycle.toolResults}
-      planStatus={contentLifecycle.planStatus}
-      planContent={contentLifecycle.planContent}
-      questionAnswers={contentLifecycle.questionAnswers}
+      toolStatus={lifecycle.toolStatus}
+      toolResults={lifecycle.toolResults}
+      planStatus={lifecycle.planStatus}
+      planContent={lifecycle.planContent}
+      questionAnswers={lifecycle.questionAnswers}
       toolGroupCards={toolGroupCards}
       autoExpandRunningGroups={autoExpandRunningGroups}
       showMessageHeaders={showMessageHeaders}
@@ -220,18 +185,18 @@ export function SessionSearchPreview({
   )
 
   const sidechainRecord = sidechainId
-    ? (detailLifecycle.activeSubagents.get(sidechainId) ??
-      detailLifecycle.activeWorkflows.get(sidechainId) ??
-      detailLifecycle.activeSkills.get(sidechainId))
+    ? (lifecycle.activeSubagents.get(sidechainId) ??
+      lifecycle.activeWorkflows.get(sidechainId) ??
+      lifecycle.activeSkills.get(sidechainId))
     : undefined
   const sidechainLabel =
     (sidechainRecord as { label?: string; name?: string } | undefined)?.label ??
     (sidechainRecord as { name?: string } | undefined)?.name ??
     'Sidechain'
 
-  const sidechainSkill = sidechainId ? detailLifecycle.activeSkills.get(sidechainId) : undefined
+  const sidechainSkill = sidechainId ? lifecycle.activeSkills.get(sidechainId) : undefined
   const sidechainSubagent = sidechainId
-    ? (detailLifecycle.activeSubagents.get(sidechainId) ??
+    ? (lifecycle.activeSubagents.get(sidechainId) ??
       (sidechainSkill ? skillRecordAsSubagent(sidechainSkill) : undefined))
     : undefined
 
@@ -254,11 +219,11 @@ export function SessionSearchPreview({
       subagent={sidechainSubagent}
       sessionId={sessionId}
       cwd={cwd}
-      toolStatus={contentLifecycle.toolStatus}
-      toolResults={contentLifecycle.toolResults}
-      planStatus={contentLifecycle.planStatus}
-      planContent={contentLifecycle.planContent}
-      questionAnswers={contentLifecycle.questionAnswers}
+      toolStatus={lifecycle.toolStatus}
+      toolResults={lifecycle.toolResults}
+      planStatus={lifecycle.planStatus}
+      planContent={lifecycle.planContent}
+      questionAnswers={lifecycle.questionAnswers}
       toolGroupCards={toolGroupCards}
       autoExpandRunningGroups={autoExpandRunningGroups}
       showMessageHeaders={showMessageHeaders}
@@ -314,10 +279,10 @@ export function SessionSearchPreview({
           <div className="search-preview-state">This message is not shown in the transcript</div>
         ) : (
           <SubagentProvider
-            value={{ index: contentLifecycle.activeSubagents, messages, open: openSidechain }}
+            value={{ index: lifecycle.activeSubagents, messages, open: openSidechain }}
           >
-            <WorkflowProvider value={{ index: contentLifecycle.activeWorkflows, open: openSidechain }}>
-              <SkillProvider value={{ index: contentLifecycle.activeSkills, open: openSidechain }}>
+            <WorkflowProvider value={{ index: lifecycle.activeWorkflows, open: openSidechain }}>
+              <SkillProvider value={{ index: lifecycle.activeSkills, open: openSidechain }}>
                 {content}
               </SkillProvider>
             </WorkflowProvider>
