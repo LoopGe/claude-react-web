@@ -207,3 +207,39 @@ describe('assistantResultIdxByBlock', () => {
     expect(assistantResultIdxByBlock(twoEdits, new Map([['e2', entry('needle second')]]), 4, 'needle')).toEqual([undefined, 0])
   })
 })
+
+describe('splitMemberOrdinal — segments-then-results space (multi-tool member)', () => {
+  // A member with TWO tool_use blocks: a Grep (no diff) whose result carries one
+  // needle, then an Edit whose diff carries two and whose result carries two.
+  // The binding space is own segments (diffs, block order) THEN consumed results
+  // (block order) — the SAME space as rowSearchMatchCount / assistantResultIdxByBlock:
+  //   Edit diff(2) · Grep result(1) · Edit result(2)  → ordinals 0..4.
+  // An interleaved walk (diff1,result1,diff2,result2) would put the Grep result
+  // FIRST and desync from the count layer; these ordinals pin the two-pass order.
+  const member = toolUseMsg('m1', [
+    { id: 'g1', name: 'Grep', input: { pattern: 'haystack' } },
+    { id: 'e1', name: 'Edit', input: { old_string: 'old needle', new_string: 'new needle' } },
+  ])
+  const results = new Map([
+    ['g1', entry('needle')],
+    ['e1', entry('needle needle')],
+  ])
+
+  it('routes an ordinal in the (second block) Edit diff to diffIdx', () => {
+    expect(splitMemberOrdinal(member, results, 0, 'needle')).toEqual({ diffIdx: 0, resultIdx: undefined })
+    expect(splitMemberOrdinal(member, results, 1, 'needle')).toEqual({ diffIdx: 1, resultIdx: undefined })
+  })
+
+  it('routes an ordinal in the FIRST result (Grep) to resultIdx, diffIdx undefined', () => {
+    expect(splitMemberOrdinal(member, results, 2, 'needle')).toEqual({ diffIdx: undefined, resultIdx: 0 })
+  })
+
+  it('routes an ordinal in the SECOND result (Edit) to resultIdx, diffIdx undefined', () => {
+    expect(splitMemberOrdinal(member, results, 3, 'needle')).toEqual({ diffIdx: undefined, resultIdx: 0 })
+    expect(splitMemberOrdinal(member, results, 4, 'needle')).toEqual({ diffIdx: undefined, resultIdx: 1 })
+  })
+
+  it('returns both undefined past the end of the match space', () => {
+    expect(splitMemberOrdinal(member, results, 5, 'needle')).toEqual({ diffIdx: undefined, resultIdx: undefined })
+  })
+})

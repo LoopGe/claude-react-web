@@ -49,10 +49,13 @@ export function rowSearchMatchCount(
 
 /** Route a member-local active-match ordinal into the one renderer that owns
  *  it. PRECONDITION: `memberMsg` is a tool-only group member (the fold contract
- *  in transcript-rows.ts — its visible content is tool_use blocks only), so the
- *  match space is, per tool_use block in block order: the diff's matches then
- *  the consumed result's rendered-run matches. Walks that space subtracting
- *  each segment's count until the ordinal falls inside one:
+ *  in transcript-rows.ts — its visible content is tool_use blocks only).
+ *
+ *  The match space is the SAME segments-then-results space as rowSearchMatchCount
+ *  and assistantResultIdxByBlock: the member's own segments first (the tool_use
+ *  diffs, in block order), THEN the consumed results' rendered-run matches (in
+ *  tool_use block order). Two passes subtract those counts until the ordinal
+ *  falls inside one segment:
  *   - inside a diff  → `diffIdx` (diff-local, the Nth match of that tool_use's
  *     indexed del+add text), `resultIdx` undefined;
  *   - inside a result → `resultIdx` (result-global across that id's runs, the
@@ -67,12 +70,18 @@ export function splitMemberOrdinal(
   ordinal: number,
   query: string,
 ): { diffIdx: number | undefined; resultIdx: number | undefined } {
+  const blocks = getBlocks(memberMsg)
   let remaining = ordinal
-  for (const block of getBlocks(memberMsg)) {
+  // Pass 1 — own segments: the tool_use diffs, in block order.
+  for (const block of blocks) {
     if (block.type !== 'tool_use') continue
     const diffN = countMatches(extractToolUseDiffText(block.input, block.name), query)
     if (remaining < diffN) return { diffIdx: remaining, resultIdx: undefined }
     remaining -= diffN
+  }
+  // Pass 2 — consumed results, in tool_use block order.
+  for (const block of blocks) {
+    if (block.type !== 'tool_use') continue
     const id = extractToolUseId(block)
     const entry = id ? toolResults.get(id) : undefined
     if (!entry) continue
