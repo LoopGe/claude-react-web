@@ -41,6 +41,7 @@ import { useRevealClass } from '../../hooks/useRevealClass'
 import { BlockView } from './blocks'
 import { useToolStatuses, useToolResults } from '../../hooks/usePlanStatus'
 import { groupMayMatchSearch, summarizeToolGroup } from './tool-grouping'
+import { splitMemberOrdinal } from './search-addressing'
 import { extractToolUseId, getBlocks } from '../../session-store/normalize'
 import {
   IconAlertCircle,
@@ -194,17 +195,22 @@ function ToolGroupMember({
   block,
   entering,
   flash,
-  isActive,
   searchQuery,
-  activeMatchInItem,
+  diffActiveMatchIdx,
+  resultActiveMatchIdx,
 }: {
   toolUseId: string | undefined
   block: Block
   entering: boolean
   flash: boolean
-  isActive: boolean
   searchQuery?: string
-  activeMatchInItem?: number
+  /** Diff-local active match for this member's tool_use input. Undefined unless
+   *  the active ordinal routes into THIS member's diff (parent computes the
+   *  split and gates non-active members to undefined). */
+  diffActiveMatchIdx?: number
+  /** Result-global active match for this member's consumed result. Undefined
+   *  unless the active ordinal routes into THIS member's result. */
+  resultActiveMatchIdx?: number
 }) {
   const { revealing, handleAnimationEnd } = useRevealClass(entering, 'item-enter')
 
@@ -221,8 +227,8 @@ function ToolGroupMember({
       <BlockView
         block={block}
         searchQuery={searchQuery}
-        activeMatchIdx={isActive ? activeMatchInItem : undefined}
-        toolResultActiveMatchIdx={isActive ? activeMatchInItem : undefined}
+        activeMatchIdx={diffActiveMatchIdx}
+        toolResultActiveMatchIdx={resultActiveMatchIdx}
       />
     </div>
   )
@@ -293,6 +299,20 @@ function ToolGroupCardInner({
     () => groupMayMatchSearch(toolBlocks, searchQuery, toolResults),
     [toolBlocks, searchQuery, toolResults],
   )
+
+  // Route the active navigation ordinal into the one member that owns it. The
+  // ordinal is member-local; splitMemberOrdinal walks that member's
+  // diff-then-result match space and returns the diff-local / result-global
+  // pair. The render loop below hands the pair only to the active member, so
+  // exactly one card lights the orange active mark.
+  const activeMemberSplit = useMemo(() => {
+    const q = searchQuery?.trim()
+    if (!q || activeMatchInItem == null || activeMatchInItem < 0 || activeMemberItemIndex == null) return undefined
+    const mi = memberItemIndices.indexOf(activeMemberItemIndex)
+    const member = mi >= 0 ? members[mi] : undefined
+    if (!member) return undefined
+    return splitMemberOrdinal(member, toolResults, activeMatchInItem, q)
+  }, [members, memberItemIndices, activeMemberItemIndex, activeMatchInItem, searchQuery, toolResults])
   // `live` is the signal that force-opens the group AND (via the turn latch
   // in the reducer) keeps it pinned through the turn + triggers the
   // post-turn settle fold. The pref gates the running half: with the pref
@@ -528,9 +548,9 @@ function ToolGroupCardInner({
                   block={block}
                   entering={enteringFlags[i]}
                   flash={toolUseId != null && toolUseId === flashToolUseId}
-                  isActive={isActive}
                   searchQuery={searchQuery}
-                  activeMatchInItem={isActive ? activeMatchInItem : undefined}
+                  diffActiveMatchIdx={isActive ? activeMemberSplit?.diffIdx : undefined}
+                  resultActiveMatchIdx={isActive ? activeMemberSplit?.resultIdx : undefined}
                 />
               )
             })

@@ -240,9 +240,11 @@ export const MessageView = memo(function MessageView({
     return out
   }, [blocks, searchQuery, activeMatchInItem])
 
-  // Compute the active match index for tool_result content (both inline
-  // via ToolCard and orphan bubbles). After text-block matches are
-  // consumed, any remaining matches live in tool_result content.
+  // Compute the active match index for tool_result content — both the orphan
+  // bubbles of a user frame and the result merged into an assistant tool card.
+  // After text-block matches are consumed, any remaining matches live in
+  // tool_result content. The returned index is result-global across the owning
+  // id's rendered runs; ToolResultDetails rebases it per run.
   const toolResultActiveMatchIdx = useMemo(() => {
     const q = searchQuery?.trim()
     if (!q || activeMatchInItem == null || activeMatchInItem < 0) return undefined
@@ -253,18 +255,34 @@ export const MessageView = memo(function MessageView({
       remaining -= countMatches(extractPlainText(b.text), q)
       if (remaining < 0) return undefined // active match is in a text block
     }
-    // Walk tool_result blocks to find which one contains the active match.
-    // Count over the SAME raw runs the renderer uses (shared/tool-result-text),
-    // so the block-local index handed to ToolResultDetails rebases cleanly onto
-    // its per-run marks. Image runs and internal file blocks contribute none.
+    // Walk the remaining blocks in order. A user frame carries tool_result
+    // blocks (orphan bubbles); an assistant frame carries tool_use blocks whose
+    // consumed result renders inside the tool card. Both count over the SAME
+    // raw runs the renderer uses (shared/tool-result-text), so the index handed
+    // to ToolResultDetails rebases cleanly onto its per-run marks. Image runs
+    // and internal file blocks contribute none.
     for (const b of blocks) {
-      if (b.type !== 'tool_result') continue
-      const rc = (b as { content?: unknown }).content
-      let n = 0
-      for (const run of toolResultTextRuns(rc)) n += countMatches(run, q)
-      if (n === 0) continue
-      if (remaining < n) return remaining
-      remaining -= n
+      if (b.type === 'tool_result') {
+        const rc = (b as { content?: unknown }).content
+        let n = 0
+        for (const run of toolResultTextRuns(rc)) n += countMatches(run, q)
+        if (n === 0) continue
+        if (remaining < n) return remaining
+        remaining -= n
+      } else if (b.type === 'tool_use') {
+        // Assistant side: this tool's diff matches precede the matches of the
+        // result consumed into its card. A diff hit is owned by blockActiveIdx,
+        // so stand down here. Otherwise the remainder is the result-global index
+        // for that merged result. We deliberately do NOT read the toolResults map
+        // to count the result's runs: ToolResultDetails — the leaf that renders
+        // the result — already rebases a result-global index per run and lights
+        // nothing past the result's matches, and subscribing MessageView to the
+        // map would re-render every mounted row on each result landing
+        // (result-consumed-identity.test.tsx pins zero such churn).
+        const diffN = countMatches(extractToolUseDiffText(b.input, b.name), q)
+        if (remaining < diffN) return undefined
+        return remaining - diffN
+      }
     }
     return undefined
   }, [blocks, searchQuery, activeMatchInItem])

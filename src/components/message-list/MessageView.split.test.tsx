@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import type { SdkMessage } from '../../types'
+import type { ToolResultEntry } from '../../session-store/types'
 import { fileHandleText } from '../../../shared/upload-handle'
+import { ToolResultProvider } from '../../hooks/usePlanStatus'
 import { MessageView } from './MessageView'
 
 function combinedAssistant(): SdkMessage {
@@ -185,5 +187,81 @@ describe('MessageView: tool_result raw runs search addressing', () => {
     const { container } = renderResult(content, 'needle', 0)
     expect(container.querySelectorAll('mark.search-hl')).toHaveLength(0)
     expect(container.textContent).not.toContain('needle')
+  })
+})
+
+describe('MessageView: assistant consumed-result ordinal routing', () => {
+  // A non-folded assistant row carrying text + an Edit tool_use whose result has
+  // been consumed into the card. Match space (block order): text (1) + Edit diff
+  // (2) + consumed result (2). An active ordinal landing in the result must light
+  // ONLY the merged card's mark — the text and diff marks stay default.
+  function assistantWithEdit(): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid: 'a-edit',
+      parent_tool_use_id: null,
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'needle intro' },
+          {
+            type: 'tool_use',
+            id: 'tu-edit',
+            name: 'Edit',
+            input: { file_path: 'a.ts', old_string: 'old needle', new_string: 'new needle' },
+          },
+        ],
+      },
+    } as unknown as SdkMessage
+  }
+
+  const editResults = new Map<string, ToolResultEntry>([
+    ['tu-edit', { content: 'needle alpha needle beta', isError: false }],
+  ])
+
+  function renderAssistant(activeMatchInItem?: number) {
+    return render(
+      <ToolResultProvider value={editResults}>
+        <MessageView
+          msg={assistantWithEdit()}
+          searchQuery="needle"
+          activeMatchInItem={activeMatchInItem}
+          foldExpanded={false}
+          foldSearchHit={false}
+          onToggleFold={() => {}}
+          consumedKey="a-edit"
+        />
+      </ToolResultProvider>,
+    )
+  }
+
+  it('lights the merged result mark when the active ordinal falls in the consumed result', () => {
+    // ordinal 3 = text(1) + diff(2) → result-global 0 (the first result mark).
+    const { container } = renderAssistant(3)
+    const active = container.querySelectorAll('mark.search-hl-active')
+    expect(active).toHaveLength(1)
+    expect(active[0]!.textContent).toBe('needle')
+    expect(active[0]!.closest('.tool-card-result-inner')).not.toBeNull()
+    // The text mark and the diff marks render but stay at the default colour.
+    expect(container.querySelector('.md mark.search-hl')).not.toBeNull()
+    expect(container.querySelector('.md mark.search-hl-active')).toBeNull()
+    expect(container.querySelector('.diff-line-text mark.search-hl')).not.toBeNull()
+    expect(container.querySelector('.diff-line-text mark.search-hl-active')).toBeNull()
+  })
+
+  it('routes the second result ordinal to the second merged-result mark', () => {
+    const { container } = renderAssistant(4)
+    const resultMarks = container.querySelectorAll('.tool-card-result-inner mark.search-hl')
+    expect(resultMarks).toHaveLength(2)
+    const active = container.querySelectorAll('mark.search-hl-active')
+    expect(active).toHaveLength(1)
+    expect(resultMarks[1]).toBe(active[0])
+  })
+
+  it('keeps the result mark default when the active ordinal is in the diff', () => {
+    // ordinal 1 = text(1) → diff-local 0. The diff lights, the result does not.
+    const { container } = renderAssistant(1)
+    expect(container.querySelector('.diff-line-text mark.search-hl-active')).not.toBeNull()
+    expect(container.querySelector('.tool-card-result-inner mark.search-hl-active')).toBeNull()
   })
 })

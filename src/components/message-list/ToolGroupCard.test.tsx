@@ -414,6 +414,58 @@ describe('ToolGroupCard', () => {
     expect(marks[0]!.textContent).toBe('needle')
   })
 
+  it('routes the active ordinal into the active member’s merged result only', () => {
+    // Two Grep members, each with a consumed result carrying one needle. The
+    // active target is the SECOND member's result (member-local ordinal 0), so
+    // only that member's card may show the orange active mark.
+    const members = [toolMsg('t1', 'Grep', { pattern: 'haystack' }), toolMsg('t2', 'Grep', { pattern: 'haystack' })]
+    const toolStatus = new Map<string, ToolStatus>([
+      ['t1-tu', 'success'],
+      ['t2-tu', 'success'],
+    ])
+    const toolResults = new Map<string, ToolResultEntry>([
+      ['t1-tu', { content: 'needle first', isError: false }],
+      ['t2-tu', { content: 'needle second', isError: false }],
+    ])
+    const { container } = renderGroup({
+      members,
+      toolStatus,
+      toolResults,
+      searchQuery: 'needle',
+      activeMemberItemIndex: 1,
+      activeMatchInItem: 0,
+    })
+    expect(isOpen(container)).toBe(true)
+    const active = container.querySelectorAll('mark.search-hl-active')
+    expect(active).toHaveLength(1)
+    // The active mark lives in the second member's card, not the first's.
+    const second = container.querySelector('[data-member-tool-use-id="t2-tu"]')!
+    const first = container.querySelector('[data-member-tool-use-id="t1-tu"]')!
+    expect(second.querySelector('mark.search-hl-active')).toBe(active[0])
+    expect(first.querySelector('mark.search-hl-active')).toBeNull()
+    // Both members still render their passive result mark.
+    expect(first.querySelector('.tool-card-result-inner mark.search-hl')).not.toBeNull()
+    expect(second.querySelector('.tool-card-result-inner mark.search-hl')).not.toBeNull()
+  })
+
+  it('routes an active ordinal into a member’s Edit diff, not its result', () => {
+    // An Edit member whose diff carries the needle: the active ordinal is
+    // diff-local, so the diff lights and the merged result stays default.
+    const members = [toolMsg('t1', 'Edit', { file_path: 'a.ts', old_string: 'old needle', new_string: 'new needle' })]
+    const toolStatus = new Map<string, ToolStatus>([['t1-tu', 'success']])
+    const toolResults = new Map<string, ToolResultEntry>([['t1-tu', { content: 'needle result', isError: false }]])
+    const { container } = renderGroup({
+      members,
+      toolStatus,
+      toolResults,
+      searchQuery: 'needle',
+      activeMemberItemIndex: 0,
+      activeMatchInItem: 0,
+    })
+    expect(container.querySelector('.diff-line-text mark.search-hl-active')).not.toBeNull()
+    expect(container.querySelector('.tool-card-result-inner mark.search-hl-active')).toBeNull()
+  })
+
   it('treats a missing tool id as running so an in-flight card never folds', () => {
     const { container } = renderGroup({
       members: [toolMsg('t1'), toolMsg('t2')],

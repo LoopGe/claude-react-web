@@ -3,7 +3,7 @@
 // (see vitest.config.ts); opting out skips that env boot (same as
 // tool-grouping.test.ts).
 import { describe, it, expect } from 'vitest'
-import { rowSearchMatchCount } from './search-addressing'
+import { rowSearchMatchCount, splitMemberOrdinal } from './search-addressing'
 import { countCachedMessageSearchMatches } from '../../session-store/normalize'
 import type { SdkMessage } from '../../types'
 import type { ToolResultEntry } from '../../session-store/types'
@@ -111,5 +111,43 @@ describe('rowSearchMatchCount', () => {
     const msg = toolUseMsg('m1', [{ id: 'g1', name: 'Grep', input: { pattern: 'haystack' } }])
     const results = new Map([['g1', entry('needle')]])
     expect(rowSearchMatchCount(msg, undefined, results, '')).toBe(0)
+  })
+})
+
+describe('splitMemberOrdinal', () => {
+  // Edit member: the del + add lines carry 2 diff matches, the consumed result
+  // carries 3. The member's match space is diff-first then result, so ordinals
+  // 0-1 route into the diff (diff-local) and 2-4 into the result (result-global).
+  const editMember = toolUseMsg('m1', [
+    { id: 'e1', name: 'Edit', input: { old_string: 'alpha needle', new_string: 'beta needle' } },
+  ])
+  const editResults = new Map([['e1', entry('needle one needle two needle three')]])
+
+  it('routes ordinals 0,1 into the Edit diff (diff-local)', () => {
+    expect(splitMemberOrdinal(editMember, editResults, 0, 'needle')).toEqual({ diffIdx: 0, resultIdx: undefined })
+    expect(splitMemberOrdinal(editMember, editResults, 1, 'needle')).toEqual({ diffIdx: 1, resultIdx: undefined })
+  })
+
+  it('routes ordinals 2,3,4 into the consumed result (result-global)', () => {
+    expect(splitMemberOrdinal(editMember, editResults, 2, 'needle')).toEqual({ diffIdx: undefined, resultIdx: 0 })
+    expect(splitMemberOrdinal(editMember, editResults, 3, 'needle')).toEqual({ diffIdx: undefined, resultIdx: 1 })
+    expect(splitMemberOrdinal(editMember, editResults, 4, 'needle')).toEqual({ diffIdx: undefined, resultIdx: 2 })
+  })
+
+  it('returns both undefined past the end of the match space', () => {
+    expect(splitMemberOrdinal(editMember, editResults, 5, 'needle')).toEqual({ diffIdx: undefined, resultIdx: undefined })
+  })
+
+  it('routes a Grep member straight into its result (no diff)', () => {
+    const grepMember = toolUseMsg('m1', [{ id: 'g1', name: 'Grep', input: { pattern: 'haystack' } }])
+    const grepResults = new Map([['g1', entry('needle here')]])
+    expect(splitMemberOrdinal(grepMember, grepResults, 0, 'needle')).toEqual({ diffIdx: undefined, resultIdx: 0 })
+    expect(splitMemberOrdinal(grepMember, grepResults, 1, 'needle')).toEqual({ diffIdx: undefined, resultIdx: undefined })
+  })
+
+  it('returns both undefined when the result has not landed', () => {
+    expect(splitMemberOrdinal(editMember, new Map(), 2, 'needle')).toEqual({ diffIdx: undefined, resultIdx: undefined })
+    // The diff still routes without a result.
+    expect(splitMemberOrdinal(editMember, new Map(), 0, 'needle')).toEqual({ diffIdx: 0, resultIdx: undefined })
   })
 })

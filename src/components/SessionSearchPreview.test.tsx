@@ -365,10 +365,9 @@ describe('SessionSearchPreview', () => {
     expect(inner).toBeTruthy()
     expect(inner!.textContent).toContain('child output')
     expect(inner!.querySelector('mark.search-hl')).toBeTruthy()
-    // The active-mark assertion is deferred to Task 4 (search merged-result
-    // addressing plan): sidechain children render via MessageView, and its
-    // assistant-side consumed-result ordinal walk — which lights the active
-    // mark inside the merged card — lands there.
+    // The assistant-side consumed-result ordinal walk lights the active mark
+    // inside the merged card — sidechain children render via MessageView.
+    expect(inner!.querySelector('mark.search-hl-active')?.textContent).toBe('child output')
   })
 
   it('keeps an async launch ack consumed by its subagent card when it is the search target', () => {
