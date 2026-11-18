@@ -37,7 +37,7 @@ import { extractUserText, makeResultConsumed, toolResultConsumedKey } from './me
 import { MessageView } from './message-list/MessageView'
 import { userBodyFoldKey } from './message-list/fold-key'
 import { ToolGroupCard } from './message-list/ToolGroupCard'
-import { rowSearchMatchCount } from './message-list/search-addressing'
+import { assistantResultIdxByBlock, rowSearchMatchCount } from './message-list/search-addressing'
 import { BottomOverlaySpacer } from './message-list/views/frame-views'
 import {
   advanceRowAnchor,
@@ -1429,6 +1429,19 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         : activeRowIdx != null || activeGroupMemberIdx != null || rowSearchMatchCount(item.msg, item.toolGroup?.members, toolResults, sq.trim()) > 0
           ? sq
           : undefined
+    // Per-block result-ordinal routing for the ACTIVE non-group assistant row
+    // (which may carry several parallel tool_use blocks). MessageList owns the
+    // toolResults map and computes the array here; MessageView must not subscribe
+    // to that map (result-consumed-identity pins zero per-row churn). Every other
+    // row gets undefined — an identity-stable prop, so its memo skips re-render.
+    const activeResultIdxByBlock =
+      activeRowIdx != null &&
+      item.msg.type === 'assistant' &&
+      activeMatchInItem != null &&
+      activeMatchInItem >= 0 &&
+      sq?.trim()
+        ? assistantResultIdxByBlock(item.msg, toolResults, activeMatchInItem, sq.trim())
+        : undefined
     const rowBody = item.toolGroup ? (
           <ToolGroupCard
             members={item.toolGroup.members}
@@ -1458,6 +1471,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
             isCompactSummary={item.isCompactSummary}
             searchQuery={searchQueryForRow}
             activeMatchInItem={activeMatchInItem}
+            activeResultIdxByBlock={activeResultIdxByBlock}
             sending={item.sending}
             deliveryStatus={item.deliveryStatus}
             working={working}

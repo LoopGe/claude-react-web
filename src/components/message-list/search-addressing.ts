@@ -12,7 +12,7 @@ import type { SdkMessage } from '../../types'
 import type { ToolResultEntry } from '../../session-store/types'
 import { countCachedMessageSearchMatches, extractToolUseId, getBlocks } from '../../session-store/normalize'
 import { countMatches } from '../../../shared/search/match.js'
-import { extractToolUseDiffText } from '../../../shared/search/extract.js'
+import { extractPlainText, extractToolUseDiffText } from '../../../shared/search/extract.js'
 import { toolResultTextRuns } from '../../../shared/tool-result-text.js'
 
 /** Total search matches owned by one transcript row. A folded group row
@@ -83,4 +83,57 @@ export function splitMemberOrdinal(
     remaining -= n
   }
   return { diffIdx: undefined, resultIdx: undefined }
+}
+
+/** Per-block result-global active-match routing for a NON-folded assistant row
+ *  (which may carry several parallel tool_use blocks). Returns one entry per
+ *  content block in order; only the tool_use block whose consumed result holds
+ *  the active ordinal gets a number (the result-global index across that id's
+ *  runs, the coordinate ToolResultDetails rebases per run) — every other entry
+ *  is undefined, so exactly one card lights the active mark.
+ *
+ *  The walk follows the SAME attribution order as rowSearchMatchCount and
+ *  blockActiveIdx: the row's own segments first (text blocks + tool_use diffs,
+ *  in block order), THEN the consumed results (in tool_use block order). That
+ *  order is what the navigation ordinal is counted against, and it keeps this
+ *  walk in lockstep with blockActiveIdx's diff routing: an ordinal that lands
+ *  in a text block or a diff leaves EVERY entry undefined (those marks are
+ *  blockActiveIdx's), and only an ordinal past all own segments routes into a
+ *  result. Out of range → all undefined. Pure; the caller (MessageList) reads
+ *  the toolResults map so MessageView itself never subscribes to it. */
+export function assistantResultIdxByBlock(
+  msg: SdkMessage,
+  toolResults: ReadonlyMap<string, ToolResultEntry>,
+  ordinal: number,
+  query: string,
+): (number | undefined)[] {
+  const blocks = getBlocks(msg)
+  const out: (number | undefined)[] = blocks.map(() => undefined)
+  let remaining = ordinal
+  // Own segments: text + tool_use diffs, in block order (blockActiveIdx's space).
+  for (const b of blocks) {
+    if (b.type === 'text' && typeof b.text === 'string') {
+      remaining -= countMatches(extractPlainText(b.text), query)
+    } else if (b.type === 'tool_use') {
+      remaining -= countMatches(extractToolUseDiffText(b.input, b.name), query)
+    }
+    if (remaining < 0) return out // active match is in a text block or a diff
+  }
+  // Consumed results, in tool_use block order.
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]
+    if (b.type !== 'tool_use') continue
+    const id = extractToolUseId(b)
+    const entry = id ? toolResults.get(id) : undefined
+    if (!entry) continue
+    let n = 0
+    for (const run of toolResultTextRuns(entry.content)) n += countMatches(run, query)
+    if (n === 0) continue
+    if (remaining < n) {
+      out[i] = remaining
+      return out
+    }
+    remaining -= n
+  }
+  return out
 }

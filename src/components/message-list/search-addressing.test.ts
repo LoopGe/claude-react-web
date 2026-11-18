@@ -3,7 +3,7 @@
 // (see vitest.config.ts); opting out skips that env boot (same as
 // tool-grouping.test.ts).
 import { describe, it, expect } from 'vitest'
-import { rowSearchMatchCount, splitMemberOrdinal } from './search-addressing'
+import { rowSearchMatchCount, splitMemberOrdinal, assistantResultIdxByBlock } from './search-addressing'
 import { countCachedMessageSearchMatches } from '../../session-store/normalize'
 import type { SdkMessage } from '../../types'
 import type { ToolResultEntry } from '../../session-store/types'
@@ -149,5 +149,61 @@ describe('splitMemberOrdinal', () => {
     expect(splitMemberOrdinal(editMember, new Map(), 2, 'needle')).toEqual({ diffIdx: undefined, resultIdx: undefined })
     // The diff still routes without a result.
     expect(splitMemberOrdinal(editMember, new Map(), 0, 'needle')).toEqual({ diffIdx: 0, resultIdx: undefined })
+  })
+})
+
+describe('assistantResultIdxByBlock', () => {
+  // Two parallel Edit calls in ONE assistant frame. Match space follows the
+  // rowSearchMatchCount / blockActiveIdx attribution order — own segments (the
+  // diffs, in block order) THEN consumed results (in block order):
+  //   e1 diff(2) · e2 diff(2) · e1 result(1) · e2 result(1)  → ordinals 0..5.
+  const twoEdits = toolUseMsg('m1', [
+    { id: 'e1', name: 'Edit', input: { old_string: 'old needle', new_string: 'new needle' } },
+    { id: 'e2', name: 'Edit', input: { old_string: 'alpha needle', new_string: 'beta needle' } },
+  ])
+  const results = new Map([
+    ['e1', entry('needle first')],
+    ['e2', entry('needle second')],
+  ])
+
+  it('returns one entry per block, all undefined for a diff hit (blockActiveIdx owns it)', () => {
+    expect(assistantResultIdxByBlock(twoEdits, results, 0, 'needle')).toEqual([undefined, undefined])
+    expect(assistantResultIdxByBlock(twoEdits, results, 2, 'needle')).toEqual([undefined, undefined])
+  })
+
+  it('routes a first-result ordinal to the first tool_use block only', () => {
+    expect(assistantResultIdxByBlock(twoEdits, results, 4, 'needle')).toEqual([0, undefined])
+  })
+
+  it('routes a second-result ordinal to the second tool_use block only', () => {
+    expect(assistantResultIdxByBlock(twoEdits, results, 5, 'needle')).toEqual([undefined, 0])
+  })
+
+  it('returns all undefined past the end of the match space', () => {
+    expect(assistantResultIdxByBlock(twoEdits, results, 6, 'needle')).toEqual([undefined, undefined])
+  })
+
+  it('subtracts text-block matches before the tool diffs', () => {
+    const msg = {
+      type: 'assistant',
+      uuid: 'm2',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'needle intro' },
+          { type: 'tool_use', id: 'e1', name: 'Edit', input: { old_string: 'old needle', new_string: 'new needle' } },
+        ],
+      },
+    } as unknown as SdkMessage
+    const r = new Map([['e1', entry('needle res')]])
+    // space: text(1) · e1 diff(2) · e1 result(1). ordinal 3 → result-global 0 at block 1.
+    expect(assistantResultIdxByBlock(msg, r, 3, 'needle')).toEqual([undefined, 0])
+    // ordinal 0 is a text hit → no result entry.
+    expect(assistantResultIdxByBlock(msg, r, 0, 'needle')).toEqual([undefined, undefined])
+  })
+
+  it('skips a tool_use whose result has not landed', () => {
+    // e1 result absent: space e1 diff(2) · e2 diff(2) · e2 result(1). ordinal 4 → e2 result 0.
+    expect(assistantResultIdxByBlock(twoEdits, new Map([['e2', entry('needle second')]]), 4, 'needle')).toEqual([undefined, 0])
   })
 })

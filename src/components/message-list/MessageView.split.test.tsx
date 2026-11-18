@@ -5,6 +5,7 @@ import type { ToolResultEntry } from '../../session-store/types'
 import { fileHandleText } from '../../../shared/upload-handle'
 import { ToolResultProvider } from '../../hooks/usePlanStatus'
 import { MessageView } from './MessageView'
+import { assistantResultIdxByBlock } from './search-addressing'
 
 function combinedAssistant(): SdkMessage {
   return {
@@ -220,12 +221,20 @@ describe('MessageView: assistant consumed-result ordinal routing', () => {
   ])
 
   function renderAssistant(activeMatchInItem?: number) {
+    const msg = assistantWithEdit()
+    // MessageList computes this per-block array for the active row and hands it
+    // down; MessageView applies it per block (it no longer walks the result map
+    // itself — see result-consumed-identity). Mirror that here.
+    const activeResultIdxByBlock = activeMatchInItem != null
+      ? assistantResultIdxByBlock(msg, editResults, activeMatchInItem, 'needle')
+      : undefined
     return render(
       <ToolResultProvider value={editResults}>
         <MessageView
-          msg={assistantWithEdit()}
+          msg={msg}
           searchQuery="needle"
           activeMatchInItem={activeMatchInItem}
+          activeResultIdxByBlock={activeResultIdxByBlock}
           foldExpanded={false}
           foldSearchHit={false}
           onToggleFold={() => {}}
@@ -263,5 +272,94 @@ describe('MessageView: assistant consumed-result ordinal routing', () => {
     const { container } = renderAssistant(1)
     expect(container.querySelector('.diff-line-text mark.search-hl-active')).not.toBeNull()
     expect(container.querySelector('.tool-card-result-inner mark.search-hl-active')).toBeNull()
+  })
+})
+
+describe('MessageView: multi-tool_use assistant row (parallel calls)', () => {
+  // Two Edit calls in ONE assistant frame, each with a consumed result carrying
+  // a distinct needle. Match space (own segments then results): e1 diff(2) ·
+  // e2 diff(2) · e1 result(1) · e2 result(1) → ordinals 0..5. The per-block array
+  // must light exactly the owning card — never broadcast a scalar to both.
+  function parallelEdits(): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid: 'a-parallel',
+      parent_tool_use_id: null,
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tu-e1', name: 'Edit', input: { file_path: 'a.ts', old_string: 'old needle', new_string: 'new needle' } },
+          { type: 'tool_use', id: 'tu-e2', name: 'Edit', input: { file_path: 'b.ts', old_string: 'alpha needle', new_string: 'beta needle' } },
+        ],
+      },
+    } as unknown as SdkMessage
+  }
+
+  const results = new Map<string, ToolResultEntry>([
+    ['tu-e1', { content: 'needle first', isError: false }],
+    ['tu-e2', { content: 'needle second', isError: false }],
+  ])
+
+  function renderParallel(activeMatchInItem: number) {
+    const msg = parallelEdits()
+    return render(
+      <ToolResultProvider value={results}>
+        <MessageView
+          msg={msg}
+          searchQuery="needle"
+          activeMatchInItem={activeMatchInItem}
+          activeResultIdxByBlock={assistantResultIdxByBlock(msg, results, activeMatchInItem, 'needle')}
+          foldExpanded={false}
+          foldSearchHit={false}
+          onToggleFold={() => {}}
+          consumedKey="a-parallel"
+        />
+      </ToolResultProvider>,
+    )
+  }
+
+  const cards = (container: HTMLElement) => container.querySelectorAll('.tool-card')
+
+  it('lights only the SECOND card when the ordinal is in the second result', () => {
+    const { container } = renderParallel(5)
+    expect(cards(container)).toHaveLength(2)
+    const active = container.querySelectorAll('mark.search-hl-active')
+    expect(active).toHaveLength(1)
+    expect(cards(container)[1]!.querySelector('mark.search-hl-active')).toBe(active[0])
+    expect(cards(container)[0]!.querySelector('mark.search-hl-active')).toBeNull()
+  })
+
+  it('lights only the FIRST card when the ordinal is in the first result', () => {
+    const { container } = renderParallel(4)
+    const active = container.querySelectorAll('mark.search-hl-active')
+    expect(active).toHaveLength(1)
+    expect(cards(container)[0]!.querySelector('mark.search-hl-active')).toBe(active[0])
+    expect(cards(container)[1]!.querySelector('mark.search-hl-active')).toBeNull()
+  })
+
+  it('lights a diff mark only (zero result active marks) when the ordinal is in the second diff', () => {
+    const { container } = renderParallel(2)
+    expect(container.querySelector('.diff-line-text mark.search-hl-active')).not.toBeNull()
+    expect(container.querySelectorAll('.tool-card-result-inner mark.search-hl-active')).toHaveLength(0)
+    expect(container.querySelectorAll('mark.search-hl-active')).toHaveLength(1)
+  })
+
+  it('renders no active result mark when the prop is absent (non-active row)', () => {
+    const msg = parallelEdits()
+    const { container } = render(
+      <ToolResultProvider value={results}>
+        <MessageView
+          msg={msg}
+          searchQuery="needle"
+          foldExpanded={false}
+          foldSearchHit={false}
+          onToggleFold={() => {}}
+          consumedKey="a-parallel"
+        />
+      </ToolResultProvider>,
+    )
+    // Passive marks still render; none is active without the per-block array.
+    expect(container.querySelectorAll('mark.search-hl').length).toBeGreaterThan(0)
+    expect(container.querySelectorAll('mark.search-hl-active')).toHaveLength(0)
   })
 })
