@@ -74,6 +74,7 @@ describe('TranscriptWriter.enqueueDispatch (spec §8.1)', () => {
     const appendBatch = vi.fn(async (rows: object[]) => {
       order.push(`commit:${(rows[0] as { state?: string }).state ?? ''}`)
     })
+    // eslint-disable-next-line prefer-const -- circular init: dispatchUser reads w before deps (and thus w) can be constructed
     let w: TranscriptWriter
     const dispatchUser = vi.fn(async (op: { operationId: string }) => {
       order.push('dispatch')

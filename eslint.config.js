@@ -21,6 +21,7 @@ export default [
       'plugins',
       'packages',
       '.claude',
+      '.superpowers',
       '.scratch/**',
       '.tmp-investigate/**',
       'Python/**',
