@@ -466,6 +466,65 @@ describe('ToolGroupCard', () => {
     expect(container.querySelector('.tool-card-result-inner mark.search-hl-active')).toBeNull()
   })
 
+  describe('multi-tool_use member — one card lights per ordinal', () => {
+    // ONE member carrying TWO tool_use blocks (isToolGroupEligible accepts
+    // one-or-more): a Grep (no diff) whose result has one needle, then an Edit
+    // whose diff has two and whose result has two. Segments-then-results space:
+    //   Edit diff(2) · Grep result(1) · Edit result(2) → ordinals 0..4.
+    // A single shared split pair would light BOTH cards; the per-block array
+    // must light exactly the owning card.
+    const multiMember = {
+      type: 'assistant',
+      uuid: 'multi',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'g1', name: 'Grep', input: { pattern: 'haystack' } },
+          { type: 'tool_use', id: 'e1', name: 'Edit', input: { file_path: 'a.ts', old_string: 'old needle', new_string: 'new needle' } },
+        ],
+      },
+    } as unknown as SdkMessage
+    const toolStatus = new Map<string, ToolStatus>([['g1', 'success'], ['e1', 'success']])
+    const toolResults = new Map<string, ToolResultEntry>([
+      ['g1', { content: 'needle', isError: false }],
+      ['e1', { content: 'needle needle', isError: false }],
+    ])
+    const renderMulti = (activeMatchInItem: number) =>
+      renderGroup({
+        members: [multiMember],
+        toolStatus,
+        toolResults,
+        searchQuery: 'needle',
+        activeMemberItemIndex: 0,
+        activeMatchInItem,
+      })
+
+    it('lights only the Grep card when the ordinal is in the first result', () => {
+      const { container } = renderMulti(2)
+      expect(isOpen(container)).toBe(true)
+      const active = container.querySelectorAll('mark.search-hl-active')
+      expect(active).toHaveLength(1)
+      expect(container.querySelector('[data-member-tool-use-id="g1"] mark.search-hl-active')).toBe(active[0])
+      expect(container.querySelector('[data-member-tool-use-id="e1"] mark.search-hl-active')).toBeNull()
+    })
+
+    it('lights only the Edit card when the ordinal is in the second result', () => {
+      const { container } = renderMulti(3)
+      const active = container.querySelectorAll('mark.search-hl-active')
+      expect(active).toHaveLength(1)
+      expect(container.querySelector('[data-member-tool-use-id="e1"] mark.search-hl-active')).toBe(active[0])
+      expect(container.querySelector('[data-member-tool-use-id="g1"] mark.search-hl-active')).toBeNull()
+    })
+
+    it('lights only the Edit diff (zero result active marks) when the ordinal is in the diff', () => {
+      const { container } = renderMulti(0)
+      const active = container.querySelectorAll('mark.search-hl-active')
+      expect(active).toHaveLength(1)
+      expect(container.querySelector('[data-member-tool-use-id="e1"] .diff-line-text mark.search-hl-active')).toBe(active[0])
+      expect(container.querySelectorAll('.tool-card-result-inner mark.search-hl-active')).toHaveLength(0)
+    })
+  })
+
   it('treats a missing tool id as running so an in-flight card never folds', () => {
     const { container } = renderGroup({
       members: [toolMsg('t1'), toolMsg('t2')],

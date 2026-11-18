@@ -47,51 +47,62 @@ export function rowSearchMatchCount(
   return count
 }
 
-/** Route a member-local active-match ordinal into the one renderer that owns
- *  it. PRECONDITION: `memberMsg` is a tool-only group member (the fold contract
- *  in transcript-rows.ts — its visible content is tool_use blocks only).
+/** Per-block active-match routing for a tool-only group member (the fold
+ *  contract in transcript-rows.ts — its visible content is tool_use blocks only,
+ *  possibly SEVERAL parallel calls). Returns one `{ diffIdx, resultIdx }` entry
+ *  per tool_use block, in block order; only the block that owns the active
+ *  ordinal carries a number, every other entry stays undefined — so the group
+ *  lights exactly one card, never a shared pair broadcast across the member.
  *
  *  The match space is the SAME segments-then-results space as rowSearchMatchCount
  *  and assistantResultIdxByBlock: the member's own segments first (the tool_use
  *  diffs, in block order), THEN the consumed results' rendered-run matches (in
  *  tool_use block order). Two passes subtract those counts until the ordinal
- *  falls inside one segment:
- *   - inside a diff  → `diffIdx` (diff-local, the Nth match of that tool_use's
- *     indexed del+add text), `resultIdx` undefined;
- *   - inside a result → `resultIdx` (result-global across that id's runs, the
- *     coordinate ToolResultDetails rebases per run), `diffIdx` undefined.
- *  Past the end of the space (or a result that has not landed) both are
+ *  falls inside one segment, recording it on the OWNING block's entry:
+ *   - inside a diff  → that entry's `diffIdx` (diff-local, the Nth match of the
+ *     tool_use's indexed del+add text);
+ *   - inside a result → that entry's `resultIdx` (result-global across that id's
+ *     runs, the coordinate ToolResultDetails rebases per run).
+ *  Past the end of the space (or a result that has not landed) every entry is
  *  undefined. Counts use the SAME views as the renderers and rowSearchMatchCount
  *  (extractToolUseDiffText / toolResultTextRuns + countMatches), so the routed
  *  mark is exactly the one the count layer attributed to this member. */
-export function splitMemberOrdinal(
+export function memberBlockOrdinals(
   memberMsg: SdkMessage,
   toolResults: ReadonlyMap<string, ToolResultEntry>,
   ordinal: number,
   query: string,
-): { diffIdx: number | undefined; resultIdx: number | undefined } {
-  const blocks = getBlocks(memberMsg)
+): Array<{ diffIdx: number | undefined; resultIdx: number | undefined }> {
+  const toolBlocks = getBlocks(memberMsg).filter((b) => b.type === 'tool_use')
+  const out: Array<{ diffIdx: number | undefined; resultIdx: number | undefined }> =
+    toolBlocks.map(() => ({ diffIdx: undefined, resultIdx: undefined }))
   let remaining = ordinal
   // Pass 1 — own segments: the tool_use diffs, in block order.
-  for (const block of blocks) {
-    if (block.type !== 'tool_use') continue
-    const diffN = countMatches(extractToolUseDiffText(block.input, block.name), query)
-    if (remaining < diffN) return { diffIdx: remaining, resultIdx: undefined }
+  for (let i = 0; i < toolBlocks.length; i++) {
+    const b = toolBlocks[i]
+    const diffN = countMatches(extractToolUseDiffText(b.input, b.name), query)
+    if (remaining < diffN) {
+      out[i].diffIdx = remaining
+      return out
+    }
     remaining -= diffN
   }
   // Pass 2 — consumed results, in tool_use block order.
-  for (const block of blocks) {
-    if (block.type !== 'tool_use') continue
-    const id = extractToolUseId(block)
+  for (let i = 0; i < toolBlocks.length; i++) {
+    const b = toolBlocks[i]
+    const id = extractToolUseId(b)
     const entry = id ? toolResults.get(id) : undefined
     if (!entry) continue
     let n = 0
     for (const run of toolResultTextRuns(entry.content)) n += countMatches(run, query)
     if (n === 0) continue
-    if (remaining < n) return { diffIdx: undefined, resultIdx: remaining }
+    if (remaining < n) {
+      out[i].resultIdx = remaining
+      return out
+    }
     remaining -= n
   }
-  return { diffIdx: undefined, resultIdx: undefined }
+  return out
 }
 
 /** Per-block result-global active-match routing for a NON-folded assistant row

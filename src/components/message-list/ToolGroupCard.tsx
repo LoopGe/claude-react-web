@@ -41,7 +41,7 @@ import { useRevealClass } from '../../hooks/useRevealClass'
 import { BlockView } from './blocks'
 import { useToolStatuses, useToolResults } from '../../hooks/usePlanStatus'
 import { groupMayMatchSearch, summarizeToolGroup } from './tool-grouping'
-import { splitMemberOrdinal } from './search-addressing'
+import { memberBlockOrdinals } from './search-addressing'
 import { extractToolUseId, getBlocks } from '../../session-store/normalize'
 import {
   IconAlertCircle,
@@ -260,12 +260,13 @@ function ToolGroupCardInner({
     () => members.map((m) => getBlocks(m).filter((b) => b.type === 'tool_use')),
     [members],
   )
-  // One entry per rendered tool card, carrying the member message's index for
-  // the search-active join. The entrance gate and the body render both work
-  // on this flat list so a message with several tool_use blocks is gated
-  // per-card, not per-message.
+  // One entry per rendered tool card, carrying the member message's index (mi)
+  // AND the block's position within that member (bi) for the search-active join.
+  // The entrance gate and the body render both work on this flat list so a
+  // message with several tool_use blocks is gated per-card, not per-message; bi
+  // indexes the member's per-block ordinal array (memberBlockOrdinals).
   const flatMembers = useMemo(
-    () => perMember.flatMap((blocks, mi) => blocks.map((b) => ({ block: b, mi }))),
+    () => perMember.flatMap((blocks, mi) => blocks.map((b, bi) => ({ block: b, mi, bi }))),
     [perMember],
   )
   // Block projection of flatMembers — the header summary / search probe read
@@ -300,18 +301,19 @@ function ToolGroupCardInner({
     [toolBlocks, searchQuery, toolResults],
   )
 
-  // Route the active navigation ordinal into the one member that owns it. The
-  // ordinal is member-local; splitMemberOrdinal walks that member's
-  // diff-then-result match space and returns the diff-local / result-global
-  // pair. The render loop below hands the pair only to the active member, so
-  // exactly one card lights the orange active mark.
-  const activeMemberSplit = useMemo(() => {
+  // Route the active navigation ordinal into the one CARD that owns it. The
+  // ordinal is member-local; memberBlockOrdinals walks that member's
+  // segments-then-results match space and returns one { diffIdx, resultIdx }
+  // entry per tool_use block. The render loop indexes it by the card's position
+  // within the active member, so exactly one card lights the orange active mark
+  // even when the member carries several parallel tool_use blocks.
+  const activeMemberOrdinals = useMemo(() => {
     const q = searchQuery?.trim()
     if (!q || activeMatchInItem == null || activeMatchInItem < 0 || activeMemberItemIndex == null) return undefined
     const mi = memberItemIndices.indexOf(activeMemberItemIndex)
     const member = mi >= 0 ? members[mi] : undefined
     if (!member) return undefined
-    return splitMemberOrdinal(member, toolResults, activeMatchInItem, q)
+    return memberBlockOrdinals(member, toolResults, activeMatchInItem, q)
   }, [members, memberItemIndices, activeMemberItemIndex, activeMatchInItem, searchQuery, toolResults])
   // `live` is the signal that force-opens the group AND (via the turn latch
   // in the reducer) keeps it pinned through the turn + triggers the
@@ -537,10 +539,13 @@ function ToolGroupCardInner({
         animateResize
       >
         {bodyMounted
-          ? flatMembers.map(({ block, mi }, i) => {
+          ? flatMembers.map(({ block, mi, bi }, i) => {
               const toolUseId = extractToolUseId(block)
               const isActive =
                 activeMemberItemIndex != null && memberItemIndices[mi] === activeMemberItemIndex
+              // Index the active member's per-block array by this card's position
+              // within that member; non-active members get undefined.
+              const ordinals = isActive ? activeMemberOrdinals?.[bi] : undefined
               return (
                 <ToolGroupMember
                   key={toolUseId ?? `m${i}`}
@@ -549,8 +554,8 @@ function ToolGroupCardInner({
                   entering={enteringFlags[i]}
                   flash={toolUseId != null && toolUseId === flashToolUseId}
                   searchQuery={searchQuery}
-                  diffActiveMatchIdx={isActive ? activeMemberSplit?.diffIdx : undefined}
-                  resultActiveMatchIdx={isActive ? activeMemberSplit?.resultIdx : undefined}
+                  diffActiveMatchIdx={ordinals?.diffIdx}
+                  resultActiveMatchIdx={ordinals?.resultIdx}
                 />
               )
             })
