@@ -51,6 +51,7 @@ const emptyPage = {
 }
 const mockApiGet = vi.fn(async () => ({ ...emptyPage }))
 const fakeGet = mockApiGet as unknown as <T>(path: string) => Promise<T>
+const fakePost = (async () => ({ ok: true })) as unknown as <T>(path: string, body?: unknown) => Promise<T>
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -135,6 +136,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore('term-reload'),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -154,6 +156,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore('term-live'),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -172,6 +175,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore('term-alive'),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -194,6 +198,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -224,6 +229,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: { onRequest, onResolved },
     })
     sync.start()
@@ -248,6 +254,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: { onRequest: vi.fn(), onResolved },
     })
     sync.start()
@@ -273,6 +280,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: { ...noopHandlers, onElicitationRequest },
     })
     sync.start()
@@ -297,6 +305,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: { ...noopHandlers, onElicitationResolved },
     })
     sync.start()
@@ -322,6 +331,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: { ...noopHandlers, onDialogRequest },
     })
     sync.start()
@@ -348,6 +358,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: { ...noopHandlers, onDialogResolved, onEditPrompt },
     })
     sync.start()
@@ -385,6 +396,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -411,6 +423,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -433,6 +446,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -456,6 +470,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -490,6 +505,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -516,6 +532,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -544,6 +561,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -569,6 +587,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -593,6 +612,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -621,6 +641,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -675,6 +696,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -717,6 +739,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -747,6 +770,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: { ...noopHandlers, onCleared },
     })
     sync.start()
@@ -764,6 +788,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore('s1'),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -785,6 +810,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore('s1'),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -805,6 +831,7 @@ describe('SessionSynchronizer protocol', () => {
       store,
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -834,6 +861,7 @@ describe('SessionSynchronizer protocol', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: handlersA,
     })
     sync.start()

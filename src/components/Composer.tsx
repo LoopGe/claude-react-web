@@ -28,6 +28,7 @@ import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useCountUp } from '../hooks/useCountUp'
 import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo } from './icons/ToolIcons'
 import type { ScheduledSendsApi } from '../hooks/useScheduledSends'
+import type { TranscriptRecovery } from '../session-sync/session-synchronizer'
 import { SchedulePicker } from './SchedulePicker'
 import { HoverHint } from './HoverHint'
 
@@ -66,6 +67,13 @@ interface Props {
   /** Fork from the last completed turn (replacesSource). Only wired when
    *  canRetryResume. */
   onForkFromLastCompleted?: () => void
+  /** Transcript recovery state (spec §10): degraded renders a Retry rebuild
+   *  banner (input disabled by the host); blocked renders a passive notice
+   *  (capable tabs keep working on the old generation). */
+  recovery?: TranscriptRecovery | null
+  /** Retry the transcript rebuild (POST /transcript/reconcile). Wired when
+   *  recovery is degraded. */
+  onRetryReconcile?: () => void
   dragOver: boolean
   onFilesPicked: (files: File[]) => void
   onDragOver: (e: React.DragEvent) => void
@@ -181,6 +189,8 @@ export const Composer = memo(function Composer({
   error,
   onResume,
   onForkFromLastCompleted,
+  recovery,
+  onRetryReconcile,
   dragOver,
   onFilesPicked,
   onDragOver,
@@ -701,6 +711,31 @@ export const Composer = memo(function Composer({
       : filesFailed && !commandLike
         ? 'Some attachments failed to upload'
         : null
+
+  // Transcript recovery banner (spec §10) takes precedence over the terminated
+  // banner: a degraded session offers Retry rebuild; a capability-blocked one
+  // shows a passive notice (no Retry — capable tabs keep working on the old
+  // generation, the legacy tab must reload). Reuses the session-ended look.
+  if (recovery) {
+    return (
+      <div className="session-ended transcript-recovery">
+        <span>
+          {recovery.kind === 'degraded'
+            ? 'Transcript rebuild failed — history may be incomplete. Sending is disabled.'
+            : 'Transcript rebuild is waiting for an older tab to reload.'}
+        </span>
+        {recovery.message && <span className="session-ended-hint">{recovery.message}</span>}
+        {recovery.kind === 'degraded' && onRetryReconcile && (
+          <div className="session-ended-actions">
+            <button type="button" className="chat-panel-resume-btn" onClick={onRetryReconcile}>
+              Retry rebuild
+            </button>
+          </div>
+        )}
+        <span ref={contextOrbSlotRef} className="ctx-orb-slot session-ended-orb" />
+      </div>
+    )
+  }
 
   if (terminated) {
     const reasonText =

@@ -36,10 +36,34 @@ export interface SessionSyncHub {
 }
 
 export type SessionSyncGet = <T>(path: string) => Promise<T>
+export type SessionSyncPost = <T>(path: string, body?: unknown) => Promise<T>
+
+/** Transcript recovery state (spec §10), derived from the page response.
+ *  `degraded` — reconcile failed, read-only snapshot, Retry rebuild offered;
+ *  `blocked` — an incapable legacy tab blocks the rebuild, passive notice
+ *  (capable tabs keep working on the old generation, no Retry). View-local
+ *  (synchronizer paging snapshot), independent of the transient intent.error. */
+export interface TranscriptRecovery {
+  kind: 'degraded' | 'blocked'
+  message?: string
+}
 
 export interface TranscriptPagingSnapshot {
   loadingOlder: boolean
   olderError: string | null
+  recovery: TranscriptRecovery | null
+}
+
+function recoveryFromPage(page: { degraded?: boolean; rebuildBlocked?: 'client-upgrade-required' }): TranscriptRecovery | null {
+  if (page.degraded) return { kind: 'degraded' }
+  if (page.rebuildBlocked) return { kind: 'blocked' }
+  return null
+}
+
+function sameRecovery(a: TranscriptRecovery | null, b: TranscriptRecovery | null): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.kind === b.kind && a.message === b.message
 }
 
 /** The handler callbacks the host (useSessionSynchronizer) supplies —
@@ -116,7 +140,8 @@ export class SessionSynchronizer {
   private storeUnsub: (() => void) | null = null
 
   // Paging snapshot (owned here, NOT in the store reducer).
-  private paging: TranscriptPagingSnapshot = { loadingOlder: false, olderError: null }
+  private paging: TranscriptPagingSnapshot = { loadingOlder: false, olderError: null, recovery: null }
+  private readonly post: SessionSyncPost
   private taskBaselineId: string | null = null
   private taskChunks: string[] = []
   private taskChunksReceived = 0
@@ -127,12 +152,14 @@ export class SessionSynchronizer {
     store: SessionStore
     hub: SessionSyncHub
     get: SessionSyncGet
+    post: SessionSyncPost
     handlers: SessionSyncHandlers
   }) {
     this.sessionId = options.sessionId
     this.store = options.store
     this.hub = options.hub
     this.get = options.get
+    this.post = options.post
     this.handlers = options.handlers
   }
 
@@ -153,7 +180,7 @@ export class SessionSynchronizer {
     // Reset the paging snapshot for the new run. The setPaging call fires a
     // notification ONLY if a value actually changed (e.g. an olderError from
     // the previous run), so a clean start is silent.
-    this.setPaging({ loadingOlder: false, olderError: null })
+    this.setPaging({ loadingOlder: false, olderError: null, recovery: null })
 
     const { hub } = this
 
@@ -270,6 +297,9 @@ export class SessionSynchronizer {
         tombstones: page.tombstones,
         hasMore: page.hasMore,
       })
+      // Surface the recovery state carried by the page (spec §10): a degraded
+      // snapshot or a capability-blocked rebuild. A clean page clears it.
+      this.setPaging({ ...this.paging, recovery: recoveryFromPage(page) })
     } catch {
       // Genuine fetch failure (network / retry exhaustion). Gate on the
       // run being active so a late failure from a stopped run doesn't
@@ -788,12 +818,38 @@ export class SessionSynchronizer {
     const prev = this.paging
     if (
       prev.loadingOlder === next.loadingOlder &&
-      prev.olderError === next.olderError
+      prev.olderError === next.olderError &&
+      sameRecovery(prev.recovery, next.recovery)
     ) {
       return
     }
     this.paging = next
     for (const listener of this.pagingListeners) listener()
+  }
+
+  /** Explicit transcript rebuild retry (spec §10): calls the reconcile
+   *  endpoint, NOT a plain refetch. On success the tail refetch re-anchors and
+   *  clears recovery; 409 means a legacy tab blocks the rebuild (switch to the
+   *  passive blocked notice); 503 keeps degraded (retryable); 404 surfaces a
+   *  gone session. Run-scoped like every other async path here. */
+  async retryReconcile(): Promise<void> {
+    const run = this.run
+    if (!run || run.cancelled) return
+    try {
+      await this.post(`/sessions/${this.sessionId}/transcript/reconcile`, {})
+      if (run.cancelled || this.run !== run) return
+      await this.refetchTail(run)
+    } catch (err) {
+      if (run.cancelled || this.run !== run) return
+      const status = (err as { status?: number }).status
+      if (status === 409) {
+        this.setPaging({ ...this.paging, recovery: { kind: 'blocked', message: 'An older tab is blocking the rebuild — reload it, then retry.' } })
+      } else if (status === 404) {
+        this.setPaging({ ...this.paging, recovery: { kind: 'degraded', message: 'Session no longer exists.' } })
+      } else {
+        this.setPaging({ ...this.paging, recovery: { kind: 'degraded', message: 'Rebuild still failing — retry again.' } })
+      }
+    }
   }
 
   // ── Private: validated fetch ────────────────────────────────────

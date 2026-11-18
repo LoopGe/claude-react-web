@@ -39,6 +39,9 @@ import {
  *  instance (re-binding only when the session changes). */
 export interface TranscriptPaging extends TranscriptPagingSnapshot {
   loadOlder: () => Promise<number>
+  /** Explicit transcript rebuild retry (spec §10) — POST /transcript/reconcile
+   *  then refetch; drives the recovery banner's Retry button. */
+  retryReconcile: () => Promise<void>
 }
 
 export function useSessionSynchronizer(
@@ -60,6 +63,7 @@ export function useSessionSynchronizer(
         store: getSessionStore(sessionId),
         hub,
         get: api.get,
+        post: api.post,
         handlers,
       }),
     // handlers intentionally omitted — see setHandlers below.
@@ -144,6 +148,10 @@ export function useSessionSynchronizer(
     () => sync.loadOlder(),
     [sync],
   )
+  const retryReconcile = useCallback(
+    () => sync.retryReconcile(),
+    [sync],
+  )
 
   // Memoized TranscriptPaging. The paging snapshot fields are spread in so
   // consumers read loadingOlder/olderError directly off the return value;
@@ -153,7 +161,7 @@ export function useSessionSynchronizer(
   // flips, so consumers that put loadOlder in a dep array are unaffected by
   // loadingOlder/olderError transitions.
   return useMemo(
-    () => ({ ...paging, loadOlder }),
-    [paging, loadOlder],
+    () => ({ ...paging, loadOlder, retryReconcile }),
+    [paging, loadOlder, retryReconcile],
   )
 }

@@ -125,6 +125,7 @@ const mockApiGet = vi.fn(async (url: string) => {
 })
 
 const fakeGet = mockApiGet as unknown as <T>(path: string) => Promise<T>
+const fakePost = (async () => ({ ok: true })) as unknown as <T>(path: string, body?: unknown) => Promise<T>
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -181,6 +182,7 @@ describe('SessionSynchronizer paging core', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -212,6 +214,7 @@ describe('SessionSynchronizer paging core', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -235,6 +238,7 @@ describe('SessionSynchronizer paging core', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -274,6 +278,7 @@ describe('SessionSynchronizer paging core', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -300,6 +305,7 @@ describe('SessionSynchronizer paging core', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -338,6 +344,7 @@ describe('SessionSynchronizer paging core', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -400,6 +407,7 @@ describe('SessionSynchronizer paging core', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -422,7 +430,7 @@ describe('SessionSynchronizer paging core', () => {
     // start() creates run B and resets paging to {false, null}.
     sync.start()
     await waitForTail(sid)
-    expect(sync.getPagingSnapshot()).toEqual({ loadingOlder: false, olderError: null })
+    expect(sync.getPagingSnapshot()).toEqual({ loadingOlder: false, olderError: null, recovery: null })
 
     // Run B starts its own loadOlder — park it too. This sets
     // loadingOlder:true on run B.
@@ -473,6 +481,7 @@ describe('SessionSynchronizer paging core', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()
@@ -498,7 +507,7 @@ describe('SessionSynchronizer paging core', () => {
     sync.start()
     await waitForTail(sid)
     expect(calls).toBe(1)
-    expect(sync.getPagingSnapshot()).toEqual({ loadingOlder: false, olderError: null })
+    expect(sync.getPagingSnapshot()).toEqual({ loadingOlder: false, olderError: null, recovery: null })
 
     unsub()
   })
@@ -514,6 +523,7 @@ describe('SessionSynchronizer paging core', () => {
       store: getSessionStore(sid),
       hub: fakeHub,
       get: fakeGet,
+      post: fakePost,
       handlers: noopHandlers,
     })
     sync.start()

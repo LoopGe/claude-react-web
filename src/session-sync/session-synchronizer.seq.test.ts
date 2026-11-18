@@ -48,6 +48,8 @@ interface FakeTranscript {
   headSeq: number
   msgs: Array<{ seq: number; msg: unknown }>
   evicted: Set<number>
+  degraded?: boolean
+  rebuildBlocked?: 'client-upgrade-required'
 }
 
 const transcripts = new Map<string, FakeTranscript>()
@@ -86,6 +88,8 @@ function pageFor(sid: string, before: number | undefined, limit: number) {
     hasMore: eligible.length > page.length,
     messages: page,
     tombstones,
+    degraded: t.degraded ?? false,
+    rebuildBlocked: t.rebuildBlocked,
   }
 }
 
@@ -147,6 +151,9 @@ const mockApiGet = vi.fn(defaultApiGetImpl)
 
 const fakeGet = mockApiGet as unknown as <T>(path: string) => Promise<T>
 
+const mockApiPost = vi.fn(async (_path: string, _body?: unknown) => ({ ok: true }))
+const fakePost = mockApiPost as unknown as <T>(path: string, body?: unknown) => Promise<T>
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 const noopHandlers: SessionSyncHandlers = {
@@ -166,6 +173,7 @@ function makeSync(sid: string): SessionSynchronizer {
     store: getSessionStore(sid),
     hub: fakeHub,
     get: fakeGet,
+    post: fakePost,
     handlers: noopHandlers,
   })
 }
@@ -1063,6 +1071,75 @@ describe('SessionSynchronizer ordered-rebase (spec §8.3)', () => {
     // can't observe a second consumed frame).
     dispatchToSession(sid, { kind: 'messages-withdrawn', sessionId: sid, uuids: ['u1'] })
     await vi.waitFor(() => expect(store.getSnapshot().messages).toHaveLength(0))
+    sync.stop()
+  })
+})
+
+describe('SessionSynchronizer transcript recovery (spec §10)', () => {
+  beforeEach(() => {
+    currentSessionListeners = new Map()
+    transcripts.clear()
+    staleNext = null
+    deferredFetches = []
+    mockSubscribe.mockClear()
+    mockApiGet.mockReset()
+    mockApiGet.mockImplementation(defaultApiGetImpl)
+    mockApiPost.mockReset()
+    mockApiPost.mockImplementation(async (_path: string, _body?: unknown) => ({ ok: true }))
+    void sessionStoreRegistry.clear()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('a degraded page sets recovery; a successful retry refetches and clears it', async () => {
+    const sid = 'recovery-ok'
+    const t = transcript(sid)
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    t.degraded = true
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    expect(sync.getPagingSnapshot().recovery?.kind).toBe('degraded')
+    // Retry succeeds: server recovered, next page is clean.
+    t.degraded = false
+    await sync.retryReconcile()
+    expect(mockApiPost.mock.calls[0][0]).toBe(`/sessions/${sid}/transcript/reconcile`)
+    await vi.waitFor(() => expect(sync.getPagingSnapshot().recovery).toBeNull())
+    sync.stop()
+  })
+
+  it('a blocked page sets blocked recovery (no retry button affordance)', async () => {
+    const sid = 'recovery-blocked'
+    const t = transcript(sid)
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    t.rebuildBlocked = 'client-upgrade-required'
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    expect(sync.getPagingSnapshot().recovery?.kind).toBe('blocked')
+    sync.stop()
+  })
+
+  it('retry 409 switches recovery to blocked; 503 keeps degraded', async () => {
+    const sid = 'recovery-err'
+    const t = transcript(sid)
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    t.degraded = true
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    expect(sync.getPagingSnapshot().recovery?.kind).toBe('degraded')
+    mockApiPost.mockRejectedValueOnce(Object.assign(new Error('client-upgrade-required'), { status: 409 }))
+    await sync.retryReconcile()
+    expect(sync.getPagingSnapshot().recovery?.kind).toBe('blocked')
+    mockApiPost.mockRejectedValueOnce(Object.assign(new Error('transcript reconcile failed'), { status: 503 }))
+    await sync.retryReconcile()
+    expect(sync.getPagingSnapshot().recovery?.kind).toBe('degraded')
     sync.stop()
   })
 })

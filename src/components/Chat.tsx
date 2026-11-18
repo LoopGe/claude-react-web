@@ -1117,8 +1117,10 @@ export const Chat = memo(function Chat({
     elicitations.pending.length > 0 ||
     dialogs.pending.length > 0
   // One gate for the composer controls and file intake: a terminated session,
-  // a pending interactive request, or an in-flight handoff blocks new turns.
-  const composerDisabled = session.terminated || interactivePending || !!handoffing
+  // a pending interactive request, an in-flight handoff, or a degraded
+  // transcript (spec §10 read-only fence) blocks new turns. A capability-
+  // blocked rebuild does NOT disable send — capable tabs keep working.
+  const composerDisabled = session.terminated || interactivePending || !!handoffing || paging.recovery?.kind === 'degraded'
   // Drop persisted draft entries once a question resolves so questionDrafts
   // doesn't accumulate stale ids over a long session. The corresponding
   // minimize state is derived on read (see `minimizedQ` above), so we no
@@ -2360,6 +2362,8 @@ export const Chat = memo(function Chat({
               terminatedReason={session.terminatedReason}
               canRetryResume={session.canRetryResume}
               error={session.error}
+              recovery={paging.recovery}
+              onRetryReconcile={() => void paging.retryReconcile()}
               onResume={onResume ? () => onResume(session.id) : undefined}
               onForkFromLastCompleted={
                 onForkFromLastCompleted ? () => onForkFromLastCompleted(session.id) : undefined

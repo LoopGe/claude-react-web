@@ -1211,3 +1211,28 @@ describe('Composer history image recall', () => {
     expect(onRecallImages.recallEntry).toHaveBeenCalledWith('entry-2')
   })
 })
+
+describe('Composer transcript recovery banner (spec §10)', () => {
+  it('degraded shows a Retry rebuild button that calls onRetryReconcile', () => {
+    const onRetryReconcile = vi.fn()
+    const { getByRole } = render(
+      <Composer {...defaultProps} disabled recovery={{ kind: 'degraded' }} onRetryReconcile={onRetryReconcile} />,
+    )
+    const btn = getByRole('button', { name: 'Retry rebuild' })
+    fireEvent.click(btn)
+    expect(onRetryReconcile).toHaveBeenCalledOnce()
+  })
+
+  it('blocked shows a passive notice without a Retry button', () => {
+    const { container, queryByRole } = render(
+      <Composer {...defaultProps} recovery={{ kind: 'blocked' }} />,
+    )
+    expect(container.querySelector('.transcript-recovery')).not.toBeNull()
+    expect(queryByRole('button', { name: 'Retry rebuild' })).toBeNull()
+  })
+
+  it('no recovery renders no banner', () => {
+    const { container } = render(<Composer {...defaultProps} />)
+    expect(container.querySelector('.transcript-recovery')).toBeNull()
+  })
+})
