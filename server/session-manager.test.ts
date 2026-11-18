@@ -383,6 +383,7 @@ import { cleanupGitFixtures, makeRepo } from './test-git-fixtures.js'
 import { branchExists } from './git.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
 import { TranscriptSidecar } from './transcript-sidecar.js'
+import { SessionSubscriptionRegistry } from './session-plugin-subscription.js'
 import { ResetJournal } from './reset-journal.js'
 import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
 import { NativeProvider } from './providers/native/native-provider.js'
@@ -9419,6 +9420,23 @@ describe('SessionManager', () => {
       ].map((m) => JSON.stringify(m)).join('\n') + '\n')
       return { info, sub, frames }
     }
+
+    it('C1: the rebuild envelope is delivered to pluginSubscribers (capable typed, incapable reset-required)', async () => {
+      const { info } = await seedInvertedWithSubscriber()
+      const live = (sm as unknown as { sessions: Map<string, unknown> }).sessions.get(info.id)
+      const getSession = ((id: string) => (id === info.id ? live : undefined)) as never
+      const capNotify = vi.fn()
+      const incNotify = vi.fn()
+      const rCap = new SessionSubscriptionRegistry({ getSession })
+      const rInc = new SessionSubscriptionRegistry({ getSession })
+      rCap.subscribe(info.id, { notify: capNotify, closed: false } as never, { orderedRebase: true })
+      rInc.subscribe(info.id, { notify: incNotify, closed: false } as never)
+      // First in-place reconcile rebuilds (inversion) and fans the envelope out
+      // to BOTH browser subscribers and pluginSubscribers.
+      await sm.getTranscriptWindow(info.id)
+      expect(capNotify).toHaveBeenCalledWith('sessions.event', expect.objectContaining({ kind: 'transcript-rebased', reason: 'ordered-rebuild' }))
+      expect(incNotify).toHaveBeenCalledWith('sessions.event', expect.objectContaining({ kind: 'reset-required', sessionId: info.id }))
+    })
 
     it('publishes transcript-rebased on the primary queue, ordered before new-generation frames', async () => {
       const { info, sub, frames } = await seedInvertedWithSubscriber()

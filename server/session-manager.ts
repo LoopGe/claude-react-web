@@ -8385,6 +8385,14 @@ export class SessionManager {
         clearEpoch: epochs.clearEpoch,
       }
       for (const sub of live.subscribers.values()) sub.push(envelope)
+      // Plugin subscriptions are a SEPARATE map (spec §8.3 plugin protocol):
+      // fan the envelope out to them too — each plugin's registry push callback
+      // forwards the typed reset to capable plugins and reset-required +
+      // release to incapable ones. Per-subscriber try/catch mirrors the pump's
+      // dead-subscriber isolation.
+      for (const sub of live.pluginSubscribers.values()) {
+        try { sub.push(envelope) } catch { /* plugin subscriber dead — skip */ }
+      }
     }
     metrics.count('transcript_reconcile_total', { mode: 'rebuild', result: 'success' })
     metrics.count('transcript_rebuild_reason', { reason: 'middle-gap' })

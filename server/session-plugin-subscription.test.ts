@@ -126,4 +126,52 @@ describe('SessionSubscriptionRegistry', () => {
     expect(notify).toHaveBeenCalledWith('sessions.event', expect.objectContaining({ kind: 'message' }))
   })
 
+
+  it('Task 8 I2: idempotent re-subscribe honors a capability upgrade', () => {
+    const notify = vi.fn()
+    const session = fakeSession(null)
+    const r = new SessionSubscriptionRegistry({ getSession: (id) => (id === 's1' ? session : undefined) })
+    const peer = fakePeer(notify)
+    r.subscribe('s1', peer) // incapable first
+    r.subscribe('s1', peer, { orderedRebase: true }) // upgrade while subscribed
+    const sub = session.pluginSubscribers.values().next().value as any
+    sub.push({ kind: 'transcript-rebased', sessionId: 's1', reason: 'ordered-rebuild', generation: 5, headSeq: 10 })
+    expect(notify).toHaveBeenCalledWith('sessions.event', expect.objectContaining({ kind: 'transcript-rebased' }))
+    expect(session.pluginSubscribers.size).toBe(1) // not released
+  })
+
+  it('Task 8 M4: mixed-capability registries each get exactly one correct frame; releasing incapable leaves capable', () => {
+    const session = fakeSession(null)
+    const capableNotify = vi.fn()
+    const incapableNotify = vi.fn()
+    const rCap = new SessionSubscriptionRegistry({ getSession: (id) => (id === 's1' ? session : undefined) })
+    const rInc = new SessionSubscriptionRegistry({ getSession: (id) => (id === 's1' ? session : undefined) })
+    rCap.subscribe('s1', fakePeer(capableNotify), { orderedRebase: true })
+    rInc.subscribe('s1', fakePeer(incapableNotify))
+    for (const sub of session.pluginSubscribers.values()) {
+      ;(sub as any).push({ kind: 'transcript-rebased', sessionId: 's1', reason: 'ordered-rebuild', generation: 5, headSeq: 10 })
+    }
+    expect(capableNotify).toHaveBeenCalledTimes(1)
+    expect(capableNotify).toHaveBeenCalledWith('sessions.event', expect.objectContaining({ kind: 'transcript-rebased' }))
+    expect(incapableNotify).toHaveBeenCalledTimes(1)
+    expect(incapableNotify).toHaveBeenCalledWith('sessions.event', expect.objectContaining({ kind: 'reset-required' }))
+    expect(session.pluginSubscribers.size).toBe(1) // incapable released, capable remains
+  })
+
+  it('Task 8 M4: an incapable plugin can re-subscribe with capability after reset-required', () => {
+    const notify = vi.fn()
+    const session = fakeSession(null)
+    const r = new SessionSubscriptionRegistry({ getSession: (id) => (id === 's1' ? session : undefined) })
+    const peer = fakePeer(notify)
+    r.subscribe('s1', peer)
+    let sub = session.pluginSubscribers.values().next().value as any
+    sub.push({ kind: 'transcript-rebased', sessionId: 's1', reason: 'ordered-rebuild', generation: 5, headSeq: 10 })
+    expect(session.pluginSubscribers.size).toBe(0) // released
+    // Re-subscribe with the capability, then a new rebuild reaches it typed.
+    r.subscribe('s1', peer, { orderedRebase: true })
+    sub = session.pluginSubscribers.values().next().value as any
+    sub.push({ kind: 'transcript-rebased', sessionId: 's1', reason: 'ordered-rebuild', generation: 6, headSeq: 12 })
+    expect(notify).toHaveBeenLastCalledWith('sessions.event', expect.objectContaining({ kind: 'transcript-rebased', generation: 6 }))
+  })
+
 })

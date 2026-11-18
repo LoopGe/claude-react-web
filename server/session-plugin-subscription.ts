@@ -13,7 +13,7 @@ import type { WsTranscriptRebased } from './ws-protocol.js'
  *  its subscription was dropped and it must re-subscribe with orderedRebaseV1. */
 export type SessionEventOut =
   | { kind: 'message'; sessionId: string; message: SDKMessage }
-  | { kind: 'transcript-rebased'; sessionId: string; generation: number; headSeq: number; lastFullResetGeneration?: number; rebaseEpoch?: number; clearEpoch?: number }
+  | { kind: 'transcript-rebased'; sessionId: string; reason: 'ordered-rebuild' | 'recovery'; generation: number; headSeq: number; lastFullResetGeneration?: number; rebaseEpoch?: number; clearEpoch?: number }
   | { kind: 'reset-required'; sessionId: string }
 
 /** Routes clock-ticked end() back so we can drop the registration record. */
@@ -48,11 +48,17 @@ export class SessionSubscriptionRegistry {
     if (peer.closed) return { ok: false, error: 'peer is closed' }
 
     const key = `${this.registryId}:${sessionId}`
+    const orderedRebase = opts?.orderedRebase === true
     if (session.pluginSubscribers.has(key)) {
-      return { ok: true } // idempotent
+      // Idempotent re-subscribe: honor a capability UPGRADE (a plugin that
+      // first subscribed plainly and later declares orderedRebaseV1). The push
+      // callback reads entry.orderedRebase live, so this takes effect at once.
+      for (const e of this.entries) {
+        if (e.sessionId === sessionId && e.peer === peer) e.orderedRebase = orderedRebase
+      }
+      return { ok: true }
     }
 
-    const orderedRebase = opts?.orderedRebase === true
     const entry: RegistryEntry = {
       sessionId,
       peer,
@@ -76,12 +82,15 @@ export class SessionSubscriptionRegistry {
         // gets reset-required and is released (must re-subscribe with the
         // capability). ordered-rebuild does NOT cancel plugin invocations or
         // clear the task-list snapshot — those ride session-cleared only.
+        // The reset branches address THIS entry's peer directly (per-entry
+        // semantics explicit, not the all-entries notify fan-out).
         if ((frame as { kind?: string }).kind === 'transcript-rebased') {
           const env = frame as WsTranscriptRebased
-          if (orderedRebase) {
-            this.notify(sessionId, {
+          if (entry.orderedRebase) {
+            this.notifyPeer(entry, {
               kind: 'transcript-rebased',
               sessionId,
+              reason: env.reason,
               generation: env.generation,
               headSeq: env.headSeq,
               lastFullResetGeneration: env.lastFullResetGeneration,
@@ -89,7 +98,7 @@ export class SessionSubscriptionRegistry {
               clearEpoch: env.clearEpoch,
             })
           } else {
-            this.notify(sessionId, { kind: 'reset-required', sessionId })
+            this.notifyPeer(entry, { kind: 'reset-required', sessionId })
             entry.release()
           }
           return
@@ -98,6 +107,14 @@ export class SessionSubscriptionRegistry {
       },
     })
     return { ok: true }
+  }
+
+  /** Push a frame to a single entry's peer (dead-peer isolated). */
+  private notifyPeer(entry: RegistryEntry, frame: SessionEventOut): void {
+    try {
+      // @ts-expect-error: closed is private per RpcPeer interface but used for state check
+      if (!entry.peer.closed) entry.peer.notify('sessions.event', frame)
+    } catch { /* peer gone — best-effort */ }
   }
 
   /** Remove every subscription belonging to one peer (called by
