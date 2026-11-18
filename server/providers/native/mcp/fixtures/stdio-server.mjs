@@ -1,6 +1,6 @@
 // Test-only MCP server over stdio (native provider connection-manager tests).
 //
-/* global process -- Node globals are not configured for non-TS server files */
+/* global process, setTimeout -- Node globals are not configured for non-TS server files */
 //
 // argv: [byePath, mode?]
 //   byePath  file written when the child is asked to stop, so a test can prove
@@ -9,6 +9,9 @@
 //            client's connect timeout has to fire.
 //   --hang-tools  answer `initialize`, then never answer `tools/list`, so tool
 //            discovery — not the handshake — is what is in flight.
+//   --crash  answer `initialize` and `tools/list` normally, then `process.exit(1)`
+//            ~50 ms after the handshake, so a connected client that has already
+//            discovered tools loses the server mid-life (reconnect tests).
 //
 // The marker is written on every way out: a POSIX signal handler, stdin EOF
 // (which is how a stdio transport's `close()` reaches the child), and the
@@ -83,4 +86,11 @@ if (mode === '--hang') {
     async ({ text }) => ({ content: [{ type: 'text', text }] }),
   )
   await server.connect(new StdioServerTransport())
+  if (mode === '--crash') {
+    // The handshake (and the client's immediate `tools/list`) complete well
+    // within this window; the exit then drops the connection under a client
+    // that already considers the server connected. The `exit` hook above still
+    // writes the `bye` marker.
+    setTimeout(() => process.exit(1), 50)
+  }
 }
