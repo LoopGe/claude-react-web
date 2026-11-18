@@ -1,6 +1,6 @@
 // Test-only MCP server over stdio (native provider connection-manager tests).
 //
-/* global process, setInterval -- Node globals are not configured for non-TS server files */
+/* global process, setInterval, setTimeout -- Node globals are not configured for non-TS server files */
 //
 // argv: [byePath, mode?, flakyBudget?]
 //   byePath  file written when the child is asked to stop, so a test can prove
@@ -34,6 +34,9 @@
 //            stdin end, well past the fast (200ms) close deadline under test,
 //            so the child is provably alive at the deadline. Tests reap it
 //            externally with SIGKILL.
+//   --slow-exit  like the default mode, but waits ~300ms after stdin EOF
+//            before exiting, holding a HEALTHY close open long enough for a
+//            test to land an acquire DURING the teardown deterministically.
 //
 // The marker is written on every way out: a POSIX signal handler, stdin EOF
 // (which is how a stdio transport's `close()` reaches the child), and the
@@ -127,6 +130,15 @@ if (ignoreExit) {
     process.exit(0)
   })
   process.stdin.on('end', () => {
+    if (mode === '--slow-exit') {
+      // Hold the graceful exit open so a test can race an acquire into the
+      // healthy-teardown window. The ref'd timer keeps the process alive.
+      setTimeout(() => {
+        bye()
+        process.exit(0)
+      }, 300)
+      return
+    }
     bye()
     process.exit(0)
   })

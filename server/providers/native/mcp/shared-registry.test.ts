@@ -12,7 +12,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { processIdentity } from '../../../win32-job.js'
+import { captureBirthTime, processIdentity } from '../../../win32-job.js'
 import { metrics } from '../../../metrics.js'
 import type { NativeMcpServerConfig } from './connections.js'
 import type { SharedRecord } from './shared-record.js'
@@ -42,9 +42,11 @@ afterEach(async () => {
   for (const rec of openRecords.splice(0)) {
     await rec.close()
     // A hung close leaves the child alive BY DESIGN (no automatic force-kill).
-    // Reap it externally so a failed assertion never leaks it; the identity
-    // guard keeps a recycled PID from being killed by mistake.
-    if (rec.pid !== null) {
+    // cleanupFailed is the ONLY post-close state where that can be so (the
+    // exit confirmation read null/mismatch otherwise), so the reap backstop
+    // probes just that state — no identity reads for already-dead children.
+    // The identity guard keeps a recycled PID from being killed by mistake.
+    if (rec.cleanupFailed && rec.pid !== null) {
       const identity = childIdentity(rec.pid)
       if (identity !== null && (rec.birthTime === null || identity === rec.birthTime)) {
         try {
@@ -101,11 +103,12 @@ async function expectChildGone(pid: number, ms = 5000): Promise<void> {
 }
 
 /** Platform liveness/identity probe mirroring the record's default: win32
- *  reads the birth-time identity (null once dead / unreadable), POSIX probes
+ *  reads the birth-time identity via `captureBirthTime` (FFI identity with a
+ *  PowerShell fallback; null only when BOTH sources fail), POSIX probes
  *  `kill(pid, 0)` and reports an 'alive' sentinel (no birth-time identity is
  *  available there). */
 function childIdentity(pid: number): string | null {
-  if (process.platform === 'win32') return processIdentity(pid)
+  if (process.platform === 'win32') return captureBirthTime(pid)
   try {
     process.kill(pid, 0)
     return 'alive'
@@ -215,6 +218,47 @@ describe('SharedRegistry', () => {
     await reg.release(b)
     expect(reg.size).toBe(0)
     await expectChildGone(pid)
+  }, 15_000)
+
+  it('an acquire during HEALTHY teardown gets a reviving record, not a zombie marked connected', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    // --slow-exit holds the graceful exit ~300ms after stdin EOF, so the
+    // acquire below lands DURING the healthy teardown deterministically.
+    const cfg = stdioConfig(byePath, '--slow-exit')
+    const reg = new SharedRegistry()
+
+    const a = acquire(reg, cfg)
+    await a.ready
+    expect(a.status).toBe('connected')
+    const oldPid = a.pid!
+
+    // Release starts the teardown (users → 0); the record is still mapped
+    // while the close awaits, so the racing acquire joins it (users → 1).
+    const releasing = reg.release(a)
+    await waitFor(() => a.users === 0, 5000, 'the release teardown to start')
+    const b = acquire(reg, cfg)
+    expect(b).toBe(a)
+    expect(b.users).toBe(1)
+    await releasing
+
+    // The racing acquirer must get a REVIVING record: release fired a
+    // reconnect after the healthy close, so it connects fresh instead of
+    // staying a closed zombie (client gone, supervisor suppressed) that every
+    // future acquire of the key would join.
+    await waitFor(() => a.status === 'connected', 5000, 'the racing acquirer record to revive')
+    expect(a.cleanupFailed).toBe(false)
+    expect(a.pid).not.toBe(oldPid)
+    expectChildAlive(a.pid!)
+    expect(a.tools.length).toBeGreaterThan(0)
+    const result = await a.callTool('echo', { text: 'revived' }, freshSignal())
+    expect(result.content).toEqual([{ type: 'text', text: 'revived' }])
+    expect(reg.get(a.key)).toBe(a)
+    expect(reg.size).toBe(1)
+
+    await reg.release(b)
+    expect(reg.size).toBe(0)
+    await expectChildGone(a.pid!)
   }, 15_000)
 
   it('acquire/release counters and the records gauge track activity', async () => {

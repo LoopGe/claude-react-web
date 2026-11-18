@@ -22,8 +22,9 @@
 //     RETAINED (users 0) so it blocks automatic replacement — deleting first
 //     would let a concurrent acquire spawn a replacement overlapping the live
 //     hung child, the exact hazard fail-closed prevents. A healthy close
-//     removes the record; an acquire that landed DURING teardown keeps it
-//     (users > 0) for its new user instead of deleting it out from under them.
+//     removes the record; an acquire that landed DURING teardown (users > 0)
+//     gets the record REVIVED for it (fire-and-forget reconnect) instead of a
+//     closed zombie every future acquire would join.
 //   - Teardown at users==0 is immediate — no idle grace. After a healthy
 //     close + remove, the next acquire of the same key spawns a fresh child.
 //
@@ -96,9 +97,17 @@ export class SharedRegistry {
         )
         return
       }
-      // An acquire that landed during teardown bumped the refcount: keep the
-      // record for its new user rather than deleting it out from under them.
-      if (record.users > 0) return
+      // An acquire that landed during teardown bumped the refcount: REVIVE the
+      // closed record for the new user rather than leaving a zombie (client
+      // gone, supervisor suppressed) that every future acquire of the key
+      // would join. The death gate is a no-op here — cleanupFailed is false,
+      // and the registry queue serializes releases, so no close can settle
+      // ahead of this reconnect's queued gate — hence the fire-and-forget
+      // cannot reject.
+      if (record.users > 0) {
+        void record.reconnect()
+        return
+      }
       this.records.delete(record.key)
       metrics.gauge('shared_mcp_records', this.records.size)
       log.debug(`released ${record.config.command ?? 'mcp'} (last user; closed)`)

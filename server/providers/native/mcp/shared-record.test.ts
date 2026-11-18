@@ -12,7 +12,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { processIdentity } from '../../../win32-job.js'
+import { captureBirthTime, processIdentity } from '../../../win32-job.js'
 import { disableLogRing, enableLogRing, getLogConfig, readLogRing, setLogConfig } from '../../../log.js'
 import type { NativeMcpServerConfig } from './connections.js'
 import { SharedRecord, sharingKey } from './shared-record.js'
@@ -40,9 +40,11 @@ afterEach(async () => {
   for (const rec of openRecords.splice(0)) {
     await rec.close()
     // A hung close leaves the child alive BY DESIGN (no automatic force-kill).
-    // Reap it externally so a failed assertion never leaks it; the identity
-    // guard keeps a recycled PID from being killed by mistake.
-    if (rec.pid !== null) {
+    // cleanupFailed is the ONLY post-close state where that can be so (the
+    // exit confirmation read null/mismatch otherwise), so the reap backstop
+    // probes just that state — no identity reads for already-dead children.
+    // The identity guard keeps a recycled PID from being killed by mistake.
+    if (rec.cleanupFailed && rec.pid !== null) {
       const identity = childIdentity(rec.pid)
       if (identity !== null && (rec.birthTime === null || identity === rec.birthTime)) {
         try {
@@ -99,11 +101,12 @@ async function expectChildGone(pid: number, ms = 5000): Promise<void> {
 }
 
 /** Platform liveness/identity probe mirroring the record's default: win32
- *  reads the birth-time identity (null once dead / unreadable), POSIX probes
+ *  reads the birth-time identity via `captureBirthTime` (FFI identity with a
+ *  PowerShell fallback; null only when BOTH sources fail), POSIX probes
  *  `kill(pid, 0)` and reports an 'alive' sentinel (no birth-time identity is
  *  available there). */
 function childIdentity(pid: number): string | null {
-  if (process.platform === 'win32') return processIdentity(pid)
+  if (process.platform === 'win32') return captureBirthTime(pid)
   try {
     process.kill(pid, 0)
     return 'alive'
@@ -242,6 +245,9 @@ describe('SharedRecord', () => {
     await waitFor(() => existsSync(byePath), 5000, 'the stdio child to write its bye marker')
     await expectChildGone(pid)
     expect(rec.tools).toEqual([])
+    // A closed record is out of service — never left marked 'connected'
+    // (a racing acquirer would otherwise see a zombie).
+    expect(rec.status).toBe('disabled')
   }, 15_000)
 
   it('never logs secret env values in diagnostics', async () => {
@@ -475,5 +481,27 @@ describe('SharedRecord cleanup death gate', () => {
     expect(rec.cleanupFailed).toBe(true)
     expect(rec.pid).toBe(pid)
     expect(ignoreExitCount(byePath)).toBe(1)
+  }, 15_000)
+
+  it('reconnect racing an in-flight hung close refuses after teardown settles (no overlapping child)', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const rec = makeRecord(stdioConfig(byePath, '--ignore-exit'), { closeTimeoutMs: 200 })
+    await rec.connect()
+    const pid = rec.pid!
+    expect(ignoreExitCount(byePath)).toBe(1)
+
+    // close() queues the teardown (close race + exit confirmation); reconnect()
+    // lands while it is still in flight, BEFORE cleanupFailed is set. The gate
+    // must evaluate AFTER the teardown settles — not on the stale synchronous
+    // flag — or the queued connect spawns a replacement over the live child.
+    const closing = rec.close()
+    const reconnecting = rec.reconnect()
+    await expect(reconnecting).rejects.toThrow(/still alive/)
+    await closing
+    expect(rec.cleanupFailed).toBe(true)
+    expect(rec.pid).toBe(pid)
+    expect(ignoreExitCount(byePath)).toBe(1)
+    expectChildAlive(pid)
   }, 15_000)
 })
