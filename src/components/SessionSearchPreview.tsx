@@ -9,6 +9,7 @@ import { resultHitMemberOrdinal } from './message-list/search-addressing'
 import { countMatches } from '../search/match'
 import { extractMessageSearchSegments } from '../search'
 import { countMessageSearchMatches } from '../../shared/search/segments'
+import { toolResultTextRuns } from '../../shared/tool-result-text'
 import { createInitialServerMirror } from '../session-store/types'
 import { updateIndexesMirror, drainPendingResults } from '../session-store/index-pipeline'
 import { useMessagePreview, type MessagePreviewTarget } from '../hooks/useMessagePreview'
@@ -96,19 +97,14 @@ export function SessionSearchPreview({
     if (index < 0) return { index: -1, resultId: undefined as string | undefined, msg: undefined as SdkMessage | undefined }
     const resultBlocks = getBlocks(items[index].msg).filter((block) => block.type === 'tool_result')
     const ownerId = target.kind === 'hit' ? target.hit.ownerToolUseId : undefined
-    const matchedBlock = resultBlocks.find((block) => {
-      const content = (block as { content?: unknown }).content
-      const text =
-        typeof content === 'string'
-          ? content
-          : Array.isArray(content)
-            ? (content as Array<{ type?: string; text?: string }>)
-                .filter((part) => part.type === 'text' && typeof part.text === 'string')
-                .map((part) => part.text)
-                .join('\n\n')
-            : ''
-      return countMatches(text, target.query) > 0
-    }) as { tool_use_id?: string } | undefined
+    // Existence probe only: selects WHICH result block carries the hit, via
+    // the shared rendered-run view (the same text the card renders). It never
+    // feeds ordinals — resultHitMemberOrdinal owns the ordinal conversion.
+    const matchedBlock = resultBlocks.find((block) =>
+      toolResultTextRuns((block as { content?: unknown }).content).some(
+        (run) => countMatches(run, target.query) > 0,
+      ),
+    ) as { tool_use_id?: string } | undefined
     const resultId =
       matchedBlock?.tool_use_id ??
       (ownerId && resultBlocks.some((block) => (block as { tool_use_id?: string }).tool_use_id === ownerId)

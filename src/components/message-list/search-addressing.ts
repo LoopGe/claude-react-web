@@ -197,7 +197,13 @@ export function resultHitMemberOrdinal(
   const ownerEntry = toolResults.get(ownerToolUseId)
   if (!ownerEntry) return undefined
 
-  // Prefix: the member's own segments (text + tool_use diffs, block order).
+  // Prefix: the member's own segments (text + tool_use diffs, block order),
+  // then the consumed results of the tool_use blocks BEFORE the owner. Both
+  // loops are the lockstep partner of assistantResultIdxByBlock's walk above:
+  // same views, same order (extractPlainText / extractToolUseDiffText for own
+  // segments, then toolResultTextRuns per tool_use block). A segment-view or
+  // ordering change must touch BOTH, or the converted ordinal lands on a
+  // different mark than the one the walk routes.
   let prefix = 0
   for (const b of blocks) {
     if (b.type === 'text' && typeof b.text === 'string') {

@@ -1593,8 +1593,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // during a turn (task-card ResizeObserver commits, toolStatus map updates,
   // fold toggles) reuse the same array identity. toolResults is a dep because
   // a merged result can carry a row's only match: an update re-probes the
-  // rows under an active query and copies only rows whose match status
-  // flipped — no flip, same identity. The tail
+  // rows under an active query and copies EVERY matching row (not just rows
+  // whose match status flipped), so any probe-input change yields a new array
+  // while at least one row matches — the array identity stays stable only
+  // when no row matches. The tail
   // append never shifts an existing row's index, so `itemToVirtIdx` /
   // `nextItemTypeMap` / entrance-gating (all built from `renderableItems`)
   // stay valid; `handleRangeChanged` reads only `range.startIndex` (a number —

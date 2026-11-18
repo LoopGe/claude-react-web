@@ -204,12 +204,14 @@ function ToolGroupMember({
   entering: boolean
   flash: boolean
   searchQuery?: string
-  /** Diff-local active match for this member's tool_use input. Undefined unless
-   *  the active ordinal routes into THIS member's diff (parent computes the
-   *  split and gates non-active members to undefined). */
+  /** Diff-local active match for this card's tool_use input. Undefined unless
+   *  the active ordinal routes into THIS card's diff — routing is per-card
+   *  WITHIN the member (memberBlockOrdinals): the parent gates non-active
+   *  members AND non-active cards of the active member to undefined. */
   diffActiveMatchIdx?: number
-  /** Result-global active match for this member's consumed result. Undefined
-   *  unless the active ordinal routes into THIS member's result. */
+  /** Result-global active match for this card's consumed result. Undefined
+   *  unless the active ordinal routes into THIS card's result — the same
+   *  per-card-within-the-member split as diffActiveMatchIdx. */
   resultActiveMatchIdx?: number
 }) {
   const { revealing, handleAnimationEnd } = useRevealClass(entering, 'item-enter')

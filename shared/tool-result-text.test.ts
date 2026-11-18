@@ -135,6 +135,15 @@ describe('toolResultTextRuns — internal file blocks are never indexed (privacy
     expect(toolResultTextRuns(fileBlock)).toEqual([])
   })
 
+  it('returns NO runs for a file block beside an empty text block (suppression superset)', () => {
+    // The empty text buffer collapses to no text, so the empty-body fallback
+    // must stay suppressed by the file block — formatJson(content) would
+    // otherwise serialize the attachment's name/digest/id into a run.
+    const content = [fileBlock, { type: 'text', text: '' }]
+    expect(toolResultBodyParts(content)).toEqual([])
+    expect(toolResultTextRuns(content)).toEqual([])
+  })
+
   it('a file block contributes nothing and is not a flush boundary', () => {
     const content = [{ type: 'text', text: 'a' }, fileBlock, { type: 'text', text: 'b' }]
     expect(toolResultTextRuns(content)).toEqual(['a\n\nb'])

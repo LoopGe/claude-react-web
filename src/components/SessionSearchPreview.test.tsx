@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionSearchPreview } from './SessionSearchPreview'
 import { stubResizeObserver } from '../test/resize-observer-stub'
@@ -7,23 +7,63 @@ import type { SessionSearchHit } from '../../shared/session-search'
 
 stubResizeObserver()
 
+// Seek observable: every scrollToIndex the scroll writer issues through the
+// Virtuoso handle, so the owner-seek pins can assert WHICH row the preview
+// asked to reveal (see the three Agent owner-seek tests below).
+const seekMocks = vi.hoisted(() => ({ calls: [] as Array<{ index: number }> }))
+
 // Real Virtuoso needs measured DOM dimensions to choose a window; render every
-// row directly, like the other MessageList-based tests.
-vi.mock('react-virtuoso', async () => ({
-  Virtuoso: ({ data, itemContent, firstItemIndex = 0 }: {
+// row directly, like the other MessageList-based tests. The mock also wires the
+// scroll machinery so a seek is observable: the scroller attaches with a
+// non-zero clientHeight (a zero-height scroller makes the seek writer stand
+// down before it resolves anything), and rows carry NO data-item-index stamp,
+// so the writer cannot resolve the target's geometry and takes its
+// Virtuoso-handle fallback — scrollToIndex({ index }) records the exact
+// data-space row index the seek targeted.
+vi.mock('react-virtuoso', async () => {
+  const React = await vi.importActual<typeof import('react')>('react')
+  const Virtuoso = React.forwardRef(function Virtuoso(props: {
     data: unknown[]
     itemContent: (index: number, item: unknown) => React.ReactNode
     firstItemIndex?: number
-  }) => (
-    <div data-testid="virtuoso-mock">
-      {data.map((item, i) => (
-        <div key={i} data-item-index={i + firstItemIndex}>
-          {itemContent(i + firstItemIndex, item)}
-        </div>
-      ))}
-    </div>
-  ),
-}))
+    scrollerRef?: (ref: HTMLElement | null) => void
+  }, ref: React.Ref<unknown>) {
+    const { data, itemContent, firstItemIndex = 0, scrollerRef } = props
+    const scrollRef = React.useRef<HTMLDivElement | null>(null)
+    React.useImperativeHandle(ref, () => ({
+      scrollToIndex: (arg: { index: number }) => { seekMocks.calls.push({ index: arg.index }) },
+    }), [])
+    React.useLayoutEffect(() => {
+      const el = scrollRef.current
+      if (!el) return
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 600 })
+      scrollerRef?.(el)
+      return () => scrollerRef?.(null)
+    }, [scrollerRef])
+    return (
+      <div ref={scrollRef} data-testid="virtuoso-mock">
+        {data.map((item, i) => (
+          <div key={i}>
+            {itemContent(i + firstItemIndex, item)}
+          </div>
+        ))}
+      </div>
+    )
+  })
+  return { Virtuoso }
+})
+
+// The seek writer resolves its target on a requestAnimationFrame step; give
+// that frame time to land so the fallback scrollToIndex is recorded before the
+// assertion. Bounded: when no seek fires at all (the regression these pins
+// guard), the wait runs out and the assertion sees the empty call list.
+async function flushSeekFrame() {
+  await act(async () => {
+    for (let i = 0; i < 10 && seekMocks.calls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  })
+}
 
 vi.mock('../hooks/useMcpApps', async () => {
   const React = await import('react')
@@ -139,6 +179,7 @@ function expectAllResultsMerged(container: HTMLElement) {
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
   Element.prototype.scrollTo = vi.fn()
+  seekMocks.calls.length = 0
 })
 
 describe('SessionSearchPreview', () => {
@@ -370,10 +411,18 @@ describe('SessionSearchPreview', () => {
     expect(inner!.querySelector('mark.search-hl-active')?.textContent).toBe('child output')
   })
 
-  it('keeps an async launch ack consumed by its subagent card when it is the search target', () => {
+  it('keeps an async launch ack consumed by its subagent card when it is the search target', async () => {
     const agentPage = {
       ...PAGE,
       messages: [
+        // A leading user row so the owning Agent card's Virtuoso index is 1,
+        // not 0 — the seek pin below must distinguish the owner row from both
+        // the list head and the consumed result row.
+        {
+          seq: 4,
+          uuid: 'u4',
+          msg: { type: 'user', uuid: 'u4', message: { role: 'user', content: 'find the search hit' } },
+        },
         {
           seq: 5,
           uuid: 'a5',
@@ -421,6 +470,13 @@ describe('SessionSearchPreview', () => {
     expect(container.querySelector('[data-message-id="a5"] .subagent-card')).toBeTruthy()
     expect(container.querySelector('[data-message-id="u6"]')).toBeNull()
 
+    // Discriminating owner-seek pin: the scroll seek must target the owning
+    // Agent card's Virtuoso row (index 1). If the owner-seek condition
+    // regresses to the consumed result row's items index, that index maps to
+    // no rendered row, no seek fires, and this assertion fails.
+    await flushSeekFrame()
+    expect(seekMocks.calls.map((c) => c.index)).toEqual([1])
+
     // The hit stays findable: it seeks the owning Agent card (above) and the
     // sidechain conversation is reachable via drill-in (non-vacuous positive
     // assertion). The ack string itself is async launch metadata — the record
@@ -434,10 +490,16 @@ describe('SessionSearchPreview', () => {
     expect(container.textContent).toContain('review')
   })
 
-  it('uses the reducer-selected canonical result in the sidechain detail', () => {
+  it('uses the reducer-selected canonical result in the sidechain detail', async () => {
     const agentPage = {
       ...PAGE,
       messages: [
+        // Leading user row: the owning Agent card's Virtuoso index is 1.
+        {
+          seq: 4,
+          uuid: 'u4',
+          msg: { type: 'user', uuid: 'u4', message: { role: 'user', content: 'find the search hit' } },
+        },
         {
           seq: 5,
           uuid: 'a5',
@@ -499,6 +561,13 @@ describe('SessionSearchPreview', () => {
     expect(container.querySelector('[data-message-id="a5"] .subagent-card')).toBeTruthy()
     expect(container.querySelector('[data-message-id="u7"]')).toBeNull()
 
+    // Discriminating owner-seek pin: the seek targets the owning Agent card's
+    // Virtuoso row (index 1), never the consumed canonical result row's items
+    // index (unmapped — that row no longer renders, so a regression fires no
+    // seek at all).
+    await flushSeekFrame()
+    expect(seekMocks.calls.map((c) => c.index)).toEqual([1])
+
     fireEvent.click(container.querySelector('.subagent-card-details')!)
 
     expect(container.textContent).toContain('canonical output')
@@ -506,10 +575,16 @@ describe('SessionSearchPreview', () => {
     expect(container.querySelector('mark.search-hl-active')).toBeTruthy()
   })
 
-  it('keeps an errored main-thread result available in the sidechain detail', () => {
+  it('keeps an errored main-thread result available in the sidechain detail', async () => {
     const agentPage = {
       ...PAGE,
       messages: [
+        // Leading user row: the owning Agent card's Virtuoso index is 1.
+        {
+          seq: 4,
+          uuid: 'u4',
+          msg: { type: 'user', uuid: 'u4', message: { role: 'user', content: 'find the search hit' } },
+        },
         {
           seq: 5,
           uuid: 'a5',
@@ -556,6 +631,13 @@ describe('SessionSearchPreview', () => {
     // consumed errored result row.
     expect(container.querySelector('[data-message-id="a5"] .subagent-card')).toBeTruthy()
     expect(container.querySelector('[data-message-id="u6"]')).toBeNull()
+
+    // Discriminating owner-seek pin: the seek targets the owning Agent card's
+    // Virtuoso row (index 1), never the consumed errored result row's items
+    // index (unmapped — that row no longer renders, so a regression fires no
+    // seek at all).
+    await flushSeekFrame()
+    expect(seekMocks.calls.map((c) => c.index)).toEqual([1])
 
     fireEvent.click(container.querySelector('.subagent-card-details')!)
 
