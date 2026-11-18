@@ -2464,6 +2464,7 @@ export class SessionManager {
     const live = this.sessions.get(id)
     const meta = live ?? this.store?.get(id)
     if (!meta) throw new HttpError(404, `session ${id} not found`)
+    this.assertTranscriptMutable(id)
     if (!meta.lastTurnAt) {
       throw new HttpError(
         400,
@@ -2722,6 +2723,7 @@ export class SessionManager {
     fromAssistantUuid: string,
     opts?: { deleteOriginal?: boolean },
   ): Promise<SessionInfo> {
+    this.assertTranscriptMutable(id)
     // 1. Validate the anchor: it must be a recorded turn anchor (a success
     //    turn's last assistant frame). A uuid not in the sidecar is either
     //    a non-anchor message or a turn whose anchor was never persisted —
@@ -3039,6 +3041,7 @@ export class SessionManager {
     const live = this.sessions.get(parentId)
     const meta = live ?? this.store?.get(parentId)
     if (!meta) throw new HttpError(404, `parent session ${parentId} not found`)
+    this.assertTranscriptMutable(parentId)
     if (meta.terminated) {
       throw new HttpError(400, 'Cannot create a Side Chat from a terminated session.')
     }
@@ -3779,6 +3782,7 @@ export class SessionManager {
   /** Send a user turn into an existing session. */
   async send(id: string, text: string): Promise<SentUserMessage> {
     const s = this.requireSendable(id)
+    this.assertTranscriptMutable(id)
     const lifecycle = this.beginSend(s)
     return this.opLock.run(id, async () => {
       this.assertSendCurrent(s, lifecycle)
@@ -3864,6 +3868,7 @@ export class SessionManager {
     content: ProviderInputContentBlock[],
   ): Promise<SentUserMessage> {
     const s = this.requireSendable(id)
+    this.assertTranscriptMutable(id)
     const lifecycle = this.beginSend(s)
     return this.opLock.run(id, async () => {
       this.assertSendCurrent(s, lifecycle)
@@ -8030,6 +8035,11 @@ export class SessionManager {
    *  frames without re-walking the store. */
   private recordTranscriptFor(sessionId: string, msg: SDKMessage): void {
     const t = this.getOrCreateTranscript(sessionId)
+    // Degraded fence (spec §10): a failed-reconcile holder accepts no durable
+    // append — the frame gets no seq and no sidecar row, so the degraded seq
+    // space does not grow with frames it cannot persist. Recovery re-hydrates
+    // from the sidecar + provider log on a successful retry.
+    if (t.degraded) return
     const seq = recordTranscriptMessage(t, msg)
     // Capture the generation AT ASSIGNMENT (spec §8.3): after an ordered
     // rebuild, this message object must still serialize with the generation
@@ -8358,6 +8368,17 @@ export class SessionManager {
     await this.transcriptReconciles.get(id)
   }
 
+  /** Degraded read-only fence (spec §10): a failed-reconcile holder refuses
+   *  transcript mutations (send/fork/discard/eviction) until an explicit
+   *  rebuild retry clears `degraded`. Throws 423 so the client surfaces a
+   *  recovery banner rather than silently accepting writes into a broken
+   *  seq space. No-op when the holder is healthy or absent. */
+  private assertTranscriptMutable(id: string): void {
+    if (this.transcriptStores.get(id)?.degraded === true) {
+      throw new HttpError(423, 'transcript-degraded')
+    }
+  }
+
   /** Pre-seed a FORK's seq store from its source's transcript BEFORE the
    *  fork's pump starts — the fork-path counterpart of resume()'s
    *  pre-spawn reconcile, closing the same chronology hole.
@@ -8468,10 +8489,14 @@ export class SessionManager {
    *  client's page size in the seq-window protocol). Cold / dormant sessions
    *  reconcile on first read, so a page served here always covers the full
    *  history the JSONL carries, not just the in-memory tail. */
-  async getTranscriptWindow(id: string, before?: number, limit = 200): Promise<TranscriptWindow & { totalCount: number }> {
+  async getTranscriptWindow(id: string, before?: number, limit = 200): Promise<TranscriptWindow & { totalCount: number; degraded: boolean; rebuildBlocked?: 'client-upgrade-required' }> {
     const t = await this.ensureTranscriptReconciled(id)
     const win = t.store.window(before, limit)
-    return { ...win, totalCount: t.store.visibleCount }
+    // Surface the recovery state (spec §10): the page is a read-only snapshot
+    // when degraded; rebuildBlocked signals a capability refusal (old gen
+    // still usable). The route returns this object verbatim, so the fields
+    // reach the client's TranscriptPageResponse.
+    return { ...win, totalCount: t.store.visibleCount, degraded: t.degraded, rebuildBlocked: t.rebuildBlocked }
   }
 
   /** A seq-centered page for search jumps. Null when the target seq is
@@ -8553,6 +8578,7 @@ export class SessionManager {
   async evictTranscript(id: string, uuids: string[]): Promise<number[]> {
     if (!this.sessions.has(id) && !this.store?.get(id)) return []
     const t = await this.ensureTranscriptReconciled(id)
+    if (t.degraded) throw new HttpError(423, 'transcript-degraded')
     const seqs = t.store.evict(uuids)
     for (const seq of seqs) void t.sidecar.appendRow({ seq, evicted: true })
     return seqs
@@ -9752,6 +9778,7 @@ export class SessionManager {
       lastTurnSummary: s.lastTurnSummary,
       recap: s.recap,
       skillOverride: s.skillOverride,
+      transcriptDegraded: this.transcriptStores.get(s.id)?.degraded === true,
     }
   }
 

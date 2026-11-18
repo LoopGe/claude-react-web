@@ -296,6 +296,11 @@ export interface SessionInfoBase<PM = string> {
    *  via spawn()'s writeStore. */
   canRetryResume?: boolean
   error?: string
+  /** True when the session's transcript holder is degraded (reconcile
+   *  failed, spec §10). Carried on the live session-update so a degradation
+   *  surfaces without waiting for a transcript page fetch; the client shows
+   *  a recovery banner and disables send until a successful rebuild retry. */
+  transcriptDegraded?: boolean
   /** True while the SDK is mid-turn. Drives the "thinking" animation. */
   working: boolean
   /** Epoch ms when the current turn started. Only set while `working` is

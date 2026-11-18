@@ -9384,6 +9384,83 @@ describe('SessionManager', () => {
       expect(uuidsOf(await sm.getTranscriptWindow(info.id))).toEqual(['A', 'R', 'N'])
     })
   })
+  describe('degraded read-only fence (spec §10)', () => {
+    let prevConfigDir: string | undefined
+    beforeEach(() => {
+      prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    })
+
+    const emitAssistant = (uuid: string, id: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant',
+        uuid,
+        parent_tool_use_id: null,
+        message: { id, role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+    const writeJsonl = (sessionId: string, lines: string[]) => {
+      const p = join(dir, 'projects', encodeCwd(TEST_CWD), `${sessionId}.jsonl`)
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, lines.join('\n') + '\n')
+    }
+    const asst = (uuid: string, id: string, text: string) =>
+      JSON.stringify({ type: 'assistant', uuid, message: { id, role: 'assistant', content: [{ type: 'text', text }] } })
+    /** Force the holder degraded: a mid-file corrupt JSONL makes the strict
+     *  reconcile reader throw, which ensureTranscriptReconciled swallows into
+     *  holder.degraded. */
+    const makeDegraded = async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      emitAssistant('A', 'mA', 'first')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 1)).toBe(true)
+      // Corrupt line in the MIDDLE: a torn FINAL line is a tolerated torn-tail
+      // (status ok), only a mid-file parse error throws → degraded.
+      writeJsonl(info.id, [asst('A', 'mA', 'first'), 'NOT VALID JSON', asst('N', 'mN', 'second')])
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(win.degraded).toBe(true)
+      return info
+    }
+
+    it('a degraded session refuses send and eviction with 423, and the page carries degraded', async () => {
+      const info = await makeDegraded()
+      await expect(sm.send(info.id, 'hi')).rejects.toMatchObject({ status: 423 })
+      await expect(sm.evictTranscript(info.id, ['A'])).rejects.toMatchObject({ status: 423 })
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(win.degraded).toBe(true)
+    })
+
+    it('recordTranscriptFor drops durable frames while degraded (no seq growth)', async () => {
+      const info = await makeDegraded()
+      const headBefore = sm.transcriptHead(info.id)!.headSeq
+      emitAssistant('B', 'mB', 'second')
+      await new Promise((r) => setImmediate(r))
+      expect(sm.transcriptHead(info.id)!.headSeq).toBe(headBefore)
+    })
+
+    it('fork from a degraded source is refused with 423', async () => {
+      const info = await makeDegraded()
+      await expect(sm.fork(info.id)).rejects.toMatchObject({ status: 423 })
+    })
+
+    it('info carries transcriptDegraded for a degraded live session', async () => {
+      const info = await makeDegraded()
+      expect(sm.get(info.id).transcriptDegraded).toBe(true)
+    })
+
+    it('a successful retry clears degraded and re-enables send', async () => {
+      const info = await makeDegraded()
+      writeJsonl(info.id, [asst('A', 'mA', 'first')])
+      const r = await sm.retryTranscriptReconcile(info.id)
+      expect(r.degraded).toBe(false)
+      expect(sm.get(info.id).transcriptDegraded).toBe(false)
+      const sent = await sm.send(info.id, 'now works')
+      expect(sent.uuid).toBeTruthy()
+    })
+  })
   describe('transcript eviction + messages-evicted broadcast (Task 5 wiring)', () => {
     const emitAssistant = (uuid: string, text: string) => {
       mockHandles[0].emit({

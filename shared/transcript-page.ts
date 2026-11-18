@@ -46,4 +46,13 @@ export interface TranscriptPageResponse {
    *  identify the target even when aroundUuid resolved an alias whose outer
    *  message carries a different uuid. Present only on `around` pages. */
   aroundSeq?: number
+  /** True when the session's transcript reconcile failed and the holder is
+   *  degraded (spec §10): the page is a read-only old-generation snapshot.
+   *  The client disables send and shows a persistent recovery banner with a
+   *  Retry that calls POST /sessions/:id/transcript/reconcile. */
+  degraded?: boolean
+  /** Set when an ordered-rebuild was refused because an incapable browser
+   *  subscriber is attached (spec §8.3). The session keeps working on the old
+   *  generation; the legacy tab must reload. Distinct from `degraded`. */
+  rebuildBlocked?: 'client-upgrade-required'
 }
