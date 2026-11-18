@@ -25,7 +25,7 @@ interface Props {
 }
 
 function roleLabel(role: SessionSearchRole): string {
-  return role === 'user' ? 'You' : role === 'tool_result' ? 'Tool' : 'Claude'
+  return role === 'user' ? 'You' : role === 'tool_result' ? 'Tool' : 'Agent'
 }
 
 function formatTime(timestamp?: number): string {
