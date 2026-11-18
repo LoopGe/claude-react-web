@@ -9,7 +9,7 @@ import type { SandboxSetting } from '../../shared/sandbox.js'
 import type { InProcessHookForward, InProcessSubagentStop, InProcessTaskSnapshot } from './claude/inprocess-hooks.js'
 import type { SessionToolProfile } from '../../shared/tool-profile.js'
 import type { SupplementOutcome } from './steering-format.js'
-import type { NativeFileAttachment } from './native/session-log/format.js'
+import type { NativeFileAttachment } from './attachment-types.js'
 
 export interface ProviderAttachmentOccurrence {
   messageUuid: string
