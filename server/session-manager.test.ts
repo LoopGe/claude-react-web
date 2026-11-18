@@ -9691,6 +9691,46 @@ describe('SessionManager', () => {
       await expect(sm.execInSession(info.id, 'echo hi', { share: true })).rejects.toMatchObject({ status: 423 })
     })
   })
+  describe('fork pre-seed spawn-marker recovery (spec §11)', () => {
+    let prevConfigDir: string | undefined
+    beforeEach(() => {
+      prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    })
+    const forkSeedStoreOf = (sm: SessionManager) =>
+      (sm as unknown as { forkSeedStore: { save(id: string, s: unknown[]): Promise<void>; markSpawnStarted(id: string): Promise<void>; markTargetLogObserved(id: string): Promise<void> } }).forkSeedStore
+    const asst = (uuid: string) => ({ type: 'assistant', uuid, message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text: uuid }] } })
+
+    it('spawn never started + missing target log: reconcile falls back to the pre-seed snapshot', async () => {
+      const forkId = `fork-snap-${randomUUID()}`
+      await forkSeedStoreOf(sm).save(forkId, [asst('A'), asst('B')])
+      // No provider JSONL for forkId (spawn never copied it).
+      const win = await sm.getTranscriptWindow(forkId)
+      expect(win.degraded).toBe(false)
+      expect(win.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual(['A', 'B'])
+    })
+
+    it('spawn started but target log never observed + missing log: source-lost (degraded)', async () => {
+      const forkId = `fork-lost-${randomUUID()}`
+      await forkSeedStoreOf(sm).save(forkId, [asst('A')])
+      await forkSeedStoreOf(sm).markSpawnStarted(forkId)
+      const win = await sm.getTranscriptWindow(forkId)
+      expect(win.degraded).toBe(true)
+    })
+
+    it('target log observed then lost: source-lost (degraded), not snapshot fallback', async () => {
+      const forkId = `fork-observed-${randomUUID()}`
+      await forkSeedStoreOf(sm).save(forkId, [asst('A')])
+      await forkSeedStoreOf(sm).markSpawnStarted(forkId)
+      await forkSeedStoreOf(sm).markTargetLogObserved(forkId)
+      const win = await sm.getTranscriptWindow(forkId)
+      expect(win.degraded).toBe(true)
+    })
+  })
   describe('transcript eviction + messages-evicted broadcast (Task 5 wiring)', () => {
     const emitAssistant = (uuid: string, text: string) => {
       mockHandles[0].emit({

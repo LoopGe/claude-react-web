@@ -159,6 +159,7 @@ import { buildOrderedProjection, TranscriptRebuildBlockedError } from './transcr
 import { SessionSubscriptionHub } from './session-subscription-hub.js'
 import { ResetJournal, type ResetJournalEntry } from './reset-journal.js'
 import { TranscriptWriter } from './transcript-writer.js'
+import { ForkSeedStore } from './fork-seed-store.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -934,6 +935,10 @@ export class SessionManager {
    *  manager, one JSON file per session, full-replace snapshots. Without it a
    *  server restart wipes the panel's completed-task history. */
   private taskResultStore: TaskResultStore
+  /** Fork pre-seed snapshot + spawn markers (spec §11): canonical fallback for
+   *  a fork whose CLI never copied the target log, and source-lost fail-closed
+   *  once spawn started but the log was never observed / is now lost. */
+  private forkSeedStore: ForkSeedStore
   /** Sidecar store for shadow-repo file snapshots. Holds per-session
    *  metadata (gitDir / worktree / scope / byMessage / patches / last)
    *  used by SnapshotService and accessed directly here for fork/discard
@@ -1080,6 +1085,7 @@ export class SessionManager {
     this.turnAnchorStore = new TurnAnchorStore(this.store.getDir(), this.historyCap)
     this.resultFrameStore = new ResultFrameStore(this.store.getDir(), this.historyCap)
     this.taskResultStore = new TaskResultStore(this.store.getDir())
+    this.forkSeedStore = new ForkSeedStore(this.store.getDir())
     // Shadow-repo file snapshots: build the store and service against the
     // same stateDir so direct copyForFork/remove and service-driven capture
     // /rewind share one underlying writer per session. fileSnapshots /
@@ -2640,6 +2646,11 @@ export class SessionManager {
     }
     const forkSeed = await this.preseedForkTranscript(forkId, id, { seed: opts?.historySeed })
     const bridgedPromptUuids = forkSeed.promptUuids
+    // Mark spawn started BEFORE the CLI copies the source transcript into the
+    // fork's log (spec §11): from here, a missing target log can no longer be
+    // proven "never created", so recovery fails closed (source-lost) rather
+    // than falling back to the possibly-stale pre-seed snapshot.
+    await this.forkSeedStore.markSpawnStarted(forkId)
     const forkInfo = this.spawn(
       forkId,
       forkOpts,
@@ -2850,6 +2861,7 @@ export class SessionManager {
       await this.promptUuidStore.remove(id)
       await this.steeredStore.remove(id)
       await this.removeResetJournal(id)
+      await this.forkSeedStore.remove(id)
     } else {
       await this.unload(id, { removeFromStore: true })
     }
@@ -8108,11 +8120,25 @@ export class SessionManager {
     // is a real error. Falls back to the tolerant reader only for providers
     // without the strict API.
     let entries: HistoryEntry[]
+    // Fork spawn-marker recovery (spec §11): null for non-forks (one ENOENT
+    // read), drives the missing-log fallback / source-lost verdict below.
+    const forkSeed = await this.forkSeedStore.load(id)
     if (provider.readHistoryForReconcile) {
       const result = await provider.readHistoryForReconcile(id, afterUuid ? { afterUuid } : {})
       if (result.status === 'boundary-not-found') throw new Error('boundary-not-found')
-      if (result.status === 'missing') return []
+      if (result.status === 'missing') {
+        if (!forkSeed) return []
+        // Spawn never started → the CLI provably never copied the log → the
+        // pre-seed snapshot is the canonical fallback (already composed).
+        if (!forkSeed.spawnStarted) return forkSeed.snapshot as SDKMessage[]
+        // Spawn started but the log was never observed, or observed then lost:
+        // cannot prove it never existed → source-lost, fail closed (degraded).
+        throw new Error('source-lost')
+      }
       entries = result.entries
+      // First confirmed read of the fork's target log: once observed, a later
+      // missing log is source-lost (not snapshot fallback).
+      if (forkSeed && !forkSeed.targetLogObserved) await this.forkSeedStore.markTargetLogObserved(id)
     } else {
       entries = await provider.readHistoryEntries(id, afterUuid ? { afterUuid } : {})
     }
@@ -8586,6 +8612,10 @@ export class SessionManager {
       t.store.hydrate(foldSidecarRows(await t.sidecar.load()))
       const entries = opts.seed ?? (await this.composeTranscriptEntries(sourceId, opts.afterUuid))
       backfillFromEntries(t, entries)
+      // Persist the pre-seed snapshot + spawn markers (spec §11): the canonical
+      // fallback if the fork's CLI never copies the target log. spawnStarted is
+      // flipped just before spawn(); targetLogObserved on the first log read.
+      await this.forkSeedStore.save(forkId, entries)
       const promptUuids = await this.bridgeInheritedPromptUuids(forkId, sourceId, entries)
       return { promptUuids, historySeed: entries }
     } catch (err) {
@@ -9092,6 +9122,7 @@ export class SessionManager {
         void this.snapshotStore.remove(id)
         void this.removeTranscriptState(id)
         void this.removeResetJournal(id)
+        void this.forkSeedStore.remove(id)
       }
       // Drop any stored recap — otherwise a new session that happens to
       // reuse this id (rare, but possible under --state-dir swaps) would
