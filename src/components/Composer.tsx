@@ -712,20 +712,17 @@ export const Composer = memo(function Composer({
         ? 'Some attachments failed to upload'
         : null
 
-  // Transcript recovery banner (spec §10) takes precedence over the terminated
-  // banner: a degraded session offers Retry rebuild; a capability-blocked one
-  // shows a passive notice (no Retry — capable tabs keep working on the old
-  // generation, the legacy tab must reload). Reuses the session-ended look.
-  if (recovery) {
+  // Degraded transcript (spec §10): a read-only snapshot replaces the editor
+  // with a Retry rebuild banner (the host also disables send). Takes
+  // precedence over the terminated banner. A capability-BLOCKED rebuild does
+  // NOT replace the editor — capable tabs keep working on the old generation;
+  // its passive notice is rendered as a row above the editor below.
+  if (recovery?.kind === 'degraded') {
     return (
       <div className="session-ended transcript-recovery">
-        <span>
-          {recovery.kind === 'degraded'
-            ? 'Transcript rebuild failed — history may be incomplete. Sending is disabled.'
-            : 'Transcript rebuild is waiting for an older tab to reload.'}
-        </span>
+        <span>Transcript rebuild failed — history may be incomplete. Sending is disabled.</span>
         {recovery.message && <span className="session-ended-hint">{recovery.message}</span>}
-        {recovery.kind === 'degraded' && onRetryReconcile && (
+        {onRetryReconcile && (
           <div className="session-ended-actions">
             <button type="button" className="chat-panel-resume-btn" onClick={onRetryReconcile}>
               Retry rebuild
@@ -790,6 +787,17 @@ export const Composer = memo(function Composer({
   // forgot one side made the wrapper either not open or never collapse. A
   // single array removes the chance to disagree.
   const composerRows: ReactNode[] = []
+  // Capability-blocked rebuild (spec §8.3): a passive notice ABOVE the editor —
+  // the editor stays rendered and enabled, capable tabs keep working on the
+  // old generation while an incapable legacy tab blocks the rebuild.
+  if (recovery?.kind === 'blocked') {
+    composerRows.push(
+      <div className="transcript-recovery transcript-recovery-blocked" key="transcript-recovery" role="status">
+        <IconAlertTriangle size={12} aria-hidden />
+        <span>{recovery.message ?? 'Transcript rebuild is waiting for an older tab to reload.'}</span>
+      </div>,
+    )
+  }
   if (SCHEDULE_SEND_ENABLED && (pendingScheduled.length > 0 || failedScheduled.length > 0) && scheduled) {
     composerRows.push(
       <div className="scheduled-sends" key="scheduled-sends">

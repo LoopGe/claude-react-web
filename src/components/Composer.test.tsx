@@ -1223,12 +1223,17 @@ describe('Composer transcript recovery banner (spec §10)', () => {
     expect(onRetryReconcile).toHaveBeenCalledOnce()
   })
 
-  it('blocked shows a passive notice without a Retry button', () => {
+  it('blocked shows a passive notice without a Retry button AND keeps the editor enabled', () => {
     const { container, queryByRole } = render(
       <Composer {...defaultProps} recovery={{ kind: 'blocked' }} />,
     )
     expect(container.querySelector('.transcript-recovery')).not.toBeNull()
     expect(queryByRole('button', { name: 'Retry rebuild' })).toBeNull()
+    // Capable tabs keep working on the old generation: the editor must still
+    // render and be enabled (blocked never disables send).
+    const editor = getEditor(container)
+    expect(editor).not.toBeNull()
+    expect(editor.getAttribute('contenteditable')).not.toBe('false')
   })
 
   it('no recovery renders no banner', () => {

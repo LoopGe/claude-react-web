@@ -2237,6 +2237,14 @@ export class SessionManager {
     // preseedForkTranscript — their JSONL is non-empty from birth because
     // forkSession copies the source transcript into the new id's file.)
     await this.ensureTranscriptReconciled(id)
+    // Degraded fence (spec §10 resume/spawn): a failed-reconcile holder must
+    // NOT start a pump — the session stays read-only dormant until an explicit
+    // rebuild retry clears degraded. This keeps degraded sessions out of the
+    // live state (no seq-less live broadcast) and honors "no pump on
+    // rebuild-required failure". retryTranscriptReconcile resumes only after
+    // clearing degraded, so recovery still spawns. Reads the holder via the
+    // map (same accessor as the other fences), not the reconcile return.
+    if (this.transcriptStores.get(id)?.degraded === true) throw new HttpError(423, 'transcript-degraded')
     return this.spawn(id, resumeOpts, undefined, historySeed, undefined, undefined, undefined, undefined, promptUuids ?? [])
   }
 
@@ -4633,6 +4641,7 @@ export class SessionManager {
     message: SDKUserMessage
   }> {
     const s = this.requireRunnable(id)
+    this.assertTranscriptMutable(id)
     const cwd = s.cwd
     if (!cwd) throw new HttpError(400, 'session has no cwd — cannot run a shell command')
     const share = opts.share ?? false
@@ -5261,6 +5270,10 @@ export class SessionManager {
    *  `session-cleared` signal, then paints the new divider + summary. */
   private async maybeAutoCompact(s: Session, pressure?: AutoCompactPressure | null): Promise<void> {
     if (!defaultConfig.nativeAutoCompact) return
+    // Degraded fence (spec §10): in-place compact resets the seq store and
+    // deletes sidecars — it must not lift the degraded fence outside the
+    // explicit Retry path. A degraded session compacts only after recovery.
+    if (this.transcriptStores.get(s.id)?.degraded === true) return
     const compactInPlace = s.handle.compactInPlace
     if (!compactInPlace) return
     if (this.phaseOf(s) !== 'idle') return
@@ -10107,6 +10120,9 @@ export class SessionManager {
     // Guard: session must still be live and not explicitly stopped
     if (!this.sessions.has(session.id)) return false
     if (session.terminated) return false
+    // Degraded fence (spec §10): never auto-resume a degraded holder into a
+    // live pump; recovery is an explicit Retry, not an idle ladder step.
+    if (this.transcriptStores.get(session.id)?.degraded === true) return false
     // Guard: SessionManager.clear() is mid-flight and drives its own
     // respawn path. Returning false here lets cleanupPump skip its
     // terminate tail (the `clearing` branch above) and clear() do the

@@ -843,7 +843,7 @@ export class SessionSynchronizer {
       if (run.cancelled || this.run !== run) return
       const status = (err as { status?: number }).status
       if (status === 409) {
-        this.setPaging({ ...this.paging, recovery: { kind: 'blocked', message: 'An older tab is blocking the rebuild — reload it, then retry.' } })
+        this.setPaging({ ...this.paging, recovery: { kind: 'blocked', message: 'An older tab is blocking the rebuild — reload that tab to unblock it.' } })
       } else if (status === 404) {
         this.setPaging({ ...this.paging, recovery: { kind: 'degraded', message: 'Session no longer exists.' } })
       } else {

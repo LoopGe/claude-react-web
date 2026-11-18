@@ -2849,6 +2849,20 @@ describe('SessionManager', () => {
       expect(summarizeForCompact).not.toHaveBeenCalled()
     })
 
+    it('skips compact when the transcript holder is degraded (fence lifts only via Retry)', async () => {
+      const info = await sm.create({})
+      await sm.getTranscriptWindow(info.id) // create the holder
+      const live = liveSession(info.id)
+      live.handle.compactInPlace = vi.fn(async () => {})
+      live.lastContextUsage = cachedUsage({ autoCompactThreshold: 100 })
+      ;(sm as unknown as { transcriptStores: Map<string, { degraded: boolean }> })
+        .transcriptStores.get(info.id)!.degraded = true
+      // Pressure that WOULD fire (90/100 over a 50 threshold) — the degraded
+      // fence must block the in-place compact (which deletes sidecars).
+      await callAutoCompact(live, { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 })
+      expect(live.handle.compactInPlace).not.toHaveBeenCalled()
+    })
+
     it('uses a positive provider threshold before the ratio fallback', async () => {
       const info = await sm.create({})
       const live = liveSession(info.id)
@@ -9459,6 +9473,21 @@ describe('SessionManager', () => {
       expect(sm.get(info.id).transcriptDegraded).toBe(false)
       const sent = await sm.send(info.id, 'now works')
       expect(sent.uuid).toBeTruthy()
+    })
+
+    it('resume of a degraded session refuses to start the pump (423, stays not running)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      emitAssistant('A', 'mA', 'first')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 1)).toBe(true)
+      await sm.unload(info.id) // dormant
+      writeJsonl(info.id, [asst('A', 'mA', 'first'), 'NOT VALID JSON', asst('N', 'mN', 'second')])
+      await expect(sm.resume(info.id)).rejects.toMatchObject({ status: 423 })
+      expect(sm.get(info.id).running).toBe(false)
+    })
+
+    it('execInSession (!!) on a degraded session is refused with 423', async () => {
+      const info = await makeDegraded()
+      await expect(sm.execInSession(info.id, 'echo hi', { share: true })).rejects.toMatchObject({ status: 423 })
     })
   })
   describe('transcript eviction + messages-evicted broadcast (Task 5 wiring)', () => {
