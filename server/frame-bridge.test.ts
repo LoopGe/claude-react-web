@@ -1518,7 +1518,7 @@ describe('attached epoch carriage (spec §8.3, Task 5)', () => {
     send(conn, { kind: 'subscribe', sessionId: 's1', orderedRebase: true })
     await waitForFrame(sink, (f) => f.kind === 'attached' && f.sessionId === 's1')
     expect(sink.kinds('attached')).toEqual([
-      { kind: 'attached', sessionId: 's1', generation: 5, headSeq: 10, tombstoneEpoch: 3, rebaseEpoch: 2, clearEpoch: 1 },
+      { kind: 'attached', sessionId: 's1', generation: 5, headSeq: 10, tombstoneEpoch: 3, rebaseEpoch: 2, clearEpoch: 1, lastFullResetGeneration: 4 },
     ])
     conn.close()
   })

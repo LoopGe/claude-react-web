@@ -9434,6 +9434,8 @@ describe('SessionManager', () => {
         reason: 'ordered-rebuild',
         generation: 1,
         headSeq: 3,
+        rebaseEpoch: 1,
+        clearEpoch: 0,
       })
       // A post-rebuild live frame must arrive AFTER the envelope on the same
       // per-subscriber FIFO (the client resets before it sees new-gen seqs).
@@ -9767,6 +9769,31 @@ describe('SessionManager', () => {
       const forked = await sm.fork(info.id)
       const seed = await forkSeedStoreOf(sm).load(forked.id)
       expect(seed?.spawnStarted).toBe(true)
+    })
+  })
+  describe('durable tombstoneEpoch (spec §8.3, Task 5 C1)', () => {
+    it('tombstoneEpoch survives rehydrate monotonically (not reset to 0)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await sm.send(info.id, 'evict me')
+      mockHandles[0].emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      const win = await sm.getTranscriptWindow(info.id)
+      const userUuid = (win.messages[0].msg as { uuid: string }).uuid
+      await sm.evictTranscript(info.id, [userUuid])
+      const epochBefore = sm.transcriptEpochs(info.id).tombstoneEpoch
+      expect(epochBefore).toBeGreaterThan(0)
+      // Wait for the durable tombstone row, then restart over the same state dir.
+      expect(await waitFor(async () => (await new TranscriptSidecar(dir, info.id).load()).some((r) => r.evicted === true))).toBe(true)
+      const store2 = new SessionStore({ stateDir: dir })
+      await store2.load()
+      const sm2 = new SessionManager({ store: store2 })
+      try {
+        await sm2.getTranscriptWindow(info.id)
+        expect(sm2.transcriptEpochs(info.id).tombstoneEpoch).toBeGreaterThanOrEqual(epochBefore)
+      } finally {
+        await sm2.shutdown()
+      }
     })
   })
   describe('transcript eviction + messages-evicted broadcast (Task 5 wiring)', () => {

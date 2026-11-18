@@ -197,6 +197,11 @@ export interface WsAttached {
   lifecycleEpoch?: number
   rebaseEpoch?: number
   clearEpoch?: number
+  /** Newest committed clear/compact/recovery generation (spec §8.3). On a
+   *  generation-change reconnect, above the client's local floor means a clear
+   *  was missed (full reset, wipe intent); at/below it means a pure ordered-
+   *  rebuild (rebase, preserve intent). Optional for pre-journal servers. */
+  lastFullResetGeneration?: number
   /** Why the client must reset: a missed ordered-rebuild vs a missed clear. */
   reason?: 'ordered-rebuild' | 'clear'
 }

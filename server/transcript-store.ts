@@ -82,7 +82,11 @@ export class TranscriptStore {
    *  reconcile's whole-message coverage check only. */
   private assistantMessageSeqs = new Map<string, Set<number>>()
   /** Bumped whenever a message is newly tombstoned. Search caches use it to
-   *  invalidate an index whose rows may still describe an evicted message. */
+   *  invalidate an index whose rows may still describe an evicted message.
+   *  DURABLE + monotonic (spec §8.3): hydrate() restores it from the count of
+   *  committed tombstone rows (append-only, never decreases across rehydrate),
+   *  so a reconnecting client detects a missed eviction even after a server
+   *  restart — not a process-local zeroable counter. */
   private tombsEpoch = 0
 
   get tombstoneEpoch(): number {
@@ -394,6 +398,7 @@ export class TranscriptStore {
 
   /** 对账：从持久化行恢复内存索引（Task 3 负责加载行；本方法只做纯内存恢复）。 */
   hydrate(rows: HydrateRow[]): void {
+    let evictedCount = 0
     for (const row of rows) {
       this.nextSeq = Math.max(this.nextSeq, row.seq + 1)
       this.messages.set(row.seq, {
@@ -402,8 +407,14 @@ export class TranscriptStore {
         msg: row.msg,
         evicted: row.evicted === true ? true : undefined,
       })
+      if (row.evicted === true) evictedCount++
       if (row.uuid !== null) this.uuidToSeq.set(row.uuid, row.aliasToSeq ?? row.seq)
       this.indexAssistantMessage(row.seq, row.msg)
     }
+    // Restore the durable tombstoneEpoch from committed tombstone rows so it
+    // survives rehydrate monotonically (spec §8.3: holder reload 不把 epoch 归零).
+    // Tombstones are append-only, so the row count never decreases; max() keeps
+    // it monotonic if hydrate runs over an already-evolved store.
+    this.tombsEpoch = Math.max(this.tombsEpoch, evictedCount)
   }
 }

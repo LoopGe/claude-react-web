@@ -484,6 +484,7 @@ export class SessionConnection {
         tombstoneEpoch: epochs?.tombstoneEpoch,
         rebaseEpoch: epochs?.rebaseEpoch,
         clearEpoch: epochs?.clearEpoch,
+        lastFullResetGeneration: epochs?.lastFullResetGeneration,
       })
     }
   }

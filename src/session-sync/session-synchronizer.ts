@@ -445,6 +445,24 @@ export class SessionSynchronizer {
         // Seq-space handshake (server sends it after every successful
         // subscribe — the reconnect catch-up trigger, spec §6).
         const snap = store.getSnapshot()
+        // Record the durable epoch baselines BEFORE the replayReady gate so the
+        // open-path attached (page in flight) still establishes them — a later
+        // same-generation advance is then detected (spec §8.3). max() keeps the
+        // tombstone baseline monotonic even if a server epoch ever regresses.
+        const tombstoneAdvanced = frame.tombstoneEpoch != null
+          && this.adoptedTombstoneEpoch != null
+          && frame.tombstoneEpoch > this.adoptedTombstoneEpoch
+        if (frame.tombstoneEpoch != null) {
+          this.adoptedTombstoneEpoch = Math.max(this.adoptedTombstoneEpoch ?? -1, frame.tombstoneEpoch)
+        }
+        // A full reset (clear/compact) above the local floor was missed; capture
+        // it before advancing the floor so the generation-change branch below
+        // can distinguish a clear (wipe intent) from a pure rebuild (preserve).
+        const missedFullReset = frame.lastFullResetGeneration != null
+          && frame.lastFullResetGeneration > this.lastFullResetGeneration
+        if (frame.lastFullResetGeneration != null) {
+          this.lastFullResetGeneration = Math.max(this.lastFullResetGeneration, frame.lastFullResetGeneration)
+        }
         // replayReady is false while the open path's first page is in flight
         // (it adopts the server generation) AND after a failed open — that
         // failure surfaces as an error band and is retried by the next
@@ -452,16 +470,16 @@ export class SessionSynchronizer {
         // an empty page would paint the empty state and lose a terminated
         // session's replayReady-gated turn-end sweep.
         if (!snap.replayReady) break
-        // Track the durable tombstoneEpoch (spec §8.3): an advance at the SAME
-        // generation means an eviction was missed while disconnected.
-        const tombstoneAdvanced = frame.tombstoneEpoch != null
-          && this.adoptedTombstoneEpoch != null
-          && frame.tombstoneEpoch > this.adoptedTombstoneEpoch
-        if (frame.tombstoneEpoch != null) this.adoptedTombstoneEpoch = frame.tombstoneEpoch
         if (frame.generation !== snap.generation) {
-          // Dead universe (/clear or a server-side reset): the seq space is
-          // gone, so re-fetch the new tail.
-          store.dispatch({ type: 'WINDOW_BUMP', generation: frame.generation, headSeq: frame.headSeq })
+          if (missedFullReset) {
+            // A clear/compact was missed → dead universe: full reset wipes
+            // pre-clear intent (WINDOW_BUMP), then re-fetch the new tail.
+            store.dispatch({ type: 'WINDOW_BUMP', generation: frame.generation, headSeq: frame.headSeq })
+          } else {
+            // A pure ordered-rebuild was missed → REBASE preserves ClientIntent
+            // for reconciliation against the new projection (spec §8.3).
+            store.dispatch({ type: 'REBASE_TRANSCRIPT', generation: frame.generation, headSeq: frame.headSeq, fullReset: false })
+          }
           run.minGeneration = frame.generation
           void this.refetchTail(run)
         } else if (tombstoneAdvanced) {

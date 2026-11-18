@@ -1268,4 +1268,44 @@ describe('SessionSynchronizer epoch convergence (spec §8.3, Task 5)', () => {
     expect(store.getSnapshot().error).toBe('keep me')
     sync.stop()
   })
+
+  it('I2: attached generation-change with a missed clear wipes intent (WINDOW_BUMP)', async () => {
+    const sid = 'epoch-attached-clear'
+    const t = transcript(sid)
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    store.dispatch({ type: 'ERROR', message: 'pre-clear intent' })
+    t.generation = 7
+    t.msgs = [{ seq: 0, msg: fakeMsg(sid, 100) }]
+    t.headSeq = 1
+    // Reconnect reports a clear at gen 6 above the floor (-1) → full reset wipes intent.
+    dispatchToSession(sid, { kind: 'attached', sessionId: sid, generation: 7, headSeq: 1, lastFullResetGeneration: 6 })
+    await vi.waitFor(() => expect(store.getSnapshot().generation).toBe(7))
+    expect(store.getSnapshot().error).toBeNull()
+    sync.stop()
+  })
+
+  it('I2: attached generation-change from a pure rebuild preserves intent (REBASE)', async () => {
+    const sid = 'epoch-attached-rebuild'
+    const t = transcript(sid)
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    store.dispatch({ type: 'ERROR', message: 'keep me' })
+    t.generation = 7
+    t.msgs = [{ seq: 0, msg: fakeMsg(sid, 100) }]
+    t.headSeq = 1
+    // Reconnect reports a rebuild (no lastFullResetGeneration above floor) → preserve intent.
+    dispatchToSession(sid, { kind: 'attached', sessionId: sid, generation: 7, headSeq: 1 })
+    await vi.waitFor(() => expect(store.getSnapshot().generation).toBe(7))
+    expect(store.getSnapshot().error).toBe('keep me')
+    sync.stop()
+  })
 })
