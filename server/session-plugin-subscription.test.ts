@@ -90,4 +90,40 @@ describe('SessionSubscriptionRegistry', () => {
     rB.dropPeer(peerB)
     expect(session.pluginSubscribers.size).toBe(1)
   })
+
+  it('Task 8: a capable plugin receives a typed transcript-rebased envelope', () => {
+    const notify = vi.fn()
+    const session = fakeSession(null)
+    const r = new SessionSubscriptionRegistry({ getSession: (id) => (id === 's1' ? session : undefined) })
+    expect(r.subscribe('s1', fakePeer(notify), { orderedRebase: true }).ok).toBe(true)
+    const sub = session.pluginSubscribers.values().next().value as any
+    sub.push({ kind: 'transcript-rebased', sessionId: 's1', reason: 'ordered-rebuild', generation: 5, headSeq: 10, rebaseEpoch: 1, clearEpoch: 0 })
+    expect(notify).toHaveBeenCalledWith('sessions.event', expect.objectContaining({
+      kind: 'transcript-rebased', sessionId: 's1', generation: 5, headSeq: 10, rebaseEpoch: 1,
+    }))
+    // subscription stays active (capable plugins keep receiving frames)
+    expect(session.pluginSubscribers.size).toBe(1)
+  })
+
+  it('Task 8: an incapable plugin gets reset-required and is released (must re-subscribe)', () => {
+    const notify = vi.fn()
+    const session = fakeSession(null)
+    const r = new SessionSubscriptionRegistry({ getSession: (id) => (id === 's1' ? session : undefined) })
+    expect(r.subscribe('s1', fakePeer(notify)).ok).toBe(true)
+    const sub = session.pluginSubscribers.values().next().value as any
+    sub.push({ kind: 'transcript-rebased', sessionId: 's1', reason: 'ordered-rebuild', generation: 5, headSeq: 10 })
+    expect(notify).toHaveBeenCalledWith('sessions.event', expect.objectContaining({ kind: 'reset-required', sessionId: 's1' }))
+    expect(session.pluginSubscribers.size).toBe(0)
+  })
+
+  it('Task 8: a capable plugin still receives ordinary messages', () => {
+    const notify = vi.fn()
+    const session = fakeSession(null)
+    const r = new SessionSubscriptionRegistry({ getSession: (id) => (id === 's1' ? session : undefined) })
+    r.subscribe('s1', fakePeer(notify), { orderedRebase: true })
+    const sub = session.pluginSubscribers.values().next().value as any
+    sub.push({ type: 'assistant', uuid: 'a' })
+    expect(notify).toHaveBeenCalledWith('sessions.event', expect.objectContaining({ kind: 'message' }))
+  })
+
 })

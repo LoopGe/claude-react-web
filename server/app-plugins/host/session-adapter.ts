@@ -77,9 +77,9 @@ export class SessionAdapter {
    *  permission. Returns `{ ok: true }` — the release handle stays host-side;
    *  a plugin unsubscribes proactively via the separate `sessions.unsubscribe`
    *  call (a function cannot cross the JSON-RPC wire). */
-  async subscribe(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  async subscribe(sessionId: string, opts?: { orderedRebase?: boolean }): Promise<{ ok: true } | { ok: false; error: string }> {
     this.perm.assert('sessions.read')
-    const res = this.subscriptions.subscribe(sessionId, this.peer)
+    const res = this.subscriptions.subscribe(sessionId, this.peer, opts)
     if (!res.ok) return res
     return { ok: true }
   }

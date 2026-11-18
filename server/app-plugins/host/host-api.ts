@@ -120,8 +120,8 @@ export function registerHostApi(peer: RpcPeer, ctx: HostContext): {
     return sessions.compact(sessionId)
   })
   peer.registerHandler('sessions.subscribe', async (p) => {
-    const { sessionId } = requireParams(p, ['sessionId']) as { sessionId: string }
-    return sessions.subscribe(sessionId)
+    const { sessionId, orderedRebase } = requireParams(p, ['sessionId']) as { sessionId: string; orderedRebase?: boolean }
+    return sessions.subscribe(sessionId, { orderedRebase })
   })
   peer.registerHandler('sessions.unsubscribe', async (p) => {
     const { sessionId } = requireParams(p, ['sessionId']) as { sessionId: string }
