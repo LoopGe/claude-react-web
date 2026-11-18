@@ -278,6 +278,14 @@ class FakeBroadcaster implements SessionBroadcaster {
     return this.requiresRebase.has(id)
   }
 
+  /** When non-null, whenTranscriptReconciled hands back this promise — lets a
+   *  test hold a subscribe across an in-flight reconcile (the capability-gate
+   *  race window). */
+  reconcileGate: Promise<void> | null = null
+  whenTranscriptReconciled(_id: string): Promise<void> {
+    return this.reconcileGate ?? Promise.resolve()
+  }
+
   subscribePermissions(sessionId: string) {
     const s = this.require(sessionId)
     return { iterable: s.perms.iterable, snapshot: this.pendingPerms, unsubscribe: () => { s.unsubs.perm++; s.perms.end() } }
@@ -1344,6 +1352,46 @@ describe('ordered-rebase capability negotiation (spec §8.3)', () => {
     sm.addSession('s1', { running: true })
     const { sink, conn } = setup(sm)
     send(conn, { kind: 'subscribe', sessionId: 's1', orderedRebase: true })
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1' && f.ok === true)
+    expect(sm.subscribeOpts).toEqual([{ sessionId: 's1', orderedRebase: true }])
+    conn.close()
+  })
+
+  it('holds a subscribe across an in-flight reconcile, then refuses it if the rebuild committed (gate race)', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    let release!: () => void
+    sm.reconcileGate = new Promise<void>((r) => { release = r })
+    const { sink, conn } = setup(sm)
+    // An incapable subscribe lands WHILE a reconcile is in flight (before the
+    // rebuild has committed, so requiresRebase is still false). It must be
+    // held — not wired onto the old generation ahead of the rebuild.
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    expect(sink.kinds('subscribe-result')).toEqual([])
+    expect(sm.subscribeOpts).toEqual([])
+    // The rebuild commits during the await: the session now requires rebase.
+    sm.requiresRebase.add('s1')
+    release()
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1')
+    expect(sink.kinds('subscribe-result')).toEqual([
+      { kind: 'subscribe-result', sessionId: 's1', ok: false, reason: 'refused' },
+    ])
+    expect(sm.subscribeOpts).toEqual([])
+    conn.close()
+  })
+
+  it('a capable subscribe held across an in-flight reconcile is served after it commits', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    let release!: () => void
+    sm.reconcileGate = new Promise<void>((r) => { release = r })
+    const { sink, conn } = setup(sm)
+    send(conn, { kind: 'subscribe', sessionId: 's1', orderedRebase: true })
+    await tick()
+    expect(sink.kinds('subscribe-result')).toEqual([])
+    sm.requiresRebase.add('s1')
+    release()
     await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1' && f.ok === true)
     expect(sm.subscribeOpts).toEqual([{ sessionId: 's1', orderedRebase: true }])
     conn.close()

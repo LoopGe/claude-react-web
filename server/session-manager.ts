@@ -8351,6 +8351,13 @@ export class SessionManager {
     return this.transcriptStores.get(id)?.hasOrderedRebuild === true
   }
 
+  /** Settle any in-flight reconcile for the session (no-op when none). The
+   *  subscribe path awaits this so a subscribe racing an in-place rebuild is
+   *  held until publication, then faces the capability requirement check. */
+  async whenTranscriptReconciled(id: string): Promise<void> {
+    await this.transcriptReconciles.get(id)
+  }
+
   /** Pre-seed a FORK's seq store from its source's transcript BEFORE the
    *  fork's pump starts — the fork-path counterpart of resume()'s
    *  pre-spawn reconcile, closing the same chronology hole.

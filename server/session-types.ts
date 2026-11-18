@@ -1020,6 +1020,13 @@ export interface SessionBroadcaster {
    *  orderedRebaseV1 must be refused. Optional so test broadcaster fixtures
    *  without a seq store stay valid — absence means "no requirement". */
   transcriptRequiresOrderedRebase?(sessionId: string): boolean
+  /** Resolves when any in-flight transcript reconcile for the session has
+   *  settled (no-op when none). The subscribe path awaits this BEFORE the
+   *  capability requirement check so a subscribe racing an in-place rebuild's
+   *  durable append is held until the rebuild commits — closing the window
+   *  where an incapable tab could attach after the gate check but before
+   *  publication (spec §8.1 step 3). Optional for fixtures. */
+  whenTranscriptReconciled?(sessionId: string): Promise<void>
   subscribePermissions(sessionId: string): {
     iterable: AsyncIterable<PermissionEvent>
     snapshot: PermissionRequestSnapshot[]

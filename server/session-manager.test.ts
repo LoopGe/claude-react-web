@@ -9117,6 +9117,25 @@ describe('SessionManager', () => {
         await sm2.shutdown()
       }
     })
+
+    it('the in-place first reconcile is gated too: an incapable subscriber blocks the rebuild, old projection served', async () => {
+      const info = await seedInverted()
+      const sub = sm.subscribe(info.id, { orderedRebase: false })
+      try {
+        // First reconcile on a LIVE session (create does not reconcile): the
+        // gate must refuse the rebuild while the incapable tab is attached.
+        const win = await sm.getTranscriptWindow(info.id)
+        expect(uuidsOf(win)).toEqual(['A', 'N', 'R'])
+        expect(win.generation).toBe(0)
+        expect(sm.transcriptRequiresOrderedRebase(info.id)).toBe(false)
+      } finally {
+        sub.unsubscribe()
+      }
+      // With the blocker gone, the retry rebuilds to provider order.
+      const r = await sm.retryTranscriptReconcile(info.id)
+      expect(r.degraded).toBe(false)
+      expect(uuidsOf(await sm.getTranscriptWindow(info.id))).toEqual(['A', 'R', 'N'])
+    })
   })
   describe('ordered-rebase live publication (spec §8.3)', () => {
     let prevConfigDir: string | undefined
@@ -12182,9 +12201,12 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(winUuids).not.toContain(queuedUuids[0])
       expect(win.totalCount).toBe(1)
 
-      // (b) A tombstone row landed in the sidecar file.
+      // (b) A tombstone row landed in the sidecar file. The send-time append
+      // is fire-and-forget, so under load the file may not exist yet at this
+      // instant — wait for it (the tombstone-row waitFor below already tolerates
+      // the mid-write race; this bare existsSync did not).
       const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
-      expect(existsSync(sidecarFile)).toBe(true)
+      expect(await waitFor(() => existsSync(sidecarFile))).toBe(true)
       // Read through the production loader, which deliberately skips a torn
       // tail (a read can land while the append is mid-write — reliably visible
       // on Windows). Hand-rolling JSON.parse here made that race a failure.

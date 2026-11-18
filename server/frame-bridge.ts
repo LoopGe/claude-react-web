@@ -693,9 +693,16 @@ export class SessionConnection {
       // The socket may have closed while the spawn was in flight; don't
       // wire subscriptions onto a dead connection.
       if (this.closed || this.startingCancelled.has(sessionId)) return
+      // Hold the subscribe across any in-flight reconcile (spec §8.1 step 3):
+      // a subscribe racing an in-place rebuild's durable append must wait
+      // until the rebuild commits, so the capability check below sees the
+      // committed requirement instead of waving an incapable tab through the
+      // gate-check→publication window.
+      await this.sm.whenTranscriptReconciled?.(sessionId)
+      if (this.closed || this.startingCancelled.has(sessionId)) return
       // Rebuilt sessions refuse incapable subscribes (spec §8.3). Checked
-      // AFTER the auto-resume so the holder is reconciled and the
-      // requirement (derived from the sidecar's generation history) is known.
+      // AFTER the auto-resume + reconcile settle so the holder is reconciled
+      // and the requirement (from the sidecar's generation history) is known.
       if (!orderedRebase && this.sm.transcriptRequiresOrderedRebase?.(sessionId)) {
         this.refuseUpgradeRequired(sessionId)
         return
