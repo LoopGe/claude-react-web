@@ -15,6 +15,7 @@
 
 import { makeCommitV2, type GenerationRecord } from './transcript-sidecar.js'
 import type { PendingOperation } from './transcript-reconcile.js'
+import type { ResetJournal } from './reset-journal.js'
 
 export interface DispatchOp {
   operationId: string
@@ -204,8 +205,14 @@ export class TranscriptWriter {
   }
 
   /** Write a reset generation batch (empty for clear) + commit + fsync, bump the
-   *  matching epoch (spec §8.3). The sidecar is NOT deleted. */
-  async resetGeneration(reason: GenerationRecord['reason'], clientFloor?: number): Promise<number> {
+   *  matching epoch (spec §8.3). The sidecar is NOT deleted.
+   *
+   *  Two-phase with a journal: the caller `prepare`s the journal BEFORE the
+   *  provider op, then calls this (batch + fsync), then this `commit`s the
+   *  journal AFTER the batch is durable — the journal commit is the publication
+   *  marker. Epochs then live in the journal (persisted); the writer's epoch
+   *  fields sync from it. Journal-less callers keep the in-memory bump. */
+  async resetGeneration(reason: GenerationRecord['reason'], clientFloor?: number, journal?: ResetJournal): Promise<number> {
     const gen = this.ledger.next(reason, clientFloor)
     const batchId = nextBatchId()
     const commit = makeCommitV2({
@@ -217,8 +224,15 @@ export class TranscriptWriter {
       rows: [],
     })
     await this.commit([], commit)
-    if (reason === 'clear' || reason === 'compact') this.clearEpoch++
-    else this.rebaseEpoch++
+    if (journal) {
+      await journal.commit(gen)
+      this.clearEpoch = journal.clearEpoch
+      this.rebaseEpoch = journal.rebaseEpoch
+    } else if (reason === 'clear' || reason === 'compact') {
+      this.clearEpoch++
+    } else {
+      this.rebaseEpoch++
+    }
     return gen
   }
 }

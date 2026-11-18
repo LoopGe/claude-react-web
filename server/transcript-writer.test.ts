@@ -146,3 +146,43 @@ describe('TranscriptWriter.abortRebuild (spec §8.1)', () => {
     expect(w.degraded).toBe(false)
   })
 })
+
+describe('TranscriptWriter.resetGeneration (spec §8.3)', () => {
+  it('journal-less reset bumps in-memory epochs and writes a reset batch', async () => {
+    const { deps } = makeDeps()
+    const w = new TranscriptWriter(deps)
+    const gen = await w.resetGeneration('clear')
+    expect(gen).toBe(1)
+    expect(w.clearEpoch).toBe(1)
+    expect(w.rebaseEpoch).toBe(0)
+    expect(deps.appendBatch).toHaveBeenCalledTimes(1)
+    const commit = vi.mocked(deps.appendBatch).mock.calls[0][1] as { batchType?: string; reason?: string; generation?: number }
+    expect(commit).toMatchObject({ batchType: 'reset', reason: 'clear', generation: 1 })
+  })
+
+  it('with a journal, commits the journal after the batch and syncs epochs from it', async () => {
+    const { mkdtemp, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { ResetJournal } = await import('./reset-journal.js')
+    const dir = await mkdtemp(join(tmpdir(), 'crw-writer-journal-'))
+    try {
+      const journal = new ResetJournal(dir, 'sid')
+      await journal.prepare({ generation: 1, reason: 'compact', seedBoundaryUuid: 'b' })
+      const order: string[] = []
+      const { deps } = makeDeps({ appendBatch: vi.fn(async () => { order.push('batch') }) })
+      const origCommit = journal.commit.bind(journal)
+      journal.commit = async (g: number) => { order.push('journal-commit'); await origCommit(g) }
+      const w = new TranscriptWriter(deps)
+      const gen = await w.resetGeneration('compact', undefined, journal)
+      expect(gen).toBe(1)
+      // batch fsynced BEFORE the journal commit (durable-before-publish)
+      expect(order).toEqual(['batch', 'journal-commit'])
+      expect(journal.latest?.state).toBe('committed')
+      expect(journal.clearEpoch).toBe(1)
+      expect(w.clearEpoch).toBe(1)
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
+  })
+})
