@@ -1,6 +1,6 @@
 // Test-only MCP server over stdio (native provider connection-manager tests).
 //
-/* global process -- Node globals are not configured for non-TS server files */
+/* global process, setInterval -- Node globals are not configured for non-TS server files */
 //
 // argv: [byePath, mode?, flakyBudget?]
 //   byePath  file written when the child is asked to stop, so a test can prove
@@ -21,6 +21,19 @@
 //            spawns are healthy. The spawn count persists in `${byePath}.flaky`
 //            so a test can prove exactly which attempts ran (and that none
 //            ran after give-up / close).
+//   --ignore-exit  spawn 1 completes the handshake and discovery normally,
+//            then refuses every graceful exit: stdin EOF is swallowed, POSIX
+//            SIGTERM/SIGINT are no-ops, and a ref'd interval keeps the event
+//            loop alive after stdin closes — so the client's `close()` cannot
+//            reap it and a bounded close deadline trips. Later spawns are
+//            healthy (same counter pattern as --flaky, persisted in
+//            `${byePath}.ignore-exit`), so a death-gated manual reconnect with
+//            the SAME config recovers onto a fresh child. On Windows Node's
+//            `kill('SIGTERM')` is a hard TerminateProcess no JS can intercept;
+//            the SDK transport's background close only reaches it ~2s after
+//            stdin end, well past the fast (200ms) close deadline under test,
+//            so the child is provably alive at the deadline. Tests reap it
+//            externally with SIGKILL.
 //
 // The marker is written on every way out: a POSIX signal handler, stdin EOF
 // (which is how a stdio transport's `close()` reaches the child), and the
@@ -52,19 +65,9 @@ function bye() {
   markOnce(byePath, 'bye')
 }
 
-process.on('SIGTERM', () => {
-  bye()
-  process.exit(0)
-})
-process.on('SIGINT', () => {
-  bye()
-  process.exit(0)
-})
+// The exit hook runs on every way out, including the --flaky early exit(1)
+// below, so it is installed before any spawn accounting.
 process.on('exit', bye)
-process.stdin.on('end', () => {
-  bye()
-  process.exit(0)
-})
 
 // --flaky spawn accounting, before any exit path so every spawn is counted.
 // Attempts are serialized by the supervisor, so the read-increment-write is
@@ -83,6 +86,50 @@ if (mode === '--flaky') {
   if (spawn >= 2 && spawn <= 1 + budget) {
     process.exit(1)
   }
+}
+
+// --ignore-exit spawn accounting (same serialized read-increment-write as
+// --flaky): spawn 1 refuses to exit; later spawns are healthy so a death-gated
+// reconnect with the same config recovers.
+let ignoreExit = false
+if (mode === '--ignore-exit') {
+  const countPath = `${byePath}.ignore-exit`
+  let prev = 0
+  try {
+    prev = parseInt(readFileSync(countPath, 'utf8'), 10) || 0
+  } catch {
+    // first spawn: no counter file yet
+  }
+  const spawn = prev + 1
+  markOnce(countPath, String(spawn))
+  ignoreExit = spawn === 1
+}
+
+if (ignoreExit) {
+  // Refuse every graceful exit path. The SIGTERM/SIGINT no-ops matter on
+  // POSIX (the default action terminates); on Windows they are unreachable
+  // because Node's kill() is a hard TerminateProcess — the SDK's background
+  // close only sends it ~2s after stdin end, past the close deadline under
+  // test. Swallowing stdin EOF plus a ref'd interval keeps the process alive
+  // after the client closes stdin (an empty event loop would exit on its own).
+  process.on('SIGTERM', () => {})
+  process.on('SIGINT', () => {})
+  process.stdin.on('end', () => {})
+  process.stdin.resume()
+  setInterval(() => {}, 1000)
+} else {
+  process.on('SIGTERM', () => {
+    bye()
+    process.exit(0)
+  })
+  process.on('SIGINT', () => {
+    bye()
+    process.exit(0)
+  })
+  process.stdin.on('end', () => {
+    bye()
+    process.exit(0)
+  })
 }
 
 if (mode === '--hang') {

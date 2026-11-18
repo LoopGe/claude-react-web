@@ -7,6 +7,7 @@
 // `process.kill(pid, 0)` on POSIX).
 
 import { afterEach, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -38,7 +39,22 @@ function acquire(reg: SharedRegistry, config: NativeMcpServerConfig): SharedReco
 }
 
 afterEach(async () => {
-  for (const rec of openRecords.splice(0)) await rec.close()
+  for (const rec of openRecords.splice(0)) {
+    await rec.close()
+    // A hung close leaves the child alive BY DESIGN (no automatic force-kill).
+    // Reap it externally so a failed assertion never leaks it; the identity
+    // guard keeps a recycled PID from being killed by mistake.
+    if (rec.pid !== null) {
+      const identity = childIdentity(rec.pid)
+      if (identity !== null && (rec.birthTime === null || identity === rec.birthTime)) {
+        try {
+          process.kill(rec.pid, 'SIGKILL')
+        } catch {
+          // already gone
+        }
+      }
+    }
+  }
   for (const dir of tempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
   }
@@ -84,9 +100,31 @@ async function expectChildGone(pid: number, ms = 5000): Promise<void> {
   throw new Error(`pid ${pid} still alive after ${ms}ms`)
 }
 
-function stdioConfig(byePath: string): NativeMcpServerConfig {
-  return { type: 'stdio', command: 'node', args: [fixturePath, byePath] }
+/** Platform liveness/identity probe mirroring the record's default: win32
+ *  reads the birth-time identity (null once dead / unreadable), POSIX probes
+ *  `kill(pid, 0)` and reports an 'alive' sentinel (no birth-time identity is
+ *  available there). */
+function childIdentity(pid: number): string | null {
+  if (process.platform === 'win32') return processIdentity(pid)
+  try {
+    process.kill(pid, 0)
+    return 'alive'
+  } catch {
+    return null
+  }
 }
+
+function stdioConfig(byePath: string, mode?: string): NativeMcpServerConfig {
+  return { type: 'stdio', command: 'node', args: mode ? [fixturePath, byePath, mode] : [fixturePath, byePath] }
+}
+
+/** The --ignore-exit spawn counter the fixture persists, so a test can prove
+ *  a blocked acquire spawned no fresh child. */
+function ignoreExitCount(byePath: string): number {
+  return parseInt(readFileSync(`${byePath}.ignore-exit`, 'utf8'), 10)
+}
+
+const freshSignal = () => new AbortController().signal
 
 describe('SharedRegistry', () => {
   it('two acquires of the same config share one child; release semantics', async () => {
@@ -197,5 +235,69 @@ describe('SharedRegistry', () => {
     expect(snap.counters['mcp_shared_acquire']).toBe(2)
     expect(snap.counters['mcp_shared_release']).toBe(2)
     expect(snap.gauges['shared_mcp_records']).toBe(0)
+  }, 15_000)
+
+  it('retains a cleanupFailed record at users==0 and blocks automatic re-acquire', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const cfg = stdioConfig(byePath, '--ignore-exit')
+    const reg = new SharedRegistry({ closeTimeoutMs: 200 })
+
+    const a = acquire(reg, cfg)
+    await a.ready
+    expect(a.status).toBe('connected')
+    const pid = a.pid!
+
+    // Last user releases: the hung close trips the deadline, and the record is
+    // RETAINED (users 0) instead of removed — fail-closed against replacement.
+    await reg.release(a)
+    expect(a.users).toBe(0)
+    expect(a.cleanupFailed).toBe(true)
+    expect(reg.get(a.key)).toBe(a)
+    expect(reg.size).toBe(1)
+    expectChildAlive(pid)
+
+    // A new session acquiring the same config gets the SAME blocked record —
+    // no fresh child, no fresh connect — and its calls fail fast.
+    const b = acquire(reg, cfg)
+    expect(b).toBe(a)
+    expect(b.users).toBe(1)
+    expect(b.status).toBe('failed')
+    expect(ignoreExitCount(byePath)).toBe(1)
+    await expect(b.callTool('echo', { text: 'x' }, freshSignal())).rejects.toThrow('MCP_SERVER_UNAVAILABLE')
+
+    // Releasing again keeps the block (the child is still alive).
+    await reg.release(b)
+    expect(reg.get(a.key)).toBe(a)
+    expect(reg.size).toBe(1)
+    expect(a.cleanupFailed).toBe(true)
+
+    // Only a death-gated manual reconnect clears the flag (fixture spawn 2 is
+    // healthy, so the same config recovers onto a fresh child).
+    process.kill(pid, 'SIGKILL')
+    await expectChildGone(pid)
+    await a.reconnect()
+    expect(a.cleanupFailed).toBe(false)
+    expect(a.status).toBe('connected')
+    expect(ignoreExitCount(byePath)).toBe(2)
+
+    // After recovery the record is a normal shared connection again: acquire
+    // joins it, and the last release closes it cleanly and removes it.
+    const d = acquire(reg, cfg)
+    expect(d).toBe(a)
+    await reg.release(d)
+    expect(reg.size).toBe(0)
+    expect(reg.get(a.key)).toBeUndefined()
+    await expectChildGone(a.pid!)
+
+    // And the next acquire connects fresh.
+    const c = acquire(reg, cfg)
+    expect(c).not.toBe(a)
+    await c.ready
+    expect(c.status).toBe('connected')
+    expect(ignoreExitCount(byePath)).toBe(3)
+    await reg.release(c)
+    expect(reg.size).toBe(0)
+    await expectChildGone(c.pid!)
   }, 15_000)
 })

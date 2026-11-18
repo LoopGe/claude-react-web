@@ -37,7 +37,22 @@ function makeRecord(config: NativeMcpServerConfig, opts?: ConstructorParameters<
 }
 
 afterEach(async () => {
-  for (const rec of openRecords.splice(0)) await rec.close()
+  for (const rec of openRecords.splice(0)) {
+    await rec.close()
+    // A hung close leaves the child alive BY DESIGN (no automatic force-kill).
+    // Reap it externally so a failed assertion never leaks it; the identity
+    // guard keeps a recycled PID from being killed by mistake.
+    if (rec.pid !== null) {
+      const identity = childIdentity(rec.pid)
+      if (identity !== null && (rec.birthTime === null || identity === rec.birthTime)) {
+        try {
+          process.kill(rec.pid, 'SIGKILL')
+        } catch {
+          // already gone
+        }
+      }
+    }
+  }
   for (const dir of tempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
   }
@@ -83,8 +98,29 @@ async function expectChildGone(pid: number, ms = 5000): Promise<void> {
   throw new Error(`pid ${pid} still alive after ${ms}ms`)
 }
 
+/** Platform liveness/identity probe mirroring the record's default: win32
+ *  reads the birth-time identity (null once dead / unreadable), POSIX probes
+ *  `kill(pid, 0)` and reports an 'alive' sentinel (no birth-time identity is
+ *  available there). */
+function childIdentity(pid: number): string | null {
+  if (process.platform === 'win32') return processIdentity(pid)
+  try {
+    process.kill(pid, 0)
+    return 'alive'
+  } catch {
+    return null
+  }
+}
+
 function stdioConfig(byePath: string, mode?: string): NativeMcpServerConfig {
   return { type: 'stdio', command: 'node', args: mode ? [fixturePath, byePath, mode] : [fixturePath, byePath] }
+}
+
+/** The --ignore-exit spawn counter the fixture persists, so a test can prove
+ *  exactly which spawns ran (and that no replacement spawned while the death
+ *  gate refuses). */
+function ignoreExitCount(byePath: string): number {
+  return parseInt(readFileSync(`${byePath}.ignore-exit`, 'utf8'), 10)
 }
 
 /** --flaky: spawn 1 crashes on a `slow` call, spawns 2..(1+budget) fail before
@@ -350,5 +386,94 @@ describe('SharedRecord reconnect supervisor', () => {
     expect(rec.error).toBeUndefined()
     expectChildAlive(rec.pid!)
     expect(flakyCount(byePath)).toBe(5)
+  }, 15_000)
+})
+
+describe('SharedRecord cleanup death gate', () => {
+  it('hung close trips the deadline and sets cleanupFailed', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const rec = makeRecord(stdioConfig(byePath, '--ignore-exit'), { closeTimeoutMs: 200 })
+    await rec.connect()
+    expect(rec.status).toBe('connected')
+    const pid = rec.pid!
+    expect(pid).toBeGreaterThan(0)
+    expect(rec.cleanupFailed).toBe(false)
+
+    const started = Date.now()
+    await rec.close()
+    // Bounded by the close race plus the exit-confirmation window (200ms
+    // each), never by the SDK transport's own multi-second kill escalation.
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(rec.cleanupFailed).toBe(true)
+    expect(rec.status).toBe('failed')
+    expect(rec.error).toMatch(/still alive/)
+    expect(rec.tools).toEqual([])
+    // No automatic force-kill: the child is provably still running, and the
+    // flag is what blocks replacement.
+    expectChildAlive(pid)
+
+    // Idempotent: a second close stays bounded and keeps the flag.
+    await rec.close()
+    expect(rec.cleanupFailed).toBe(true)
+    expectChildAlive(pid)
+  }, 15_000)
+
+  it('manual reconnect is refused while the child is alive, allowed after confirmed death', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const rec = makeRecord(stdioConfig(byePath, '--ignore-exit'), { closeTimeoutMs: 200 })
+    await rec.connect()
+    const pid = rec.pid!
+    await rec.close()
+    expect(rec.cleanupFailed).toBe(true)
+    expectChildAlive(pid)
+
+    // Refused while the child lives — and the refusal is a pure no-op: no
+    // replacement child spawns (the exact overlap fail-closed prevents).
+    await expect(rec.reconnect()).rejects.toThrow(/still alive/)
+    expect(rec.cleanupFailed).toBe(true)
+    expect(rec.pid).toBe(pid)
+    expect(ignoreExitCount(byePath)).toBe(1)
+
+    // Externally confirmed death unlocks recovery: spawn 2 of the fixture is
+    // healthy, so the SAME config reconnects cleanly.
+    process.kill(pid, 'SIGKILL')
+    await expectChildGone(pid)
+    await rec.reconnect()
+    expect(rec.cleanupFailed).toBe(false)
+    expect(rec.status).toBe('connected')
+    expect(rec.error).toBeUndefined()
+    expect(rec.tools.length).toBeGreaterThan(0)
+    expect(rec.pid).not.toBe(pid)
+    expectChildAlive(rec.pid!)
+    expect(ignoreExitCount(byePath)).toBe(2)
+  }, 15_000)
+
+  it('death gate refuses a recycled PID (stale birth-time identity)', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    // The probe delegates to the real platform identity until `reused` flips,
+    // then reports a DIFFERENT birth-time identity at the same pid — a
+    // deterministic simulation of PID reuse (forcing real reuse is racy).
+    let reused = false
+    const probe = (pid: number): string | null => (reused ? '999999999999999' : childIdentity(pid))
+    const rec = makeRecord(stdioConfig(byePath, '--ignore-exit'), { closeTimeoutMs: 200, identityProbe: probe })
+    await rec.connect()
+    const pid = rec.pid!
+    expect(rec.birthTime).not.toBeNull()
+    await rec.close()
+    expect(rec.cleanupFailed).toBe(true)
+
+    // The real child dies externally…
+    process.kill(pid, 'SIGKILL')
+    await expectChildGone(pid)
+    // …but the pid now reads as a DIFFERENT process: a mismatched identity can
+    // never pass the gate, so recovery stays refused and no replacement spawns.
+    reused = true
+    await expect(rec.reconnect()).rejects.toThrow(/identity|reuse/i)
+    expect(rec.cleanupFailed).toBe(true)
+    expect(rec.pid).toBe(pid)
+    expect(ignoreExitCount(byePath)).toBe(1)
   }, 15_000)
 })

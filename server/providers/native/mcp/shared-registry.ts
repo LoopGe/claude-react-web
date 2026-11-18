@@ -7,17 +7,25 @@
 // Lifetime rules:
 //   - `acquire` is synchronous (it returns the record; callers await
 //     `record.ready` for the initial connect). Its map mutation — users++ or
-//     create + users=1 + fire-and-forget connect — happens inline.
-//   - `release` runs its whole mutation (users--, and at 0 the map delete +
-//     bounded close) on one serialized queue, the `enqueue` pattern from
+//     create + users=1 + fire-and-forget connect — happens inline. An acquire
+//     of a `cleanupFailed` record returns that SAME blocked record (users++)
+//     without a fresh connect: automatic replacement is refused until a
+//     death-gated manual `reconnect()` clears the flag.
+//   - `release` runs its whole mutation (users--, and at 0 the bounded close +
+//     the map decision) on one serialized queue, the `enqueue` pattern from
 //     `connections.ts`. That serialization is what keeps a release-at-0 from
 //     racing a concurrent acquire of the same key: an acquire that lands
 //     before the queued task runs bumps the refcount the task then observes
-//     (so it stands down), and the map delete happens BEFORE the close await,
-//     so an acquire that lands during teardown creates a fresh record instead
-//     of reviving a closing one.
-//   - Teardown at users==0 is immediate — no idle grace. The next acquire of
-//     the same key spawns a fresh child.
+//     (so it stands down).
+//   - At users==0 the close settles BEFORE the map decision, because only a
+//     settled close knows whether cleanup failed: a `cleanupFailed` record is
+//     RETAINED (users 0) so it blocks automatic replacement — deleting first
+//     would let a concurrent acquire spawn a replacement overlapping the live
+//     hung child, the exact hazard fail-closed prevents. A healthy close
+//     removes the record; an acquire that landed DURING teardown keeps it
+//     (users > 0) for its new user instead of deleting it out from under them.
+//   - Teardown at users==0 is immediate — no idle grace. After a healthy
+//     close + remove, the next acquire of the same key spawns a fresh child.
 //
 // The sharing key embeds env values, so it never reaches a log; diagnostics
 // carry only the (non-secret) command.
@@ -46,6 +54,15 @@ export class SharedRegistry {
     let rec = this.records.get(key)
     if (rec) {
       rec.users++
+      if (rec.cleanupFailed) {
+        // Fail-closed: the blocked record is returned as-is — no fresh connect,
+        // no replacement child. It stays failed until a death-gated manual
+        // reconnect() clears the flag.
+        log.warn(
+          `acquire of ${config.command ?? 'mcp'} returned a cleanup-failed record ` +
+            '(automatic replacement blocked; reconnect gated on confirmed child death)',
+        )
+      }
     } else {
       rec = new SharedRecord(key, config, this.opts)
       rec.users = 1
@@ -58,18 +75,32 @@ export class SharedRegistry {
     return rec
   }
 
-  /** Drop one user of the record; at 0 close it and remove it from the map.
+  /** Drop one user of the record; at 0 close it, then remove it from the map
+   *  ONLY if cleanup succeeded. A `cleanupFailed` record is retained (users 0)
+   *  so it blocks automatic replacement until a death-gated manual reconnect.
    *  Resolves once the teardown (if any) has settled. */
   release(record: SharedRecord): Promise<void> {
     return this.enqueue(async () => {
       record.users--
       metrics.count('mcp_shared_release')
       if (record.users > 0) return
-      // Delete BEFORE awaiting close: a concurrent acquire of the same key
-      // during teardown must create a fresh record, never revive a closing one.
+      // Close BEFORE the map decision: only a settled close knows whether
+      // cleanup failed, and a failed one must stay in the map — deleting
+      // first would let a concurrent acquire spawn a replacement overlapping
+      // the live hung child.
+      await record.close()
+      if (record.cleanupFailed) {
+        log.warn(
+          `retaining ${record.config.command ?? 'mcp'} at users 0 (cleanup failed; ` +
+            'automatic replacement blocked until a death-gated reconnect)',
+        )
+        return
+      }
+      // An acquire that landed during teardown bumped the refcount: keep the
+      // record for its new user rather than deleting it out from under them.
+      if (record.users > 0) return
       this.records.delete(record.key)
       metrics.gauge('shared_mcp_records', this.records.size)
-      await record.close()
       log.debug(`released ${record.config.command ?? 'mcp'} (last user; closed)`)
     })
   }

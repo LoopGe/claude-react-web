@@ -31,8 +31,15 @@
 //     (attempt > maxAttempts) `tools` empties and `status:'failed'` until a
 //     manual `reconnect()`. `cachedTools` is retained throughout. A `needs-auth`
 //     failure does not auto-retry. The attempt budget resets only after
-//     sustained uptime past `maxDelayMs`. The cleanup death confirmation is
-//     layered on top of this core (Task 4).
+//     sustained uptime past `maxDelayMs`.
+//   - Cleanup is fail-closed: `close()` races `client.close()` against
+//     `closeTimeoutMs`, then confirms the stdio child actually exited by
+//     polling its process identity under a second `closeTimeoutMs` window. A
+//     child still alive at that deadline sets `cleanupFailed` (no automatic
+//     force-kill — the gate guards replacement). A `cleanupFailed` record
+//     refuses manual `reconnect()` until the child's death is confirmed: the
+//     identity must read null, so a recycled PID (a different birth-time
+//     identity) can never pass. Only an allowed reconnect clears the flag.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
@@ -41,6 +48,7 @@ import { CallToolResultSchema, type CallToolResult } from '@modelcontextprotocol
 import { createMcpTransport, isMcpAuthError, type McpTransportTarget } from '../../../mcp-config.js'
 import { mcpToolFqn } from '../../../../shared/mcp-fqn.js'
 import { createLogger } from '../../../log.js'
+import { processIdentity } from '../../../win32-job.js'
 import type { NativeMcpServerConfig, NativeMcpStatus, NativeMcpToolInfo } from './connections.js'
 
 const log = createLogger('native-mcp-shared')
@@ -49,6 +57,8 @@ const CLIENT_INFO = { name: 'claude-react-web-native', version: '1.0.0' }
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000
 const DEFAULT_CLOSE_TIMEOUT_MS = 5_000
+/** Poll cadence of the child-exit confirmation after a close. */
+const EXIT_POLL_MS = 25
 const DEFAULT_RECONNECT: ReconnectPolicy = {
   enabled: true,
   initialDelayMs: 500,
@@ -69,6 +79,24 @@ export function sharingKey(config: NativeMcpServerConfig): string {
   ])
 }
 
+/** Liveness + identity probe for one child PID, the default behind the
+ *  cleanup death gate. Win32 reads the creation-time identity via
+ *  `processIdentity` (decimal birth-time ticks; null once the PID is dead or
+ *  unreadable), so a recycled PID reads as a DIFFERENT identity and can never
+ *  impersonate the captured child. POSIX has no birth-time identity through
+ *  that win32-only check, so `kill(pid, 0)` liveness stands in with an 'alive'
+ *  sentinel (null once gone; EPERM means alive-but-not-ours). PID-reuse
+ *  fencing is therefore win32-only, matching `processIdentity`'s contract. */
+export function childIdentity(pid: number): string | null {
+  if (process.platform === 'win32') return processIdentity(pid)
+  try {
+    process.kill(pid, 0)
+    return 'alive'
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM' ? 'alive' : null
+  }
+}
+
 /** Bounded exponential-backoff reconnect budget (consumed by the supervisor). */
 export interface ReconnectPolicy {
   enabled: boolean
@@ -85,6 +113,10 @@ export interface SharedRecordOptions {
   /** Default { enabled: true, initialDelayMs: 500, maxDelayMs: 30_000, maxAttempts: 10 }. */
   reconnect?: ReconnectPolicy
   closeTimeoutMs?: number // default 5_000
+  /** Identity probe for the child-exit confirmation and the reconnect death
+   *  gate; defaults to `childIdentity`. Injectable so tests can simulate PID
+   *  reuse deterministically (a mismatched birth-time identity). */
+  identityProbe?: (pid: number) => string | null
 }
 
 export class SharedRecord {
@@ -105,6 +137,14 @@ export class SharedRecord {
   readonly ready: Promise<void>
   /** The stdio child PID (transport.pid after start); null otherwise. */
   pid: number | null = null
+  /** The child's birth-time identity captured at connect (`childIdentity`);
+   *  null when there is no child or the identity was unreadable. The death
+   *  gate compares against it so a recycled PID cannot impersonate the child. */
+  birthTime: string | null = null
+  /** A close whose child was still alive at the exit-confirmation deadline.
+   *  Blocks automatic replacement (the registry retains the record) and gates
+   *  manual `reconnect()` on confirmed child death; only an allowed reconnect
+   *  clears it. */
   cleanupFailed = false
 
   private readonly authFor?: (name: string) => OAuthClientProvider | undefined
@@ -112,6 +152,7 @@ export class SharedRecord {
   private readonly toolTimeoutMs: number
   private readonly closeTimeoutMs: number
   private readonly policy: ReconnectPolicy
+  private readonly identityProbe: (pid: number) => string | null
   /** Reconnect attempt count within the active outage. Reset ONLY by sustained
    *  uptime past `maxDelayMs` or a manual `reconnect()` — never by a new loss,
    *  so a flapping server still burns its budget and gives up. */
@@ -151,6 +192,7 @@ export class SharedRecord {
     this.toolTimeoutMs = opts.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
     this.closeTimeoutMs = opts.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS
     this.policy = opts.reconnect ?? DEFAULT_RECONNECT
+    this.identityProbe = opts.identityProbe ?? childIdentity
     this.ready = new Promise<void>((resolve) => {
       this.settleReady = resolve
     })
@@ -176,9 +218,29 @@ export class SharedRecord {
 
   /** Manual reconnect: cancel any pending backoff, invalidate the supervisor's
    *  current run, and run a fresh connect (which tears down the old generation
-   *  first). Revives a gave-up record; a later crash re-arms the supervisor.
-   *  Task 4 adds the cleanup death gate. */
+   *  first). Revives a gave-up or closed record; a later crash re-arms the
+   *  supervisor.
+   *
+   *  Death gate: a `cleanupFailed` record may only reconnect once its child's
+   *  death is CONFIRMED — the identity probe must read null. A live child
+   *  (identity matches the spawn-captured birth time) refuses, and so does a
+   *  recycled PID (a different identity): fail-closed, a replacement must never
+   *  overlap a possibly-live child. The refusal is a pure no-op (no state
+   *  reset, no spawn); an allowed reconnect clears `cleanupFailed`. */
   async reconnect(): Promise<void> {
+    if (this.cleanupFailed) {
+      const pid = this.pid
+      const identity = pid === null ? null : this.identityProbe(pid)
+      if (identity !== null) {
+        const reused = this.birthTime !== null && identity !== this.birthTime
+        const reason = reused
+          ? `pid ${pid} reads a different birth-time identity (PID reuse); the child's death is unconfirmed`
+          : `child ${pid} is still alive`
+        log.warn(`[${this.label}] reconnect refused: cleanup failed, ${reason}`)
+        throw new Error(`reconnect refused: cleanup failed and ${reason}`)
+      }
+      this.cleanupFailed = false
+    }
     this.cancelBackoff()
     this.clearUptimeTimer()
     this.supervisorRun++
@@ -231,10 +293,13 @@ export class SharedRecord {
     return client.readResource({ uri })
   }
 
-  /** Abort in-flight work, then close the client under a bounded deadline.
-   *  Idempotent; never throws. Aborting BEFORE awaiting is what keeps teardown
-   *  from waiting out an in-flight handshake or `listTools` page. Cancels the
-   *  reconnect supervisor so a closed record never retries. */
+  /** Abort in-flight work, then close the client under a bounded deadline and
+   *  confirm the stdio child actually exited (a second `closeTimeoutMs`
+   *  window). Idempotent; never throws. Aborting BEFORE awaiting is what keeps
+   *  teardown from waiting out an in-flight handshake or `listTools` page.
+   *  Cancels the reconnect supervisor so a closed record never retries. A
+   *  child still alive at the confirmation deadline sets `cleanupFailed` —
+   *  there is NO automatic force-kill; the death gate guards replacement. */
   async close(): Promise<void> {
     this.closed = true
     this.cancelBackoff()
@@ -242,6 +307,7 @@ export class SharedRecord {
     this.abort.abort()
     await this.enqueue(async () => {
       await this.closeResources()
+      await this.confirmChildExit()
       this.tools = []
     })
   }
@@ -271,6 +337,7 @@ export class SharedRecord {
     this.gen = { lost: false }
     this.status = 'pending'
     this.pid = null
+    this.birthTime = null
     const client = new Client(CLIENT_INFO, { capabilities: {} })
     this.client = client
     client.onclose = () => this.handleLoss(client)
@@ -393,6 +460,9 @@ export class SharedRecord {
     await client.connect(transport)
     if (this.config.type === 'stdio') {
       this.pid = (transport as StdioClientTransport).pid ?? null
+      // Birth-time identity for the death gate: a recycled PID reads a
+      // different identity, so it can never impersonate this child.
+      this.birthTime = this.pid === null ? null : this.identityProbe(this.pid)
     }
   }
 
@@ -476,11 +546,42 @@ export class SharedRecord {
       )
     })
   }
+
+  /** Confirm the stdio child exited after a close: poll its identity until it
+   *  reads null (dead) or a `closeTimeoutMs` window passes. A mismatched
+   *  identity also proves exit — the PID was recycled, so the captured child
+   *  is gone. Still alive at the deadline → `cleanupFailed`: no automatic
+   *  force-kill, the death gate on `reconnect()` guards replacement. The flag
+   *  is never cleared here — only a death-gated manual reconnect clears it, so
+   *  a retained record stays blocked even if the child dies later. */
+  private async confirmChildExit(): Promise<void> {
+    const pid = this.pid
+    if (pid === null) return
+    const deadline = Date.now() + this.closeTimeoutMs
+    for (;;) {
+      const identity = this.identityProbe(pid)
+      if (identity === null) return
+      if (this.birthTime !== null && identity !== this.birthTime) return
+      if (Date.now() >= deadline) break
+      await delay(EXIT_POLL_MS)
+    }
+    this.cleanupFailed = true
+    this.status = 'failed'
+    this.error = `cleanup failed: child ${pid} still alive after the ${this.closeTimeoutMs}ms close deadline`
+    log.warn(
+      `[${this.label}] child ${pid} still alive after the close deadline; cleanup failed ` +
+        '(automatic replacement blocked until a death-gated reconnect)',
+    )
+  }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
 function noop(): void {}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
