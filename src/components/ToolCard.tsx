@@ -11,7 +11,7 @@
 //   ToolStatusBadge — running/success/error pill, also used standalone
 //                     by some tool views
 
-import { Fragment, memo, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
 import {
   IconAlertCircle,
   IconArrowDown,
@@ -29,9 +29,9 @@ import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { useCopy } from '../hooks/useCopy'
 import type { ToolResultEntry, ToolStatus } from '../session-store/types'
 import type { Block } from '../types'
-import { formatJson } from '../utils/format'
 import { truncate, stripAnsi } from '../utils/text'
-import { imageBlockToDataUrl } from '../utils/image-block'
+import { toolResultBodyParts } from '../../shared/tool-result-text'
+import { countMatches } from '../../shared/search/match'
 import { MsgImage } from './MsgImage'
 import { AnsiText } from './AnsiText'
 
@@ -219,15 +219,30 @@ export const ToolResultDetails = memo(function ToolResultDetails({
   activeMatchIdx?: number
 }) {
   const preview = toolResultPreview(content)
-  const isString = typeof content === 'string'
-  const body = isString ? truncate(content, 4000) : buildToolResultBody(content)
-  // The "active" search-match index is global across the whole result, so it
-  // only maps cleanly onto a single text run. Multi-run (interleaved) bodies
-  // degrade to plain highlighting — no `.search-hl-active` marker.
-  const singleTextRun =
-    !Array.isArray(body) || body.filter((p): p is string => typeof p === 'string').length === 1
-  const hasSearch = Boolean(searchQuery?.trim())
+  // One shared derivation (shared/tool-result-text) is the single writer of the
+  // rendered runs; the server search segments and client match walks consume
+  // the same view, so counts and marks always agree.
+  const parts = toolResultBodyParts(content)
+  const q = searchQuery?.trim()
+  const hasSearch = Boolean(q)
   const bodyRef = useRef<HTMLDivElement>(null)
+
+  // Rebase the result-global active match index into per-run coordinates: each
+  // text run owns countMatches(run, q) matches, image runs own none. The run
+  // containing the active hit gets its part-local index; every other run gets
+  // undefined (default highlight colour).
+  const partActive = parts.map(() => undefined as number | undefined)
+  if (q && activeMatchIdx != null && activeMatchIdx >= 0) {
+    let remaining = activeMatchIdx
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]
+      if (part.kind !== 'text') continue
+      const n = countMatches(part.text, q)
+      if (n === 0) continue
+      if (remaining < n) { partActive[i] = remaining; break }
+      remaining -= n
+    }
+  }
 
   // When navigating search results, scroll the active <mark> into view
   // inside this (potentially scrollable) tool-result container.
@@ -247,101 +262,32 @@ export const ToolResultDetails = memo(function ToolResultDetails({
       open={hasSearch ? true : undefined}
     >
       <div className="tool-input" ref={bodyRef}>
-        {typeof body === 'string' ? (
-          <AnsiText text={body} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
-        ) : (
-          body.map((part, i) =>
-            typeof part === 'string' ? (
+        {parts.map((part, i) => {
+          if (part.kind === 'text') {
+            return (
               <AnsiText
                 key={i}
-                text={part}
+                text={part.text}
                 searchQuery={searchQuery}
-                activeMatchIdx={singleTextRun ? activeMatchIdx : undefined}
+                activeMatchIdx={partActive[i]}
               />
-            ) : (
-              <Fragment key={i}>{part}</Fragment>
-            ),
+            )
+          }
+          // The WHOLE image run is one navigable viewer group, shared by every
+          // MsgImage in the row (click image N → viewer opens at N with ←/→).
+          const group = part.srcs.map((src) => ({ src }))
+          return (
+            <div key={`imgs-${i}`} className="tool-result-images">
+              {part.srcs.map((src, j) => (
+                <MsgImage key={j} src={src} alt="tool result image" decoding="async" group={group} index={j} />
+              ))}
+            </div>
           )
-        )}
+        })}
       </div>
     </AnimatedDetails>
   )
 })
-
-/** A rendered tool-result body: a single truncated string when the result is
- *  text-only (so AnsiText stays ONE component over the whole body and search
- *  match indexing is unchanged), or an ordered list of text runs and image
- *  rows that preserves the original block order for interleaved
- *  text + image results. */
-type ToolResultBody = string | Array<string | ReactNode>
-
-/** Build the expanded tool-result body from a (possibly non-array) content
- *  value: text blocks are joined + truncated; image blocks are rendered as
- *  `<img className="msg-image">` so screenshots show up instead of a base64
- *  JSON blob. Text runs and image rows stay in source order — an
- *  `[{text},{image},{text}]` result renders text → image → text, not all
- *  images moved to the end. Consecutive images are grouped into one
- *  `.tool-result-images` row (flex layout), text-only bodies collapse to a
- *  single string. */
-function buildToolResultBody(content: unknown): ToolResultBody {
-  const raw = Array.isArray(content)
-    ? content
-    : content && typeof content === 'object'
-      ? [content]
-      : []
-  const blocks = raw as Block[]
-  const parts: Array<string | ReactNode> = []
-  let textBuf: string[] = []
-  // Image runs are collected as data (not nodes) so the flush can hand the
-  // WHOLE run to each MsgImage as its navigable viewer group.
-  let imgRun: Array<{ src: string }> = []
-
-  const flushText = () => {
-    if (textBuf.length === 0) return
-    const text = truncate(textBuf.join('\n\n'), 4000)
-    if (text) parts.push(text)
-    textBuf = []
-  }
-  const flushImgs = () => {
-    if (imgRun.length === 0) return
-    parts.push(
-      <div key={`imgs-${parts.length}`} className="tool-result-images">
-        {imgRun.map((img, i) => (
-          <MsgImage key={i} src={img.src} alt="tool result image" decoding="async" group={imgRun} index={i} />
-        ))}
-      </div>,
-    )
-    imgRun = []
-  }
-
-  for (const b of blocks) {
-    // Defensive: a null/undefined element in the content array must not crash
-    // the render (imageBlockToDataUrl handles it, but the type check below
-    // would dereference it).
-    if (b == null) continue
-    const src = imageBlockToDataUrl(b)
-    if (src) {
-      flushText()
-      imgRun.push({ src })
-    } else if (b.type === 'text' && typeof b.text === 'string') {
-      flushImgs()
-      textBuf.push(b.text)
-    } else {
-      flushImgs()
-      textBuf.push(formatJson(b))
-    }
-  }
-  flushText()
-  flushImgs()
-
-  // Text-only body → single string so the renderer keeps the one-AnsiText
-  // path (truncation + search match indexing identical to before).
-  if (parts.every((p) => typeof p === 'string')) {
-    const text = (parts as string[]).join('\n\n')
-    return text || formatJson(content)
-  }
-  return parts
-}
 
 /** One-line preview for the collapsed <summary>.
  *  Keeps the transcript scannable when many tool results are present. */

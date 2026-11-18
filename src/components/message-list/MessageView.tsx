@@ -14,6 +14,7 @@ import type { SdkMessage } from '../../types'
 import { formatTokens } from '../../utils/format'
 import { IconUser } from '../icons/ToolIcons'
 import { localCommandOf } from '../../../shared/results.js'
+import { toolResultTextRuns } from '../../../shared/tool-result-text.js'
 import { countMatches, extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../../search'
 import { getBlocks, isHumanUserMessage, userMessageOriginKind } from '../../session-store/normalize'
 import { BlockView, ToolResultBlock } from './blocks'
@@ -253,16 +254,14 @@ export const MessageView = memo(function MessageView({
       if (remaining < 0) return undefined // active match is in a text block
     }
     // Walk tool_result blocks to find which one contains the active match.
+    // Count over the SAME raw runs the renderer uses (shared/tool-result-text),
+    // so the block-local index handed to ToolResultDetails rebases cleanly onto
+    // its per-run marks. Image runs and internal file blocks contribute none.
     for (const b of blocks) {
       if (b.type !== 'tool_result') continue
       const rc = (b as { content?: unknown }).content
-      const text = typeof rc === 'string' ? rc
-        : Array.isArray(rc) ? (rc as Array<{ type?: string; text?: string }>)
-            .filter(x => x.type === 'text' && typeof x.text === 'string')
-            .map(x => x.text).join('\n\n')
-        : ''
-      if (!text) continue
-      const n = countMatches(text, q)
+      let n = 0
+      for (const run of toolResultTextRuns(rc)) n += countMatches(run, q)
       if (n === 0) continue
       if (remaining < n) return remaining
       remaining -= n

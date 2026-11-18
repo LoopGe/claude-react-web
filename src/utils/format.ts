@@ -50,14 +50,10 @@ export function formatFullTimestamp(ms: number | undefined | null): string {
   }
 }
 
-/** Pretty-print a value as indented JSON, falling back to String(). */
-export function formatJson(v: unknown): string {
-  try {
-    return JSON.stringify(v, null, 2)
-  } catch {
-    return String(v)
-  }
-}
+// formatJson moved to shared/format.ts so the server search index and the
+// client renderer share one JSON fallback. Re-exported here so every existing
+// import site keeps compiling.
+export { formatJson } from '../../shared/format'
 
 /** Format a byte count as a human-readable string: "512 B", "1.5 MB", "2.0 GB". */
 export function formatBytes(n: number): string {

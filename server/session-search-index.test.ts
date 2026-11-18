@@ -130,6 +130,30 @@ describe('createSessionSearchIndex', () => {
     })
   })
 
+  it('indexes tool_result RAW text so a markdown-syntax query hits in raw space', async () => {
+    // The markdown view flattens `say **hi** now` to `say hi now`, so a literal
+    // `**hi**` query would miss it. The raw rendered run keeps the `**`, so the
+    // hit exists only under the single raw-runs view (shared/tool-result-text).
+    const messages = [
+      textMessage(0, 'u0', 'user', 'run it'),
+      toolUseMessage(1, 'a1', 'tu1'),
+      toolResultMessage(2, 'u2', 'tu1', 'say **hi** now', 'tu1'),
+    ]
+    const deps = makeDeps({ raw: messages })
+    const index = createSessionSearchIndex(deps)
+    const res = await index.search('raw', '**hi**', 100)
+    expect(res.hits).toHaveLength(1)
+    expect(res.hits[0]).toMatchObject({
+      seq: 1,
+      messageSeq: 2,
+      ownerToolUseId: 'tu1',
+      role: 'tool_result',
+      matchCount: 1,
+      matchOrdinal: 0,
+      snippet: 'say **hi** now',
+    })
+  })
+
   it('treats a steered top-level user message as a new turn', async () => {
     const deps = makeDeps(fixture())
     const index = createSessionSearchIndex(deps)

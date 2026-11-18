@@ -42,6 +42,7 @@ import { htmlAsTextHandlers } from '../markdown-html-text.js'
 import { stripFileHandles } from '../upload-handle.js'
 import { isFileBlock } from '../attachments.js'
 import { splitFileHandleText, type MessageSearchSegment } from './segments.js'
+import { toolResultTextRuns } from '../tool-result-text.js'
 
 interface SearchableMessage {
   type?: string
@@ -268,13 +269,14 @@ export function extractMessageSearchSegments(msg: SearchableMessage): MessageSea
           attachment: { id: file.id, name: file.name, size: file.size },
         })
       } else if (b.type === 'tool_result') {
+        // RAW rendered runs (shared/tool-result-text), one segment per run —
+        // the same view ToolResultDetails renders, so markdown syntax in tool
+        // output (`**`, `#`, `_`) stays searchable and ordinals agree end to
+        // end. extractMessagePlainText keeps the markdown view for prompt
+        // editing/dedup.
         const rc = (b as { content?: unknown }).content
-        if (typeof rc === 'string') {
-          pushMarkdown(rc)
-        } else if (Array.isArray(rc)) {
-          for (const inner of rc as SearchableBlock[]) {
-            if (inner.type === 'text' && typeof inner.text === 'string') pushMarkdown(inner.text)
-          }
+        for (const run of toolResultTextRuns(rc)) {
+          out.push({ type: 'text', text: run })
         }
       } else if (b.type === 'tool_use') {
         const text = extractToolUseDiffText(b.input, b.name)

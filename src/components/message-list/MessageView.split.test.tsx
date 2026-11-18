@@ -124,3 +124,66 @@ describe('MessageView: ordered user attachments', () => {
     expect(trailingText.container.querySelector('.msg-file-chip mark.search-hl-active')).toBeNull()
   })
 })
+
+describe('MessageView: tool_result raw runs search addressing', () => {
+  const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }
+
+  function toolResultUser(content: unknown): SdkMessage {
+    return {
+      type: 'user',
+      uuid: 'tr-raw',
+      parent_tool_use_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-raw', content }] },
+    } as unknown as SdkMessage
+  }
+
+  function renderResult(content: unknown, query: string, activeMatchInItem?: number) {
+    return render(
+      <MessageView
+        msg={toolResultUser(content)}
+        searchQuery={query}
+        activeMatchInItem={activeMatchInItem}
+        foldExpanded={false}
+        foldSearchHit={false}
+        onToggleFold={() => {}}
+        consumedKey="tr-raw"
+      />,
+    )
+  }
+
+  // An interleaved text+image result renders TWO text runs (the image flushes
+  // the first buffer). The active ordinal is result-global; ToolResultDetails
+  // rebases it per run, so ordinal 1 must light the SECOND run's mark only.
+  const interleaved = [
+    { type: 'text', text: 'alpha needle' },
+    image,
+    { type: 'text', text: 'beta needle' },
+  ]
+
+  it('lights exactly the second run mark when the active ordinal falls in the second run', () => {
+    const { container } = renderResult(interleaved, 'needle', 1)
+    const marks = container.querySelectorAll('mark.search-hl')
+    expect(marks).toHaveLength(2)
+    const active = container.querySelectorAll('mark.search-hl-active')
+    expect(active).toHaveLength(1)
+    // Document order: run0 mark, image row, run1 mark — the active one is run1's.
+    expect(marks[1]).toBe(active[0])
+    expect(active[0].textContent).toBe('needle')
+    expect(container.querySelector('.tool-result-images')).not.toBeNull()
+  })
+
+  it('lights the first run mark when the active ordinal is 0', () => {
+    const { container } = renderResult(interleaved, 'needle', 0)
+    const marks = container.querySelectorAll('mark.search-hl')
+    const active = container.querySelectorAll('mark.search-hl-active')
+    expect(active).toHaveLength(1)
+    expect(marks[0]).toBe(active[0])
+  })
+
+  it('renders no marks for a query matching only past the 4000-char truncation', () => {
+    const content = 'a'.repeat(4000) + 'needle'
+    const { container } = renderResult(content, 'needle', 0)
+    expect(container.querySelectorAll('mark.search-hl')).toHaveLength(0)
+    expect(container.textContent).not.toContain('needle')
+  })
+})

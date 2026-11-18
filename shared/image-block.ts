@@ -1,0 +1,57 @@
+/** Loose structural content-block shape. The client's `Block` (src/types.ts)
+ *  and the server's SDK blocks both satisfy it. shared/ cannot import src/, so
+ *  the image-source reader types its input structurally — the same pattern
+ *  shared/user-frames.ts uses for SDK-agnostic frame shapes. */
+interface BlockLike {
+  type?: string
+  source?: unknown
+  [k: string]: unknown
+}
+
+/** Shape of the `source` field on an SDK image block. Deliberately loose —
+ *  `BlockLike.source` is `unknown` via the index signature, and this is the one
+ *  place that knows the real shape. */
+interface ImageSource {
+  type?: string
+  data?: unknown
+  media_type?: string
+}
+
+/**
+ * Convert an image content block (SDK shape `{ type: 'image', source:
+ * { type: 'base64', media_type, data } }`) into a `data:` URL safe for an
+ * `<img>` src.
+ *
+ * Returns null when the block is not an image, the source is missing /
+ * malformed, the data is not a non-empty string, or the media type is not
+ * `image/*`. Validation is shape-only: it does not attempt to verify the
+ * base64 payload itself (the SDK emits valid base64; an invalid payload
+ * degrades to a broken img exactly as it does today).
+ *
+ * Single source of truth for the image-source shape, shared by
+ * ToolResultDetails (tool-result screenshots) and BlockView (pasted /
+ * streamed image blocks).
+ */
+export function imageBlockToDataUrl(block: BlockLike | undefined | null): string | null {
+  if (!block || block.type !== 'image') return null
+  const source = block.source as ImageSource | undefined
+  if (
+    !source ||
+    typeof source !== 'object' ||
+    source.type !== 'base64' ||
+    typeof source.data !== 'string' ||
+    source.data.length === 0 ||
+    typeof source.media_type !== 'string' ||
+    !/^image\//.test(source.media_type)
+  ) {
+    return null
+  }
+  return imageDataUrl(source.media_type, source.data)
+}
+
+
+/** Build a base64 `data:` URL — the one spelling of the data-URL format,
+ *  shared by imageBlockToDataUrl and the file viewer's image preview. */
+export function imageDataUrl(mediaType: string, data: string): string {
+  return `data:${mediaType};base64,${data}`
+}
