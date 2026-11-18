@@ -37,6 +37,7 @@ import { extractUserText, makeResultConsumed, toolResultConsumedKey } from './me
 import { MessageView } from './message-list/MessageView'
 import { userBodyFoldKey } from './message-list/fold-key'
 import { ToolGroupCard } from './message-list/ToolGroupCard'
+import { rowSearchMatchCount } from './message-list/search-addressing'
 import { BottomOverlaySpacer } from './message-list/views/frame-views'
 import {
   advanceRowAnchor,
@@ -1425,7 +1426,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const searchQueryForRow =
       !sq?.trim()
         ? undefined
-        : activeRowIdx != null || activeGroupMemberIdx != null || countCachedMessageSearchMatches(item.msg, sq.trim()) > 0
+        : activeRowIdx != null || activeGroupMemberIdx != null || rowSearchMatchCount(item.msg, item.toolGroup?.members, toolResults, sq.trim()) > 0
           ? sq
           : undefined
     const rowBody = item.toolGroup ? (
@@ -1508,11 +1509,13 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // settles, a stale closure would leave its group card reading the old map
     // (and so still showing `running`). Both change only on subagent/workflow
     // events, unlike the context values that carry `messages`.
+    // toolResults: the row search gate counts merged results, so a result
+    // landing mid-query must re-gate the row that owns it.
     // revealSnapshot: the reveal row class + frozen stagger come from the
     // flip-time snapshot; identity-stable between reveals.
     // resultConsumedCtx: identity-stable (useCallback []), listed because
     // itemContent reads it for `consumedKey` — a no-op for invalidation.
-  }, [isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, revealSnapshot, resultConsumedCtx])
+  }, [isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, toolResults, revealSnapshot, resultConsumedCtx])
 
   // Key rows by their stable message id instead of Virtuoso's default
   // (offset-space index).
@@ -1573,8 +1576,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // stable there — the per-flush rebuild is inline-only (spec §Risks). The
   // memo keeps that guarantee exact: a rebuild happens ONLY when the stream
   // text (or the rows, or the mode) actually changes — unrelated re-renders
-  // during a turn (task-card ResizeObserver commits, toolStatus/toolResults
-  // map updates, fold toggles) reuse the same array identity. The tail
+  // during a turn (task-card ResizeObserver commits, toolStatus map updates,
+  // fold toggles) reuse the same array identity. toolResults is a dep because
+  // a merged result can carry a row's only match: an update re-probes the
+  // rows under an active query and copies only rows whose match status
+  // flipped — no flip, same identity. The tail
   // append never shifts an existing row's index, so `itemToVirtIdx` /
   // `nextItemTypeMap` / entrance-gating (all built from `renderableItems`)
   // stay valid; `handleRangeChanged` reads only `range.startIndex` (a number —
@@ -1595,7 +1601,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const out: VirtuosoItem[] = new Array(base.length)
     for (let i = 0; i < base.length; i++) {
       const it = base[i]
-      const matches = countCachedMessageSearchMatches(it.msg, searchTick.trim()) > 0
+      const matches = rowSearchMatchCount(it.msg, it.toolGroup?.members, toolResults, searchTick.trim()) > 0
       if (matches) {
         if (!copied) { for (let j = 0; j < i; j++) out[j] = base[j]; copied = true }
         out[i] = { ...it, searchTick } as TranscriptRow
@@ -1604,7 +1610,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       }
     }
     return copied ? out : base
-  }, [renderableItems, searchTick])
+  }, [renderableItems, searchTick, toolResults])
 
   // Virtuoso Footer is reserved for transcript metadata and invisible bottom
   // breathing room. The bottom overlay stack (live streaming bubble + task

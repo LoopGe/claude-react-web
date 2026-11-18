@@ -6,10 +6,12 @@
 // RUNNING tool no longer opens the group (the header badge still reports
 // it). AskUserQuestion and ExitPlanMode never enter a group at all (they
 // are run boundaries in isToolGroupEligible and render as their own
-// QuestionCard / PlanCard). Search force-expands only when the group's own
-// name/input may match (tool results force-expand themselves via
-// ToolResultDetails). Children are existing BlockView / ToolUseBlock cards
-// — no tool view is rewritten.
+// QuestionCard / PlanCard). Search force-expands when the group's own
+// name/input OR a member's consumed tool_result may match (the result
+// renders inside the member's card, so a result-only hit must open the
+// group too; ToolResultDetails force-expands its own body on the query).
+// Children are existing BlockView / ToolUseBlock cards — no tool view is
+// rewritten.
 //
 // Collapsed header still surfaces running / failed so a failure is never
 // hidden. (A pending decision can no longer be buried either — AskUserQuestion
@@ -37,7 +39,7 @@ import { AnimatedCollapse } from '../AnimatedCollapse'
 import { HoverHint } from '../HoverHint'
 import { useRevealClass } from '../../hooks/useRevealClass'
 import { BlockView } from './blocks'
-import { useToolStatuses } from '../../hooks/usePlanStatus'
+import { useToolStatuses, useToolResults } from '../../hooks/usePlanStatus'
 import { groupMayMatchSearch, summarizeToolGroup } from './tool-grouping'
 import { extractToolUseId, getBlocks } from '../../session-store/normalize'
 import {
@@ -239,6 +241,7 @@ function ToolGroupCardInner({
   autoExpandRunningGroups = true,
 }: ToolGroupCardProps) {
   const toolStatuses = useToolStatuses()
+  const toolResults = useToolResults()
 
   // Stable, page-unique id for the folded body, so the header button can point
   // aria-controls at it (multiple group cards can coexist in one transcript).
@@ -287,8 +290,8 @@ function ToolGroupCardInner({
   )
 
   const hasSearchHit = useMemo(
-    () => groupMayMatchSearch(toolBlocks, searchQuery),
-    [toolBlocks, searchQuery],
+    () => groupMayMatchSearch(toolBlocks, searchQuery, toolResults),
+    [toolBlocks, searchQuery, toolResults],
   )
   // `live` is the signal that force-opens the group AND (via the turn latch
   // in the reducer) keeps it pinned through the turn + triggers the

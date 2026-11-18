@@ -3,8 +3,9 @@
 // These live outside React so they can be unit-tested without a DOM.
 
 import type { Block } from '../../types'
-import type { ActiveSubagent, ToolStatus, WorkflowRecord } from '../../session-store/types'
+import type { ActiveSubagent, ToolResultEntry, ToolStatus, WorkflowRecord } from '../../session-store/types'
 import { extractToolUseId, TOOL_STATUS_EXCLUDE } from '../../session-store/normalize'
+import { toolResultTextRuns } from '../../../shared/tool-result-text.js'
 import { toolTargetLabel } from './tool-target'
 
 /** One tool NAME in a folded group, with the target of its first call and a
@@ -181,12 +182,15 @@ export function summarizeToolGroup(
   }
 }
 
-/** True when any tool name or stringified input value in the group
- *  contains the search query (case-insensitive). This determines whether
- *  a collapsed group force-expands to reveal a search hit. */
+/** True when any tool name, stringified input value, or consumed tool_result
+ *  run in the group contains the search query (case-insensitive). This
+ *  determines whether a collapsed group force-expands to reveal a search hit.
+ *  `toolResults` is the merged-result map (ToolResultProvider's value); omit
+ *  it and only names/inputs are probed. */
 export function groupMayMatchSearch(
   toolBlocks: Block[],
   searchQuery: string | undefined,
+  toolResults?: ReadonlyMap<string, ToolResultEntry>,
 ): boolean {
   if (!searchQuery) return false
   const needle = searchQuery.toLowerCase()
@@ -195,6 +199,15 @@ export function groupMayMatchSearch(
     if (name && name.toLowerCase().includes(needle)) return true
     const input = (block as { input?: Record<string, unknown> }).input
     if (input && matchesInput(input, needle)) return true
+    if (toolResults) {
+      const id = extractToolUseId(block)
+      const entry = id ? toolResults.get(id) : undefined
+      if (entry) {
+        for (const run of toolResultTextRuns(entry.content)) {
+          if (run.toLowerCase().includes(needle)) return true
+        }
+      }
+    }
   }
   return false
 }

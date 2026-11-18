@@ -392,6 +392,28 @@ describe('ToolGroupCard', () => {
     expect(isOpen(hit.container)).toBe(true)
   })
 
+  it('force-expands a closed group when the query matches only a merged result', () => {
+    const members = [toolMsg('t1', 'Grep', { pattern: 'haystack' }), toolMsg('t2')]
+    const toolStatus = new Map<string, ToolStatus>([
+      ['t1-tu', 'success'],
+      ['t2-tu', 'success'],
+    ])
+    const toolResults = new Map<string, ToolResultEntry>([
+      ['t1-tu', { content: 'found needle here', isError: false }],
+    ])
+    // Name/input probe alone misses → the settled closed group stays folded.
+    const miss = renderGroup({ members, toolStatus, toolResults, searchQuery: 'zzzzzz', closed: true })
+    expect(isOpen(miss.container)).toBe(false)
+
+    // The needle lives ONLY in the merged result: force-open plus passive
+    // marks, with no active navigation target.
+    const hit = renderGroup({ members, toolStatus, toolResults, searchQuery: 'needle', closed: true })
+    expect(isOpen(hit.container)).toBe(true)
+    const marks = hit.container.querySelectorAll('mark.search-hl')
+    expect(marks).toHaveLength(1)
+    expect(marks[0]!.textContent).toBe('needle')
+  })
+
   it('treats a missing tool id as running so an in-flight card never folds', () => {
     const { container } = renderGroup({
       members: [toolMsg('t1'), toolMsg('t2')],
