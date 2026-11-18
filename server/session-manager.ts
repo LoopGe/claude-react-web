@@ -220,6 +220,9 @@ const TRANSIENT_TERMINATED_REASONS = new Set([
   'process_killed',
   'process_exited',
   'spawn_failed',
+  // Quiesced for a transcript rebuild retry (spec §10): resumable once the
+  // reconcile succeeds — no server restart needed.
+  'transcript_rebuild_required',
 ])
 
 function isTransientTerminatedReason(reason?: string): boolean {
@@ -1024,6 +1027,10 @@ export class SessionManager {
    *  a frame's seq without index drift after ring trimming, and without
    *  mutating the SDKMessage shape. */
   private readonly seqByMessage = new WeakMap<object, { seq: number; generation: number }>()
+  /** In-flight fire-and-forget eviction chains per session. Teardown drains
+   *  these before closing the sidecar so a tombstone append still awaiting
+   *  its reconcile is not lost (see evictTranscriptAndBroadcast). */
+  private readonly pendingEvictions = new Map<string, Set<Promise<void>>>()
   constructor(opts: SessionManagerOptions & { uploadStore?: UploadStore } = {}) {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.subagentHistoryCap = opts.subagentHistoryCap ?? defaultConfig.subagentHistoryCap
@@ -8291,11 +8298,48 @@ export class SessionManager {
    *  rebuilding if needed. Recovers a `rebuild_failed`/degraded session without a
    *  server restart. Returns the resulting cursor + degraded flag. */
   async retryTranscriptReconcile(id: string): Promise<{ generation: number; headSeq: number; degraded: boolean }> {
+    const wasLive = this.sessions.has(id)
+    if (wasLive) {
+      // Capability pre-check BEFORE any mutation (spec §8.3): an incapable
+      // tab keeps its live channel on the old generation; the user reloads
+      // it and retries. Checked before quiesce so a refusal never tears the
+      // session down.
+      if (!this.subscriptionHub.allSubscribersCapable(id)) {
+        throw new HttpError(409, 'client-upgrade-required')
+      }
+      // Quiesce (spec §8.1: rebuild only on a quiesced session). Abort the
+      // in-flight turn and withdraw queued inputs with the visible Stop
+      // semantics (the drain-preserve-replay dispatch machinery is the
+      // queued-not-published follow-up), then destroy the provider and await
+      // the pump. Subscriber queues end here; tabs re-anchor via the
+      // attached handshake after resume.
+      try {
+        await this.interrupt(id, { cancelQueued: true })
+      } catch (err) {
+        // The destroy below quiesces regardless; a failed interrupt control
+        // op must not strand the recovery path.
+        log.warn(`[session ${id}] retry quiesce interrupt failed: ${(err as Error).message ?? err}`)
+      }
+      await this.unload(id, { terminated: true, reason: 'transcript_rebuild_required', awaitDestroy: true })
+    }
     this.transcriptStores.delete(id)
     this.transcriptReconciles.delete(id)
     const t = await this.ensureTranscriptReconciled(id)
     if (t.rebuildBlocked) throw new HttpError(409, t.rebuildBlocked)
-    return { generation: t.store.generation, headSeq: t.store.headSeq, degraded: t.degraded }
+    if (!t.degraded) {
+      // Standard resume after a successful rebuild (spec §10): the session
+      // we quiesced, or one a prior failed attempt left transient-terminated.
+      // Dormant sessions stay dormant — opening them is the user's call.
+      const meta = this.store?.get(id)
+      const terminatedTransient = meta?.terminated === true && isTransientTerminatedReason(meta.terminatedReason)
+      if (wasLive || terminatedTransient) await this.resume(id)
+    }
+    const head = this.transcriptHead(id)
+    return {
+      generation: head?.generation ?? t.store.generation,
+      headSeq: head?.headSeq ?? t.store.headSeq,
+      degraded: t.degraded,
+    }
   }
 
   /** Whether the session's committed generation history contains an
@@ -8518,7 +8562,7 @@ export class SessionManager {
    *  eviction is durable via the sidecar regardless of whether a frame
    *  reaches a live tab. */
   private evictTranscriptAndBroadcast(id: string, uuids: string[]): void {
-    void this.evictTranscript(id, uuids)
+    const p = this.evictTranscript(id, uuids)
       .then((seqs) => {
         if (seqs.length === 0) return
         const head = this.transcriptHead(id)
@@ -8532,6 +8576,20 @@ export class SessionManager {
       .catch((err: unknown) => {
         log.warn(`[session ${id}] transcript eviction failed: ${err instanceof Error ? err.message : String(err)}`)
       })
+    // Track the in-flight chain so teardown can drain it before closing the
+    // sidecar: the tombstone append sits BEHIND an awaited reconcile, and a
+    // close racing that reconcile would lose the durable copy of an already-
+    // broadcast withdrawal (the resurrect-on-rebuild bug).
+    let set = this.pendingEvictions.get(id)
+    if (!set) {
+      set = new Set()
+      this.pendingEvictions.set(id, set)
+    }
+    set.add(p)
+    void p.finally(() => {
+      set.delete(p)
+      if (set.size === 0) this.pendingEvictions.delete(id)
+    })
   }
 
   /** WeakMap accessor for the WS frame path (Task 5): the seq stamped onto
@@ -8957,6 +9015,14 @@ export class SessionManager {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
     this.sessions.delete(id)
+    // Drain in-flight eviction chains BEFORE dropping the holder / closing
+    // the sidecar: a tombstone append still awaiting its reconcile would
+    // otherwise be lost, resurrecting an already-withdrawn prompt on the
+    // next rebuild. The holder must still exist here — the chain reconciles
+    // against it. (The synchronous teardown contract above is unaffected:
+    // map removal + broadcasts already happened.)
+    const evictions = this.pendingEvictions.get(id)
+    if (evictions) await Promise.allSettled([...evictions])
     const transcript = this.transcriptStores.get(id)
     // Drop the in-memory transcript seq store with the session. The ndjson
     // sidecar file is deliberately KEPT: unload() (unlike delete()) leaves

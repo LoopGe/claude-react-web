@@ -9171,7 +9171,11 @@ describe('SessionManager', () => {
 
     it('publishes transcript-rebased on the primary queue, ordered before new-generation frames', async () => {
       const { info, sub, frames } = await seedInvertedWithSubscriber()
-      await sm.retryTranscriptReconcile(info.id)
+      // First reconcile on a LIVE session (create does not reconcile; the
+      // first window read does) — the in-place rebuild path, with the
+      // subscriber queue intact. The retry route quiesces via teardown and
+      // clients re-anchor through attached instead.
+      await sm.getTranscriptWindow(info.id)
       const env = frames.find((f) => f.kind === 'transcript-rebased')
       expect(env).toMatchObject({
         kind: 'transcript-rebased',
@@ -9200,11 +9204,25 @@ describe('SessionManager', () => {
       // assigned in — serialization after the rebuild must not re-stamp it
       // with the new generation (old seqs would collide with the new space).
       expect(sm.transcriptFrameMetaOf(info.id, aFrame)).toEqual({ seq: 0, generation: 0 })
-      emitAssistant('T', 'mT', 'post-rebuild')
-      expect(await waitFor(() => frames.some((f) => f.uuid === 'T'))).toBe(true)
-      const tFrame = frames.find((f) => f.uuid === 'T') as object
-      expect(sm.transcriptFrameMetaOf(info.id, tFrame)).toEqual({ seq: 3, generation: 1 })
+      // The retry quiesced via teardown, which ended the old subscriber
+      // queue; re-attach to observe post-rebuild live frames.
       sub.unsubscribe()
+      const sub2 = sm.subscribe(info.id, { orderedRebase: true })
+      const frames2: Array<Record<string, unknown>> = []
+      void (async () => {
+        for await (const f of sub2.iterable) frames2.push(f as Record<string, unknown>)
+      })()
+      // The retry respawned the provider — emit on the NEW handle.
+      mockHandles.at(-1)!.emit({
+        type: 'assistant',
+        uuid: 'T',
+        parent_tool_use_id: null,
+        message: { id: 'mT', role: 'assistant', content: [{ type: 'text', text: 'post-rebuild' }] },
+      })
+      expect(await waitFor(() => frames2.some((f) => f.uuid === 'T'))).toBe(true)
+      const tFrame = frames2.find((f) => f.uuid === 'T') as object
+      expect(sm.transcriptFrameMetaOf(info.id, tFrame)).toEqual({ seq: 3, generation: 1 })
+      sub2.unsubscribe()
     })
 
     it('messages-withdrawn carries the current generation', async () => {
@@ -9221,6 +9239,130 @@ describe('SessionManager', () => {
       const w = frames.find((f) => f.kind === 'messages-withdrawn')
       expect(w!.generation).toBe(sm.transcriptHead(info.id)!.generation)
       sub!.unsubscribe()
+    })
+  })
+  describe('quiesced live rebuild via retry (spec §8.1/§10)', () => {
+    let prevConfigDir: string | undefined
+    beforeEach(() => {
+      prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    })
+
+    const emitAssistant = (uuid: string, id: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant',
+        uuid,
+        parent_tool_use_id: null,
+        message: { id, role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+    const jsonlAssistant = (uuid: string, id: string, text: string) => ({
+      type: 'assistant',
+      uuid,
+      message: { id, role: 'assistant', content: [{ type: 'text', text }] },
+    })
+    const writeJsonl = (sessionId: string, lines: string[]) => {
+      const jsonlPath = join(dir, 'projects', encodeCwd(TEST_CWD), `${sessionId}.jsonl`)
+      mkdirSync(dirname(jsonlPath), { recursive: true })
+      writeFileSync(jsonlPath, lines.join('\n') + '\n')
+    }
+    const orderedJsonl = [
+      jsonlAssistant('A', 'mA', 'first'),
+      jsonlAssistant('R', 'mR', 'belongs in the middle'),
+      jsonlAssistant('N', 'mN', 'newer'),
+    ].map((m) => JSON.stringify(m))
+    const uuidsOf = (win: { messages: Array<{ msg: unknown }> }) =>
+      win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+    /** Live arrival order U,A,N,R vs provider order A,R,N. */
+    const seedInverted = async (withTurn: boolean) => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      let promptUuid: string | undefined
+      if (withTurn) promptUuid = ((await sm.send(info.id, 'seed turn')) as { uuid: string }).uuid
+      emitAssistant('A', 'mA', 'first')
+      emitAssistant('N', 'mN', 'newer')
+      emitAssistant('R', 'mR', 'belongs in the middle')
+      const rows = withTurn ? 4 : 3
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === rows)).toBe(true)
+      expect(await waitFor(async () =>
+        (await new TranscriptSidecar(dir, info.id).load()).length === rows,
+      )).toBe(true)
+      return { info, promptUuid }
+    }
+
+    it('retry quiesces a live session, rebuilds to provider order, and auto-resumes', async () => {
+      const { info, promptUuid } = await seedInverted(true)
+      writeJsonl(info.id, orderedJsonl)
+      const h = mockHandles.at(-1)!
+      const handlesBefore = mockHandles.length
+      const r = await sm.retryTranscriptReconcile(info.id)
+      expect(r.degraded).toBe(false)
+      expect(r.generation).toBeGreaterThan(0)
+      // Quiesce: the in-flight turn was aborted with cancelQueued semantics.
+      expect(h.interrupt).toHaveBeenCalledWith({ cancelQueued: true })
+      // Auto-resume: a fresh provider handle was spawned.
+      expect(mockHandles.length).toBe(handlesBefore + 1)
+      expect(sm.get(info.id).running).toBe(true)
+      const win = await sm.getTranscriptWindow(info.id)
+      const uuids = uuidsOf(win)
+      // The app-only prompt keeps its head anchor; the assistants follow
+      // provider order, not the displaced live order.
+      expect(uuids[0]).toBe(promptUuid)
+      expect(uuids.slice(1)).toEqual(['A', 'R', 'N'])
+    })
+
+    it('retry withdraws queued inputs visibly before rebuilding', async () => {
+      // The seed turn is consumed (idle direct hand-off); the SECOND send
+      // queues behind it — that is the prompt the retry must withdraw.
+      const { info } = await seedInverted(true)
+      const queued = ((await sm.send(info.id, 'queued turn')) as { uuid: string }).uuid
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 5)).toBe(true)
+      writeJsonl(info.id, orderedJsonl)
+      const frames: Array<{ kind?: string; uuids?: string[] }> = []
+      const sub = sm.subscribeMessageStatus(info.id)
+      void (async () => {
+        for await (const v of sub!.iterable) frames.push(v as { kind?: string; uuids?: string[] })
+      })()
+      const r = await sm.retryTranscriptReconcile(info.id)
+      expect(r.degraded).toBe(false)
+      // The queued prompt was withdrawn (visible signal), not silently lost.
+      expect(frames.some((f) => f.kind === 'messages-withdrawn' && f.uuids?.includes(queued))).toBe(true)
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(uuidsOf(win)).not.toContain(queued)
+      sub!.unsubscribe()
+    })
+
+    it('retry on a dormant session reconciles without spawning', async () => {
+      const { info } = await seedInverted(false)
+      writeJsonl(info.id, orderedJsonl)
+      await sm.unload(info.id) // dormant, not terminated
+      const handlesBefore = mockHandles.length
+      const r = await sm.retryTranscriptReconcile(info.id)
+      expect(r.degraded).toBe(false)
+      expect(r.generation).toBeGreaterThan(0)
+      expect(mockHandles.length).toBe(handlesBefore)
+      expect(sm.get(info.id).running).toBe(false)
+      expect(uuidsOf(await sm.getTranscriptWindow(info.id))).toEqual(['A', 'R', 'N'])
+    })
+
+    it('a failed retry leaves the session transient-terminated; a later retry recovers and resumes', async () => {
+      const { info } = await seedInverted(false)
+      // Mid-file corrupt JSONL: the strict reconcile reader throws → degraded.
+      writeJsonl(info.id, [orderedJsonl[0], 'NOT VALID JSON', orderedJsonl[2]])
+      const r1 = await sm.retryTranscriptReconcile(info.id)
+      expect(r1.degraded).toBe(true)
+      const afterFail = sm.get(info.id)
+      expect(afterFail.running).toBe(false)
+      expect(afterFail.terminatedReason).toBe('transcript_rebuild_required')
+      // The reason is transient: a later retry recovers without a restart.
+      writeJsonl(info.id, orderedJsonl)
+      const r2 = await sm.retryTranscriptReconcile(info.id)
+      expect(r2.degraded).toBe(false)
+      expect(sm.get(info.id).running).toBe(true)
+      expect(uuidsOf(await sm.getTranscriptWindow(info.id))).toEqual(['A', 'R', 'N'])
     })
   })
   describe('transcript eviction + messages-evicted broadcast (Task 5 wiring)', () => {

@@ -406,7 +406,7 @@ describe('native steering through SessionManager', () => {
     })
     // The live injected transition was observed (the client's MESSAGE_STEERED).
     expect(statusFrames).toContainEqual({
-      kind: 'message-steered', sessionId: id, uuid: steer.uuid, state: 'injected',
+      kind: 'message-steered', sessionId: id, uuid: steer.uuid, state: 'injected', generation: 0,
     })
     // The ring entry is stamped for replay, and the steer is no longer in flight.
     const entry = liveSession(sm, id).history.find((m) => m.uuid === steer.uuid) as
@@ -476,7 +476,7 @@ describe('native steering through SessionManager', () => {
     expect(requests).toHaveLength(2)
 
     expect(statusFrames).toContainEqual({
-      kind: 'message-steered', sessionId: id, uuid: steer.uuid, state: 'requeued',
+      kind: 'message-steered', sessionId: id, uuid: steer.uuid, state: 'requeued', generation: 0,
     })
     const entry = liveSession(sm, id).history.find((m) => m.uuid === steer.uuid) as
       { requeuedAt?: number } | undefined

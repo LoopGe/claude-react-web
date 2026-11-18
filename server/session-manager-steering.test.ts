@@ -306,7 +306,7 @@ describe('supplement delivery handler', () => {
     const sidecar = await (sm as unknown as { steeredStore: { load(id: string): Promise<Array<{ u: string; injectedAt?: number }>> } }).steeredStore.load(info.id)
     expect(sidecar?.[0]).toMatchObject({ u: second.uuid, injectedAt: expect.any(Number) })
     // live 帧已广播
-    expect(frames).toContainEqual({ kind: 'message-steered', sessionId: info.id, uuid: second.uuid, state: 'injected' })
+    expect(frames).toContainEqual({ kind: 'message-steered', sessionId: info.id, uuid: second.uuid, state: 'injected', generation: 0 })
     msgstat!.unsubscribe()
     await sm.shutdown()
   })

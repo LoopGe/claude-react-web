@@ -454,11 +454,11 @@ describe('useWsHub: subscribe ref-counting and channel state', () => {
     expect(live.framesOfKind('unsubscribe')).toHaveLength(1) // not 2 — not ours
   })
 
-  it('the subscribe frame carries only the sessionId (no legacy replay cursor)', () => {
+  it('the subscribe frame carries sessionId + orderedRebase capability (no legacy replay cursor)', () => {
     const { result } = mountHub()
     openSocket()
     act(() => { result.current.hub.subscribe('s1') })
-    expect(sock().framesOfKind('subscribe')[0]).toEqual({ kind: 'subscribe', sessionId: 's1' })
+    expect(sock().framesOfKind('subscribe')[0]).toEqual({ kind: 'subscribe', sessionId: 's1', orderedRebase: true })
   })
 
   it('force sends for a channel the server already confirmed', () => {
@@ -604,7 +604,7 @@ describe('useWsHub: transport seam', () => {
 
     // …and normal sends still work afterwards.
     act(() => { result.current.subscribe('s1') })
-    expect(sent).toContainEqual({ kind: 'subscribe', sessionId: 's1' })
+    expect(sent).toContainEqual({ kind: 'subscribe', sessionId: 's1', orderedRebase: true })
   })
 })
 
