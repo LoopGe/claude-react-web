@@ -59,6 +59,9 @@ export class DialogBroker {
       decision: UserDialogDecision,
       retractedMessageUuids?: string[],
     ) => void,
+    /** Current transcript generation, stamped on resolved events AT PUSH
+     *  (spec §8.3) so a stale resolution can't evict new-generation rows. */
+    private readonly generationOf?: (sessionId: string) => number | undefined,
   ) {}
 
   /** Build the onUserDialog callback for a session.
@@ -272,8 +275,9 @@ export class DialogBroker {
     decision: UserDialogDecision,
     retractedMessageUuids?: string[],
   ): void {
+    const generation = this.generationOf?.(session.id)
     for (const sub of session.dialogSubscribers.values()) {
-      sub.push({ kind: 'resolved', did, decision, retractedMessageUuids })
+      sub.push({ kind: 'resolved', did, decision, retractedMessageUuids, generation })
     }
     this.onResolved?.(session, did, decision, retractedMessageUuids)
   }

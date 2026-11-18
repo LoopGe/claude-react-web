@@ -297,6 +297,11 @@ export interface WsDialogResolved {
   id: string
   decision: UserDialogDecision
   retractedMessageUuids?: string[]
+  /** Seq-space generation the resolution (and its retractions) belong to.
+   *  A client that adopted a different generation drops the whole frame —
+   *  a stale resolution must not evict same-uuid new-generation rows
+   *  (spec §8.3). Optional for pre-rebase servers. */
+  generation?: number
 }
 
 /** Fresh context-usage snapshot pushed from the server. Shape is
@@ -395,6 +400,10 @@ export interface WsMessageConsumed {
   uuid: string
   /** Epoch ms the SDK read it off the queue. */
   consumedAt: number
+  /** Seq-space generation the consumed prompt belongs to (spec §8.3):
+   *  stale-generation frames are dropped whole. Optional for pre-rebase
+   *  servers. */
+  generation?: number
 }
 
 /** Queued user messages were withdrawn from the input queue — the client
@@ -420,6 +429,10 @@ export interface WsMessagesWithdrawn {
   /** Server-minted uuids of the withdrawn user messages (plus any
    *  CLI-internal uuids reported cancelled by the interrupt receipt). */
   uuids: string[]
+  /** Seq-space generation the withdrawn prompts belong to (spec §8.3):
+   *  stale-generation frames are dropped whole. Optional for pre-rebase
+   *  servers. */
+  generation?: number
 }
 
 /** A steered message's delivery-state transition (spec §7). 'injecting'
@@ -438,6 +451,10 @@ export interface WsMessageSteered {
    *  undelivered and it was re-routed to the SDK input queue as a normal
    *  next-turn prompt (ring entry stamped requeuedAt). */
   state: 'injected' | 'requeued'
+  /** Seq-space generation the steered prompt belongs to (spec §8.3):
+   *  stale-generation frames are dropped whole. Optional for pre-rebase
+   *  servers. */
+  generation?: number
 }
 
 /** Per-session recap state mutation (pending / ready / error / cleared).

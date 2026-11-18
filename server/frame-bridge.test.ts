@@ -1396,3 +1396,42 @@ describe('ordered-rebase in-flight subscribe retry', () => {
     conn.close()
   })
 })
+
+describe('ordered-rebase envelope and generation passthrough (spec §8.3)', () => {
+  it('forwards a transcript-rebased envelope unwrapped on the primary queue', async () => {
+    const sm = new FakeBroadcaster()
+    const s = sm.addSession('s1', { running: true })
+    const { sink, conn } = setup(sm)
+    send(conn, { kind: 'subscribe', sessionId: 's1', orderedRebase: true })
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1' && f.ok === true)
+    const envelope = { kind: 'transcript-rebased', sessionId: 's1', reason: 'ordered-rebuild', generation: 5, headSeq: 3 }
+    s.messages.push(envelope as unknown as SDKMessage)
+    await waitForFrame(sink, (f) => f.kind === 'transcript-rebased')
+    // NOT wrapped as kind:'message' — the client routes it as a control frame.
+    expect(sink.kinds('transcript-rebased')).toEqual([envelope])
+    expect(sink.kinds('message')).toEqual([])
+    conn.close()
+  })
+
+  it('forwards generation on msgstat frames and dialog-resolved', async () => {
+    const sm = new FakeBroadcaster()
+    const s = sm.addSession('s1', { running: true })
+    const { sink, conn } = setup(sm)
+    send(conn, { kind: 'subscribe', sessionId: 's1', orderedRebase: true })
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1' && f.ok === true)
+    s.msgstat.push({ kind: 'message-consumed', sessionId: 's1', uuid: 'u1', consumedAt: 1, generation: 5 })
+    s.msgstat.push({ kind: 'messages-withdrawn', sessionId: 's1', uuids: ['u2'], generation: 5 })
+    s.msgstat.push({ kind: 'message-steered', sessionId: 's1', uuid: 'u3', state: 'injected', generation: 5 })
+    s.dialogs.push({ kind: 'resolved', did: 'd1', decision: { behavior: 'cancelled' }, retractedMessageUuids: ['u4'], generation: 5 } as never)
+    await waitForFrame(sink, (f) => f.kind === 'dialog-resolved')
+    const consumed = sink.kinds('message-consumed')[0]
+    const withdrawn = sink.kinds('messages-withdrawn')[0]
+    const steered = sink.kinds('message-steered')[0]
+    const dialog = sink.kinds('dialog-resolved')[0]
+    expect(consumed).toMatchObject({ uuid: 'u1', generation: 5 })
+    expect(withdrawn).toMatchObject({ uuids: ['u2'], generation: 5 })
+    expect(steered).toMatchObject({ uuid: 'u3', generation: 5 })
+    expect(dialog).toMatchObject({ id: 'd1', generation: 5 })
+    conn.close()
+  })
+})

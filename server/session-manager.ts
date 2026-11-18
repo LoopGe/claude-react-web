@@ -55,7 +55,7 @@ import {
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
 import { imagePayloadOfContent, taskNotificationToolUseId } from '../shared/user-frames.js'
-import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased } from './ws-protocol.js'
 import type { TurnChangesPayload, TurnDiffOptions, TurnDiffPayload, WsTurnChanges } from '../shared/turn-changes.js'
 import { toolTargetPaths } from './snapshot/tool-targets.js'
 import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
@@ -87,6 +87,7 @@ import {
 } from './session-pump.js'
 import {
   type Subscriber,
+  type SessionLiveFrame,
   type PermissionEvent,
   type PermissionRequestSnapshot,
   type QuestionAnswer,
@@ -1022,7 +1023,7 @@ export class SessionManager {
    *  keyed by the message OBJECT (not a ring index) so later tasks can read
    *  a frame's seq without index drift after ring trimming, and without
    *  mutating the SDKMessage shape. */
-  private readonly seqByMessage = new WeakMap<object, number>()
+  private readonly seqByMessage = new WeakMap<object, { seq: number; generation: number }>()
   constructor(opts: SessionManagerOptions & { uploadStore?: UploadStore } = {}) {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.subagentHistoryCap = opts.subagentHistoryCap ?? defaultConfig.subagentHistoryCap
@@ -1040,7 +1041,7 @@ export class SessionManager {
     // contract is evict on ANY resolution, never on receipt.
     this.dialogBroker = new DialogBroker((s, _did, _decision, retracted) => {
       if (retracted && retracted.length > 0) this.evictTranscriptAndBroadcast(s.id, retracted)
-    })
+    }, (id) => this.transcriptHead(id)?.generation)
     this.clientDebugBroker = new ClientDebugBroker((frame) => {
       // Only real WS connections subscribe to this channel (see the field
       // doc), so its size IS the browser-tab count. Zero live tabs → report
@@ -1143,7 +1144,7 @@ export class SessionManager {
     // Sessions map is passed by reference — the broadcaster reads/mutates
     // subscriber sets directly on Session objects, so it needs no other
     // wiring back to SessionManager (see session-broadcaster.ts header).
-    this.broadcaster = new SessionEventBroadcaster(this.sessions)
+    this.broadcaster = new SessionEventBroadcaster(this.sessions, (id) => this.transcriptHead(id)?.generation)
 
     this.backgroundWatchers = new BackgroundWatcherRegistry({
       applyTaskEvent: (s, msg) => {
@@ -4542,6 +4543,13 @@ export class SessionManager {
   private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges): void {
     const s = this.sessions.get(id)
     if (!s || s.messageStatusSubscribers.size === 0) return
+    // Stamp the generation AT EMISSION (spec §8.3): a frame queued before a
+    // rebuild must keep the generation it was emitted under, so the client
+    // drops it whole instead of applying old-gen intent to the new space.
+    // turn-changes is not transcript-scoped; evicted already carries its own.
+    if (frame.kind !== 'turn-changes' && frame.kind !== 'messages-evicted' && frame.generation === undefined) {
+      frame = { ...frame, generation: this.transcriptHead(id)?.generation ?? 0 }
+    }
     for (const sub of s.messageStatusSubscribers) {
       try { sub.push(frame) } catch { /* subscriber dead — skip */ }
     }
@@ -7818,10 +7826,10 @@ export class SessionManager {
    * to clients. Transcript history is NOT attached — the seq-window
    * protocol pages it over REST (GET /sessions/:id/messages).
    */
-  subscribe(id: string, opts?: { orderedRebase?: boolean }): { iterable: AsyncIterable<SDKMessage>; unsubscribe: () => void } {
+  subscribe(id: string, opts?: { orderedRebase?: boolean }): { iterable: AsyncIterable<SessionLiveFrame>; unsubscribe: () => void } {
     const s = this.require(id)
     const subId = randomUUID()
-    const sub = createAsyncSubscription<SDKMessage>(() => {
+    const sub = createAsyncSubscription<SessionLiveFrame>(() => {
       s.subscribers.delete(subId)
       this.subscriptionHub.detach(id, subId)
     })
@@ -7841,7 +7849,7 @@ export class SessionManager {
     if (opts) {
       this.subscriptionHub.attach(id, {
         id: subId,
-        push: (frame) => sdkSub.push(frame as SDKMessage),
+        push: (frame) => sdkSub.push(frame as SessionLiveFrame),
         get closed() { return sub.closed },
         orderedRebase: opts.orderedRebase === true,
       })
@@ -7886,7 +7894,12 @@ export class SessionManager {
     }
     void (async () => {
       try {
-        for await (const frame of sub.iterable) emit(frame)
+        for await (const frame of sub.iterable) {
+          // The primary queue also carries the ordered-rebase control
+          // envelope (spec §8.3) — not an SDK frame, not a subagent frame.
+          if ((frame as { kind?: string }).kind === 'transcript-rebased') continue
+          emit(frame as SDKMessage)
+        }
         terminate(new Error(`live subagent frame subscription for session ${id} ended unexpectedly`))
       } catch (err) {
         terminate(err instanceof Error ? err : new Error(String(err)))
@@ -8009,8 +8022,13 @@ export class SessionManager {
    *  seqByMessage so the WS frame path (Task 5) can stamp it onto live
    *  frames without re-walking the store. */
   private recordTranscriptFor(sessionId: string, msg: SDKMessage): void {
-    const seq = recordTranscriptMessage(this.getOrCreateTranscript(sessionId), msg)
-    if (seq !== null) this.seqByMessage.set(msg, seq)
+    const t = this.getOrCreateTranscript(sessionId)
+    const seq = recordTranscriptMessage(t, msg)
+    // Capture the generation AT ASSIGNMENT (spec §8.3): after an ordered
+    // rebuild, this message object must still serialize with the generation
+    // its seq was allocated in, or a stale queued frame would carry an old
+    // seq under the new generation and collide with the rebuilt space.
+    if (seq !== null) this.seqByMessage.set(msg, { seq, generation: t.store.generation })
   }
 
   /** Compose the authoritative "what should be in the seq store" list from
@@ -8246,6 +8264,21 @@ export class SessionManager {
       for (const a of ordered[i].aliases) t.store.registerUuidAlias(a, i)
     }
     t.hasOrderedRebuild = true
+    // Ordered-rebase reset signal (spec §8.3): a control envelope on the
+    // PRIMARY message FIFO, so every attached connection receives the reset
+    // before any new-generation frame. Pushed synchronously right after the
+    // store swap — no live append can interleave between swap and push.
+    const live = this.sessions.get(id)
+    if (live) {
+      const envelope: WsTranscriptRebased = {
+        kind: 'transcript-rebased',
+        sessionId: id,
+        reason: 'ordered-rebuild',
+        generation: t.store.generation,
+        headSeq: t.store.headSeq,
+      }
+      for (const sub of live.subscribers.values()) sub.push(envelope)
+    }
     metrics.count('transcript_reconcile_total', { mode: 'rebuild', result: 'success' })
     metrics.count('transcript_rebuild_reason', { reason: 'middle-gap' })
     metrics.count('transcript_rebuild_entries', { kind: 'canonical' }, ordered.length)
@@ -8507,6 +8540,14 @@ export class SessionManager {
    *  leaking into ring entries, replay JSON, or equality checks). Undefined
    *  for messages outside the durable transcript. */
   transcriptSeqOf(_sessionId: string, message: object): number | undefined {
+    return this.seqByMessage.get(message)?.seq
+  }
+
+  /** Seq + assignment-time generation for the WS frame path (spec §8.3).
+   *  Unlike reading transcriptHead at serialization time, this keeps an old
+   *  message object's frame on its OLD generation after a rebuild, so the
+   *  client's generation guard drops it instead of misreading its seq. */
+  transcriptFrameMetaOf(_sessionId: string, message: object): { seq: number; generation: number } | undefined {
     return this.seqByMessage.get(message)
   }
 

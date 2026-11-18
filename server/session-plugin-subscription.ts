@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { Session } from './session-types.js'
+import type { Session, SessionLiveFrame } from './session-types.js'
 import type { RpcPeer } from './app-plugins/rpc-peer.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 
@@ -60,8 +60,12 @@ export class SessionSubscriptionRegistry {
       id: key,
       closed: false,
       end: () => { this.entries.delete(entry) },
-      push: (message: SDKMessage) => {
-        this.notify(sessionId, { kind: 'message', sessionId, message })
+      push: (message: SessionLiveFrame) => {
+        // The ordered-rebase control envelope is not an SDK message. The
+        // typed plugin reset signal (spec §8.3 plugin protocol) is a separate
+        // extension; until it lands, plugins simply don't see the envelope.
+        if ((message as { kind?: string }).kind === 'transcript-rebased') return
+        this.notify(sessionId, { kind: 'message', sessionId, message: message as SDKMessage })
       },
     })
     return { ok: true }

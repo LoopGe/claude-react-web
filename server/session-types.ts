@@ -30,7 +30,7 @@ import type { SessionSkillOverride } from '../shared/skills.js'
 import type { SessionToolProfile } from '../shared/tool-profile.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
-import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted, WsTurnChanges } from '../shared/ws-protocol.js'
+import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased, WsTurnChanges } from '../shared/ws-protocol.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 import type { FirstPartyToolStatus } from '../shared/first-party.js'
 
@@ -125,10 +125,16 @@ export interface DebugSessionDetail extends DebugSessionSummary {
   contextUsageMismatch: boolean
 }
 
+/** One frame on the primary per-session message queue: an SDK message, or
+ *  the ordered-rebase control envelope (spec §8.3). The envelope rides the
+ *  SAME FIFO so every connection receives the reset before any
+ *  new-generation frame; frame-bridge distinguishes it by `kind`. */
+export type SessionLiveFrame = SDKMessage | WsTranscriptRebased
+
 /** Subscriber — each connected client gets one of these. */
 export interface Subscriber {
   id: string
-  push: (msg: SDKMessage) => void
+  push: (msg: SessionLiveFrame) => void
   end: () => void
   closed: boolean
 }
@@ -161,7 +167,7 @@ export interface ElicitationSubscriber {
  *  subscriber set. */
 export type DialogEvent =
   | { kind: 'request'; payload: UserDialogRequestUi }
-  | { kind: 'resolved'; did: string; decision: UserDialogDecision; retractedMessageUuids?: string[] }
+  | { kind: 'resolved'; did: string; decision: UserDialogDecision; retractedMessageUuids?: string[]; generation?: number }
 export interface DialogSubscriber {
   id: string
   push: (ev: DialogEvent) => void
@@ -999,9 +1005,16 @@ export interface SessionBroadcaster {
    *  the same fixture reason as transcriptHead. */
   transcriptSeqOf?(sessionId: string, message: object): number | undefined
   subscribe(sessionId: string, opts?: { orderedRebase?: boolean }): {
-    iterable: AsyncIterable<SDKMessage>
+    iterable: AsyncIterable<SessionLiveFrame>
     unsubscribe: () => void
   }
+  /** Seq + assignment-time generation of one live message object (spec §8.3).
+   *  The generation is captured when the seq is ALLOCATED, not at
+   *  serialization time: after an ordered rebuild, an old message object
+   *  still in a subscriber queue must serialize with its OLD generation so
+   *  the client drops it instead of misreading its seq in the new space.
+   *  Optional for fixtures without a seq store. */
+  transcriptFrameMetaOf?(sessionId: string, message: object): { seq: number; generation: number } | undefined
   /** Whether the session's committed generation history contains an
    *  ordered-rebuild (spec §8.3): subscribes that do not declare
    *  orderedRebaseV1 must be refused. Optional so test broadcaster fixtures

@@ -381,6 +381,19 @@ export class SessionSynchronizer {
     }
   }
 
+  /** Stale-generation guard (spec §8.3): a msgstat/dialog frame stamped
+   *  with a generation other than the adopted one is dropped WHOLE —
+   *  applying it would evict or stamp same-uuid rows of the new seq space
+   *  (a pre-rebuild withdrawal/consumed/resolution arriving late). Frames
+   *  WITHOUT a generation (pre-rebase servers) and an unanchored window
+   *  (generation < 0, no page adopted yet) apply unchanged. */
+  private isStaleGeneration(frame: { generation?: number }): boolean {
+    const g = frame.generation
+    if (g == null) return false
+    const adopted = this.store.getSnapshot().generation
+    return adopted >= 0 && g !== adopted
+  }
+
   /** The full WS frame switch, ported from useChatStream. Synchronous
    *  dispatches run inline; async paths (refetchTail, fillGap) are kicked
    *  off as fire-and-forget with `run` captured so a stopped run's late
@@ -460,11 +473,31 @@ export class SessionSynchronizer {
         }
         break
       }
+      case 'transcript-rebased': {
+        // Ordered rebuild committed (spec §8.3): reset the seq window to the
+        // new generation, PRESERVE ClientIntent (REBASE, not WINDOW_BUMP),
+        // and refetch the tail. The generation floor makes any in-flight
+        // old-generation page retry. `lastFullResetGeneration` (a missed
+        // clear/compact forcing a full reset) is not emitted by the server
+        // yet — in-place reset batches arrive with the lifecycle rewiring;
+        // until then no missed clear can precede a rebase, so fullReset is
+        // false.
+        store.dispatch({
+          type: 'REBASE_TRANSCRIPT',
+          generation: frame.generation,
+          headSeq: frame.headSeq,
+          fullReset: false,
+        })
+        run.minGeneration = frame.generation
+        void this.refetchTail(run)
+        break
+      }
       case 'messages-evicted': {
         // Server tombstones by seq (refusal-fallback retraction, resolved
         // user-dialog eviction). The reducer maps the seqs to their uuids
         // and reuses the uuid eviction machinery, so the ordered log and
         // the lifecycle maps stay in lockstep with the window.
+        if (this.isStaleGeneration(frame)) break
         store.dispatch({ type: 'WINDOW_EVICT', seqs: frame.seqs })
         break
       }
@@ -508,6 +541,9 @@ export class SessionSynchronizer {
         // For edit_prompt we first lift the evicted leg's last user
         // message text so Chat can prefill the composer with the original
         // question.
+        // A stale-generation resolution must not evict same-uuid rows of
+        // the new space, nor prefill the composer from a dead leg (§8.3).
+        if (this.isStaleGeneration(frame)) break
         if (frame.retractedMessageUuids?.length) {
           const uuidSet = new Set(frame.retractedMessageUuids)
           if (
@@ -576,6 +612,7 @@ export class SessionSynchronizer {
         // reducer stashes the timestamp in pendingConsumedMessages and the
         // message's own broadcast / next page folds it in. Either way
         // the placeholder lookup in applyMessageConsumed self-heals.
+        if (this.isStaleGeneration(frame)) break
         store.dispatch({ type: 'MESSAGE_CONSUMED', uuid: frame.uuid, consumedAt: frame.consumedAt })
         break
       }
@@ -584,6 +621,7 @@ export class SessionSynchronizer {
         // "injected"; 'requeued' means the turn ended before delivery and
         // the message went back to the SDK input queue (chip falls back to
         // the normal queued→consumed flow).
+        if (this.isStaleGeneration(frame)) break
         store.dispatch({ type: 'MESSAGE_STEERED', uuid: frame.uuid, state: frame.state })
         break
       }
@@ -593,6 +631,7 @@ export class SessionSynchronizer {
         // the bubbles here too (same machinery as the refusal-fallback
         // eviction). The frame may list CLI-internal uuids this tab never
         // sent; the reducer's lookup simply finds nothing for those.
+        if (this.isStaleGeneration(frame)) break
         if (frame.uuids.length > 0) {
           store.dispatch({ type: 'EVICT_MESSAGES', uuids: frame.uuids })
         }

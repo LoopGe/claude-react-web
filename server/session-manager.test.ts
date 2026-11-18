@@ -2694,7 +2694,7 @@ describe('SessionManager', () => {
     transcriptSpy.mockClear()
     const subscriber = sm.subscribe(info.id)
     const broadcasts: SDKMessage[] = []
-    void (async () => { for await (const frame of subscriber.iterable) broadcasts.push(frame) })()
+    void (async () => { for await (const frame of subscriber.iterable) broadcasts.push(frame as SDKMessage) })()
     let releaseSummary!: (summary: string) => void
     vi.mocked(summarizeForCompact).mockImplementationOnce(
       () => new Promise<string>((resolve) => { releaseSummary = resolve }),
@@ -2760,7 +2760,7 @@ describe('SessionManager', () => {
     transcriptSpy.mockClear()
     const subscriber = sm.subscribe(info.id)
     const broadcasts: SDKMessage[] = []
-    void (async () => { for await (const frame of subscriber.iterable) broadcasts.push(frame) })()
+    void (async () => { for await (const frame of subscriber.iterable) broadcasts.push(frame as SDKMessage) })()
     let releaseSummary!: (summary: string) => void
     vi.mocked(summarizeForCompact).mockImplementationOnce(
       () => new Promise<string>((resolve) => { releaseSummary = resolve }),
@@ -9116,6 +9116,111 @@ describe('SessionManager', () => {
       } finally {
         await sm2.shutdown()
       }
+    })
+  })
+  describe('ordered-rebase live publication (spec §8.3)', () => {
+    let prevConfigDir: string | undefined
+    beforeEach(() => {
+      prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    })
+
+    const emitAssistant = (uuid: string, id: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant',
+        uuid,
+        parent_tool_use_id: null,
+        message: { id, role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+    const jsonlAssistant = (uuid: string, id: string, text: string) => ({
+      type: 'assistant',
+      uuid,
+      message: { id, role: 'assistant', content: [{ type: 'text', text }] },
+    })
+    /** Live order A,N,R vs provider order A,R,N, with a capable subscriber
+     *  attached BEFORE the live frames so the test holds the actual message
+     *  objects the seq space recorded. */
+    const seedInvertedWithSubscriber = async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const sub = sm.subscribe(info.id, { orderedRebase: true })
+      const frames: Array<Record<string, unknown>> = []
+      void (async () => {
+        for await (const f of sub.iterable) frames.push(f as Record<string, unknown>)
+      })()
+      emitAssistant('A', 'mA', 'first')
+      emitAssistant('N', 'mN', 'newer')
+      emitAssistant('R', 'mR', 'belongs in the middle')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      expect(await waitFor(async () =>
+        (await new TranscriptSidecar(dir, info.id).load()).length === 3,
+      )).toBe(true)
+      const jsonlPath = join(dir, 'projects', encodeCwd(TEST_CWD), `${info.id}.jsonl`)
+      mkdirSync(dirname(jsonlPath), { recursive: true })
+      writeFileSync(jsonlPath, [
+        jsonlAssistant('A', 'mA', 'first'),
+        jsonlAssistant('R', 'mR', 'belongs in the middle'),
+        jsonlAssistant('N', 'mN', 'newer'),
+      ].map((m) => JSON.stringify(m)).join('\n') + '\n')
+      return { info, sub, frames }
+    }
+
+    it('publishes transcript-rebased on the primary queue, ordered before new-generation frames', async () => {
+      const { info, sub, frames } = await seedInvertedWithSubscriber()
+      await sm.retryTranscriptReconcile(info.id)
+      const env = frames.find((f) => f.kind === 'transcript-rebased')
+      expect(env).toMatchObject({
+        kind: 'transcript-rebased',
+        sessionId: info.id,
+        reason: 'ordered-rebuild',
+        generation: 1,
+        headSeq: 3,
+      })
+      // A post-rebuild live frame must arrive AFTER the envelope on the same
+      // per-subscriber FIFO (the client resets before it sees new-gen seqs).
+      emitAssistant('T', 'mT', 'post-rebuild')
+      expect(await waitFor(() => frames.some((f) => f.uuid === 'T'))).toBe(true)
+      const envIdx = frames.findIndex((f) => f.kind === 'transcript-rebased')
+      const tIdx = frames.findIndex((f) => f.uuid === 'T')
+      expect(envIdx).toBeLessThan(tIdx)
+      sub.unsubscribe()
+    })
+
+    it('live frames keep their assignment-time generation across a rebuild', async () => {
+      const { info, sub, frames } = await seedInvertedWithSubscriber()
+      expect(await waitFor(() => frames.filter((f) => f.type === 'assistant').length === 3)).toBe(true)
+      const aFrame = frames.find((f) => f.uuid === 'A') as object
+      expect(sm.transcriptFrameMetaOf(info.id, aFrame)).toEqual({ seq: 0, generation: 0 })
+      await sm.retryTranscriptReconcile(info.id)
+      // The OLD message object still reports the generation its seq was
+      // assigned in — serialization after the rebuild must not re-stamp it
+      // with the new generation (old seqs would collide with the new space).
+      expect(sm.transcriptFrameMetaOf(info.id, aFrame)).toEqual({ seq: 0, generation: 0 })
+      emitAssistant('T', 'mT', 'post-rebuild')
+      expect(await waitFor(() => frames.some((f) => f.uuid === 'T'))).toBe(true)
+      const tFrame = frames.find((f) => f.uuid === 'T') as object
+      expect(sm.transcriptFrameMetaOf(info.id, tFrame)).toEqual({ seq: 3, generation: 1 })
+      sub.unsubscribe()
+    })
+
+    it('messages-withdrawn carries the current generation', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await sm.send(info.id, 'in-flight seed')
+      await sm.send(info.id, 'queued')
+      const frames: Array<{ kind?: string; generation?: number }> = []
+      const sub = sm.subscribeMessageStatus(info.id)
+      void (async () => {
+        for await (const v of sub!.iterable) frames.push(v as { kind?: string; generation?: number })
+      })()
+      await sm.interrupt(info.id, { cancelQueued: true })
+      expect(await waitFor(() => frames.some((f) => f.kind === 'messages-withdrawn'))).toBe(true)
+      const w = frames.find((f) => f.kind === 'messages-withdrawn')
+      expect(w!.generation).toBe(sm.transcriptHead(info.id)!.generation)
+      sub!.unsubscribe()
     })
   })
   describe('transcript eviction + messages-evicted broadcast (Task 5 wiring)', () => {

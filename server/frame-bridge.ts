@@ -39,6 +39,7 @@ import type {
   WsSubagentTranscriptSubscribe,
   WsSubagentTranscriptUnsubscribe,
   WsTasklistSnapshot,
+  WsTranscriptRebased,
   WsTurnChanges,
 } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
@@ -860,6 +861,13 @@ export class SessionConnection {
       }
 
       drive(msg.iterable[Symbol.asyncIterator](), (value: unknown) => {
+        // Ordered-rebase control envelope (spec §8.3): forward UNWRAPPED on
+        // the primary queue — the client resets its seq window to the new
+        // generation before any new-generation frame arrives.
+        if ((value as { kind?: string } | null)?.kind === 'transcript-rebased') {
+          this.sink.send(value as WsTranscriptRebased)
+          return
+        }
         // The same message object reference is delivered to every
         // connection subscribed to this session, so serialize the
         // frame once and reuse across all of them (see
@@ -868,16 +876,20 @@ export class SessionConnection {
         const msgObj = typeof value === 'object' && value !== null
           ? (value as object)
           : null
-        const seq = msgObj ? this.sm.transcriptSeqOf?.(sessionId, msgObj) : undefined
-        // Generation rides alongside seq (spec §4: live `message`
-        // frames carry { seq, generation } — the client's WINDOW_LIVE
-        // path requires BOTH non-null). Same source as the attached
-        // handshake. Only stamped when a seq exists, matching the
-        // wire contract (`generation` is omitted when `seq` is) and
-        // the frame-cache invariant documented in messageFrameJson.
-        const generation = seq !== undefined
+        // Seq + generation come from the ASSIGNMENT-TIME meta (spec §8.3):
+        // after an ordered rebuild, an old message object still queued here
+        // keeps its OLD generation so the client drops the frame instead of
+        // misreading its seq in the new space. Reading transcriptHead at
+        // serialization time would re-stamp it with the new generation.
+        const meta = msgObj ? this.sm.transcriptFrameMetaOf?.(sessionId, msgObj) : undefined
+        const seq = meta?.seq ?? (msgObj ? this.sm.transcriptSeqOf?.(sessionId, msgObj) : undefined)
+        // Generation rides alongside seq (spec §4: live `message` frames
+        // carry { seq, generation } — the client's WINDOW_LIVE path requires
+        // BOTH non-null). Only stamped when a seq exists, matching the wire
+        // contract and the frame-cache invariant in messageFrameJson.
+        const generation = meta?.generation ?? (seq !== undefined
           ? this.sm.transcriptHead?.(sessionId)?.generation
-          : undefined
+          : undefined)
         this.sink.sendRaw(
           msgObj
             ? messageFrameJson(sessionId, msgObj, seq, generation)
@@ -906,7 +918,7 @@ export class SessionConnection {
       drive(dialogs.iterable[Symbol.asyncIterator](), (value: unknown) => {
         const ev = value as
           | { kind: 'request'; payload: never }
-          | { kind: 'resolved'; did: string; decision: never; retractedMessageUuids?: string[] }
+          | { kind: 'resolved'; did: string; decision: never; retractedMessageUuids?: string[]; generation?: number }
         if (ev.kind === 'request')
           this.sink.send({ kind: 'dialog-request', sessionId, payload: ev.payload })
         else
@@ -916,6 +928,7 @@ export class SessionConnection {
             id: ev.did,
             decision: ev.decision,
             ...(ev.retractedMessageUuids ? { retractedMessageUuids: ev.retractedMessageUuids } : {}),
+            generation: ev.generation,
           })
       })
       drive(ctxIter, (value) => {
@@ -937,16 +950,19 @@ export class SessionConnection {
         // SessionManager.subscribeMessageStatus), so this is a
         // plain discriminated-union switch, not a defensive parse.
         const v = value as WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges
+        // generation is stamped at EMISSION by the manager (spec §8.3) and
+        // forwarded verbatim — re-reading transcriptHead here would re-stamp
+        // a pre-rebuild frame with the new generation.
         if (v.kind === 'messages-withdrawn') {
-          this.sink.send({ kind: 'messages-withdrawn', sessionId, uuids: v.uuids })
+          this.sink.send({ kind: 'messages-withdrawn', sessionId, uuids: v.uuids, generation: v.generation })
         } else if (v.kind === 'messages-evicted') {
           this.sink.send({ kind: 'messages-evicted', sessionId, seqs: v.seqs, generation: v.generation })
         } else if (v.kind === 'message-steered') {
-          this.sink.send({ kind: 'message-steered', sessionId, uuid: v.uuid, state: v.state })
+          this.sink.send({ kind: 'message-steered', sessionId, uuid: v.uuid, state: v.state, generation: v.generation })
         } else if (v.kind === 'turn-changes') {
           this.sink.send({ kind: 'turn-changes', sessionId, summary: v.summary })
         } else {
-          this.sink.send({ kind: 'message-consumed', sessionId, uuid: v.uuid, consumedAt: v.consumedAt })
+          this.sink.send({ kind: 'message-consumed', sessionId, uuid: v.uuid, consumedAt: v.consumedAt, generation: v.generation })
         }
       })
       drive(recapIter, (value) => {

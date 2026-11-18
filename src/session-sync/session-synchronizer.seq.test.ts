@@ -986,3 +986,83 @@ describe('SessionSynchronizer seq-window protocol', () => {
     sync.stop()
   })
 })
+
+describe('SessionSynchronizer ordered-rebase (spec §8.3)', () => {
+  beforeEach(() => {
+    currentSessionListeners = new Map()
+    transcripts.clear()
+    staleNext = null
+    deferredFetches = []
+    mockSubscribe.mockClear()
+    mockApiGet.mockReset()
+    mockApiGet.mockImplementation(defaultApiGetImpl)
+    void sessionStoreRegistry.clear()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('transcript-rebased resets the window to the new generation, preserves intent, and refetches the tail', async () => {
+    const sid = 'rebase-reset'
+    const t = transcript(sid)
+    for (let i = 0; i < 3; i++) t.msgs.push({ seq: i, msg: fakeMsg(sid, i) })
+    t.headSeq = 3
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    expect(store.getSnapshot().generation).toBe(0)
+    // ClientIntent (an undismissed error) must survive the rebase.
+    store.dispatch({ type: 'ERROR', message: 'keep me' })
+    // The server rebuilt: new generation, new projection.
+    t.generation = 7
+    t.msgs = [{ seq: 0, msg: fakeMsg(sid, 100) }, { seq: 1, msg: fakeMsg(sid, 101) }]
+    t.headSeq = 2
+    mockApiGet.mockClear()
+    dispatchToSession(sid, { kind: 'transcript-rebased', sessionId: sid, reason: 'ordered-rebuild', generation: 7, headSeq: 2 })
+    await vi.waitFor(() => expect(store.getSnapshot().generation).toBe(7))
+    await vi.waitFor(() => expect(store.getSnapshot().messages).toHaveLength(2))
+    expect(store.getSnapshot().error).toBe('keep me')
+    expect(tailFetchUrls()).toEqual([`/sessions/${sid}/messages?limit=200`])
+    // Old-generation live frames are dropped after the rebase.
+    dispatchToSession(sid, { kind: 'message', sessionId: sid, seq: 2, generation: 0, message: fakeMsg(sid, 2) as never })
+    expect(store.getSnapshot().messages).toHaveLength(2)
+    sync.stop()
+  })
+
+  it('drops stale-generation msgstat/dialog frames whole; current-generation and legacy frames apply', async () => {
+    const sid = 'rebase-guards'
+    const t = transcript(sid)
+    const userMsg = { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hello' } }
+    t.msgs.push({ seq: 0, msg: userMsg })
+    t.headSeq = 1
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    // Rebase to generation 5; the refetched page re-anchors the same row.
+    t.generation = 5
+    dispatchToSession(sid, { kind: 'transcript-rebased', sessionId: sid, reason: 'ordered-rebuild', generation: 5, headSeq: 1 })
+    await vi.waitFor(() => expect(store.getSnapshot().generation).toBe(5))
+    await vi.waitFor(() => expect(store.getSnapshot().messages).toHaveLength(1))
+    // Stale frames from the OLD generation must not touch the new transcript.
+    dispatchToSession(sid, { kind: 'message-consumed', sessionId: sid, uuid: 'u1', consumedAt: 111, generation: 0 })
+    dispatchToSession(sid, { kind: 'messages-withdrawn', sessionId: sid, uuids: ['u1'], generation: 0 })
+    dispatchToSession(sid, { kind: 'message-steered', sessionId: sid, uuid: 'u1', state: 'injected', generation: 0 })
+    dispatchToSession(sid, { kind: 'dialog-resolved', sessionId: sid, id: 'd1', decision: { behavior: 'cancelled' }, retractedMessageUuids: ['u1'], generation: 0 })
+    dispatchToSession(sid, { kind: 'messages-evicted', sessionId: sid, seqs: [0], generation: 0 })
+    const snap = store.getSnapshot()
+    expect(snap.messages).toHaveLength(1)
+    expect((snap.messages[0] as { consumedAt?: number }).consumedAt).toBeUndefined()
+    // A current-generation frame applies.
+    dispatchToSession(sid, { kind: 'message-consumed', sessionId: sid, uuid: 'u1', consumedAt: 222, generation: 5 })
+    await vi.waitFor(() => expect((store.getSnapshot().messages[0] as { consumedAt?: number }).consumedAt).toBe(222))
+    // A legacy frame WITHOUT generation still applies (backward compat):
+    // a withdrawal evicts the row (consumedAt is first-stamp-wins, so it
+    // can't observe a second consumed frame).
+    dispatchToSession(sid, { kind: 'messages-withdrawn', sessionId: sid, uuids: ['u1'] })
+    await vi.waitFor(() => expect(store.getSnapshot().messages).toHaveLength(0))
+    sync.stop()
+  })
+})

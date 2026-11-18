@@ -85,7 +85,12 @@ function gitGroupKey(s: Session): string {
 }
 
 export class SessionEventBroadcaster {
-  constructor(private sessions: Map<string, Session>) {}
+  constructor(
+    private sessions: Map<string, Session>,
+    /** Current transcript generation — stamped on the withdrawal-window seed
+     *  frame (spec §8.3) so a reconnecting tab can generation-guard it. */
+    private transcriptGenerationOf?: (id: string) => number | undefined,
+  ) {}
 
   /** AsyncIterable of context-usage snapshots for one session.
    *  Returns null if the session doesn't exist (caller should treat
@@ -168,7 +173,7 @@ export class SessionEventBroadcaster {
     if (!s) return null
     return this.subscribePushableSet(s, s.messageStatusSubscribers, 'msgstat', 50, () =>
       s.withdrawnUuids.length > 0
-        ? [{ kind: 'messages-withdrawn' as const, sessionId: id, uuids: [...s.withdrawnUuids] }]
+        ? [{ kind: 'messages-withdrawn' as const, sessionId: id, uuids: [...s.withdrawnUuids], generation: this.transcriptGenerationOf?.(id) ?? 0 }]
         : [],
     )
   }
