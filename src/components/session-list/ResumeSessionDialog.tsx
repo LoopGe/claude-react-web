@@ -261,13 +261,24 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
                       → {s.lastPrompt}
                     </span>
                   )}
+                  {/* cwd · time · branch meta row. maxWidth:100% overrides
+                      the hint class's 200px cap (same reason as the prompt
+                      previews above): as a flex container its overflow is
+                      hard-clipped, not ellipsized, so the cap used to slice
+                      the branch name mid-glyph. The path shrinks with an
+                      ellipsis (minWidth:0 lets it go below content width);
+                      time/branch never shrink. */}
                   <span
                     className="palette-item-hint"
-                    style={{ display: 'flex', gap: 8, fontSize: 'var(--fs-xs)' }}
+                    style={{ display: 'flex', gap: 8, fontSize: 'var(--fs-xs)', maxWidth: '100%' }}
                   >
-                    {s.cwd && <span title={s.cwd}>{shortenPath(s.cwd)}</span>}
-                    <span>· {formatRelativeFromMs(s.lastModified)}</span>
-                    {s.gitBranch && <span>· {s.gitBranch}</span>}
+                    {s.cwd && (
+                      <span className="truncate" style={{ minWidth: 0 }} title={s.cwd}>
+                        {shortenPath(s.cwd)}
+                      </span>
+                    )}
+                    <span style={{ flexShrink: 0 }}>· {formatRelativeFromMs(s.lastModified)}</span>
+                    {s.gitBranch && <span style={{ flexShrink: 0 }}>· {s.gitBranch}</span>}
                   </span>
                 </button>
               )

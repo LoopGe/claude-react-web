@@ -114,6 +114,34 @@ describe('ResumeSessionDialog', () => {
     expect(scrollIntoView.mock.instances[0]).toBe(rows()[0])
   })
 
+  // Regression: the cwd · time · branch meta row reuses .palette-item-hint,
+  // whose 200px max-width + overflow:hidden hard-clipped the branch name
+  // mid-glyph ("main" → "mair") once the row's content exceeded 200px —
+  // text-overflow:ellipsis does not apply to a flex container. The row must
+  // override the cap to full width, let the path shrink with an ellipsis,
+  // and keep the time/branch segments unshrinkable.
+  it('meta row spans the full row width and truncates only the path', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      sessions: [{ ...SESSIONS[0], cwd: 'D:\\codes\\knowledge', gitBranch: 'main' }],
+    })
+    setup()
+    await waitFor(() => expect(rows()).toHaveLength(1))
+
+    const meta = Array.from(rows()[0].querySelectorAll<HTMLElement>('.palette-item-hint')).find(
+      (el) => el.style.display === 'flex',
+    )
+    expect(meta).toBeDefined()
+    expect(meta!.style.maxWidth).toBe('100%')
+
+    const [cwd, time, branch] = Array.from(meta!.children) as HTMLElement[]
+    expect(cwd.textContent).toBe('D:\\codes\\knowledge')
+    expect(cwd.classList.contains('truncate')).toBe(true)
+    expect(parseFloat(cwd.style.minWidth)).toBe(0)
+    expect(time.style.flexShrink).toBe('0')
+    expect(branch.textContent).toBe('· main')
+    expect(branch.style.flexShrink).toBe('0')
+  })
+
   it('resumes the highlighted session on Enter', async () => {
     spyOnScrollIntoView()
     const onResume = vi.fn()
