@@ -9702,7 +9702,7 @@ describe('SessionManager', () => {
       else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
     })
     const forkSeedStoreOf = (sm: SessionManager) =>
-      (sm as unknown as { forkSeedStore: { save(id: string, s: unknown[]): Promise<void>; markSpawnStarted(id: string): Promise<void>; markTargetLogObserved(id: string): Promise<void> } }).forkSeedStore
+      (sm as unknown as { forkSeedStore: { save(id: string, s: unknown[]): Promise<void>; markSpawnStarted(id: string): Promise<void>; markTargetLogObserved(id: string): Promise<void>; load(id: string): Promise<{ spawnStarted: boolean; targetLogObserved: boolean } | null> } }).forkSeedStore
     const asst = (uuid: string) => ({ type: 'assistant', uuid, message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text: uuid }] } })
 
     it('spawn never started + missing target log: reconcile falls back to the pre-seed snapshot', async () => {
@@ -9729,6 +9729,27 @@ describe('SessionManager', () => {
       await forkSeedStoreOf(sm).markTargetLogObserved(forkId)
       const win = await sm.getTranscriptWindow(forkId)
       expect(win.degraded).toBe(true)
+    })
+
+    it('I1: createSideChat marks spawnStarted before spawn (spec §11 covers Side Chat)', async () => {
+      const parent = await sm.create({ cwd: TEST_CWD })
+      await sm.send(parent.id, 'hi')
+      mockHandles[0].emit({ type: 'result' })
+      await tick()
+      const side = await sm.createSideChat(parent.id)
+      const seed = await forkSeedStoreOf(sm).load(side.id)
+      expect(seed?.spawnStarted).toBe(true)
+    })
+
+    it('I4: a real fork has spawnStarted:true durable (snapshot fallback is defensive-only)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await sm.send(info.id, 'seed')
+      mockHandles[0].emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      await tick()
+      const forked = await sm.fork(info.id)
+      const seed = await forkSeedStoreOf(sm).load(forked.id)
+      expect(seed?.spawnStarted).toBe(true)
     })
   })
   describe('transcript eviction + messages-evicted broadcast (Task 5 wiring)', () => {

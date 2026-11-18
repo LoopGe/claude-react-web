@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ForkSeedStore } from './fork-seed-store.js'
@@ -52,4 +52,33 @@ describe('ForkSeedStore (spec §11)', () => {
     await store.save('f1', [])
     expect(await store.load('f1')).toBeNull()
   })
+
+  it('I2: corrupt JSON load throws (not null) — fail closed, not "not a fork"', async () => {
+    const dir = await tmpDir()
+    const store = new ForkSeedStore(dir)
+    await mkdir(join(dir, 'fork-seeds'), { recursive: true })
+    await writeFile(join(dir, 'fork-seeds', 'f1.json'), '{ not valid json')
+    await expect(store.load('f1')).rejects.toThrow()
+  })
+
+  it('I2: shape-invalid load throws (snapshot not an array)', async () => {
+    const dir = await tmpDir()
+    const store = new ForkSeedStore(dir)
+    await mkdir(join(dir, 'fork-seeds'), { recursive: true })
+    await writeFile(join(dir, 'fork-seeds', 'f1.json'), JSON.stringify({ spawnStarted: true }))
+    await expect(store.load('f1')).rejects.toThrow(/corrupt-fork-seed/)
+  })
+
+  it('I2: ENOENT load returns null (verified absence)', async () => {
+    const store = new ForkSeedStore(await tmpDir())
+    expect(await store.load('absent')).toBeNull()
+  })
+
+  it('M9: markSpawnStarted without a saved seed creates an empty-snapshot seed', async () => {
+    const store = new ForkSeedStore(await tmpDir())
+    await store.markSpawnStarted('f1')
+    const loaded = await store.load('f1')
+    expect(loaded).toEqual({ snapshot: [], spawnStarted: true, targetLogObserved: false })
+  })
+
 })

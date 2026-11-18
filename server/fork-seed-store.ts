@@ -10,17 +10,21 @@
 //   targetLogObserved:true + missing log → the log existed and is now lost →
 //                                        source-lost
 //
-// One JSON object per fork at <stateDir>/fork-seeds/<id>.json (writeAtomic).
-// The snapshot can be large (the inherited renderable transcript); it is a
-// recovery fallback, so process-crash-safe atomic write suffices (the markers
-// are re-derived from the provider log on the next reconcile).
+// One JSON object per fork at <stateDir>/fork-seeds/<id>.json, written durably
+// (writeAtomicDurable: fsync tmp + dir sync) — spawnStarted is written ONLY at
+// fork time (not re-derived later), so a power loss dropping it would reopen
+// the fail-open window; the marker class warrants the same durability as the
+// reset journal. The snapshot can be large (the inherited renderable transcript).
+//
+// NOTE: the snapshot-fallback branch (spawnStarted:false) is DEFENSIVE-ONLY in
+// production: spawn() persists meta after provider.createSession starts, so
+// every visible fork already has spawnStarted:true durable. The fallback covers
+// a fork whose meta never persisted (crash between save and mark) — an invisible
+// session. The reachable, valuable half is the fail-closed source-lost verdict.
 
 import { readFile, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { writeAtomic } from './json-file-store.js'
-import { createLogger } from './log.js'
-
-const log = createLogger('fork-seed')
+import { writeAtomicDurable } from './json-file-store.js'
 
 export interface ForkSeedState {
   /** The pre-seeded canonical projection (composed source entries), used as
@@ -40,23 +44,28 @@ export class ForkSeedStore {
     return join(this.dir!, `${id}.json`)
   }
 
+  /** null ONLY on verified absence (ENOENT) or absent stateDir. IO/parse/shape
+   *  errors PROPAGATE (spec §7.1: app stores distinguish ok/missing/error; a
+   *  swallowed error would read as "not a fork" → silent empty healthy
+   *  transcript instead of degraded). ensureTranscriptReconciled's catch
+   *  converts a throw to degraded. */
   async load(id: string): Promise<ForkSeedState | null> {
     if (!this.dir) return null
+    let raw: string
     try {
-      const parsed = JSON.parse(await readFile(this.file(id), 'utf8')) as Partial<ForkSeedState>
-      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.snapshot)) {
-        return {
-          snapshot: parsed.snapshot,
-          spawnStarted: parsed.spawnStarted === true,
-          targetLogObserved: parsed.targetLogObserved === true,
-        }
-      }
-      return null
+      raw = await readFile(this.file(id), 'utf8')
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        log.warn(`[${id}] load failed: ${(err as Error).message ?? err}`)
-      }
-      return null
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw err
+    }
+    const parsed = JSON.parse(raw) as Partial<ForkSeedState>
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.snapshot)) {
+      throw new Error(`corrupt-fork-seed: ${id}`)
+    }
+    return {
+      snapshot: parsed.snapshot,
+      spawnStarted: parsed.spawnStarted === true,
+      targetLogObserved: parsed.targetLogObserved === true,
     }
   }
 
@@ -64,14 +73,14 @@ export class ForkSeedStore {
   async save(id: string, snapshot: unknown[]): Promise<void> {
     if (!this.dir) return
     const state: ForkSeedState = { snapshot, spawnStarted: false, targetLogObserved: false }
-    await writeAtomic(this.dir, this.file(id), state)
+    await writeAtomicDurable(this.dir, this.file(id), state)
   }
 
   /** Mark the fork's provider spawn started (BEFORE the CLI copies the log). */
   async markSpawnStarted(id: string): Promise<void> {
     if (!this.dir) return
     const current = (await this.load(id)) ?? { snapshot: [], spawnStarted: false, targetLogObserved: false }
-    await writeAtomic(this.dir, this.file(id), { ...current, spawnStarted: true })
+    await writeAtomicDurable(this.dir, this.file(id), { ...current, spawnStarted: true })
   }
 
   /** Mark the fork's target log confirmed present + readable (first reconcile
@@ -81,7 +90,7 @@ export class ForkSeedStore {
     const current = await this.load(id)
     if (!current) return
     if (current.targetLogObserved) return
-    await writeAtomic(this.dir, this.file(id), { ...current, targetLogObserved: true })
+    await writeAtomicDurable(this.dir, this.file(id), { ...current, targetLogObserved: true })
   }
 
   async remove(id: string): Promise<void> {

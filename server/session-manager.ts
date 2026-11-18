@@ -3179,6 +3179,10 @@ export class SessionManager {
     // this, a first live message would take seq 0 ahead of the inherited rows.
     const sideChatId = randomUUID()
     const { promptUuids: bridgedPromptUuids } = await this.preseedForkTranscript(sideChatId, parentId, { afterUuid: forkBoundaryUuid })
+    // Same spawn-marker contract as doFork (spec §11 covers Side Chat too):
+    // mark started BEFORE the CLI copies the parent log, so a later missing
+    // log fails closed (source-lost) rather than falling back to the snapshot.
+    await this.forkSeedStore.markSpawnStarted(sideChatId)
     // promptUuids (round 3): seed the live Side Chat's in-memory list with
     // the bridged mappings — same onPromptEcho writeAtomic-REPLACE rationale
     // as fork().
@@ -8130,6 +8134,11 @@ export class SessionManager {
         if (!forkSeed) return []
         // Spawn never started → the CLI provably never copied the log → the
         // pre-seed snapshot is the canonical fallback (already composed).
+        // DEFENSIVE-ONLY in production: spawn() persists meta after
+        // provider.createSession starts, so every visible fork already has
+        // spawnStarted:true; this branch covers a fork whose meta never
+        // persisted (crash between save and mark). The reachable half is the
+        // source-lost fail-closed verdict below.
         if (!forkSeed.spawnStarted) return forkSeed.snapshot as SDKMessage[]
         // Spawn started but the log was never observed, or observed then lost:
         // cannot prove it never existed → source-lost, fail closed (degraded).
@@ -9057,6 +9066,11 @@ export class SessionManager {
             this.taskResultStore.remove(id, { strict: true }),
             this.snapshotStore.remove(id, { strict: true }),
             this.removeTranscriptState(id, { strict: true, sidecar: transcriptSidecar }),
+            // The fork-seed snapshot holds the FULL inherited transcript and
+            // the reset journal holds reset markers — permanent deletion must
+            // remove both (remove() propagates non-ENOENT, matching strict).
+            this.forkSeedStore.remove(id),
+            this.removeResetJournal(id),
           ])
           const failed = removals.find((r) => r.status === 'rejected')
           if (failed) throw failed.reason
