@@ -86,11 +86,16 @@ Posture aligned with DSH (user-approved):
 - **`server/providers/native/mcp/shared-registry.ts`** — host-global
   `Map<sharingKey, SharedRecord>`. `acquire(config)` is synchronous (users++ or
   create + users=1 + fire-and-forget connect; callers await `record.ready` for the
-  initial connect). `release(record)` runs its whole mutation on one serialized
-  queue: users--, and at 0 the bounded close settles BEFORE the map decision (only a
+  initial connect). `release(record)` runs its whole mutation on a PER-KEY
+  serialized queue (one tail promise per sharing key, settled tails removed):
+  users--, and at 0 the bounded close settles BEFORE the map decision (only a
   settled close knows whether cleanup failed), retaining a `cleanupFailed` record
-  and reviving a during-teardown acquirer. Immediate teardown at users==0, no idle
-  grace.
+  and reviving a during-teardown acquirer. Same-key serialization keeps a
+  release-at-0 from racing a concurrent acquire of that key; different keys'
+  releases run concurrently, so a hung close on one server never blocks another
+  server's teardown (a single global queue coupled every server's release latency
+  to the worst hung close, ~2 × `closeTimeoutMs`). Immediate teardown at users==0,
+  no idle grace.
 - **Sharing key** = `JSON.stringify(['stdio', command, args, env sorted by key])` —
   **includes env**, unlike the local replace-diff identity (which excludes it). The
   two keys serve different purposes and stay separate.
@@ -257,10 +262,13 @@ allows 8s), a rare load-flake mode rather than a padded pin.
   (no busy poll); a re-close of a retained `cleanupFailed` record skips
   re-confirmation (sticky verdict, no status flip).
 - **`mcp/shared-registry.test.ts`** — two acquires share one child + release semantics;
-  different env yields separate children; release-at-0 cannot race a concurrent
-  acquire; acquire during healthy teardown gets a reviving record (not a zombie);
-  acquire/release counters + records gauge; retains a `cleanupFailed` record at users 0
-  and blocks automatic re-acquire.
+  different env yields separate children; a hung close on one key does not block
+  another key's release (cross-key isolation, mutation-verified RED under the old
+  global queue); release-at-0 cannot race a concurrent acquire; acquire during
+  healthy teardown gets a reviving record (not a zombie); acquire/release counters +
+  records gauge; retains a `cleanupFailed` record at users 0 and blocks automatic
+  re-acquire; per-key release queues drain to empty once every release settles
+  (`pendingQueueCount` test/diagnostic seam).
 - **`mcp/connections.test.ts`** — two views share a stdio child + view-level toggle; no
   double-release on toggle-off + closeAll; env-only change acquires a new child and
   releases the old; scope labels (shared global / sdk session); tool re-projection with

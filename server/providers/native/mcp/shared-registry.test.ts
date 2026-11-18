@@ -185,6 +185,46 @@ describe('SharedRegistry', () => {
     await expectChildGone(b.pid!)
   }, 15_000)
 
+  it("a hung close on one key does not block another key's release", async () => {
+    const dir = await tempDir()
+    // A refuses every graceful exit (--ignore-exit spawn 1), so its release
+    // hangs for the close race + the exit-confirmation window (~2 × 1500ms).
+    // B is a healthy child on a DIFFERENT key (distinct args).
+    const cfgA = stdioConfig(join(dir, 'a.txt'), '--ignore-exit')
+    const cfgB = stdioConfig(join(dir, 'b.txt'))
+    const reg = new SharedRegistry({ closeTimeoutMs: 1500 })
+
+    const a = acquire(reg, cfgA)
+    const b = acquire(reg, cfgB)
+    expect(a.key).not.toBe(b.key)
+    await Promise.all([a.ready, b.ready])
+    expect(a.status).toBe('connected')
+    expect(b.status).toBe('connected')
+
+    // Start A's release and wait until its teardown is actually in flight.
+    let aSettled = false
+    const releasingA = reg.release(a).then(() => {
+      aSettled = true
+    })
+    await waitFor(() => a.users === 0, 5000, "A's release teardown to start")
+
+    // B's release rides its OWN key's queue, so it resolves while A's close is
+    // still hanging. Under one global queue B would chain behind A's teardown
+    // (≥ the 1500ms close race alone), failing both pins below.
+    const t0 = Date.now()
+    await reg.release(b)
+    const bElapsed = Date.now() - t0
+    expect(aSettled).toBe(false)
+    expect(bElapsed).toBeLessThan(1200)
+    expect(b.users).toBe(0)
+    expect(b.cleanupFailed).toBe(false)
+    expect(reg.get(b.key)).toBeUndefined()
+
+    // Let A's hung teardown settle (retained or reaped depending on whether
+    // the SDK's close escalation killed the child before the deadline).
+    await releasingA
+  }, 15_000)
+
   it('a release-at-0 cannot race a concurrent acquire of the same key', async () => {
     const dir = await tempDir()
     const cfg = stdioConfig(join(dir, 'bye.txt'))
@@ -335,5 +375,27 @@ describe('SharedRegistry', () => {
     await reg.release(c)
     expect(reg.size).toBe(0)
     await expectChildGone(c.pid!)
+  }, 15_000)
+
+  it('drains its per-key release queues once every release settles', async () => {
+    const dir = await tempDir()
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
+
+    const a = acquire(reg, stdioConfig(join(dir, 'a.txt')))
+    const b = acquire(reg, stdioConfig(join(dir, 'b.txt')))
+    await Promise.all([a.ready, b.ready])
+
+    // A release in flight holds its key's queue tail...
+    const releasingA = reg.release(a)
+    expect(reg.pendingQueueCount).toBeGreaterThan(0)
+    await releasingA
+    await reg.release(b)
+    expect(reg.size).toBe(0)
+
+    // ...and a settled tail with no newer task chained is removed, so the
+    // queues map does not grow with every distinct key ever released.
+    await waitFor(() => reg.pendingQueueCount === 0, 5000, 'the release queues to drain')
+    await expectChildGone(a.pid!)
+    await expectChildGone(b.pid!)
   }, 15_000)
 })
