@@ -239,6 +239,31 @@ export async function writeAtomic(dir: string, file: string, data: unknown): Pro
   await renameWithRetry(tmp, file)
 }
 
+/** Durable atomic write (spec §8.3 reset journal): like writeAtomic, but
+ *  fsyncs the tmp file BEFORE rename and syncs the directory AFTER, so the
+ *  rename is power-loss durable (a plain writeAtomic leaves the rename in the
+ *  page cache — process-crash safe, but a power loss can drop a prepare/commit
+ *  marker). Directory sync is POSIX-only; Windows NTFS syncs metadata on the
+ *  file fsync, so the dir sync is best-effort there. */
+export async function writeAtomicDurable(dir: string, file: string, data: unknown): Promise<void> {
+  await fs.mkdir(dir, { recursive: true })
+  const suffix = randomBytes(6).toString('hex')
+  const tmp = `${file}.${process.pid}.${suffix}.tmp`
+  const fh = await fs.open(tmp, 'w', 0o600)
+  try {
+    await fh.writeFile(JSON.stringify(data, null, 2), 'utf8')
+    await fh.sync()
+  } finally {
+    await fh.close()
+  }
+  try { await fs.chmod(tmp, 0o600) } catch { /* Windows: no POSIX perms */ }
+  await renameWithRetry(tmp, file)
+  try {
+    const dh = await fs.open(dir, 'r')
+    try { await dh.sync() } finally { await dh.close() }
+  } catch { /* Windows: directory fsync unsupported — file fsync covers metadata */ }
+}
+
 /** Rename with a bounded retry for the Windows "destination locked"
  *  transient. Throws the last error if all retries fail. */
 async function renameWithRetry(src: string, dest: string, attempts = 5): Promise<void> {

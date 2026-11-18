@@ -108,13 +108,14 @@ function messageFrameJson(
     // serializes enumerable own properties). Seq is append-stable and
     // assigned BEFORE the pump broadcasts (recordTranscriptFor runs ahead of
     // every subscriber push), so the first serialization already sees the
-    // final value — caching it per message object is safe. The same holds
-    // for `generation` only under an invariant: the generation can change
-    // solely via TranscriptStore.reset() (the /clear path), which has no
-    // live caller today — a future reset() caller that keeps the session
-    // broadcasting MUST invalidate messageFrameJsonCache (or re-derive the
-    // generation per serialization), or cached frames would carry a stale
-    // generation and clients would misjudge the seq-space handshake.
+    // final value — caching it per message object is safe. `generation` is
+    // captured at seq-assignment time (transcriptFrameMetaOf), so a given
+    // message object's generation never changes. TranscriptStore.reset() now
+    // has a live caller (native in-place compact, runAutoCompact); it is safe
+    // because compact WIPES the ring (s.history = []), so pre-reset message
+    // objects are never re-broadcast — the new compact frames are fresh
+    // objects with the new generation. Any future reset() caller that keeps
+    // old objects broadcasting MUST invalidate messageFrameJsonCache.
     const imagePayload = imagePayloadOfMessage(message)
     if (imagePayload.images > 0) {
       metrics.count('ws_message_images', undefined, imagePayload.images)
@@ -976,8 +977,11 @@ export class SessionConnection {
         const v = value as { recap?: unknown }
         this.sink.send({ kind: 'session-recap-update', sessionId, recap: v.recap as never })
       })
-      drive(clearedIter, () => {
-        this.sink.send({ kind: 'session-cleared', sessionId })
+      drive(clearedIter, (value) => {
+        // Forward the authoritative clearedGeneration (spec §8.3) — rebuilding
+        // a bare frame here would drop it and force the client back to local+1.
+        const v = value as { clearedGeneration?: number }
+        this.sink.send({ kind: 'session-cleared', sessionId, clearedGeneration: v.clearedGeneration })
       })
       drive(cmdIter, (value) => {
         const v = value as { commands: never[] }

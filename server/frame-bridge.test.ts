@@ -1483,3 +1483,22 @@ describe('ordered-rebase envelope and generation passthrough (spec §8.3)', () =
     conn.close()
   })
 })
+
+describe('session-cleared clearedGeneration forwarding (spec §8.3)', () => {
+  it('forwards clearedGeneration from the channel to the sink (not a bare frame)', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const clearedChan = chan<unknown>()
+    sm.clearedSub = countedSub(clearedChan)
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1', orderedRebase: true })
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1' && f.ok === true)
+    clearedChan.push({ kind: 'session-cleared', sessionId: 's1', clearedGeneration: 7 })
+    await waitForFrame(sink, (f) => f.kind === 'session-cleared')
+    expect(sink.kinds('session-cleared')).toEqual([
+      { kind: 'session-cleared', sessionId: 's1', clearedGeneration: 7 },
+    ])
+    conn.close()
+  })
+})

@@ -21,9 +21,9 @@
 // of provider coupling. The journal covers ONLY same-id in-band clear / native
 // in-place compact — app /clear (X→fresh Y) writes no journal on X.
 
-import { readFile } from 'node:fs/promises'
+import { readFile, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { writeAtomic } from './json-file-store.js'
+import { writeAtomicDurable } from './json-file-store.js'
 import { createLogger } from './log.js'
 
 const log = createLogger('reset-journal')
@@ -102,9 +102,22 @@ export class ResetJournal {
       rebaseEpoch: this.state.rebaseEpoch,
       latest: this.state.latest ? { ...this.state.latest } : null,
     }
-    const run = this.chain.then(() => writeAtomic(this.dir!, this.file(), snapshot))
+    const run = this.chain.then(() => writeAtomicDurable(this.dir!, this.file(), snapshot))
     this.chain = run.then(() => undefined, () => undefined)
     return run
+  }
+
+  /** Delete the journal file (session deletion). Tombstone-free: the manager
+   *  drops its cached instance too, so a reused id starts clean rather than
+   *  inheriting a committed journal whose boundary the new log lacks. */
+  async remove(): Promise<void> {
+    if (!this.dir) return
+    await this.chain
+    try {
+      await unlink(this.file())
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    }
   }
 
   /** Record a prepared reset BEFORE the provider op. Overwrites any prior

@@ -378,12 +378,12 @@ export class TranscriptStore {
     this.generation = previous + 1
   }
 
-  /** 世代切换（/clear）：generation+1，seq 归零，清空索引。
+  /** 世代切换（native in-place compact）：generation+1，seq 归零，清空索引。
    *  注意（frame-bridge.ts messageFrameJson 的 frame-cache 不变量）：
-   *  reset() 之后若该 session 仍在向已连接客户端广播，必须让
-   *  messageFrameJsonCache 失效（或按次重新推导 generation）——
-   *  否则缓存的 live message 帧会带着旧 generation 发出去，
-   *  客户端会误判 seq-space 握手。 */
+   *  reset() 之后若该 session 仍在向已连接客户端广播旧消息对象，必须让
+   *  messageFrameJsonCache 失效——否则缓存的 live 帧会带旧 generation。
+   *  当前唯一调用方 runAutoCompact 在 reset() 同时清空 ring（s.history=[]），
+   *  旧对象不再广播，新 compact 帧是全新对象，故不变量自然满足。 */
   reset(): void {
     this.generation++
     this.nextSeq = 0

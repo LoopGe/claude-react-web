@@ -2849,6 +2849,7 @@ export class SessionManager {
       await this.snapshotStore.remove(id)
       await this.promptUuidStore.remove(id)
       await this.steeredStore.remove(id)
+      await this.removeResetJournal(id)
     } else {
       await this.unload(id, { removeFromStore: true })
     }
@@ -4745,9 +4746,10 @@ export class SessionManager {
    *
    *  No `session-cleared` frame is emitted for this — Y is a fresh session
    *  with no pre-clear content to hide, so the client simply swaps the panel
-   *  from X to Y. (The `session-cleared` frame still has a second producer —
-   *  the SDK's own in-band `cleared` control event — so the client handler
-   *  stays; only clear() stops emitting it.)
+   *  from X to Y. The `session-cleared` frame's producer is the native
+   *  in-place compact (runAutoCompact), which carries clearedGeneration; the
+   *  client handler stays for that path. (Spec §8.3: app /clear X→Y writes no
+   *  reset journal on X; the journal covers same-id in-band resets only.)
    *
    *  Idempotent: a second clear() while one is already in flight returns the
    *  current SessionInfo without re-driving the lifecycle. */
@@ -5267,18 +5269,19 @@ export class SessionManager {
    *  Manager state is reset to match the provider's restarted history: the
    *  ring, prompt-uuid pairing, steering in-flight map, withdrawal window,
    *  deferred snapshot anchors and the cached context usage all describe the
-   *  pre-compact conversation. The durable seq sidecar is deleted BEFORE the
-   *  new compact frames are recorded, so their seqs restart at 0 — and the
-   *  seq GENERATION is carried forward (`old + 1`) onto the fresh store, which
-   *  is the universe change the client's `session-cleared` floor expects.
+   *  pre-compact conversation. The durable seq sidecar is KEPT (spec §8.3): a
+   *  reset generation batch (`old + 1`) is appended + fsynced via the reset
+   *  journal, the in-memory store resets to that generation (seqs restart at
+   *  0), and the new compact frames record after the reset batch — the universe
+   *  change the client's `session-cleared` floor (clearedGeneration) expects.
    *  Background task records and file snapshots survive (the provider's
    *  compaction does not touch them). The client resets its transcript on the
    *  `session-cleared` signal, then paints the new divider + summary. */
   private async maybeAutoCompact(s: Session, pressure?: AutoCompactPressure | null): Promise<void> {
     if (!defaultConfig.nativeAutoCompact) return
-    // Degraded fence (spec §10): in-place compact resets the seq store and
-    // deletes sidecars — it must not lift the degraded fence outside the
-    // explicit Retry path. A degraded session compacts only after recovery.
+    // Degraded fence (spec §10): in-place compact resets the seq store — it
+    // must not lift the degraded fence outside the explicit Retry path. A
+    // degraded session compacts only after recovery.
     if (this.transcriptStores.get(s.id)?.degraded === true) return
     const compactInPlace = s.handle.compactInPlace
     if (!compactInPlace) return
@@ -5327,7 +5330,17 @@ export class SessionManager {
     const journal = this.journalFor(s.id)
     await journal.prepare({ generation: prevGeneration + 1, reason: 'compact', seedBoundaryUuid: uuid })
     await compactInPlace.call(s.handle, summary, { uuid, timestamp })
-    await this.resetTranscriptGeneration(s.id, 'compact', journal)
+    try {
+      await this.resetTranscriptGeneration(s.id, 'compact', journal)
+    } catch (err) {
+      // The reset batch / journal commit failed AFTER the provider compacted.
+      // Do NOT continue appending under the old generation (spec §10 提交后失败):
+      // fence the holder read-only and surface the error; the startup fence /
+      // Retry repairs the reset (writes the missing batch, commits the journal).
+      this.getOrCreateTranscript(s.id).degraded = true
+      log.warn(`[session ${s.id}] auto-compact reset failed; transcript degraded until retry:`, err)
+      return
+    }
     // These APP sidecars describe the pre-compact conversation and are cleared
     // (the seq sidecar above is kept). A failed app reset is logged, not fatal.
     const sidecarResets: Array<[string, () => Promise<void>]> = [
@@ -8137,10 +8150,16 @@ export class SessionManager {
     if (inFlight) return inFlight
     const p = (async () => {
       try {
-        // Startup reset-journal fence (spec §8.3) BEFORE projecting the sidecar.
-        await this.recoverResetJournal(id, t)
         const rawRows = await t.sidecar.load()
-        const folded = foldSidecarRowsV2(rawRows)
+        let folded = foldSidecarRowsV2(rawRows)
+        // Startup reset-journal fence (spec §8.3): enforce sidecar committed
+        // generation >= journal generation, writing a missing reset batch.
+        // Generation-comparison (not journal state alone) so a committed
+        // journal whose batch write failed still gets its batch on recovery.
+        const fenceWrote = await this.recoverResetJournal(
+          id, t, folded.hasCommittedGeneration ? folded.generation : -1,
+        )
+        if (fenceWrote) folded = foldSidecarRowsV2(await t.sidecar.load())
         if (folded.hasCommittedGeneration) {
           t.store.hydrate(folded.entries)
           t.store.generation = folded.generation
@@ -8359,6 +8378,10 @@ export class SessionManager {
     }
     this.transcriptStores.delete(id)
     this.transcriptReconciles.delete(id)
+    // Drop the cached journal so a transient load failure (a poisoned `ready`
+    // promise) is re-read from disk on the retry rather than staying rejected
+    // for the process lifetime. The journal FILE persists for the fence.
+    this.resetJournals.delete(id)
     const t = await this.ensureTranscriptReconciled(id)
     if (t.rebuildBlocked) throw new HttpError(409, t.rebuildBlocked)
     if (!t.degraded) {
@@ -8404,14 +8427,27 @@ export class SessionManager {
     }
   }
 
-  /** The session's persisted reset journal (spec §8.3), lazily created. */
+  /** The session's persisted reset journal (spec §8.3), lazily created, under
+   *  <stateDir>/reset-journals/<id>.json (a subdir like the sibling stores). */
   private journalFor(id: string): ResetJournal {
     let j = this.resetJournals.get(id)
     if (!j) {
-      j = new ResetJournal(this.store?.getDir(), id)
+      const dir = this.store?.getDir()
+      j = new ResetJournal(dir ? join(dir, 'reset-journals') : undefined, id)
       this.resetJournals.set(id, j)
     }
     return j
+  }
+
+  /** Drop the session's reset journal (file + cached instance) on deletion, so
+   *  a reused id does not inherit a committed journal whose boundary the new
+   *  provider log lacks (which would fail journal-inconsistent on first
+   *  reconcile). Mirrors the sibling per-session store removals. */
+  private async removeResetJournal(id: string): Promise<void> {
+    const j = this.resetJournals.get(id)
+    this.resetJournals.delete(id)
+    if (j) await j.remove()
+    else await new ResetJournal(this.store?.getDir() ? join(this.store.getDir(), 'reset-journals') : undefined, id).remove()
   }
 
   /** Write a reset generation batch + fsync + journal commit (spec §8.3),
@@ -8428,24 +8464,38 @@ export class SessionManager {
     return writer.resetGeneration(reason, undefined, journal)
   }
 
-  /** Startup reset-journal fence (spec §8.3): recover an interrupted in-band
-   *  clear / native compact BEFORE projecting the sidecar, so a crash mid-reset
-   *  never republishes pre-reset content. prepared+no provider floor → undo
-   *  (keep old projection); prepared+floor → complete (write the missing reset
-   *  batch); committed+no evidence → journal-inconsistent (fail closed). */
-  private async recoverResetJournal(id: string, t: TranscriptHolder): Promise<void> {
+  /** Startup reset-journal fence (spec §8.3): enforce the invariant *sidecar
+   *  committed generation >= journal.latest.generation*, so a crash mid-reset
+   *  never republishes pre-reset content. Keyed on GENERATION COMPARISON, not
+   *  journal state alone — a committed journal whose batch write failed (or a
+   *  double crash in the recovery window) still gets its missing batch written.
+   *  prepared+no provider floor → undo (keep old projection); prepared+floor →
+   *  commit; committed+no evidence → journal-inconsistent (fail closed).
+   *  Returns true when it appended a reset batch (caller re-folds). */
+  private async recoverResetJournal(id: string, t: TranscriptHolder, sidecarGeneration: number): Promise<boolean> {
     const journal = this.journalFor(id)
     await journal.ready
     const latest = journal.latest
-    if (!latest) return
+    if (!latest) return false
+    // Provider read errors PROPAGATE (retryable degraded), distinct from true
+    // absence of evidence (false) — a transient read failure must not be
+    // mislabeled journal-inconsistent on a healthy session.
     const floorExists = await this.providerHasResetFloor(id, latest)
-    const outcome = await journal.recover(() => floorExists)
-    if (outcome === 'journal-inconsistent') throw new Error('journal-inconsistent')
-    if (outcome === 'undone') return
-    if (outcome === 'completed') {
-      // Crash after the provider op but before the reset batch committed: the
-      // journal is now committed but the batch is missing — write it at the
-      // journal generation so the loader adopts the reset universe.
+    if (latest.state === 'prepared') {
+      if (!floorExists) {
+        await journal.undoPrepared()
+        return false
+      }
+      await journal.commit(latest.generation)
+    } else if (!floorExists) {
+      // committed requires provider evidence (spec §8.3).
+      throw new Error('journal-inconsistent')
+    }
+    if (latest.generation > sidecarGeneration) {
+      // The reset batch is missing (crash after the provider op / failed batch
+      // write). Write it at the journal generation so the loader adopts the
+      // reset universe. A duplicate at an already-committed generation is
+      // harmless — fold's strict `>` keeps the first.
       const commit = makeCommitV2({
         batchId: `recover-${id}-${latest.generation}`,
         batchType: 'reset',
@@ -8455,28 +8505,27 @@ export class SessionManager {
         rows: [],
       })
       await t.sidecar.appendBatch([], commit)
+      return true
     }
+    return false
   }
 
-  /** Provider-side evidence that a prepared reset's content operation actually
-   *  happened (spec §8.3): for compact, the provider log carries the compact
-   *  boundary at the journal's seedBoundaryUuid. Clear evidence (fresh init /
-   *  empty floor) is wired with the in-band clear path (Task 3). */
+  /** Provider-side evidence that a reset's content operation actually happened
+   *  (spec §8.3): for compact, the provider log carries the compact boundary at
+   *  the journal's seedBoundaryUuid. Read errors propagate (retryable); a
+   *  missing/empty log is true absence (false). Clear evidence (fresh init /
+   *  empty floor) is wired with a future in-band clear producer. */
   private async providerHasResetFloor(id: string, latest: ResetJournalEntry): Promise<boolean> {
     if (latest.reason === 'compact' && latest.seedBoundaryUuid) {
       const meta = this.sessions.get(id) ?? this.store?.get(id)
       const provider = this.providers.get(meta?.provider ?? this.defaultProvider)
       if (!provider?.readHistoryForReconcile) return false
-      try {
-        const result = await provider.readHistoryForReconcile(id, {})
-        if (result.status !== 'ok') return false
-        return result.entries.some((e) => {
-          const m = e.message as { type?: string; subtype?: string; uuid?: string }
-          return m.type === 'system' && m.subtype === 'compact_boundary' && m.uuid === latest.seedBoundaryUuid
-        })
-      } catch {
-        return false
-      }
+      const result = await provider.readHistoryForReconcile(id, {})
+      if (result.status !== 'ok') return false
+      return result.entries.some((e) => {
+        const m = e.message as { type?: string; subtype?: string; uuid?: string }
+        return m.type === 'system' && m.subtype === 'compact_boundary' && m.uuid === latest.seedBoundaryUuid
+      })
     }
     return false
   }
@@ -9042,6 +9091,7 @@ export class SessionManager {
         void this.taskResultStore.remove(id)
         void this.snapshotStore.remove(id)
         void this.removeTranscriptState(id)
+        void this.removeResetJournal(id)
       }
       // Drop any stored recap — otherwise a new session that happens to
       // reuse this id (rare, but possible under --state-dir swaps) would

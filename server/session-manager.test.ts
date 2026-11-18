@@ -2908,6 +2908,122 @@ describe('SessionManager', () => {
       sub!.unsubscribe()
     })
 
+    it('C2: committed journal + MISSING reset batch (failed batch write) — restart writes the batch, no pre-compact republish', async () => {
+      const prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        const info = await sm.create({ cwd: TEST_CWD })
+        mockHandles.at(-1)!.emit({ type: 'assistant', uuid: 'OLD', parent_tool_use_id: null, message: { id: 'mOLD', role: 'assistant', content: [{ type: 'text', text: 'pre-compact' }] } })
+        expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 1)).toBe(true)
+        // Journal COMMITTED at gen 1 but the sidecar has NO reset batch (the
+        // batch write failed after the journal commit persisted).
+        const journal = (sm as unknown as { journalFor(id: string): ResetJournal }).journalFor(info.id)
+        await journal.prepare({ generation: 1, reason: 'compact', seedBoundaryUuid: 'b' })
+        await journal.commit(1)
+        const jsonlPath = join(dir, 'projects', encodeCwd(TEST_CWD), `${info.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(jsonlPath, [
+          JSON.stringify({ type: 'system', subtype: 'compact_boundary', uuid: 'b', compact_metadata: { trigger: 'auto', pre_tokens: 10 } }),
+          JSON.stringify({ type: 'user', uuid: 's', isCompactSummary: true, message: { role: 'user', content: 'summary' } }),
+        ].join('\n') + '\n')
+        await sm.shutdown()
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const win = await sm2.getTranscriptWindow(info.id)
+          expect(win.generation).toBe(1)
+          const uuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+          expect(uuids).not.toContain('OLD')
+          expect(uuids).toContain('b')
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+      }
+    })
+
+    it('I5: prepared journal + NO provider floor — restart undoes, keeps the old projection', async () => {
+      const prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        const info = await sm.create({ cwd: TEST_CWD })
+        mockHandles.at(-1)!.emit({ type: 'assistant', uuid: 'OLD', parent_tool_use_id: null, message: { id: 'mOLD', role: 'assistant', content: [{ type: 'text', text: 'kept' }] } })
+        expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 1)).toBe(true)
+        const journal = (sm as unknown as { journalFor(id: string): ResetJournal }).journalFor(info.id)
+        await journal.prepare({ generation: 1, reason: 'compact', seedBoundaryUuid: 'b' })
+        // Provider did NOT compact: no boundary 'b' in the log.
+        const jsonlPath = join(dir, 'projects', encodeCwd(TEST_CWD), `${info.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(jsonlPath, JSON.stringify({ type: 'assistant', uuid: 'OLD', message: { id: 'mOLD', role: 'assistant', content: [{ type: 'text', text: 'kept' }] } }) + '\n')
+        await sm.shutdown()
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const win = await sm2.getTranscriptWindow(info.id)
+          expect(win.generation).toBe(0)
+          expect(win.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toContain('OLD')
+          const j2 = (sm2 as unknown as { journalFor(id: string): ResetJournal }).journalFor(info.id)
+          await j2.ready
+          expect(j2.latest).toBeNull()
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+      }
+    })
+
+    it('I5: happy-path compact survives a reload — fresh manager projects the post-compact universe from the kept sidecar', async () => {
+      const prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        const info = await sm.create({ cwd: dir })
+        await sm.send(info.id, 'seed turn')
+        const h = mockHandles.at(-1)!
+        h.emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
+        h.emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+        expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+        const live = liveSession(info.id)
+        live.handle.compactInPlace = vi.fn(async () => {})
+        await callAutoCompact(live, { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 })
+        const genAfter = sm.transcriptHead(info.id)!.generation
+        // The real native compactInPlace writes the boundary to the provider
+        // log; the mock no-op does not, so simulate that evidence here (the
+        // startup fence requires it for a committed journal).
+        const jr = (sm as unknown as { journalFor(id: string): ResetJournal }).journalFor(info.id)
+        await jr.ready
+        const boundaryUuid = jr.latest!.seedBoundaryUuid!
+        const jsonlPath = join(dir, 'projects', encodeCwd(dir), `${info.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(jsonlPath, [
+          JSON.stringify({ type: 'system', subtype: 'compact_boundary', uuid: boundaryUuid, compact_metadata: { trigger: 'auto', pre_tokens: 90 } }),
+          JSON.stringify({ type: 'user', uuid: 'sum', isCompactSummary: true, message: { role: 'user', content: 'MOCK SUMMARY' } }),
+        ].join('\n') + '\n')
+        await sm.shutdown()
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const win = await sm2.getTranscriptWindow(info.id)
+          expect(win.generation).toBe(genAfter)
+          const uuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+          // post-compact universe: the boundary + summary, NOT the pre-compact seed turn
+          expect(uuids.some((u) => u === 'a1' || u === 'r1')).toBe(false)
+          expect(win.messages.length).toBeGreaterThanOrEqual(2)
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+      }
+    })
+
     it('crash after provider compact before reset commit: restart completes reset, no pre-clear republish', async () => {
       const prevConfigDir = process.env.CLAUDE_CONFIG_DIR
       process.env.CLAUDE_CONFIG_DIR = dir
