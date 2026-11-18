@@ -55,6 +55,17 @@ export interface TranscriptHolder {
    *  missing pre-restart history. Session search reports this as
    *  `indexStatus: 'degraded'`. */
   degraded: boolean
+  /** Set when an ordered-rebuild was refused because an incapable browser
+   *  subscriber is attached (spec §8.3). Distinct from `degraded`: the old
+   *  projection is intact and append-only reads/writes continue; only the
+   *  rebuild waits for the legacy tab to reload. Cleared by a successful
+   *  retry (which re-reconciles from a fresh holder). */
+  rebuildBlocked?: 'client-upgrade-required'
+  /** True once the session's committed generation history contains an
+   *  ordered-rebuild (spec §8.3): subsequent subscribes must declare
+   *  orderedRebaseV1. Derived from the sidecar fold on hydrate, so it
+   *  survives restarts. */
+  hasOrderedRebuild?: boolean
 }
 
 export class TranscriptSidecar {

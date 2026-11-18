@@ -242,7 +242,7 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         for (const state of channelsRef.current.values()) state.live = false
         sendOn(conn, { kind: 'hello', capabilities: ['taskOutputV1'] })
         for (const sessionId of channelsRef.current.keys()) {
-          sendOn(conn, { kind: 'subscribe', sessionId })
+          sendOn(conn, { kind: 'subscribe', sessionId, orderedRebase: true })
         }
         for (const key of subagentChannelsRef.current.keys()) {
           // ids are server-minted uuid/hex — no '::' inside them.
@@ -451,7 +451,7 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         // Any frames arriving before the server answers this subscribe are
         // impossible: the send is dropped while the socket isn't OPEN, and on
         // reopen every held session is re-subscribed.
-        safeSend({ kind: 'subscribe', sessionId })
+        safeSend({ kind: 'subscribe', sessionId, orderedRebase: true })
       }
       // Captured, not re-read: a release that runs twice (or after the entry
       // was replaced) must not decrement a successor's count and tear down a

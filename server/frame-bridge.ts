@@ -218,6 +218,9 @@ export class SessionConnection {
   private readonly starting = new Set<string>()
   private readonly startingRetry = new Set<string>()
   private readonly startingCancelled = new Set<string>()
+  /** Latest orderedRebase declaration per session — the in-flight retry
+   *  path re-runs startSession with the most recent frame's capability. */
+  private readonly subscribeCapability = new Map<string, boolean>()
 
   private globalCleanup: (() => void) | null = null
   private appPluginCleanup: (() => void) | null = null
@@ -352,12 +355,17 @@ export class SessionConnection {
         return
       case 'subscribe':
         if (typeof frame.sessionId === 'string' && frame.sessionId) {
-          void this.startSession(frame.sessionId)
+          // Remember the latest declaration: a subscribe that lands while
+          // another is in flight queues a retry (startingRetry), which must
+          // re-run with THIS frame's capability, not the first frame's.
+          this.subscribeCapability.set(frame.sessionId, frame.orderedRebase === true)
+          void this.startSession(frame.sessionId, frame.orderedRebase === true)
         }
         break
       case 'unsubscribe':
         if (typeof frame.sessionId === 'string' && frame.sessionId) {
           this.startingRetry.delete(frame.sessionId)
+          this.subscribeCapability.delete(frame.sessionId)
           if (this.starting.has(frame.sessionId) && !this.subs.has(frame.sessionId)) {
             this.startingCancelled.add(frame.sessionId)
           }
@@ -427,6 +435,7 @@ export class SessionConnection {
     this.sink.close()
     for (const s of this.subs.values()) s.cleanup()
     this.subs.clear()
+    this.subscribeCapability.clear()
     for (const sub of this.subagentSubs.values()) sub.unsubscribe()
     this.subagentSubs.clear()
     this.globalCleanup?.()
@@ -524,7 +533,19 @@ export class SessionConnection {
     return entry.taskSend
   }
 
-  private async startSession(sessionId: string): Promise<void> {
+  /** Refuse a subscribe that lacks orderedRebaseV1 on a session whose
+   *  committed history contains an ordered-rebuild (spec §8.3): a legacy
+   *  tab must reload before it can anchor the rebuilt seq space. */
+  private refuseUpgradeRequired(sessionId: string): void {
+    this.sink.send({
+      kind: 'error',
+      sessionId,
+      message: 'client-upgrade-required: reload this tab to continue',
+    })
+    this.ackSubscribe(sessionId, false, 'refused')
+  }
+
+  private async startSession(sessionId: string, orderedRebase: boolean): Promise<void> {
     // A second subscribe on a connection that already holds this channel:
     // re-attach the caller's listener rather than swallowing the frame. The
     // channel is per-connection and the caller's listener may have mounted
@@ -540,6 +561,10 @@ export class SessionConnection {
       // instead of being reported as a refusal, and nothing would answer
       // the frame.
       try {
+        if (!orderedRebase && this.sm.transcriptRequiresOrderedRebase?.(sessionId)) {
+          this.refuseUpgradeRequired(sessionId)
+          return
+        }
         if (this.sm.getHistory(sessionId)) {
           // Pending requests read FRESH, not from a cached snapshot — a
           // stale one could resurrect an already resolved request.
@@ -667,7 +692,14 @@ export class SessionConnection {
       // The socket may have closed while the spawn was in flight; don't
       // wire subscriptions onto a dead connection.
       if (this.closed || this.startingCancelled.has(sessionId)) return
-      const msg = this.sm.subscribe(sessionId)
+      // Rebuilt sessions refuse incapable subscribes (spec §8.3). Checked
+      // AFTER the auto-resume so the holder is reconciled and the
+      // requirement (derived from the sidecar's generation history) is known.
+      if (!orderedRebase && this.sm.transcriptRequiresOrderedRebase?.(sessionId)) {
+        this.refuseUpgradeRequired(sessionId)
+        return
+      }
+      const msg = this.sm.subscribe(sessionId, { orderedRebase })
       msgSub = msg
       step = 'subscribePermissions'
       const perms = this.sm.subscribePermissions(sessionId)
@@ -986,7 +1018,7 @@ export class SessionConnection {
       this.starting.delete(sessionId)
       this.startingCancelled.delete(sessionId)
       const retry = this.startingRetry.delete(sessionId)
-      if (retry && !this.closed) void this.startSession(sessionId)
+      if (retry && !this.closed) void this.startSession(sessionId, this.subscribeCapability.get(sessionId) ?? false)
     }
   }
 

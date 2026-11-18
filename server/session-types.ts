@@ -998,10 +998,15 @@ export interface SessionBroadcaster {
    *  transcript. Backs the seq field on live `message` frames. Optional for
    *  the same fixture reason as transcriptHead. */
   transcriptSeqOf?(sessionId: string, message: object): number | undefined
-  subscribe(sessionId: string): {
+  subscribe(sessionId: string, opts?: { orderedRebase?: boolean }): {
     iterable: AsyncIterable<SDKMessage>
     unsubscribe: () => void
   }
+  /** Whether the session's committed generation history contains an
+   *  ordered-rebuild (spec §8.3): subscribes that do not declare
+   *  orderedRebaseV1 must be refused. Optional so test broadcaster fixtures
+   *  without a seq store stay valid — absence means "no requirement". */
+  transcriptRequiresOrderedRebase?(sessionId: string): boolean
   subscribePermissions(sessionId: string): {
     iterable: AsyncIterable<PermissionEvent>
     snapshot: PermissionRequestSnapshot[]

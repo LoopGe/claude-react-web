@@ -43,6 +43,16 @@ export type ReconcileError =
   | 'unmapped-tombstone'
   | 'sidecar-missing'
 
+/** A rebuild was refused BEFORE any public projection/generation mutation
+ *  because an incapable browser subscriber is attached (spec §8.3). Not a
+ *  degradation: the old generation stays fully usable; the user must reload
+ *  the legacy tab and retry. */
+export class TranscriptRebuildBlockedError extends Error {
+  constructor(readonly reason: 'client-upgrade-required') {
+    super(reason)
+  }
+}
+
 type Loose = Record<string, unknown>
 const obj = (m: unknown): Loose | null => (m !== null && typeof m === 'object' ? (m as Loose) : null)
 const uuidOf = (m: unknown): string | null => {

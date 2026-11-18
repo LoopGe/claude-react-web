@@ -263,10 +263,19 @@ class FakeBroadcaster implements SessionBroadcaster {
     return this.sessions.get(id)?.history ?? null
   }
 
-  subscribe(sessionId: string) {
+  subscribeOpts: Array<{ sessionId: string; orderedRebase?: boolean }> = []
+  subscribe(sessionId: string, opts?: { orderedRebase?: boolean }) {
     const s = this.require(sessionId)
     if (!s.running) throw new Error(`session ${sessionId} not found`)
+    this.subscribeOpts.push({ sessionId, orderedRebase: opts?.orderedRebase })
     return { iterable: s.messages.iterable, history: s.history, unsubscribe: () => { s.unsubs.msg++; s.messages.end() } }
+  }
+
+  /** Sessions whose committed history contains an ordered-rebuild (spec
+   *  §8.3): incapable subscribes must be refused. */
+  requiresRebase = new Set<string>()
+  transcriptRequiresOrderedRebase(id: string): boolean {
+    return this.requiresRebase.has(id)
   }
 
   subscribePermissions(sessionId: string) {
@@ -1299,5 +1308,91 @@ describe('SessionConnection: subagent-transcript channel', () => {
     // Narrowed by message: pins the malformed-input guard, not the
     // default "unknown kind" fallback.
     await waitForFrame(sink, (f) => f.kind === 'error' && String(f.message).includes('sessionId/agentId required'))
+  })
+})
+
+describe('ordered-rebase capability negotiation (spec §8.3)', () => {
+  it('refuses a subscribe without orderedRebase on a rebuilt session', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    sm.requiresRebase.add('s1')
+    const { sink, conn } = setup(sm)
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1')
+    expect(sink.kinds('subscribe-result')).toEqual([
+      { kind: 'subscribe-result', sessionId: 's1', ok: false, reason: 'refused' },
+    ])
+    expect(sink.kinds('error').some((f) => f.kind === 'error' && String(f.message).includes('client-upgrade-required'))).toBe(true)
+    // No channel was wired: the legacy tab must not receive rebuilt frames.
+    expect(sm.subscribeOpts).toEqual([])
+    conn.close()
+  })
+
+  it('serves a subscribe declaring orderedRebase on a rebuilt session', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    sm.requiresRebase.add('s1')
+    const { sink, conn } = setup(sm)
+    send(conn, { kind: 'subscribe', sessionId: 's1', orderedRebase: true })
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1' && f.ok === true)
+    expect(sm.subscribeOpts).toEqual([{ sessionId: 's1', orderedRebase: true }])
+    conn.close()
+  })
+
+  it('passes the declared capability through on ordinary sessions', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const { sink, conn } = setup(sm)
+    send(conn, { kind: 'subscribe', sessionId: 's1', orderedRebase: true })
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1' && f.ok === true)
+    expect(sm.subscribeOpts).toEqual([{ sessionId: 's1', orderedRebase: true }])
+    conn.close()
+  })
+
+  it('refuses an incapable re-serve on a rebuilt session', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const { sink, conn } = setup(sm)
+    send(conn, { kind: 'subscribe', sessionId: 's1', orderedRebase: true })
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1' && f.ok === true)
+    // The session rebuilds while the channel is held; a re-subscribe that
+    // no longer declares the capability is refused.
+    sm.requiresRebase.add('s1')
+    sink.reset()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1')
+    expect(sink.kinds('subscribe-result')).toEqual([
+      { kind: 'subscribe-result', sessionId: 's1', ok: false, reason: 'refused' },
+    ])
+    conn.close()
+  })
+})
+
+describe('ordered-rebase in-flight subscribe retry', () => {
+  it('re-runs with the latest capability declaration when a subscribe raced an in-flight one', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: false }) // dormant → auto-resume await opens the in-flight window
+    sm.requiresRebase.add('s1')
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const origResume = sm.resume.bind(sm)
+    sm.resume = async (id: string) => { await gate; return origResume(id) }
+    const { sink, conn } = setup(sm)
+    // First subscribe: incapable, parks in the auto-resume await.
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    // Second subscribe while the first is in flight: capable, queues a retry.
+    send(conn, { kind: 'subscribe', sessionId: 's1', orderedRebase: true })
+    release()
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.sessionId === 's1' && f.ok === true)
+    // The first attempt was refused (incapable); the retry served with the
+    // SECOND frame's capability — not the first frame's.
+    const results = sink.frames.filter(
+      (f): f is Extract<WsServerFrame, { kind: 'subscribe-result' }> =>
+        f.kind === 'subscribe-result' && f.sessionId === 's1',
+    )
+    expect(results.some((f) => !f.ok && f.reason === 'refused')).toBe(true)
+    expect(sm.subscribeOpts).toEqual([{ sessionId: 's1', orderedRebase: true }])
+    conn.close()
   })
 })

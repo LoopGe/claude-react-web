@@ -9003,6 +9003,121 @@ describe('SessionManager', () => {
       }
     })
   })
+  describe('ordered-rebase capability gate (spec §8.3)', () => {
+    let prevConfigDir: string | undefined
+    beforeEach(() => {
+      prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    })
+
+    const emitAssistant = (uuid: string, id: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant',
+        uuid,
+        parent_tool_use_id: null,
+        message: { id, role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+    const jsonlAssistant = (uuid: string, id: string, text: string) => ({
+      type: 'assistant',
+      uuid,
+      message: { id, role: 'assistant', content: [{ type: 'text', text }] },
+    })
+    const uuidsOf = (win: { messages: Array<{ msg: unknown }> }) =>
+      win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+
+    /** Live arrival order A,N,R vs provider file order A,R,N — a genuine
+     *  chronology inversion that forces ordered-rebuild on reconcile. */
+    const seedInverted = async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      emitAssistant('A', 'mA', 'first')
+      emitAssistant('N', 'mN', 'newer')
+      emitAssistant('R', 'mR', 'belongs in the middle')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      expect(await waitFor(async () =>
+        (await new TranscriptSidecar(dir, info.id).load()).length === 3,
+      )).toBe(true)
+      const jsonlPath = join(dir, 'projects', encodeCwd(TEST_CWD), `${info.id}.jsonl`)
+      mkdirSync(dirname(jsonlPath), { recursive: true })
+      writeFileSync(jsonlPath, [
+        jsonlAssistant('A', 'mA', 'first'),
+        jsonlAssistant('R', 'mR', 'belongs in the middle'),
+        jsonlAssistant('N', 'mN', 'newer'),
+      ].map((m) => JSON.stringify(m)).join('\n') + '\n')
+      return info
+    }
+
+    it('refuses rebuild while an incapable browser subscriber is attached; retry after unsubscribe rebuilds', async () => {
+      const info = await seedInverted()
+      const sub = sm.subscribe(info.id, { orderedRebase: false })
+      try {
+        await expect(sm.retryTranscriptReconcile(info.id)).rejects.toMatchObject({
+          status: 409,
+          message: expect.stringContaining('client-upgrade-required'),
+        })
+        // Refusal happens BEFORE any public mutation: the old projection is
+        // intact and no new generation was published.
+        const win = await sm.getTranscriptWindow(info.id)
+        expect(uuidsOf(win)).toEqual(['A', 'N', 'R'])
+        expect(win.generation).toBe(0)
+      } finally {
+        sub.unsubscribe()
+      }
+      const r = await sm.retryTranscriptReconcile(info.id)
+      expect(r.degraded).toBe(false)
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(uuidsOf(win)).toEqual(['A', 'R', 'N'])
+      expect(win.generation).toBeGreaterThan(0)
+    })
+
+    it('rebuilds while every attached browser subscriber declares orderedRebase', async () => {
+      const info = await seedInverted()
+      const sub = sm.subscribe(info.id, { orderedRebase: true })
+      try {
+        const r = await sm.retryTranscriptReconcile(info.id)
+        expect(r.degraded).toBe(false)
+        expect(uuidsOf(await sm.getTranscriptWindow(info.id))).toEqual(['A', 'R', 'N'])
+      } finally {
+        sub.unsubscribe()
+      }
+    })
+
+    it('internal (non-browser) subscriptions do not block rebuild', async () => {
+      const info = await seedInverted()
+      // No opts = an internal consumer (e.g. subscribeLiveSubagentFrames),
+      // not a browser tab — it must not count as an incapable subscriber.
+      const sub = sm.subscribe(info.id)
+      try {
+        const r = await sm.retryTranscriptReconcile(info.id)
+        expect(r.degraded).toBe(false)
+        expect(uuidsOf(await sm.getTranscriptWindow(info.id))).toEqual(['A', 'R', 'N'])
+      } finally {
+        sub.unsubscribe()
+      }
+    })
+
+    it('a rebuilt session requires orderedRebase on subscribe, and the requirement survives restart', async () => {
+      const info = await seedInverted()
+      expect(sm.transcriptRequiresOrderedRebase(info.id)).toBe(false)
+      await sm.retryTranscriptReconcile(info.id)
+      expect(sm.transcriptRequiresOrderedRebase(info.id)).toBe(true)
+      // Restart: a fresh manager derives the requirement from the sidecar's
+      // committed generation history, not from in-memory state.
+      const store2 = new SessionStore({ stateDir: dir })
+      await store2.load()
+      const sm2 = new SessionManager({ store: store2 })
+      try {
+        await sm2.getTranscriptWindow(info.id)
+        expect(sm2.transcriptRequiresOrderedRebase(info.id)).toBe(true)
+      } finally {
+        await sm2.shutdown()
+      }
+    })
+  })
   describe('transcript eviction + messages-evicted broadcast (Task 5 wiring)', () => {
     const emitAssistant = (uuid: string, text: string) => {
       mockHandles[0].emit({

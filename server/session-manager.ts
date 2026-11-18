@@ -154,7 +154,8 @@ import {
 } from './transcript-sidecar.js'
 import { occurrenceIdOf, semanticMessageProjection, type ProjectionEntry } from './transcript-projection.js'
 import { createHash } from 'node:crypto'
-import { buildOrderedProjection } from './transcript-reconcile.js'
+import { buildOrderedProjection, TranscriptRebuildBlockedError } from './transcript-reconcile.js'
+import { SessionSubscriptionHub } from './session-subscription-hub.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -1008,6 +1009,11 @@ export class SessionManager {
    *  ingests only record into a complete seq space. Dropped on unload —
    *  the sidecar file survives, so a later resume re-hydrates from it. */
   private readonly transcriptStores = new Map<string, TranscriptHolder>()
+  /** Manager-owned browser-subscriber capability registry (spec §8.1/§8.3).
+   *  Only BROWSER subscribes register here (frame-bridge passes opts); the
+   *  transport fan-out still lives on Session.subscribers. The ordered-rebuild
+   *  gate reads allSubscribersCapable before any public projection mutation. */
+  private readonly subscriptionHub = new SessionSubscriptionHub()
   /** In-flight transcript reconciles, keyed by session id — getTranscriptWindow
    *  and resume() can both trigger one; they must share the same promise. */
   private readonly transcriptReconciles = new Map<string, Promise<TranscriptHolder>>()
@@ -7812,11 +7818,12 @@ export class SessionManager {
    * to clients. Transcript history is NOT attached — the seq-window
    * protocol pages it over REST (GET /sessions/:id/messages).
    */
-  subscribe(id: string): { iterable: AsyncIterable<SDKMessage>; unsubscribe: () => void } {
+  subscribe(id: string, opts?: { orderedRebase?: boolean }): { iterable: AsyncIterable<SDKMessage>; unsubscribe: () => void } {
     const s = this.require(id)
     const subId = randomUUID()
     const sub = createAsyncSubscription<SDKMessage>(() => {
       s.subscribers.delete(subId)
+      this.subscriptionHub.detach(id, subId)
     })
     const sdkSub: Subscriber = {
       id: subId,
@@ -7825,12 +7832,27 @@ export class SessionManager {
       get closed() { return sub.closed },
     }
     s.subscribers.set(subId, sdkSub)
+    // A browser subscribe (opts present — frame-bridge always passes it)
+    // registers its ordered-rebase capability in the manager-owned hub.
+    // Internal consumers (subscribeLiveSubagentFrames, plugin sources) pass
+    // no opts and must NOT count as incapable subscribers blocking rebuilds.
+    // The hub entry delegates `closed` to the live subscription, so a queue
+    // ended by teardown/overflow stops counting even before detach runs.
+    if (opts) {
+      this.subscriptionHub.attach(id, {
+        id: subId,
+        push: (frame) => sdkSub.push(frame as SDKMessage),
+        get closed() { return sub.closed },
+        orderedRebase: opts.orderedRebase === true,
+      })
+    }
 
     return {
       iterable: sub.iterable,
       unsubscribe: () => {
         sub.end()
         s.subscribers.delete(subId)
+        this.subscriptionHub.detach(id, subId)
       },
     }
   }
@@ -8063,6 +8085,9 @@ export class SessionManager {
           t.store.hydrate(folded.entries)
           t.store.generation = folded.generation
           for (const a of folded.aliases) t.store.registerUuidAlias(a.uuid, a.seq)
+          // Derive the subscribe-capability requirement from the committed
+          // generation history (survives restarts — spec §8.3).
+          t.hasOrderedRebuild = folded.history.some((h) => h.reason === 'ordered-rebuild')
         } else {
           // No committed v2 generation yet (incl. a crash before the first
           // commit): fall back to the intact v1 projection, ignoring any
@@ -8072,13 +8097,21 @@ export class SessionManager {
         const composed = await this.composeTranscriptEntries(id)
         if (!this.isSessionDeleteTombstoned(id)) await this.reconcileOrdered(t, id, composed)
       } catch (err) {
-        // Degraded but usable: the store keeps whatever hydrated/appended
-        // before the failure; the sidecar's append queue is unbroken. Never
-        // head-append unknown middle records (the incident bug).
-        t.degraded = true
-        metrics.count('transcript_reconcile_total', { mode: 'rebuild', result: 'error' })
-        metrics.count('transcript_rebuild_failures', { stage: 'reconcile' })
-        log.warn(`[session ${id}] transcript reconcile failed: ${(err as Error).message ?? err}`)
+        if (err instanceof TranscriptRebuildBlockedError) {
+          // Capability refusal (spec §8.3): NOT a degradation — the old
+          // projection is intact and stays readable/append-only. Only the
+          // rebuild waits for the incapable tab to reload and retry.
+          t.rebuildBlocked = err.reason
+          log.info(`[session ${id}] transcript rebuild blocked: ${err.reason} (incapable subscriber attached)`)
+        } else {
+          // Degraded but usable: the store keeps whatever hydrated/appended
+          // before the failure; the sidecar's append queue is unbroken. Never
+          // head-append unknown middle records (the incident bug).
+          t.degraded = true
+          metrics.count('transcript_reconcile_total', { mode: 'rebuild', result: 'error' })
+          metrics.count('transcript_rebuild_failures', { stage: 'reconcile' })
+          log.warn(`[session ${id}] transcript reconcile failed: ${(err as Error).message ?? err}`)
+        }
       } finally {
         t.reconciled = true
         this.transcriptReconciles.delete(id)
@@ -8168,6 +8201,13 @@ export class SessionManager {
       metrics.count('transcript_reconcile_total', { mode: 'append', result: 'success' })
       return
     }
+    // Capability gate (spec §8.3): a rebuild is refused BEFORE any public
+    // projection/generation/WS mutation while an incapable browser subscriber
+    // is attached. Ordinary append-only back-fill above needs no upgrade.
+    if (!this.subscriptionHub.allSubscribersCapable(id)) {
+      metrics.count('transcript_rebuild_blocked_total', { reason: 'client-upgrade-required' })
+      throw new TranscriptRebuildBlockedError('client-upgrade-required')
+    }
     const startedAt = Date.now()
     const ordered = buildOrderedProjection(input)
     // Build the batch WITHOUT mutating the in-memory store; append + fsync FIRST
@@ -8205,6 +8245,7 @@ export class SessionManager {
     for (let i = 0; i < ordered.length; i++) {
       for (const a of ordered[i].aliases) t.store.registerUuidAlias(a, i)
     }
+    t.hasOrderedRebuild = true
     metrics.count('transcript_reconcile_total', { mode: 'rebuild', result: 'success' })
     metrics.count('transcript_rebuild_reason', { reason: 'middle-gap' })
     metrics.count('transcript_rebuild_entries', { kind: 'canonical' }, ordered.length)
@@ -8220,7 +8261,17 @@ export class SessionManager {
     this.transcriptStores.delete(id)
     this.transcriptReconciles.delete(id)
     const t = await this.ensureTranscriptReconciled(id)
+    if (t.rebuildBlocked) throw new HttpError(409, t.rebuildBlocked)
     return { generation: t.store.generation, headSeq: t.store.headSeq, degraded: t.degraded }
+  }
+
+  /** Whether the session's committed generation history contains an
+   *  ordered-rebuild (spec §8.3): a browser subscribe must declare
+   *  orderedRebaseV1 or be refused, so a legacy tab never anchors a seq
+   *  window it cannot reset. Derived from the sidecar fold, so it holds
+   *  across restarts. False for unknown / never-rebuilt sessions. */
+  transcriptRequiresOrderedRebase(id: string): boolean {
+    return this.transcriptStores.get(id)?.hasOrderedRebuild === true
   }
 
   /** Pre-seed a FORK's seq store from its source's transcript BEFORE the
