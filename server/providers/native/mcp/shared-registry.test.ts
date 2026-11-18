@@ -20,6 +20,13 @@ import { SharedRegistry } from './shared-registry.js'
 
 const fixturePath = fileURLToPath(new URL('./fixtures/stdio-server.mjs', import.meta.url))
 
+// A healthy stdio child can outlive the default 5s close deadline under
+// full-suite load: the exit-confirmation then marks cleanupFailed and the
+// registry RETAINS the record, reddening the reg.size===0 pins. Give the
+// healthy leg a generous close margin (the deliberately-hung retention pin
+// keeps its own short closeTimeoutMs).
+const HEALTHY_CLOSE_MS = 10_000
+
 const tempDirs: string[] = []
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'native-mcp-registry-'))
@@ -118,7 +125,7 @@ describe('SharedRegistry', () => {
   it('two acquires of the same config share one child; release semantics', async () => {
     const dir = await tempDir()
     const cfg = stdioConfig(join(dir, 'bye.txt'))
-    const reg = new SharedRegistry()
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
 
     const a = acquire(reg, cfg)
     const b = acquire(reg, cfg)
@@ -156,7 +163,7 @@ describe('SharedRegistry', () => {
   it('different env yields separate children', async () => {
     const dir = await tempDir()
     const cfg = stdioConfig(join(dir, 'bye.txt'))
-    const reg = new SharedRegistry()
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
 
     const a = acquire(reg, { ...cfg, env: { A: '1' } })
     const b = acquire(reg, { ...cfg, env: { A: '2' } })
@@ -181,7 +188,7 @@ describe('SharedRegistry', () => {
   it('a release-at-0 cannot race a concurrent acquire of the same key', async () => {
     const dir = await tempDir()
     const cfg = stdioConfig(join(dir, 'bye.txt'))
-    const reg = new SharedRegistry()
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
 
     const a = acquire(reg, cfg)
     await a.ready
@@ -211,7 +218,7 @@ describe('SharedRegistry', () => {
     // --slow-exit holds the graceful exit ~300ms after stdin EOF, so the
     // acquire below lands DURING the healthy teardown deterministically.
     const cfg = stdioConfig(byePath, '--slow-exit')
-    const reg = new SharedRegistry()
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
 
     const a = acquire(reg, cfg)
     await a.ready
@@ -250,7 +257,7 @@ describe('SharedRegistry', () => {
     metrics.reset()
     const dir = await tempDir()
     const cfg = stdioConfig(join(dir, 'bye.txt'))
-    const reg = new SharedRegistry()
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
 
     const a = acquire(reg, cfg)
     const b = acquire(reg, cfg)

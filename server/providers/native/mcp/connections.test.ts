@@ -19,6 +19,13 @@ import { childIdentity, sharingKey } from './shared-record.js'
 
 const fixturePath = fileURLToPath(new URL('./fixtures/stdio-server.mjs', import.meta.url))
 
+// A healthy stdio child can outlive the default 5s close deadline under
+// full-suite load: the exit-confirmation then marks cleanupFailed and the
+// registry RETAINS the record, reddening the reg.size===0 pins. Give the
+// healthy leg a generous close margin (a deliberately-hung pin keeps its own
+// short closeTimeoutMs).
+const HEALTHY_CLOSE_MS = 10_000
+
 const abortSignal = () => new AbortController().signal
 
 const tempDirs: string[] = []
@@ -409,7 +416,7 @@ describe('NativeMcpConnections over a shared registry', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const cfg = stdioCfg(byePath)
-    const reg = new SharedRegistry()
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
     const v1 = new NativeMcpConnections({ registry: reg })
     const v2 = new NativeMcpConnections({ registry: reg })
     v1.load({ ext: cfg })
@@ -454,7 +461,7 @@ describe('NativeMcpConnections over a shared registry', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const cfg = stdioCfg(byePath)
-    const reg = new SharedRegistry()
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
     const v1 = new NativeMcpConnections({ registry: reg })
     const v2 = new NativeMcpConnections({ registry: reg })
     v1.load({ ext: cfg })
@@ -486,7 +493,7 @@ describe('NativeMcpConnections over a shared registry', () => {
     const byePath = join(dir, 'bye.txt')
     const cfg1 = stdioCfg(byePath, { A: '1' })
     const cfg2 = stdioCfg(byePath, { A: '2' })
-    const reg = new SharedRegistry()
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
     const v1 = new NativeMcpConnections({ registry: reg })
     v1.load({ ext: cfg1 })
     await v1.whenReady()
@@ -517,7 +524,7 @@ describe('NativeMcpConnections over a shared registry', () => {
   it('statuses label shared stdio global and sdk session', async () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
-    const reg = new SharedRegistry()
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
     const v1 = new NativeMcpConnections({ registry: reg })
     v1.load({ ext: stdioCfg(byePath), a: { type: 'sdk', instance: echoServer() } })
     await v1.whenReady()
@@ -541,7 +548,7 @@ describe('NativeMcpConnections over a shared registry', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const cfg = stdioCfg(byePath, { SECRET_TOKEN: 'super-secret-value' })
-    const reg = new SharedRegistry()
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
     const v1 = new NativeMcpConnections({ registry: reg })
     v1.load({ secret: cfg })
     await v1.whenReady()
@@ -563,5 +570,82 @@ describe('NativeMcpConnections over a shared registry', () => {
     await v1.closeAll()
     expect(reg.size).toBe(0)
     await waitFor(() => existsSync(byePath), 5000, 'the shared stdio child to exit')
+  }, 15_000)
+
+  // The unowned-guard re-acquire paths: a DISABLED shared entry holds no ref,
+  // so reconnect / toggle(true) must re-acquire ownership (users back to 1,
+  // registry holds the record) — never revive the released record at users 0,
+  // which would leave a connected child nobody owns or tears down.
+  it('reconnect on a disabled shared entry re-acquires ownership', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const cfg = stdioCfg(byePath)
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const v1 = new NativeMcpConnections({ registry: reg })
+    v1.load({ ext: cfg })
+    await v1.whenReady()
+    const rec = reg.get(sharingKey(cfg))!
+    const pid = rec.pid!
+    expect(rec.users).toBe(1)
+
+    // Releasing the only ref reaps the child and removes the record.
+    await v1.toggle('ext', false)
+    expect(rec.users).toBe(0)
+    expect(reg.size).toBe(0)
+    await expectChildGone(pid)
+    expect(v1.statuses()[0]).toMatchObject({ name: 'ext', status: 'disabled' })
+
+    // reconnect re-acquires: a fresh OWNED record (users 1), not a revived
+    // unowned one (which would leave reg.size 0 / users 0 with a live child).
+    await v1.reconnect('ext')
+    expect(reg.size).toBe(1)
+    const rec2 = reg.get(sharingKey(cfg))!
+    expect(rec2.users).toBe(1)
+    expect(rec2.status).toBe('connected')
+    expect(rec2.pid).toBeGreaterThan(0)
+    expect(rec2.pid).not.toBe(pid)
+    expect(v1.tools().map((t) => t.fqn)).toEqual(['mcp__ext__echo'])
+    expect((await v1.call('mcp__ext__echo', { text: 'again' }, abortSignal())).text).toContain('again')
+
+    // The re-acquired child is owned: closeAll releases the last ref, reaps it.
+    await v1.closeAll()
+    expect(rec2.users).toBe(0)
+    expect(reg.size).toBe(0)
+    await expectChildGone(rec2.pid!)
+  }, 15_000)
+
+  it('toggle(true) on a disabled shared entry re-acquires ownership', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const cfg = stdioCfg(byePath)
+    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const v1 = new NativeMcpConnections({ registry: reg })
+    v1.load({ ext: cfg })
+    await v1.whenReady()
+    const rec = reg.get(sharingKey(cfg))!
+    const pid = rec.pid!
+    expect(rec.users).toBe(1)
+
+    await v1.toggle('ext', false)
+    expect(rec.users).toBe(0)
+    expect(reg.size).toBe(0)
+    await expectChildGone(pid)
+
+    // toggle(true) re-acquires ownership the same way reconnect does.
+    await v1.toggle('ext', true)
+    expect(reg.size).toBe(1)
+    const rec2 = reg.get(sharingKey(cfg))!
+    expect(rec2.users).toBe(1)
+    expect(rec2.status).toBe('connected')
+    expect(rec2.pid).toBeGreaterThan(0)
+    expect(rec2.pid).not.toBe(pid)
+    expect(v1.statuses()[0]).toMatchObject({ name: 'ext', status: 'connected', scope: 'global' })
+    expect(v1.tools().map((t) => t.fqn)).toEqual(['mcp__ext__echo'])
+    expect((await v1.call('mcp__ext__echo', { text: 'back' }, abortSignal())).text).toContain('back')
+
+    await v1.closeAll()
+    expect(rec2.users).toBe(0)
+    expect(reg.size).toBe(0)
+    await expectChildGone(rec2.pid!)
   }, 15_000)
 })
