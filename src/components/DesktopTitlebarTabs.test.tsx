@@ -22,7 +22,7 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   } as SessionInfo
 }
 
-function setup(sessions: SessionInfo[] = [], focusedId: string | null = null) {
+function setup(sessions: SessionInfo[] = [], focusedId: string | null = null, onNewDefaultSession?: () => void) {
   const onNewSession = vi.fn()
   const onCreateGroup = vi.fn()
   const askPrompt = vi.fn() as ReturnType<typeof vi.fn>
@@ -33,12 +33,13 @@ function setup(sessions: SessionInfo[] = [], focusedId: string | null = null) {
       onSelect={vi.fn()}
       onClose={vi.fn()}
       onNewSession={onNewSession}
+      onNewDefaultSession={onNewDefaultSession}
       onCreateGroup={onCreateGroup}
       askPrompt={askPrompt}
       maxOpen={3}
     />,
   )
-  return { onNewSession, onCreateGroup, askPrompt, ...utils }
+  return { onNewSession, onNewDefaultSession, onCreateGroup, askPrompt, ...utils }
 }
 
 describe('DesktopTitlebarTabs', () => {
@@ -49,6 +50,30 @@ describe('DesktopTitlebarTabs', () => {
     expect(onNewSession).not.toHaveBeenCalled()
     const labels = Array.from(document.querySelectorAll('.ctx-menu-label')).map((e) => e.textContent)
     expect(labels).toEqual(['New session…', 'New group…'])
+  })
+
+  it('offers New Session (Default) when wired, matching the sidebar menu', () => {
+    const onNewDefaultSession = vi.fn()
+    const { onNewSession } = setup([], null, onNewDefaultSession)
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    const labels = Array.from(document.querySelectorAll('.ctx-menu-label')).map((e) => e.textContent)
+    expect(labels).toEqual(['New session…', 'New Session (Default)', 'New group…'])
+    fireEvent.click(screen.getByText('New Session (Default)'))
+    expect(onNewDefaultSession).toHaveBeenCalledOnce()
+    expect(onNewSession).not.toHaveBeenCalled()
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('at panel capacity both New session rows are disabled, New group… still works', () => {
+    const sessions = [makeSession({ id: 's1' }), makeSession({ id: 's2' }), makeSession({ id: 's3' })]
+    const { askPrompt } = setup(sessions, null, vi.fn())
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    const items = document.querySelectorAll<HTMLButtonElement>('.ctx-menu-item')
+    expect(items[0].disabled).toBe(true) // New session…
+    expect(items[1].disabled).toBe(true) // New Session (Default)
+    expect(items[2].disabled).toBe(false) // New group…
+    fireEvent.click(items[2])
+    expect(askPrompt).toHaveBeenCalledOnce()
   })
 
   it('with tabs: + opens the same create menu', () => {

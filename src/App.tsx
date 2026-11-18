@@ -5232,6 +5232,7 @@ export function App() {
               onSelect={handleSelectFromSidebar}
               onActivateGroup={handleActivateGroup}
               onNewSession={openNewSessionDialog}
+              onNewDefaultSession={handleCreateDefaultSession}
               onCreateGroup={handleCreateGroup}
               askPrompt={stripDialogs.askPrompt}
               onSessionContextMenu={handleStripSessionContextMenu}
@@ -5297,7 +5298,7 @@ export function App() {
           })()}
           {/* Open-panel tabs in the custom titlebar (desktop win/darwin).
               Mirror openSessions — click focuses, × closes, + opens the
-              create menu (New session… / New group…).
+              create menu (New session… / New Session (Default) / New group…).
               Sits AFTER the left chrome cluster (☰ / sidebar / profile) so
               the drag spacer below cannot shove those buttons to the right. */}
           {hostCaps.customTitlebar && (
@@ -5307,6 +5308,7 @@ export function App() {
               onSelect={(id) => void handleSelect(id)}
               onClose={closeSession}
               onNewSession={openNewSessionDialog}
+              onNewDefaultSession={handleCreateDefaultSession}
               onCreateGroup={handleCreateGroup}
               askPrompt={stripDialogs.askPrompt}
               maxOpen={maxOpen}

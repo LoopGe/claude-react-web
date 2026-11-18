@@ -2,8 +2,9 @@
 //
 // Windows/macOS custom chrome has no OS tab strip, so the open Chat panels
 // surface as tabs in the drag row: click focuses that panel, × closes it,
-// + opens the create menu (New session… / New group…) — same two-step flow
-// as SessionNavStrip's leading +. The sidebar still lists ALL sessions —
+// + opens the create menu (New session… / New group…, plus New Session
+// (Default) when wired) — same two-step flow as SessionNavStrip's leading +.
+// The sidebar still lists ALL sessions —
 // these tabs mirror only what is currently open as a panel (openSessions).
 //
 // The whole strip is a no-drag island inside the drag region so clicks land
@@ -24,6 +25,9 @@ interface Props {
   onClose: (id: string) => void
   /** Create-menu actions (the + opens the menu first). */
   onNewSession: () => void
+  /** Immediate create from server defaults — the same New Session (Default)
+   *  row the sidebar offers, so every create entry point matches. */
+  onNewDefaultSession?: () => void
   onCreateGroup: (name: string) => void
   askPrompt: (config: PromptRequest) => void
   maxOpen: number
@@ -110,6 +114,7 @@ function TitlebarTab({
 
 function NewButton(props: {
   onNewSession: () => void
+  onNewDefaultSession?: () => void
   onCreateGroup: (name: string) => void
   askPrompt: (config: PromptRequest) => void
   newSessionDisabled: boolean
@@ -118,8 +123,9 @@ function NewButton(props: {
     <CreateMenuButton
       className="titlebar-tab-new btn btn-icon"
       aria-label="Create"
-      title="New session or group"
+      title="New session, default session, or group"
       onNewSession={props.onNewSession}
+      onNewDefaultSession={props.onNewDefaultSession}
       onCreateGroup={props.onCreateGroup}
       askPrompt={props.askPrompt}
       newSessionDisabled={props.newSessionDisabled}
@@ -135,6 +141,7 @@ export const DesktopTitlebarTabs = memo(function DesktopTitlebarTabs({
   onSelect,
   onClose,
   onNewSession,
+  onNewDefaultSession,
   onCreateGroup,
   askPrompt,
   maxOpen,
@@ -150,6 +157,7 @@ export const DesktopTitlebarTabs = memo(function DesktopTitlebarTabs({
       <div className="titlebar-tabs" role="group" aria-label="Open sessions">
         <NewButton
           onNewSession={onNewSession}
+          onNewDefaultSession={onNewDefaultSession}
           onCreateGroup={onCreateGroup}
           askPrompt={askPrompt}
           newSessionDisabled={false}
@@ -176,6 +184,7 @@ export const DesktopTitlebarTabs = memo(function DesktopTitlebarTabs({
       ))}
       <NewButton
         onNewSession={onNewSession}
+        onNewDefaultSession={onNewDefaultSession}
         onCreateGroup={onCreateGroup}
         askPrompt={askPrompt}
         newSessionDisabled={newSessionDisabled}

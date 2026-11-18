@@ -1,7 +1,8 @@
 // Create-menu button for the sidebar, SessionNavStrip and DesktopTitlebarTabs.
-// The ordinary flow opens New session… / New group…; the sidebar can also
-// inject an immediate New Session (Default) row. Owns its open-state +
-// ContextMenu; the caller supplies the actions and prompt host.
+// The ordinary flow opens New session… / New group…; a caller that wires
+// onNewDefaultSession also gets an immediate New Session (Default) row (all
+// three surfaces do). Owns its open-state + ContextMenu; the caller supplies
+// the actions and prompt host.
 //
 // The trigger TOGGLES the menu: ContextMenu gets `triggerRef` so a press on
 // the + is not treated as an outside press (see useOutsideMouseDown), and

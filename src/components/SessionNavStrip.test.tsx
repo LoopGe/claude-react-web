@@ -49,6 +49,7 @@ function stripProps(sections: SidebarSection[], overrides: StripOverrides = {}) 
     onSelect: overrides.onSelect ?? vi.fn(),
     onActivateGroup: overrides.onActivateGroup ?? vi.fn(),
     onNewSession: overrides.onNewSession ?? vi.fn(),
+    onNewDefaultSession: overrides.onNewDefaultSession,
     onCreateGroup: overrides.onCreateGroup ?? vi.fn(),
     askPrompt: overrides.askPrompt ?? vi.fn(),
     onSessionContextMenu: overrides.onSessionContextMenu,
@@ -67,6 +68,7 @@ function renderStrip(sections: SidebarSection[], overrides: StripOverrides = {})
     onSelect: props.onSelect,
     onActivateGroup: props.onActivateGroup,
     onNewSession: props.onNewSession,
+    onNewDefaultSession: props.onNewDefaultSession,
     onCreateGroup: props.onCreateGroup,
     askPrompt: props.askPrompt,
     /** Re-render against a new sections snapshot (same override set, or a
@@ -409,6 +411,18 @@ describe('SessionNavStrip', () => {
     const labels = Array.from(document.querySelectorAll('.ctx-menu-label')).map((e) => e.textContent)
     expect(labels).toEqual(['New session…', 'New group…'])
     expect(onNewSession).not.toHaveBeenCalled()
+  })
+
+  it('offers New Session (Default) when wired, matching the sidebar menu', () => {
+    const onNewDefaultSession = vi.fn()
+    const { container, onNewSession } = renderStrip(baseSections(), { onNewDefaultSession })
+    fireEvent.click(container.querySelector<HTMLElement>('.session-nav-new')!)
+    const labels = Array.from(document.querySelectorAll('.ctx-menu-label')).map((e) => e.textContent)
+    expect(labels).toEqual(['New session…', 'New Session (Default)', 'New group…'])
+    fireEvent.click(screen.getByText('New Session (Default)'))
+    expect(onNewDefaultSession).toHaveBeenCalledOnce()
+    expect(onNewSession).not.toHaveBeenCalled()
+    expect(screen.queryByRole('menu')).toBeNull()
   })
 
   it('renders a divider between + and the scroll region when sessions exist', () => {

@@ -1,9 +1,9 @@
 // Create-menu item definitions shared by the sidebar, header nav strip and
-// desktop titlebar. The optional default-session row is injected only by the
-// sidebar; the other surfaces keep the original two-row menu. Same contract as
-// groupMenuItems — the builder owns the item rows AND the create-group
-// prompt copy so the surfaces cannot drift; the caller injects the
-// dialog host and the side effects as plain callbacks.
+// desktop titlebar. The optional default-session row appears on every surface
+// that wires onNewDefaultSession (all three create entry points do), so the
+// menus stay consistent. Same contract as groupMenuItems — the builder owns
+// the item rows AND the create-group prompt copy so the surfaces cannot drift;
+// the caller injects the dialog host and the side effects as plain callbacks.
 
 import { ContextMenuItem } from './ContextMenu'
 import { IconMessageCircle, IconFolder } from './icons/ToolIcons'
@@ -11,7 +11,8 @@ import type { PromptRequest } from '../hooks/useDialogHosts'
 
 export function buildCreateMenuItems(opts: {
   onNewSession: () => void
-  /** Immediate create from server defaults. Supplied only by the sidebar. */
+  /** Immediate create from server defaults. When omitted the menu keeps the
+   *  two-row form; every create entry point supplies it. */
   onNewDefaultSession?: () => void
   /** Called with the NEW name after the create prompt confirms. */
   onCreateGroup: (name: string) => void

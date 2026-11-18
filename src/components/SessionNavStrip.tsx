@@ -14,8 +14,9 @@
 //
 // The strip renders even with zero sessions: the leading + keeps a create
 // entry point in the header (same reasoning as the titlebar tabs' empty
-// state). The + opens a small create menu (New session… / New group…)
-// rather than immediately creating a session — see CreateMenuButton.
+// state). The + opens a small create menu (New session… / New group…, plus
+// New Session (Default) when the caller wires it) rather than immediately
+// creating a session — see CreateMenuButton.
 //
 // Structure: [+][scroller]. The + lives OUTSIDE the scroll region so the
 // edge-fade mask can never ghost the primary create affordance.
@@ -50,6 +51,9 @@ interface Props {
   onActivateGroup: (groupId: string) => void
   /** Create-menu actions (the leading + opens the menu first). */
   onNewSession: () => void
+  /** Immediate create from server defaults — the same New Session (Default)
+   *  row the sidebar offers, so every create entry point matches. */
+  onNewDefaultSession?: () => void
   onCreateGroup: (name: string) => void
   askPrompt: (config: PromptRequest) => void
   /** Right-click management hooks, mirroring the sidebar cards / group
@@ -324,6 +328,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
   onSelect,
   onActivateGroup,
   onNewSession,
+  onNewDefaultSession,
   onCreateGroup,
   askPrompt,
   onSessionContextMenu,
@@ -475,8 +480,9 @@ export const SessionNavStrip = memo(function SessionNavStrip({
       <CreateMenuButton
         className="session-nav-new btn btn-icon"
         aria-label="Create"
-        title="New session or group"
+        title="New session, default session, or group"
         onNewSession={onNewSession}
+        onNewDefaultSession={onNewDefaultSession}
         onCreateGroup={onCreateGroup}
         askPrompt={askPrompt}
       >
