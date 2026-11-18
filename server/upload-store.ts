@@ -19,7 +19,7 @@ import { basename, resolve as resolvePath } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import { createLogger } from './log.js'
-import { NativeAttachmentReferenceIndex } from './attachment-reference-index.js'
+import { NativeAttachmentReferenceIndex } from './providers/native/attachment-reference-index.js'
 export type { UploadEntry } from '../shared/uploads.js'
 import type { UploadEntry } from '../shared/uploads.js'
 

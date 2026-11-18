@@ -7,7 +7,7 @@ import {
 } from './explore.js'
 import type { ToolDef } from './tools/types.js'
 import { createAttachmentReadTool } from './tools/attachment-read.js'
-import { NativeAttachmentReferenceIndex } from '../../attachment-reference-index.js'
+import { NativeAttachmentReferenceIndex } from './attachment-reference-index.js'
 import { UploadStore } from '../../upload-store.js'
 import { PdfBudgetLedger, PreparedPdfStore } from './pdf-documents.js'
 

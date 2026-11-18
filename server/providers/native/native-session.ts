@@ -35,7 +35,7 @@ import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './ses
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
 import type { NativeFileAttachment, NativeLogEvent, NativeSubagentDescriptorEvent, NativeTurnEndReason } from './session-log/format.js'
-import { nativeAttachmentOccurrences } from '../../attachment-reference-index.js'
+import { nativeAttachmentOccurrences } from './attachment-reference-index.js'
 import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
@@ -65,7 +65,7 @@ import { formatSupplementInstruction, type SupplementOutcome } from '../steering
 import { isQuestionResult } from '../../permission-broker.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import type { UploadStore } from '../../upload-store.js'
-import type { NativeAttachmentReferenceIndex } from '../../attachment-reference-index.js'
+import type { NativeAttachmentReferenceIndex } from './attachment-reference-index.js'
 import {
   assignPdfModelForms,
   PdfBudgetLedger,
