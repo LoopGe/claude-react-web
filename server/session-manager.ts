@@ -157,6 +157,8 @@ import { occurrenceIdOf, semanticMessageProjection, type ProjectionEntry } from 
 import { createHash } from 'node:crypto'
 import { buildOrderedProjection, TranscriptRebuildBlockedError } from './transcript-reconcile.js'
 import { SessionSubscriptionHub } from './session-subscription-hub.js'
+import { ResetJournal, type ResetJournalEntry } from './reset-journal.js'
+import { TranscriptWriter } from './transcript-writer.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -1018,6 +1020,10 @@ export class SessionManager {
    *  transport fan-out still lives on Session.subscribers. The ordered-rebuild
    *  gate reads allSubscribersCapable before any public projection mutation. */
   private readonly subscriptionHub = new SessionSubscriptionHub()
+  /** Per-session persisted reset journals (spec §8.3): clearEpoch/rebaseEpoch
+   *  + the latest clear/compact reset's prepared/committed state. Lazily
+   *  created; survives restarts via <stateDir>/reset-journals/<id>.json. */
+  private readonly resetJournals = new Map<string, ResetJournal>()
   /** In-flight transcript reconciles, keyed by session id — getTranscriptWindow
    *  and resume() can both trigger one; they must share the same promise. */
   private readonly transcriptReconciles = new Map<string, Promise<TranscriptHolder>>()
@@ -5314,19 +5320,16 @@ export class SessionManager {
     // store starts at 0. Carrying the bump is what lets the follow-up tail
     // fetch and live frames re-anchor instead of retrying forever.
     const prevGeneration = this.transcriptStores.get(s.id)?.store.generation ?? 0
+    // Two-phase reset (spec §8.3): prepare the journal BEFORE the provider op,
+    // then write the reset generation batch + fsync + journal commit AFTER it
+    // succeeds. The seq sidecar is KEPT (no deletion) — the reset batch is the
+    // new publication marker; the loader projects from it on the next reload.
+    const journal = this.journalFor(s.id)
+    await journal.prepare({ generation: prevGeneration + 1, reason: 'compact', seedBoundaryUuid: uuid })
     await compactInPlace.call(s.handle, summary, { uuid, timestamp })
-    await this.removeTranscriptState(s.id)
-    // Establish the fresh seq space now, but do NOT publish the new
-    // generation yet: a panel that reads while the sidecar removals run must
-    // not adopt a generation ahead of the final one (its `session-cleared`
-    // floor is local + 1, so adopting `prev + 1` early would arm `prev + 2`
-    // and wedge the tab). The fresh store reports 0, which is never ahead of
-    // the final `prev + 1`; the floor is a MINIMUM, so 0 re-anchors safely.
-    // `reconciled` is set because this seq space is defined by the two
-    // frames below, not by a disk backfill (which would collide with the
-    // boundary uuid).
-    const fresh = this.getOrCreateTranscript(s.id)
-    fresh.reconciled = true
+    await this.resetTranscriptGeneration(s.id, 'compact', journal)
+    // These APP sidecars describe the pre-compact conversation and are cleared
+    // (the seq sidecar above is kept). A failed app reset is logged, not fatal.
     const sidecarResets: Array<[string, () => Promise<void>]> = [
       ['prompt-uuid', () => this.promptUuidStore.remove(s.id)],
       ['steered', () => this.steeredStore.remove(s.id)],
@@ -5340,11 +5343,16 @@ export class SessionManager {
         log.warn(`[session ${s.id}] auto-compact: ${label} sidecar reset failed:`, err)
       }
     }
-    // One synchronous block from here: publish the new generation, restart
-    // the seq space, wipe the in-memory state, signal, push the new frames.
+    // One synchronous block from here: reset the in-memory seq space to the
+    // reset generation, wipe the in-memory state, signal, push the new frames.
     // No await may be introduced between these statements — a client that
     // samples the generation in between would arm a floor one too high.
-    fresh.store.continueGeneration(prevGeneration)
+    // store.reset() bumps generation prev→prev+1 (matching the reset batch)
+    // and zeroes seqs; `reconciled` stays true because this seq space is
+    // defined by the reset batch + the two frames below, not a disk backfill.
+    const t = this.getOrCreateTranscript(s.id)
+    t.reconciled = true
+    t.store.reset()
     s.history = []
     s.subagentHistory = []
     s.promptUuids = []
@@ -8127,6 +8135,8 @@ export class SessionManager {
     if (inFlight) return inFlight
     const p = (async () => {
       try {
+        // Startup reset-journal fence (spec §8.3) BEFORE projecting the sidecar.
+        await this.recoverResetJournal(id, t)
         const rawRows = await t.sidecar.load()
         const folded = foldSidecarRowsV2(rawRows)
         if (folded.hasCommittedGeneration) {
@@ -8390,6 +8400,83 @@ export class SessionManager {
     if (this.transcriptStores.get(id)?.degraded === true) {
       throw new HttpError(423, 'transcript-degraded')
     }
+  }
+
+  /** The session's persisted reset journal (spec §8.3), lazily created. */
+  private journalFor(id: string): ResetJournal {
+    let j = this.resetJournals.get(id)
+    if (!j) {
+      j = new ResetJournal(this.store?.getDir(), id)
+      this.resetJournals.set(id, j)
+    }
+    return j
+  }
+
+  /** Write a reset generation batch + fsync + journal commit (spec §8.3),
+   *  KEEPING the sidecar. The caller must have `journal.prepare`d the same
+   *  `holder.generation + 1` before the provider op. Uses a reset-only writer
+   *  initialized to the holder's current generation so the batch generation
+   *  matches the prepared journal entry. Returns the new generation. */
+  private async resetTranscriptGeneration(id: string, reason: 'clear' | 'compact', journal: ResetJournal): Promise<number> {
+    const t = this.getOrCreateTranscript(id)
+    const writer = TranscriptWriter.forReset(
+      (rows, commit) => t.sidecar.appendBatch(rows, commit),
+      t.store.generation,
+    )
+    return writer.resetGeneration(reason, undefined, journal)
+  }
+
+  /** Startup reset-journal fence (spec §8.3): recover an interrupted in-band
+   *  clear / native compact BEFORE projecting the sidecar, so a crash mid-reset
+   *  never republishes pre-reset content. prepared+no provider floor → undo
+   *  (keep old projection); prepared+floor → complete (write the missing reset
+   *  batch); committed+no evidence → journal-inconsistent (fail closed). */
+  private async recoverResetJournal(id: string, t: TranscriptHolder): Promise<void> {
+    const journal = this.journalFor(id)
+    await journal.ready
+    const latest = journal.latest
+    if (!latest) return
+    const floorExists = await this.providerHasResetFloor(id, latest)
+    const outcome = await journal.recover(() => floorExists)
+    if (outcome === 'journal-inconsistent') throw new Error('journal-inconsistent')
+    if (outcome === 'undone') return
+    if (outcome === 'completed') {
+      // Crash after the provider op but before the reset batch committed: the
+      // journal is now committed but the batch is missing — write it at the
+      // journal generation so the loader adopts the reset universe.
+      const commit = makeCommitV2({
+        batchId: `recover-${id}-${latest.generation}`,
+        batchType: 'reset',
+        generation: latest.generation,
+        reason: latest.reason,
+        contentPolicy: latest.reason === 'clear' ? 'replace' : 'preserve',
+        rows: [],
+      })
+      await t.sidecar.appendBatch([], commit)
+    }
+  }
+
+  /** Provider-side evidence that a prepared reset's content operation actually
+   *  happened (spec §8.3): for compact, the provider log carries the compact
+   *  boundary at the journal's seedBoundaryUuid. Clear evidence (fresh init /
+   *  empty floor) is wired with the in-band clear path (Task 3). */
+  private async providerHasResetFloor(id: string, latest: ResetJournalEntry): Promise<boolean> {
+    if (latest.reason === 'compact' && latest.seedBoundaryUuid) {
+      const meta = this.sessions.get(id) ?? this.store?.get(id)
+      const provider = this.providers.get(meta?.provider ?? this.defaultProvider)
+      if (!provider?.readHistoryForReconcile) return false
+      try {
+        const result = await provider.readHistoryForReconcile(id, {})
+        if (result.status !== 'ok') return false
+        return result.entries.some((e) => {
+          const m = e.message as { type?: string; subtype?: string; uuid?: string }
+          return m.type === 'system' && m.subtype === 'compact_boundary' && m.uuid === latest.seedBoundaryUuid
+        })
+      } catch {
+        return false
+      }
+    }
+    return false
   }
 
   /** Pre-seed a FORK's seq store from its source's transcript BEFORE the

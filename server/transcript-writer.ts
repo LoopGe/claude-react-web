@@ -82,6 +82,32 @@ export class TranscriptWriter {
     this.ledger = new GenerationLedger(initialGeneration)
   }
 
+  /** A writer scoped to generation RESETS only (spec §8.3 clear/compact):
+   *  resetGeneration uses just `appendBatch` + the ledger, so the live-append
+   *  deps (record/publish/dispatch) are not wired here and fail LOUDLY if
+   *  called — live durable append through the writer is the T7b follow-up.
+   *  Initialized to the holder's current generation so ledger.next yields the
+   *  same `prev + 1` the caller prepared in the journal. */
+  static forReset(appendBatch: WriterDeps['appendBatch'], initialGeneration: number): TranscriptWriter {
+    const notWired = (): never => {
+      throw new Error('reset-only writer: live append/dispatch not wired (T7b)')
+    }
+    return new TranscriptWriter(
+      {
+        appendBatch,
+        recordSeq: notWired,
+        headSeq: () => initialGeneration,
+        publish: notWired,
+        dispatchUser: async () => { notWired() },
+        dispatchSupplement: async () => notWired(),
+        dispatchControl: async () => { notWired() },
+        isTurnActive: () => false,
+        generation: () => initialGeneration,
+      },
+      initialGeneration,
+    )
+  }
+
   get degraded(): boolean {
     return this.degradedFlag
   }

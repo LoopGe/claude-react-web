@@ -383,6 +383,7 @@ import { cleanupGitFixtures, makeRepo } from './test-git-fixtures.js'
 import { branchExists } from './git.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
 import { TranscriptSidecar } from './transcript-sidecar.js'
+import { ResetJournal } from './reset-journal.js'
 import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
 import { NativeProvider } from './providers/native/native-provider.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './providers/native/session-log/log.js'
@@ -2861,6 +2862,72 @@ describe('SessionManager', () => {
       // fence must block the in-place compact (which deletes sidecars).
       await callAutoCompact(live, { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 })
       expect(live.handle.compactInPlace).not.toHaveBeenCalled()
+    })
+
+    it('native compact writes a reset batch and KEEPS the sidecar (no deletion), journal committed', async () => {
+      const info = await sm.create({ cwd: dir })
+      await sm.send(info.id, 'seed turn')
+      const h = mockHandles.at(-1)!
+      h.emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
+      h.emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      const prevGen = sm.transcriptHead(info.id)!.generation
+      const live = liveSession(info.id)
+      live.handle.compactInPlace = vi.fn(async () => {})
+      await callAutoCompact(live, { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 })
+      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+      // The seq sidecar is KEPT (spec §8.3: no deletion on compact).
+      const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
+      expect(existsSync(sidecarFile)).toBe(true)
+      const rows = await new TranscriptSidecar(dir, info.id).load()
+      expect(rows.some((r) => r.commit === true && r.batchType === 'reset' && r.reason === 'compact')).toBe(true)
+      // Generation carried forward; journal committed with clearEpoch advanced.
+      expect(sm.transcriptHead(info.id)!.generation).toBe(prevGen + 1)
+      const journal = (sm as unknown as { journalFor(id: string): ResetJournal }).journalFor(info.id)
+      await journal.ready
+      expect(journal.latest?.state).toBe('committed')
+      expect(journal.latest?.reason).toBe('compact')
+      expect(journal.clearEpoch).toBe(1)
+    })
+
+    it('crash after provider compact before reset commit: restart completes reset, no pre-clear republish', async () => {
+      const prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        const info = await sm.create({ cwd: TEST_CWD })
+        mockHandles.at(-1)!.emit({ type: 'assistant', uuid: 'OLD', parent_tool_use_id: null, message: { id: 'mOLD', role: 'assistant', content: [{ type: 'text', text: 'pre-compact' }] } })
+        expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 1)).toBe(true)
+        // Simulate the crash window: journal PREPARED (gen 1), provider log
+        // compacted (boundary 'b' present), but NO reset batch in the sidecar.
+        const journal = (sm as unknown as { journalFor(id: string): ResetJournal }).journalFor(info.id)
+        await journal.prepare({ generation: 1, reason: 'compact', seedBoundaryUuid: 'b' })
+        const jsonlPath = join(dir, 'projects', encodeCwd(TEST_CWD), `${info.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(jsonlPath, [
+          JSON.stringify({ type: 'system', subtype: 'compact_boundary', uuid: 'b', compact_metadata: { trigger: 'auto', pre_tokens: 10 } }),
+          JSON.stringify({ type: 'user', uuid: 's', isCompactSummary: true, message: { role: 'user', content: 'summary' } }),
+        ].join('\n') + '\n')
+        await sm.shutdown()
+        // Restart: a fresh manager must complete the interrupted reset.
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const win = await sm2.getTranscriptWindow(info.id)
+          expect(win.generation).toBe(1)
+          const uuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+          expect(uuids).not.toContain('OLD') // pre-compact content not republished
+          expect(uuids).toContain('b')
+          const j2 = (sm2 as unknown as { journalFor(id: string): ResetJournal }).journalFor(info.id)
+          await j2.ready
+          expect(j2.latest?.state).toBe('committed')
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+      }
     })
 
     it('uses a positive provider threshold before the ratio fallback', async () => {
