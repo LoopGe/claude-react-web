@@ -1,18 +1,30 @@
 // server/providers/native/mcp/connections.ts
 //
-// Per-session MCP connection manager for the native provider. One
-// `@modelcontextprotocol/sdk` `Client` per entry of the manager-resolved
-// `mcpServers` map: external servers over the shared transports
-// (`createMcpTransport`) and first-party in-process servers (`type: 'sdk'`)
-// over an `InMemoryTransport` pair, so both kinds share one discovery / call /
-// status path.
+// Per-session MCP connection VIEW for the native provider. Two kinds of entry
+// share one discovery / call / status surface:
+//
+//   - LOCAL entries (`type:'sdk'` first-party in-process servers over an
+//     `InMemoryTransport` pair, and `sse`/`http` remote sockets, plus external
+//     `stdio` when no registry is supplied) own a per-session `Client` and the
+//     connect / discover / close lifecycle below.
+//   - SHARED entries (`type:'stdio'` WITH a `SharedRegistry`) delegate to one
+//     host-global `SharedRecord` per `sharingKey(config)`, refcounted across
+//     sessions, so N sessions with an identical stdio config drive ONE child.
+//     The view holds a ref (acquire/release) and re-projects the record's tools
+//     under its own session-local server name. sdk/sse/http NEVER reach the
+//     registry: sdk is cwd-bound and in-process, sse/http own a socket per
+//     session, and `sharingKey` hardcodes 'stdio' (a non-stdio config would
+//     collapse onto one key).
 //
 // Lifetime rules:
 //   - Entries are FINGERPRINTED, never serialized. An `sdk` entry holds a live
 //     server instance, and `JSON.stringify` on it throws on the circular refs;
-//     its identity is the instance itself. An external entry's identity is the
-//     serializable fields only (headers but not env — changing an env value
-//     does not reconnect, matching the replace diff's documented behavior).
+//     its identity is the instance itself. A LOCAL external entry's identity is
+//     the serializable fields only (headers but not env — changing an env value
+//     does not reconnect, matching the replace diff's documented behavior). A
+//     SHARED stdio entry's identity is the env-INCLUDED `sharingKey`, so an
+//     env-only change acquires a new child and releases the old. The two keys
+//     are distinct.
 //   - Every `setServers` closes and reconnects all `type:'sdk'` servers: the
 //     manager's `injectAll` builds fresh server instances per call, so their
 //     identities differ by construction. That is correct and cheap (in-process).
@@ -23,14 +35,22 @@
 //   - Every mutation (load / setServers / reconnect / toggle / closeAll) runs
 //     serialized on one queue; `whenReady()` is that queue, so callers that
 //     need discovered tools just await it.
-//   - Each record owns an `AbortController` that bounds its whole connect task
-//     (handshake AND every `listTools` page) and its in-flight tool calls.
+//   - Each LOCAL record owns an `AbortController` that bounds its whole connect
+//     task (handshake AND every `listTools` page) and its in-flight tool calls.
 //     `closeServer` / `closeAll` abort it synchronously BEFORE awaiting, so
-//     teardown never waits out a hung server.
+//     teardown never waits out a hung server. A SHARED entry owns a VIEW-level
+//     `AbortController` bounding only THIS view's in-flight calls; the shared
+//     record's own abort is owned by the registry (one view's teardown never
+//     cancels a sibling's calls). `closeAll` aborts every view-level controller
+//     synchronously, then releases shared refs / closes local records.
 //   - A failing or timing-out server never rejects a mutation and never leaks
 //     a child process: the client is closed (which kills a stdio child), the
 //     in-process instance is closed, and the record turns `failed` /
 //     `needs-auth` with an error message.
+//   - Tool / status / call routing keys off the record's live STATUS
+//     (`connected` → tools; otherwise empty / fail-fast), never merely its
+//     `ready` promise: a revival acquirer can hold a record whose `ready` is
+//     already resolved but whose status is still `pending`/`disabled`.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
@@ -41,6 +61,8 @@ import { createMcpTransport, isMcpAuthError, type McpTransportTarget } from '../
 import { mcpToolFqn } from '../../../../shared/mcp-fqn.js'
 import { createLogger } from '../../../log.js'
 import { capToolText } from '../tools/bash.js'
+import { sharingKey, type SharedRecord } from './shared-record.js'
+import type { SharedRegistry } from './shared-registry.js'
 
 const log = createLogger('native-mcp')
 
@@ -86,7 +108,8 @@ export interface NativeMcpStatus {
   error?: string
   /** Never carries `env` or `headers`; `args` is included deliberately. */
   config?: { type: string; command?: string; args?: string[]; url?: string }
-  scope: 'session'
+  /** `global` for a shared stdio record (host-wide), `session` for a local one. */
+  scope: 'session' | 'global'
   source?: 'sdk'
   tools?: Array<{
     name: string
@@ -107,13 +130,18 @@ export interface NativeMcpConnectionsOptions {
   authFor?: (name: string) => OAuthClientProvider | undefined
   connectTimeoutMs?: number
   toolTimeoutMs?: number
+  /** Host-global shared registry for external stdio entries. Absent → legacy
+   *  per-session behavior (every entry local), so standalone tests still work. */
+  registry?: SharedRegistry
 }
 
+/** A per-session connection (sdk / sse / http, and stdio without a registry). */
 interface ServerRecord {
+  kind: 'local'
   name: string
   config: NativeMcpServerConfig
   /** Replace-diff identity: the live instance for `type:'sdk'`, a JSON
-   *  fingerprint of the serializable fields otherwise. */
+   *  fingerprint of the serializable fields otherwise (env excluded). */
   identity: unknown
   client?: Client
   connectTimer?: ReturnType<typeof setTimeout>
@@ -126,12 +154,32 @@ interface ServerRecord {
   tools: NativeMcpToolInfo[]
 }
 
+/** A view over one host-global shared stdio record. `enabled` tracks whether
+ *  THIS view currently holds a ref: toggle(false) releases it (enabled false),
+ *  toggle(true) re-acquires. closeAll skips an already-released entry, so a
+ *  toggle-off followed by closeAll never double-releases. */
+interface SharedEntry {
+  kind: 'shared'
+  name: string
+  config: NativeMcpServerConfig
+  /** Replace-diff identity: the env-INCLUDED sharing key (registry dedup). */
+  identity: string
+  record: SharedRecord
+  enabled: boolean
+  /** Bounds THIS view's in-flight calls only; aborted on toggle-off / closeAll
+   *  so one view's teardown never cancels a sibling's calls on the record. */
+  abort: AbortController
+}
+
+type Entry = ServerRecord | SharedEntry
+
 export class NativeMcpConnections {
   private readonly authFor?: (name: string) => OAuthClientProvider | undefined
   private readonly connectTimeoutMs: number
   private readonly toolTimeoutMs: number
+  private readonly registry?: SharedRegistry
 
-  private readonly records = new Map<string, ServerRecord>()
+  private readonly records = new Map<string, Entry>()
   private queue: Promise<void> = Promise.resolve()
   private closing = false
 
@@ -139,6 +187,7 @@ export class NativeMcpConnections {
     this.authFor = opts.authFor
     this.connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     this.toolTimeoutMs = opts.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
+    this.registry = opts.registry
   }
 
   /** Start connecting the map. Returns immediately; the connects run on the
@@ -160,28 +209,22 @@ export class NativeMcpConnections {
   statuses(): NativeMcpStatus[] {
     return [...this.records.values()]
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((rec) => {
-        const status: NativeMcpStatus = {
-          name: rec.name,
-          status: rec.status,
-          scope: 'session',
-          config: configOf(rec.config),
-          tools: rec.status === 'connected' ? rec.tools.map(statusTool) : [],
-        }
-        if (rec.serverInfo) status.serverInfo = rec.serverInfo
-        if (rec.error) status.error = rec.error
-        if (rec.config.type === 'sdk') status.source = 'sdk'
-        return status
-      })
+      .map((entry) => (entry.kind === 'local' ? this.localStatus(entry) : this.sharedStatus(entry)))
   }
 
   /** Discovered tools of every connected server, in status (name) order. Each
    *  entry is copied so a consumer cannot mutate the stored tool list the next
-   *  `call` resolves against. */
+   *  `call` resolves against. Shared tools are re-projected under this view's
+   *  session-local server name (the record stamps them with the raw env-bearing
+   *  sharing key, which must never reach a client / model / log surface). */
   tools(): NativeMcpToolInfo[] {
     const out: NativeMcpToolInfo[] = []
-    for (const rec of [...this.records.values()].sort((a, b) => a.name.localeCompare(b.name))) {
-      if (rec.status === 'connected') for (const tool of rec.tools) out.push({ ...tool })
+    for (const entry of [...this.records.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.kind === 'local') {
+        if (entry.status === 'connected') for (const tool of entry.tools) out.push({ ...tool })
+      } else if (entry.enabled && entry.record.status === 'connected') {
+        out.push(...this.sharedToolInfos(entry))
+      }
     }
     return out
   }
@@ -196,16 +239,21 @@ export class NativeMcpConnections {
     await this.queue
     const found = this.findTool(fqn)
     if (!found) throw new Error(`unknown MCP tool: ${fqn}`)
-    // The declared return type is the union of the parsed result and the
-    // legacy compatibility shape regardless of the schema passed; asking for
-    // CallToolResultSchema means the former is what actually comes back.
-    const result = (await found.rec.client!.callTool(
-      { name: found.tool.rawName, arguments: args },
-      CallToolResultSchema,
-      // The record's signal tears down an in-flight call when the server is
-      // closed under it (replace / toggle / closeAll).
-      { timeout: this.toolTimeoutMs, signal: AbortSignal.any([signal, found.rec.abort.signal]) },
-    )) as CallToolResult
+    const { entry, tool } = found
+    // The caller's signal combines with the entry's view-level abort (and, for
+    // a shared record, the record's own abort inside `callTool`), so one view's
+    // teardown cancels its own in-flight call without touching a sibling's.
+    const callSignal = AbortSignal.any([signal, entry.abort.signal])
+    const result = entry.kind === 'local'
+      // The declared return type is the union of the parsed result and the
+      // legacy compatibility shape regardless of the schema passed; asking for
+      // CallToolResultSchema means the former is what actually comes back.
+      ? ((await entry.client!.callTool(
+          { name: tool.rawName, arguments: args },
+          CallToolResultSchema,
+          { timeout: this.toolTimeoutMs, signal: callSignal },
+        )) as CallToolResult)
+      : await entry.record.callTool(tool.rawName, args, callSignal)
     const parts: string[] = []
     for (const block of result.content) {
       // Text blocks are the payload; anything else (image / audio / embedded
@@ -226,53 +274,87 @@ export class NativeMcpConnections {
   /** Drop the current connection and connect again from the stored config. */
   async reconnect(name: string): Promise<void> {
     return this.enqueue(async () => {
-      const rec = this.requireRecord(name)
-      await this.closeServer(rec)
-      await this.connectRecord(rec)
+      const entry = this.requireEntry(name)
+      if (entry.kind === 'local') {
+        await this.closeServer(entry)
+        await this.connectRecord(entry)
+        return
+      }
+      // A disabled shared entry holds NO ref; reconnecting the record at users 0
+      // would revive an UNOWNED connected child. Re-acquire ownership instead
+      // (the acquire connects a fresh record, or joins a retained blocked one).
+      if (!entry.enabled) {
+        await this.acquireShared(entry)
+        return
+      }
+      await entry.record.reconnect()
     })
   }
 
-  /** Disable a server (close + empty tools) or connect it again. */
+  /** Disable a server (hide tools + drop the ref / close) or connect it again. */
   async toggle(name: string, enabled: boolean): Promise<void> {
     return this.enqueue(async () => {
-      const rec = this.requireRecord(name)
-      if (enabled) {
-        if (rec.status === 'connected') return
-        await this.closeServer(rec)
-        await this.connectRecord(rec)
+      const entry = this.requireEntry(name)
+      if (entry.kind === 'local') {
+        if (enabled) {
+          if (entry.status === 'connected') return
+          await this.closeServer(entry)
+          await this.connectRecord(entry)
+          return
+        }
+        await this.closeServer(entry)
+        entry.status = 'disabled'
+        entry.error = undefined
+        entry.serverInfo = undefined
+        entry.tools = []
         return
       }
-      await this.closeServer(rec)
-      rec.status = 'disabled'
-      rec.error = undefined
-      rec.serverInfo = undefined
-      rec.tools = []
+      if (enabled) {
+        if (entry.enabled && entry.record.status === 'connected') return
+        if (entry.enabled) {
+          // Enabled but not connected (failed / outage): a global retry.
+          await entry.record.reconnect()
+          return
+        }
+        await this.acquireShared(entry)
+        return
+      }
+      await this.releaseShared(entry)
     })
   }
 
   /** Forward a resource read to a connected server, result unchanged. */
   async readResource(name: string, uri: string): Promise<unknown> {
     await this.queue
-    const rec = this.records.get(name)
-    if (!rec) throw new Error(`unknown MCP server: ${name}`)
-    if (rec.status !== 'connected' || !rec.client) {
+    const entry = this.records.get(name)
+    if (!entry) throw new Error(`unknown MCP server: ${name}`)
+    if (entry.kind === 'local') {
+      if (entry.status !== 'connected' || !entry.client) {
+        throw new Error(`MCP server "${name}" is not connected`)
+      }
+      return entry.client.readResource({ uri })
+    }
+    if (!entry.enabled || entry.record.status !== 'connected') {
       throw new Error(`MCP server "${name}" is not connected`)
     }
-    return rec.client.readResource({ uri })
+    return entry.record.readResource(uri)
   }
 
-  /** Close every client and in-process instance and clear the map. Idempotent;
-   *  never throws. */
+  /** Close every local client / in-process instance and release every shared
+   *  ref, then clear the map. Idempotent; never throws. */
   async closeAll(): Promise<void> {
     this.closing = true
-    // Abort in-flight connects synchronously so this does not wait out a
-    // hanging handshake or tool listing; the queue then drains with those
-    // attempts settled.
-    for (const rec of this.records.values()) rec.abort.abort()
+    // Abort in-flight work synchronously so this does not wait out a hanging
+    // handshake or tool listing; the queue then drains with those attempts
+    // settled. For shared entries this aborts only the VIEW's call signal — the
+    // registry's release owns the record's own abort at users 0.
+    for (const entry of this.records.values()) entry.abort.abort()
     await this.enqueue(async () => {
-      const records = [...this.records.values()]
+      const entries = [...this.records.values()]
       this.records.clear()
-      await Promise.all(records.map((rec) => this.closeResources(rec)))
+      await Promise.all(entries.map((entry) => (
+        entry.kind === 'local' ? this.closeResources(entry) : this.releaseShared(entry)
+      )))
     })
   }
 
@@ -293,23 +375,46 @@ export class NativeMcpConnections {
     this.closing = false
     const result: NativeMcpSetServersResult = { added: [], removed: [], errors: {} }
     const next = new Map<string, { config: NativeMcpServerConfig; identity: unknown }>()
-    for (const [name, raw] of Object.entries(servers ?? {})) next.set(name, entryOf(raw))
+    for (const [name, raw] of Object.entries(servers ?? {})) next.set(name, this.entryOf(raw))
 
     // Removed and changed: close first so a changed name never holds two live
     // connections (and so a freed stdio child is gone before its replacement
-    // spawns).
-    for (const [name, rec] of [...this.records]) {
-      const entry = next.get(name)
-      if (entry && Object.is(entry.identity, rec.identity)) continue
+    // spawns). For a shared entry this awaits the registry release (full
+    // teardown at users 0) BEFORE the add loop acquires the replacement.
+    for (const [name, entry] of [...this.records]) {
+      const entryNext = next.get(name)
+      if (entryNext && Object.is(entryNext.identity, entry.identity)) continue
       this.records.delete(name)
-      await this.closeServer(rec)
+      await this.closeEntry(entry)
       result.removed.push(name)
     }
 
     const connecting: Promise<void>[] = []
     for (const [name, entry] of next) {
       if (this.records.has(name)) continue
+      // STDIO-ONLY gate: only external stdio with a registry goes shared; sdk /
+      // sse / http (and stdio without a registry) stay local.
+      if (this.registry && entry.config.type === 'stdio') {
+        const shared: SharedEntry = {
+          kind: 'shared',
+          name,
+          config: entry.config,
+          identity: entry.identity as string,
+          record: this.registry.acquire(entry.config),
+          enabled: true,
+          abort: new AbortController(),
+        }
+        this.records.set(name, shared)
+        result.added.push(name)
+        connecting.push(shared.record.ready.then(() => {
+          if (shared.enabled && (shared.record.status === 'failed' || shared.record.status === 'needs-auth')) {
+            result.errors[name] = shared.record.error ?? shared.record.status
+          }
+        }))
+        continue
+      }
       const rec: ServerRecord = {
+        kind: 'local',
         name,
         config: entry.config,
         identity: entry.identity,
@@ -331,8 +436,105 @@ export class NativeMcpConnections {
     return result
   }
 
-  /** Connect + discover tools for one record. Never rejects: every failure is
-   *  recorded on the record and its resources are closed. */
+  /** Read one manager-resolved entry into a config plus its diff identity.
+   *  Never serializes an `sdk` entry: its identity is the live instance. A
+   *  shared stdio entry's identity is the env-INCLUDED sharing key; every other
+   *  entry keeps the env-EXCLUDED replace-diff fingerprint. */
+  private entryOf(raw: unknown): { config: NativeMcpServerConfig; identity: unknown } {
+    const r = (raw ?? {}) as Record<string, unknown>
+    const type = r.type === 'sdk' || r.type === 'sse' || r.type === 'http' ? r.type : 'stdio'
+    const config: NativeMcpServerConfig = { type }
+    if (typeof r.command === 'string') config.command = r.command
+    if (Array.isArray(r.args)) config.args = r.args.filter((a): a is string => typeof a === 'string')
+    if (isStringRecord(r.env)) config.env = r.env
+    if (typeof r.url === 'string') config.url = r.url
+    if (isStringRecord(r.headers)) config.headers = r.headers
+    if (type === 'sdk') {
+      config.instance = r.instance as NativeMcpServerInstance | undefined
+      return { config, identity: config.instance }
+    }
+    if (this.registry && type === 'stdio') return { config, identity: sharingKey(config) }
+    return {
+      config,
+      identity: JSON.stringify([
+        config.type,
+        config.command ?? '',
+        config.args ?? [],
+        config.url ?? '',
+        Object.entries(config.headers ?? {}).sort(),
+      ]),
+    }
+  }
+
+  /** Acquire (or re-acquire) a shared ref for the entry and await its initial
+   *  connect. Used by toggle(true) / reconnect on a disabled entry. */
+  private async acquireShared(entry: SharedEntry): Promise<void> {
+    entry.abort = new AbortController()
+    entry.record = this.registry!.acquire(entry.config)
+    entry.enabled = true
+    await entry.record.ready
+  }
+
+  /** Release this view's shared ref (no-op if already released). Aborts the
+   *  view's call signal first; the registry owns the record's teardown at 0. */
+  private async releaseShared(entry: SharedEntry): Promise<void> {
+    if (!entry.enabled) return
+    entry.enabled = false
+    entry.abort.abort()
+    await this.registry!.release(entry.record)
+  }
+
+  private async closeEntry(entry: Entry): Promise<void> {
+    if (entry.kind === 'local') {
+      await this.closeServer(entry)
+      return
+    }
+    await this.releaseShared(entry)
+  }
+
+  /** Re-project a shared record's tools under this view's session-local name.
+   *  The record stamps `server`/`fqn` with the raw env-bearing sharing key; the
+   *  view replaces both so the key never reaches a client / model / log surface.
+   *  `rawName` is preserved so `callTool` still addresses the server-side name. */
+  private sharedToolInfos(entry: SharedEntry): NativeMcpToolInfo[] {
+    return entry.record.tools.map((tool) => ({
+      ...tool,
+      server: entry.name,
+      fqn: mcpToolFqn(entry.name, tool.rawName),
+    }))
+  }
+
+  private localStatus(rec: ServerRecord): NativeMcpStatus {
+    const status: NativeMcpStatus = {
+      name: rec.name,
+      status: rec.status,
+      scope: 'session',
+      config: configOf(rec.config),
+      tools: rec.status === 'connected' ? rec.tools.map(statusTool) : [],
+    }
+    if (rec.serverInfo) status.serverInfo = rec.serverInfo
+    if (rec.error) status.error = rec.error
+    if (rec.config.type === 'sdk') status.source = 'sdk'
+    return status
+  }
+
+  private sharedStatus(entry: SharedEntry): NativeMcpStatus {
+    const rec = entry.record
+    const connected = entry.enabled && rec.status === 'connected'
+    const status: NativeMcpStatus = {
+      name: entry.name,
+      status: entry.enabled ? rec.status : 'disabled',
+      scope: 'global',
+      config: configOf(entry.config),
+      tools: connected ? this.sharedToolInfos(entry).map(statusTool) : [],
+    }
+    if (entry.enabled && rec.serverInfo) status.serverInfo = rec.serverInfo
+    if (entry.enabled && rec.error) status.error = rec.error
+    return status
+  }
+
+  /** Connect + discover tools for one local record. Never rejects: every failure
+   *  is recorded on the record and its resources are closed. */
   private async connectRecord(rec: ServerRecord): Promise<void> {
     rec.abort = new AbortController()
     rec.status = 'pending'
@@ -424,9 +626,9 @@ export class NativeMcpConnections {
     return out
   }
 
-  /** Close a record's connection and drop its state; keeps the record itself
-   *  (status is set by the caller). Aborting BEFORE awaiting is what keeps
-   *  teardown from waiting out an in-flight handshake or `listTools` page. */
+  /** Close a local record's connection and drop its state; keeps the record
+   *  itself (status is set by the caller). Aborting BEFORE awaiting is what
+   *  keeps teardown from waiting out an in-flight handshake or `listTools` page. */
   private async closeServer(rec: ServerRecord): Promise<void> {
     rec.abort.abort()
     await this.closeResources(rec)
@@ -454,17 +656,23 @@ export class NativeMcpConnections {
     }
   }
 
-  private requireRecord(name: string): ServerRecord {
-    const rec = this.records.get(name)
-    if (!rec) throw new Error(`unknown MCP server: ${name}`)
-    return rec
+  private requireEntry(name: string): Entry {
+    const entry = this.records.get(name)
+    if (!entry) throw new Error(`unknown MCP server: ${name}`)
+    return entry
   }
 
-  private findTool(fqn: string): { rec: ServerRecord; tool: NativeMcpToolInfo } | undefined {
-    for (const rec of this.records.values()) {
-      if (rec.status !== 'connected') continue
-      const tool = rec.tools.find((t) => t.fqn === fqn)
-      if (tool) return { rec, tool }
+  private findTool(fqn: string): { entry: Entry; tool: NativeMcpToolInfo } | undefined {
+    for (const entry of this.records.values()) {
+      if (entry.kind === 'local') {
+        if (entry.status !== 'connected') continue
+        const tool = entry.tools.find((t) => t.fqn === fqn)
+        if (tool) return { entry, tool }
+      } else {
+        if (!entry.enabled || entry.record.status !== 'connected') continue
+        const tool = this.sharedToolInfos(entry).find((t) => t.fqn === fqn)
+        if (tool) return { entry, tool }
+      }
     }
     return undefined
   }
@@ -494,33 +702,6 @@ function textOf(result: CallToolResult, parts: string[]): string {
 function isStringRecord(v: unknown): v is Record<string, string> {
   if (!v || typeof v !== 'object') return false
   return Object.values(v).every((val) => typeof val === 'string')
-}
-
-/** Read one manager-resolved entry into a config plus its diff identity.
- *  Never serializes an `sdk` entry: its identity is the live instance. */
-function entryOf(raw: unknown): { config: NativeMcpServerConfig; identity: unknown } {
-  const r = (raw ?? {}) as Record<string, unknown>
-  const type = r.type === 'sdk' || r.type === 'sse' || r.type === 'http' ? r.type : 'stdio'
-  const config: NativeMcpServerConfig = { type }
-  if (typeof r.command === 'string') config.command = r.command
-  if (Array.isArray(r.args)) config.args = r.args.filter((a): a is string => typeof a === 'string')
-  if (isStringRecord(r.env)) config.env = r.env
-  if (typeof r.url === 'string') config.url = r.url
-  if (isStringRecord(r.headers)) config.headers = r.headers
-  if (type === 'sdk') {
-    config.instance = r.instance as NativeMcpServerInstance | undefined
-    return { config, identity: config.instance }
-  }
-  return {
-    config,
-    identity: JSON.stringify([
-      config.type,
-      config.command ?? '',
-      config.args ?? [],
-      config.url ?? '',
-      Object.entries(config.headers ?? {}).sort(),
-    ]),
-  }
 }
 
 function transportTarget(config: NativeMcpServerConfig): McpTransportTarget {

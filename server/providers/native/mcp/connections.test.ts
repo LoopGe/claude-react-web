@@ -13,7 +13,9 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
-import { NativeMcpConnections } from './connections.js'
+import { NativeMcpConnections, type NativeMcpServerConfig } from './connections.js'
+import { SharedRegistry } from './shared-registry.js'
+import { childIdentity, sharingKey } from './shared-record.js'
 
 const fixturePath = fileURLToPath(new URL('./fixtures/stdio-server.mjs', import.meta.url))
 
@@ -41,6 +43,12 @@ async function waitFor(check: () => boolean, ms: number, label: string): Promise
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
   throw new Error(`timed out after ${ms}ms waiting for ${label}`)
+}
+
+/** Prove a child is gone: win32 polls its birth-time identity until null,
+ *  POSIX polls `kill(pid, 0)` until it throws (same probe the registry uses). */
+async function expectChildGone(pid: number, ms = 5000): Promise<void> {
+  await waitFor(() => childIdentity(pid) === null, ms, `child ${pid} to exit`)
 }
 
 /** A real in-memory MCP server with one `echo` tool. */
@@ -385,5 +393,175 @@ describe('NativeMcpConnections', () => {
     expect(conns.statuses()).toEqual([])
     expect(conns.tools()).toEqual([])
     await expect(conns.call('mcp__a__echo', { text: 'x' }, abortSignal())).rejects.toThrow('unknown MCP tool')
+  }, 15_000)
+})
+
+// The shared-registry view path: external stdio entries delegate to a
+// host-global SharedRegistry (one child per sharing key, refcounted across
+// views), while sdk/sse/http stay per-session. Real stdio children throughout;
+// teardown is proven by the registry refcount AND a process-liveness probe.
+describe('NativeMcpConnections over a shared registry', () => {
+  function stdioCfg(byePath: string, env?: Record<string, string>): NativeMcpServerConfig {
+    return { type: 'stdio', command: 'node', args: [fixturePath, byePath], ...(env ? { env } : {}) }
+  }
+
+  it('two views over one registry share a stdio child; toggle is view-level', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const cfg = stdioCfg(byePath)
+    const reg = new SharedRegistry()
+    const v1 = new NativeMcpConnections({ registry: reg })
+    const v2 = new NativeMcpConnections({ registry: reg })
+    v1.load({ ext: cfg })
+    v2.load({ ext: cfg })
+    await v1.whenReady()
+    await v2.whenReady()
+
+    const rec = reg.get(sharingKey(cfg))!
+    expect(rec).toBeDefined()
+    expect(rec.users).toBe(2)
+    expect(reg.size).toBe(1)
+    const pid = rec.pid!
+    expect(pid).toBeGreaterThan(0)
+    expect(v1.tools().map((t) => t.fqn)).toEqual(['mcp__ext__echo'])
+    expect(v2.tools().map((t) => t.fqn)).toEqual(['mcp__ext__echo'])
+    expect((await v1.call('mcp__ext__echo', { text: 'one' }, abortSignal())).text).toContain('one')
+
+    // View-level toggle: v1 hides its tools and drops its ref; v2 is untouched
+    // and the shared child stays alive (users 1).
+    await v1.toggle('ext', false)
+    expect(v1.tools()).toEqual([])
+    expect(v1.statuses()[0]).toMatchObject({ name: 'ext', status: 'disabled', scope: 'global' })
+    expect(v2.tools().map((t) => t.fqn)).toEqual(['mcp__ext__echo'])
+    expect(rec.users).toBe(1)
+    expect(existsSync(byePath)).toBe(false)
+    expect((await v2.call('mcp__ext__echo', { text: 'two' }, abortSignal())).text).toContain('two')
+
+    // v1 already released its ref on toggle-off; closeAll must not release again.
+    await v1.closeAll()
+    expect(rec.users).toBe(1)
+    expect(existsSync(byePath)).toBe(false)
+    expect(v2.tools().map((t) => t.fqn)).toEqual(['mcp__ext__echo'])
+
+    // The last view's closeAll tears the shared child down.
+    await v2.closeAll()
+    expect(rec.users).toBe(0)
+    expect(reg.size).toBe(0)
+    await expectChildGone(pid)
+  }, 15_000)
+
+  it('toggle(false) then closeAll does not double-release', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const cfg = stdioCfg(byePath)
+    const reg = new SharedRegistry()
+    const v1 = new NativeMcpConnections({ registry: reg })
+    const v2 = new NativeMcpConnections({ registry: reg })
+    v1.load({ ext: cfg })
+    v2.load({ ext: cfg })
+    await v1.whenReady()
+    await v2.whenReady()
+    const rec = reg.get(sharingKey(cfg))!
+    const pid = rec.pid!
+    expect(rec.users).toBe(2)
+
+    await v1.toggle('ext', false)
+    expect(rec.users).toBe(1)
+    await v1.closeAll()
+    // The refcount must NOT underflow: v1's closeAll skips the already-released
+    // entry, so v2's ref survives and the child stays alive.
+    expect(rec.users).toBe(1)
+    expect(reg.size).toBe(1)
+    expect(existsSync(byePath)).toBe(false)
+    expect(v2.tools().map((t) => t.fqn)).toEqual(['mcp__ext__echo'])
+
+    await v2.closeAll()
+    expect(rec.users).toBe(0)
+    expect(reg.size).toBe(0)
+    await expectChildGone(pid)
+  }, 15_000)
+
+  it('env-only change acquires a new shared child and releases the old', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const cfg1 = stdioCfg(byePath, { A: '1' })
+    const cfg2 = stdioCfg(byePath, { A: '2' })
+    const reg = new SharedRegistry()
+    const v1 = new NativeMcpConnections({ registry: reg })
+    v1.load({ ext: cfg1 })
+    await v1.whenReady()
+    const rec1 = reg.get(sharingKey(cfg1))!
+    const pid1 = rec1.pid!
+    expect(rec1.users).toBe(1)
+
+    // The env-excluded replace-diff identity is unchanged, but the env-INCLUDED
+    // sharing key differs: a new child is acquired and the old one released.
+    const result = await v1.setServers({ ext: cfg2 })
+    expect(result.added).toEqual(['ext'])
+    expect(result.removed).toEqual(['ext'])
+    expect(result.errors).toEqual({})
+    const rec2 = reg.get(sharingKey(cfg2))!
+    expect(rec2).not.toBe(rec1)
+    expect(rec2.pid).not.toBe(pid1)
+    expect(reg.size).toBe(1)
+    expect(reg.get(sharingKey(cfg1))).toBeUndefined()
+    await expectChildGone(pid1)
+    expect(v1.tools().map((t) => t.fqn)).toEqual(['mcp__ext__echo'])
+    expect(v1.statuses()[0]).toMatchObject({ name: 'ext', status: 'connected', scope: 'global' })
+
+    await v1.closeAll()
+    expect(reg.size).toBe(0)
+    await expectChildGone(rec2.pid!)
+  }, 15_000)
+
+  it('statuses label shared stdio global and sdk session', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const reg = new SharedRegistry()
+    const v1 = new NativeMcpConnections({ registry: reg })
+    v1.load({ ext: stdioCfg(byePath), a: { type: 'sdk', instance: echoServer() } })
+    await v1.whenReady()
+
+    const statuses = v1.statuses()
+    const ext = statuses.find((s) => s.name === 'ext')!
+    expect(ext).toMatchObject({ status: 'connected', scope: 'global' })
+    expect(ext.source).toBeUndefined()
+    // The stdio-only gate: an sdk entry stays LOCAL even with a registry present.
+    const a = statuses.find((s) => s.name === 'a')!
+    expect(a).toMatchObject({ status: 'connected', scope: 'session', source: 'sdk' })
+    expect(v1.tools().map((t) => t.fqn).sort()).toEqual(['mcp__a__echo', 'mcp__ext__echo'])
+    expect(reg.size).toBe(1)
+
+    await v1.closeAll()
+    expect(reg.size).toBe(0)
+    await waitFor(() => existsSync(byePath), 5000, 'the shared stdio child to exit')
+  }, 15_000)
+
+  it('re-projects shared tools under the session-local name and never leaks the sharing key', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const cfg = stdioCfg(byePath, { SECRET_TOKEN: 'super-secret-value' })
+    const reg = new SharedRegistry()
+    const v1 = new NativeMcpConnections({ registry: reg })
+    v1.load({ secret: cfg })
+    await v1.whenReady()
+
+    // The record stamps tools with the raw env-bearing sharing key; the view
+    // MUST re-project server/fqn under the session-local name.
+    const tools = v1.tools()
+    expect(tools.map((t) => t.fqn)).toEqual(['mcp__secret__echo'])
+    expect(tools[0]).toMatchObject({ server: 'secret', name: 'echo', rawName: 'echo' })
+    const json = JSON.stringify({ statuses: v1.statuses(), tools })
+    expect(json).not.toContain('super-secret-value')
+    expect(json).not.toContain('SECRET_TOKEN')
+    expect(json).not.toContain(sharingKey(cfg))
+    expect(json).not.toContain('"env"')
+
+    // call() resolves the session-local FQN to the record's rawName.
+    expect((await v1.call('mcp__secret__echo', { text: 'hi' }, abortSignal())).text).toContain('hi')
+
+    await v1.closeAll()
+    expect(reg.size).toBe(0)
+    await waitFor(() => existsSync(byePath), 5000, 'the shared stdio child to exit')
   }, 15_000)
 })

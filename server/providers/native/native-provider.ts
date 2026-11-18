@@ -13,6 +13,7 @@ import type { SessionMeta } from '../../persistence.js'
 import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef } from '../types.js'
 import type { LoopDeps } from './loop.js'
 import { NativeMcpConnections } from './mcp/connections.js'
+import { SharedRegistry } from './mcp/shared-registry.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
 import { NativeSession } from './native-session.js'
 import { NativeModelContextResolver } from './model-context.js'
@@ -164,6 +165,11 @@ export class NativeProvider implements AgentProvider {
   readonly attachmentReferences: NativeAttachmentReferenceIndex
   private readonly modelContext: NativeModelContextResolver
   private readonly fallbackProfiles = new WeakMap<ServerConfig, ProviderProfile>()
+  /** One host-global shared MCP registry per provider (the provider is
+   *  one-per-host). Every session's connection view delegates its external
+   *  stdio entries here, so identical configs across sessions share one child.
+   *  Platform-agnostic: the record's death gate degrades on POSIX. */
+  private readonly mcpRegistry: SharedRegistry
 
   constructor(opts: {
     stateDir?: string
@@ -174,6 +180,7 @@ export class NativeProvider implements AgentProvider {
   } = {}) {
     this.stateDir = resolveNativeStateDir(opts.stateDir)
     this.authFor = opts.authFor
+    this.mcpRegistry = new SharedRegistry({ authFor: this.authFor })
     this.agentStore = opts.agentStore
     this.uploadStore = opts.uploadStore
     const discovery = new AnthropicModelDiscovery()
@@ -242,14 +249,15 @@ export class NativeProvider implements AgentProvider {
     // The manager has already resolved globals + inline configs + first-party
     // `injectAll` results into `mcpServers`. Connections start here and are
     // awaited per turn, so spawn never blocks on a slow server.
-    const mcp = new NativeMcpConnections({ authFor: this.authFor })
+    const mcp = new NativeMcpConnections({ authFor: this.authFor, registry: this.mcpRegistry })
     mcp.load(opts.mcpServers as Record<string, unknown> | undefined)
     // Spawn skill policy rides the SDK-shaped create body the manager already
     // forwards through providerExtras (`Options.skills`).
     const sdkOptions = opts.providerExtras?.sdkOptions as ({ skills?: string[] | 'all' } & Record<string, unknown>) | undefined
     // The constructor can throw on real paths (corrupt/unsupported log, missing
     // fork log). The queued connect has no owner then, so it must be torn down
-    // here or it would run forever and leak its children.
+    // here or it would run forever and leak its children. `closeAll` closes the
+    // local connects AND releases any shared-registry refs the load acquired.
     const profile = opts.profile ?? (config.profiles.length > 0
       ? resolveActiveProfile(config.profiles, config.activeProfileId, DEFAULT_PROFILE)
       : this.fallbackProfile())
