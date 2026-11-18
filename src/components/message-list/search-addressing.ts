@@ -157,3 +157,77 @@ export function assistantResultIdxByBlock(
   }
   return out
 }
+
+/** Convert a result hit's server ordinal into the owning member's match space.
+ *
+ *  A tool_result hit carries `matchOrdinal` message-local to the RESULT message
+ *  (raw-runs space: one segment per rendered run of each tool_result block, in
+ *  block order). The owning card renders in the SAME segments-then-results space
+ *  as rowSearchMatchCount / memberBlockOrdinals / assistantResultIdxByBlock: the
+ *  member's own segments first (text + tool_use diffs, block order), THEN the
+ *  consumed results (tool_use block order). This returns the member-space ordinal
+ *  the existing walks route to the owner's result mark:
+ *
+ *   - prefix = the member's own-segment match total (text via extractPlainText,
+ *     tool_use diffs via extractToolUseDiffText — the SAME views blockActiveIdx
+ *     uses, without stripFileHandles) PLUS the consumed-result run counts of the
+ *     tool_use blocks BEFORE the owner (block order);
+ *   - local  = the server ordinal minus the run counts of the tool_result blocks
+ *     preceding the owner's block in `resultMsg`.
+ *
+ *  Returns undefined when the owner block is absent from the member, its result
+ *  has not landed in `toolResults`, or `local` falls outside the owner's rendered
+ *  runs (e.g. an ordinal past the 4000-char truncation) — the caller then lights
+ *  no active mark rather than misrouting a raw ordinal onto a diff or text block.
+ *  Pure; the caller (SessionSearchPreview) supplies the centered result message
+ *  and the owner member message it already seeks. */
+export function resultHitMemberOrdinal(
+  memberMsg: SdkMessage,
+  toolResults: ReadonlyMap<string, ToolResultEntry>,
+  resultMsg: SdkMessage,
+  ownerToolUseId: string,
+  ordinal: number,
+  query: string,
+): number | undefined {
+  const blocks = getBlocks(memberMsg)
+  const ownerIdx = blocks.findIndex(
+    (b) => b.type === 'tool_use' && extractToolUseId(b) === ownerToolUseId,
+  )
+  if (ownerIdx < 0) return undefined
+  const ownerEntry = toolResults.get(ownerToolUseId)
+  if (!ownerEntry) return undefined
+
+  // Prefix: the member's own segments (text + tool_use diffs, block order).
+  let prefix = 0
+  for (const b of blocks) {
+    if (b.type === 'text' && typeof b.text === 'string') {
+      prefix += countMatches(extractPlainText(b.text), query)
+    } else if (b.type === 'tool_use') {
+      prefix += countMatches(extractToolUseDiffText(b.input, b.name), query)
+    }
+  }
+  // …plus the consumed results of the tool_use blocks BEFORE the owner.
+  for (let i = 0; i < ownerIdx; i++) {
+    const b = blocks[i]
+    if (b.type !== 'tool_use') continue
+    const id = extractToolUseId(b)
+    const entry = id ? toolResults.get(id) : undefined
+    if (!entry) continue
+    for (const run of toolResultTextRuns(entry.content)) prefix += countMatches(run, query)
+  }
+
+  // Local: rebase the result-message ordinal past the preceding tool_result
+  // blocks' rendered runs (raw runs, the server's segment view).
+  let local = ordinal
+  for (const b of getBlocks(resultMsg)) {
+    if (b.type !== 'tool_result') continue
+    if (b.tool_use_id === ownerToolUseId) break
+    for (const run of toolResultTextRuns(b.content)) local -= countMatches(run, query)
+  }
+
+  // Range-check against the owner's rendered runs.
+  let ownerCount = 0
+  for (const run of toolResultTextRuns(ownerEntry.content)) ownerCount += countMatches(run, query)
+  if (local < 0 || local >= ownerCount) return undefined
+  return prefix + local
+}

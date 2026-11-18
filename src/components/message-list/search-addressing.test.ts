@@ -3,7 +3,7 @@
 // (see vitest.config.ts); opting out skips that env boot (same as
 // tool-grouping.test.ts).
 import { describe, it, expect } from 'vitest'
-import { rowSearchMatchCount, memberBlockOrdinals, assistantResultIdxByBlock } from './search-addressing'
+import { rowSearchMatchCount, memberBlockOrdinals, assistantResultIdxByBlock, resultHitMemberOrdinal } from './search-addressing'
 import { countCachedMessageSearchMatches } from '../../session-store/normalize'
 import type { SdkMessage } from '../../types'
 import type { ToolResultEntry } from '../../session-store/types'
@@ -23,6 +23,21 @@ function toolUseMsg(
 }
 
 const entry = (content: unknown): ToolResultEntry => ({ content, isError: false })
+
+function toolResultMsg(
+  uuid: string,
+  blocks: Array<{ toolUseId: string; content: unknown }>,
+): SdkMessage {
+  return {
+    type: 'user',
+    uuid,
+    parent_tool_use_id: null,
+    message: {
+      role: 'user',
+      content: blocks.map((b) => ({ type: 'tool_result', tool_use_id: b.toolUseId, content: b.content })),
+    },
+  } as unknown as SdkMessage
+}
 
 describe('rowSearchMatchCount', () => {
   it('counts a consumed result merged into an assistant tool_use row', () => {
@@ -243,5 +258,131 @@ describe('memberBlockOrdinals — segments-then-results space (multi-tool member
 
   it('returns undefined entries past the end of the match space', () => {
     expect(memberBlockOrdinals(member, results, 5, 'needle')).toEqual([none, none])
+  })
+})
+
+describe('resultHitMemberOrdinal', () => {
+  // A result hit's server ordinal is message-local to the RESULT message (raw
+  // runs). The owner row renders in segments-then-results MEMBER space: own
+  // segments (text + tool_use diffs, block order) THEN consumed results (block
+  // order). The converter rebases the ordinal into that member space so the
+  // existing walks (memberBlockOrdinals / assistantResultIdxByBlock) route it to
+  // the owner's result mark.
+  const editMember = toolUseMsg('m1', [
+    { id: 'e1', name: 'Edit', input: { old_string: 'alpha needle', new_string: 'beta needle' } },
+  ])
+  const editResults = new Map([['e1', entry('needle result')]])
+  const editResultMsg = toolResultMsg('u1', [{ toolUseId: 'e1', content: 'needle result' }])
+
+  it('prefixes the Edit diff count before the result-local ordinal', () => {
+    // Member space: Edit diff(2) · result(1). Server ordinal 0 → member ordinal 2.
+    expect(resultHitMemberOrdinal(editMember, editResults, editResultMsg, 'e1', 0, 'needle')).toBe(2)
+    // The converted ordinal routes back to the owner's result, mark 0.
+    expect(memberBlockOrdinals(editMember, editResults, 2, 'needle')).toEqual([{ diffIdx: undefined, resultIdx: 0 }])
+    expect(assistantResultIdxByBlock(editMember, editResults, 2, 'needle')).toEqual([0])
+  })
+
+  it('prefixes text-block matches before the tool diffs', () => {
+    const member = {
+      type: 'assistant',
+      uuid: 'm2',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'needle intro' },
+          { type: 'tool_use', id: 'e1', name: 'Edit', input: { old_string: 'alpha needle', new_string: 'beta needle' } },
+        ],
+      },
+    } as unknown as SdkMessage
+    // Space: text(1) · Edit diff(2) · result(1). Server ordinal 0 → member 3.
+    expect(resultHitMemberOrdinal(member, editResults, editResultMsg, 'e1', 0, 'needle')).toBe(3)
+    expect(assistantResultIdxByBlock(member, editResults, 3, 'needle')).toEqual([undefined, 0])
+  })
+
+  it('rebases past preceding tool_result blocks in the result message', () => {
+    // Member carries TWO tool_use blocks: Grep (no diff) then Edit (diff 2).
+    const member = toolUseMsg('m1', [
+      { id: 'g1', name: 'Grep', input: { pattern: 'haystack' } },
+      { id: 'e1', name: 'Edit', input: { old_string: 'alpha needle', new_string: 'beta needle' } },
+    ])
+    const results = new Map([
+      ['g1', entry('needle')],
+      ['e1', entry('needle result')],
+    ])
+    // The result message carries BOTH results, owner SECOND. Block 1 owns
+    // server ordinal 0; the owner's first match is server ordinal 1.
+    const resultMsg = toolResultMsg('u1', [
+      { toolUseId: 'g1', content: 'needle' },
+      { toolUseId: 'e1', content: 'needle result' },
+    ])
+    // Member space: Edit diff(2) · Grep result(1) · Edit result(1).
+    // prefix = own segments(2) + Grep result before owner(1) = 3; local = 1 - 1 = 0.
+    expect(resultHitMemberOrdinal(member, results, resultMsg, 'e1', 1, 'needle')).toBe(3)
+    expect(memberBlockOrdinals(member, results, 3, 'needle')).toEqual([
+      { diffIdx: undefined, resultIdx: undefined },
+      { diffIdx: undefined, resultIdx: 0 },
+    ])
+    // An ordinal inside the FIRST block is not the owner's → undefined.
+    expect(resultHitMemberOrdinal(member, results, resultMsg, 'e1', 0, 'needle')).toBeUndefined()
+  })
+
+  it('adds consumed-result counts of preceding tool_use blocks to the prefix', () => {
+    // Two Edit blocks; the owner is the SECOND. The first Edit's consumed result
+    // sits before the owner in result space, so its matches join the prefix.
+    const member = toolUseMsg('m1', [
+      { id: 'e0', name: 'Edit', input: { old_string: 'old needle', new_string: 'new needle' } },
+      { id: 'e1', name: 'Edit', input: { old_string: 'alpha needle', new_string: 'beta needle' } },
+    ])
+    const results = new Map([
+      ['e0', entry('needle zero')],
+      ['e1', entry('needle result')],
+    ])
+    const resultMsg = toolResultMsg('u1', [{ toolUseId: 'e1', content: 'needle result' }])
+    // Space: e0 diff(2) · e1 diff(2) · e0 result(1) · e1 result(1).
+    // prefix = own segments(4) + e0 result before owner(1) = 5; local 0 → 5.
+    expect(resultHitMemberOrdinal(member, results, resultMsg, 'e1', 0, 'needle')).toBe(5)
+    expect(memberBlockOrdinals(member, results, 5, 'needle')).toEqual([
+      { diffIdx: undefined, resultIdx: undefined },
+      { diffIdx: undefined, resultIdx: 0 },
+    ])
+  })
+
+  it('returns undefined when the owner is absent from the member', () => {
+    expect(resultHitMemberOrdinal(editMember, editResults, editResultMsg, 'nope', 0, 'needle')).toBeUndefined()
+  })
+
+  it('returns undefined when the result has not landed in the map', () => {
+    expect(resultHitMemberOrdinal(editMember, new Map(), editResultMsg, 'e1', 0, 'needle')).toBeUndefined()
+  })
+
+  it('returns undefined when the local ordinal is out of range for the owner runs', () => {
+    // Owner result carries ONE match; server ordinal 1 is past its end.
+    expect(resultHitMemberOrdinal(editMember, editResults, editResultMsg, 'e1', 1, 'needle')).toBeUndefined()
+    expect(resultHitMemberOrdinal(editMember, editResults, editResultMsg, 'e1', 9, 'needle')).toBeUndefined()
+  })
+
+  it('returns undefined for an ordinal past a >4000-char truncation', () => {
+    // The rendered run truncates at 4000 visible chars, so only the FIRST needle
+    // survives; the second (past truncation) is not a renderable match.
+    const long = `needle${'x'.repeat(4500)}needle`
+    const results = new Map([['e1', entry(long)]])
+    const resultMsg = toolResultMsg('u1', [{ toolUseId: 'e1', content: long }])
+    expect(resultHitMemberOrdinal(editMember, results, resultMsg, 'e1', 0, 'needle')).toBe(2)
+    expect(resultHitMemberOrdinal(editMember, results, resultMsg, 'e1', 1, 'needle')).toBeUndefined()
+  })
+
+  it('rebases a multi-run owner result onto the correct run', () => {
+    // An image between two text buffers splits the body into TWO runs; the
+    // owner's second run holds server ordinal 1.
+    const content = [
+      { type: 'text', text: 'needle first' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+      { type: 'text', text: 'needle second' },
+    ]
+    const results = new Map([['e1', entry(content)]])
+    const resultMsg = toolResultMsg('u1', [{ toolUseId: 'e1', content }])
+    // prefix 2 (Edit diff) + local 1 → member ordinal 3 → result-global 1.
+    expect(resultHitMemberOrdinal(editMember, results, resultMsg, 'e1', 1, 'needle')).toBe(3)
+    expect(memberBlockOrdinals(editMember, results, 3, 'needle')).toEqual([{ diffIdx: undefined, resultIdx: 1 }])
   })
 })

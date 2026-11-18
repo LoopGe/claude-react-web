@@ -661,3 +661,229 @@ describe('SessionSearchPreview', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 })
+
+// A result hit's server ordinal is message-local to the RESULT message (raw
+// runs); the owning card renders in segments-then-results member space. The
+// preview converts the ordinal so the active mark lands on the queried
+// occurrence inside the merged card — never on the Edit diff, never misrouted.
+describe('SessionSearchPreview — merged result-hit addressing', () => {
+  const editBlock = {
+    type: 'tool_use',
+    id: 'e1',
+    name: 'Edit',
+    input: { old_string: 'alpha needle', new_string: 'beta needle' },
+  }
+  const editPage = (resultContent: unknown) => ({
+    ...PAGE,
+    messages: [
+      {
+        seq: 5,
+        uuid: 'a5',
+        msg: { type: 'assistant', uuid: 'a5', message: { role: 'assistant', content: [editBlock] } },
+      },
+      {
+        seq: 6,
+        uuid: 'u6',
+        msg: {
+          type: 'user',
+          uuid: 'u6',
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'e1', content: resultContent }] },
+        },
+      },
+    ],
+  })
+  const editHit = (matchOrdinal: number): MessagePreviewTarget => ({
+    kind: 'hit',
+    hit: { ...HIT, seq: 6, messageSeq: 6, messageUuid: 'u6', ownerToolUseId: 'e1', matchOrdinal, matchCount: 2 },
+    query: 'needle',
+  })
+
+  it('activates the queried occurrence inside the merged Edit card, not the diff', () => {
+    const { container } = renderPreview(
+      { page: editPage('needle result needle again') as MessagePreviewState['page'] },
+      { target: editHit(1) },
+    )
+    // Exactly one active mark, and it lives in the merged result body.
+    const actives = container.querySelectorAll('mark.search-hl-active')
+    expect(actives.length).toBe(1)
+    const inner = container.querySelector('.tool-card-result-inner')
+    expect(inner).toBeTruthy()
+    expect(inner!.contains(actives[0]!)).toBe(true)
+    expect(actives[0]!.textContent).toBe('needle')
+    // The queried occurrence is the SECOND needle of the result (ordinal 1);
+    // the Edit diff's two matches stay passive.
+    const marks = inner!.querySelectorAll('mark.search-hl')
+    expect(marks.length).toBe(2)
+    expect(marks[1]!.classList.contains('search-hl-active')).toBe(true)
+    expect(marks[0]!.classList.contains('search-hl-active')).toBe(false)
+  })
+
+  it('rebases a multi-run result hit onto the correct run', () => {
+    // An image between two text buffers splits the body into two runs; the hit
+    // is the second run's needle (server ordinal 1).
+    const content = [
+      { type: 'text', text: 'needle first' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+      { type: 'text', text: 'needle second' },
+    ]
+    const { container } = renderPreview(
+      { page: editPage(content) as MessagePreviewState['page'] },
+      { target: editHit(1) },
+    )
+    const actives = container.querySelectorAll('mark.search-hl-active')
+    expect(actives.length).toBe(1)
+    const inner = container.querySelector('.tool-card-result-inner')
+    expect(inner!.contains(actives[0]!)).toBe(true)
+    const marks = inner!.querySelectorAll('mark.search-hl')
+    expect(marks.length).toBe(2)
+    expect(marks[1]!.classList.contains('search-hl-active')).toBe(true)
+    expect(actives[0]!.textContent).toBe('needle')
+  })
+
+  it('shows the owner row with no active mark for a hit past the 4000-char truncation', () => {
+    // Only the first needle survives the rendered run's truncation; ordinal 1
+    // points past it. The preview must seek the owner card and light NO mark
+    // (not crash, not misroute onto the diff).
+    const long = `needle${'x'.repeat(4500)}needle`
+    const { container } = renderPreview(
+      { page: editPage(long) as MessagePreviewState['page'] },
+      { target: editHit(1) },
+    )
+    expect(container.querySelector('mark.search-hl-active')).toBeNull()
+    expect(container.querySelector('[data-message-id="a5"]')).toBeTruthy()
+    expect(screen.queryByText('This message is not shown in the transcript')).toBeNull()
+    // The renderable first needle still carries a passive mark.
+    const inner = container.querySelector('.tool-card-result-inner')
+    expect(inner).toBeTruthy()
+    expect(inner!.querySelectorAll('mark.search-hl').length).toBe(1)
+  })
+
+  const childEditPage = {
+    ...PAGE,
+    messages: [
+      {
+        seq: 5,
+        uuid: 'a5',
+        msg: {
+          type: 'assistant', uuid: 'a5',
+          message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu-agent', name: 'Agent', input: { description: 'Review', prompt: 'review' } }] },
+        },
+      },
+      {
+        seq: 6,
+        uuid: 'c6',
+        msg: {
+          type: 'assistant', uuid: 'c6', parent_tool_use_id: 'tu-agent',
+          message: { role: 'assistant', content: [{ type: 'tool_use', id: 'child-e1', name: 'Edit', input: { old_string: 'alpha needle', new_string: 'beta needle' } }] },
+        },
+      },
+      {
+        seq: 7,
+        uuid: 'c7',
+        msg: {
+          type: 'user', uuid: 'c7', parent_tool_use_id: 'tu-agent',
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'child-e1', content: 'needle result needle again' }] },
+        },
+      },
+    ],
+  }
+  const childHit: MessagePreviewTarget = {
+    kind: 'hit',
+    hit: { ...HIT, seq: 7, messageSeq: 7, messageUuid: 'c7', ownerToolUseId: 'child-e1', matchOrdinal: 1, matchCount: 2 },
+    query: 'needle',
+  }
+
+  it('lights the correct mark after drilling into a sidechain child Edit hit', () => {
+    const { container } = renderPreview(
+      { page: childEditPage as MessagePreviewState['page'] },
+      { target: childHit, toolGroupCards: false },
+    )
+    // Main view: the child result is not rendered by the root Agent card, so no
+    // active mark lives here before drill-in.
+    expect(container.querySelector('[data-message-id="a5"] .subagent-card')).toBeTruthy()
+    expect(container.querySelector('mark.search-hl-active')).toBeNull()
+
+    fireEvent.click(container.querySelector('.subagent-card-details')!)
+
+    // Sidechain view: the converted ordinal routes past the Edit diff into the
+    // merged result's SECOND needle.
+    const actives = container.querySelectorAll('mark.search-hl-active')
+    expect(actives.length).toBe(1)
+    const inner = container.querySelector('.tool-card-result-inner')
+    expect(inner).toBeTruthy()
+    expect(inner!.contains(actives[0]!)).toBe(true)
+    expect(actives[0]!.textContent).toBe('needle')
+    const marks = inner!.querySelectorAll('mark.search-hl')
+    expect(marks.length).toBe(2)
+    expect(marks[1]!.classList.contains('search-hl-active')).toBe(true)
+  })
+
+  it('seeks the root ancestor card for a sidechain-owned hit in the main view', () => {
+    // The root assistant carries a Bash sibling plus the Agent, so it folds into
+    // a group card. The child Edit hit must resolve its main-view target to that
+    // ROOT row (revealing the group), never to the unrendered child row.
+    const page = {
+      ...PAGE,
+      messages: [
+        {
+          seq: 5,
+          uuid: 'a5',
+          msg: {
+            type: 'assistant', uuid: 'a5',
+            message: { role: 'assistant', content: [
+              { type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'pwd' } },
+              { type: 'tool_use', id: 'tu-agent', name: 'Agent', input: { description: 'Review', prompt: 'review' } },
+            ] },
+          },
+        },
+        {
+          seq: 6,
+          uuid: 'u6',
+          msg: { type: 'user', uuid: 'u6', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'b1', content: 'clean tree' }] } },
+        },
+        {
+          seq: 7,
+          uuid: 'c7',
+          msg: {
+            type: 'assistant', uuid: 'c7', parent_tool_use_id: 'tu-agent',
+            message: { role: 'assistant', content: [{ type: 'tool_use', id: 'child-e1', name: 'Edit', input: { old_string: 'alpha needle', new_string: 'beta needle' } }] },
+          },
+        },
+        {
+          seq: 8,
+          uuid: 'c8',
+          msg: {
+            type: 'user', uuid: 'c8', parent_tool_use_id: 'tu-agent',
+            message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'child-e1', content: 'needle result' }] },
+          },
+        },
+        {
+          seq: 9,
+          uuid: 'u9',
+          msg: { type: 'user', uuid: 'u9', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-agent', content: 'agent output' }] } },
+        },
+      ],
+    }
+    const { container } = renderPreview(
+      { page: page as MessagePreviewState['page'] },
+      {
+        target: {
+          kind: 'hit',
+          hit: { ...HIT, seq: 8, messageSeq: 8, messageUuid: 'c8', ownerToolUseId: 'child-e1', matchOrdinal: 0 },
+          query: 'needle',
+        },
+      },
+    )
+    // The root group row is the active/seek target — it reveals (data-crw-reveal)
+    // only when searchActiveMsgIdx resolves to a member of THIS group.
+    expect(container.querySelector('.tool-group-card[data-crw-reveal="true"]')).toBeTruthy()
+    expect(container.querySelector('[data-message-id="a5"]')).toBeTruthy()
+    // No active mark in the main view: the child result text is not rendered by
+    // the bespoke root card, and the child rows are absent.
+    expect(container.querySelector('mark.search-hl-active')).toBeNull()
+    expect(container.textContent).not.toContain('needle')
+    expect(container.querySelector('[data-message-id="c7"]')).toBeNull()
+    expect(container.querySelector('[data-message-id="c8"]')).toBeNull()
+    expect(screen.queryByText('This message is not shown in the transcript')).toBeNull()
+  })
+})

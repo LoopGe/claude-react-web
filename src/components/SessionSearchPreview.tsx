@@ -5,6 +5,7 @@ import { SubagentProvider } from '../hooks/useSubagentContext'
 import { WorkflowProvider } from '../hooks/useWorkflowContext'
 import { SkillProvider, skillRecordAsSubagent } from '../hooks/useSkillContext'
 import { toTranscriptItem, getBlocks, extractToolUseId } from '../session-store/normalize'
+import { resultHitMemberOrdinal } from './message-list/search-addressing'
 import { countMatches } from '../search/match'
 import { extractMessageSearchSegments } from '../search'
 import { countMessageSearchMatches } from '../../shared/search/segments'
@@ -12,6 +13,7 @@ import { createInitialServerMirror } from '../session-store/types'
 import { updateIndexesMirror, drainPendingResults } from '../session-store/index-pipeline'
 import { useMessagePreview, type MessagePreviewTarget } from '../hooks/useMessagePreview'
 import type { TranscriptItem } from '../session-store/types'
+import type { SdkMessage } from '../types'
 
 interface Props {
   sessionId: string
@@ -91,7 +93,7 @@ export function SessionSearchPreview({
           ? preview.page?.messages.find((m) => m.uuid === target.uuid)
           : preview.page?.messages.find((m) => m.seq === target.hit.messageSeq)
     const index = centered ? items.findIndex((item) => item.msg === centered.msg) : -1
-    if (index < 0) return { index: -1, resultId: undefined as string | undefined }
+    if (index < 0) return { index: -1, resultId: undefined as string | undefined, msg: undefined as SdkMessage | undefined }
     const resultBlocks = getBlocks(items[index].msg).filter((block) => block.type === 'tool_result')
     const ownerId = target.kind === 'hit' ? target.hit.ownerToolUseId : undefined
     const matchedBlock = resultBlocks.find((block) => {
@@ -112,7 +114,7 @@ export function SessionSearchPreview({
       (ownerId && resultBlocks.some((block) => (block as { tool_use_id?: string }).tool_use_id === ownerId)
         ? ownerId
         : (resultBlocks[0] as { tool_use_id?: string } | undefined)?.tool_use_id)
-    return { index, resultId }
+    return { index, resultId, msg: centered?.msg }
   }, [items, preview.page, target])
 
   // Replay the same index pipelines the live reducer runs: generic tool
@@ -129,33 +131,55 @@ export function SessionSearchPreview({
 
   const messages = useMemo(() => items.map((item) => item.msg), [items])
 
-  const targetItemIndex = useMemo(() => {
+  // The item carrying the tool_use block the hit's result settled (-1 when the
+  // result is unconsumed or its owner is off-page). Consumed results stay merged
+  // into their cards: rewriting their lifecycle would falsify the snapshot, so
+  // the preview seeks the owning card row instead of the consumed result row,
+  // which no longer renders on its own. Covers generic tool cards (toolResults),
+  // plan/question cards, and the sidechain owners (Agent/Task/Explore via
+  // activeSubagents, Workflow via activeWorkflows) — those ids never enter
+  // toolResults (TOOL_STATUS_EXCLUDE); their results are consumed through the
+  // sidechain records instead. Forked Skills are already covered via toolResults.
+  const ownerItemIndex = useMemo(() => {
     const resultId = targetInfo.resultId
-    if (!resultId) return targetInfo.index
-    // Consumed results stay merged into their cards: rewriting their lifecycle
-    // would falsify the snapshot. Seek the owning card row instead of the
-    // consumed result row, which no longer renders on its own. Covers generic
-    // tool cards (toolResults), plan/question cards, and the sidechain owners
-    // (Agent/Task/Explore via activeSubagents, Workflow via activeWorkflows) —
-    // those ids never enter toolResults (TOOL_STATUS_EXCLUDE); their results
-    // are consumed through the sidechain records instead. Forked Skills are
-    // already covered via toolResults.
+    if (!resultId) return -1
     if (
-      lifecycle.planStatus.has(resultId) ||
-      lifecycle.questionAnswers.has(resultId) ||
-      lifecycle.toolResults.has(resultId) ||
-      lifecycle.activeSubagents.has(resultId) ||
-      lifecycle.activeWorkflows.has(resultId)
+      !lifecycle.planStatus.has(resultId) &&
+      !lifecycle.questionAnswers.has(resultId) &&
+      !lifecycle.toolResults.has(resultId) &&
+      !lifecycle.activeSubagents.has(resultId) &&
+      !lifecycle.activeWorkflows.has(resultId)
     ) {
-      const owner = items.findIndex((candidate) =>
+      return -1
+    }
+    return items.findIndex((candidate) =>
+      getBlocks(candidate.msg).some(
+        (block) => block.type === 'tool_use' && extractToolUseId(block) === resultId,
+      ),
+    )
+  }, [items, lifecycle, targetInfo])
+
+  const targetItemIndex = useMemo(() => {
+    if (ownerItemIndex < 0) return targetInfo.index
+    // Sidechain-owned hit: the root-only row model renders no child rows. Walk
+    // parent_tool_use_id up to the ROOT ancestor item (the item whose tool_use
+    // block id equals that parent; repeat until parent null) and seek THAT card
+    // row. The active mark for a child hit lives in the sidechain view after
+    // drill-in — the bespoke root card does not render the child's result text.
+    let root = ownerItemIndex
+    let parent = items[root].msg.parent_tool_use_id
+    while (parent != null) {
+      const next = items.findIndex((candidate) =>
         getBlocks(candidate.msg).some(
-          (block) => block.type === 'tool_use' && extractToolUseId(block) === resultId,
+          (block) => block.type === 'tool_use' && extractToolUseId(block) === parent,
         ),
       )
-      return owner >= 0 ? owner : targetInfo.index
+      if (next < 0) break
+      root = next
+      parent = items[root].msg.parent_tool_use_id
     }
-    return targetInfo.index
-  }, [items, lifecycle, targetInfo])
+    return root
+  }, [items, ownerItemIndex, targetInfo])
 
   const title = target.kind === 'hit' ? `Turn ${target.hit.turnNo}` : 'Message'
   const subtitle = target.kind === 'hit' ? target.hit.turnPrompt : ''
@@ -167,6 +191,30 @@ export function SessionSearchPreview({
   const targetMatchOrdinal = target.kind === 'hit'
     ? target.hit.matchOrdinal ?? 0
     : target.messageMatchOrdinal ?? target.matchOrdinal ?? 0
+
+  // A result hit's server ordinal is message-local to the RESULT message (raw
+  // runs); the owner card renders in segments-then-results member space. Convert
+  // it once for both views. Non-result hits keep their message-local ordinal; a
+  // failed conversion (owner off-page / out of range) yields undefined so no
+  // misrouted raw ordinal ever lights a mark.
+  const hitMemberOrdinal =
+    target.kind === 'hit' && target.hit.ownerToolUseId && ownerItemIndex >= 0 && targetInfo.msg
+      ? resultHitMemberOrdinal(
+          items[ownerItemIndex].msg,
+          lifecycle.toolResults,
+          targetInfo.msg,
+          target.hit.ownerToolUseId,
+          targetMatchOrdinal,
+          target.query,
+        )
+      : targetMatchOrdinal
+
+  // A sidechain-owned hit lights no mark in the main (root-only) view: the child
+  // result text is not rendered by the bespoke root card. Its mark lives in the
+  // sidechain view after drill-in.
+  const ownerIsSidechainChild =
+    ownerItemIndex >= 0 && items[ownerItemIndex].msg.parent_tool_use_id != null
+  const mainActiveOrdinal = ownerIsSidechainChild ? undefined : hitMemberOrdinal
 
   const transcript = (
     <MessageList
@@ -185,7 +233,7 @@ export function SessionSearchPreview({
       showMessageHeaders={showMessageHeaders}
       searchQuery={target.query}
       searchActiveMsgIdx={targetItemIndex >= 0 ? targetItemIndex : undefined}
-      searchActiveMatchInItem={targetItemIndex >= 0 ? targetMatchOrdinal : undefined}
+      searchActiveMatchInItem={targetItemIndex >= 0 ? mainActiveOrdinal : undefined}
       replayReady
     />
   )
@@ -206,15 +254,26 @@ export function SessionSearchPreview({
       (sidechainSkill ? skillRecordAsSubagent(sidechainSkill) : undefined))
     : undefined
 
-  const sidechainTargetItemIndex = sidechainId && targetInfo.resultId === sidechainId
-    ? (() => {
-        const sourceIndex = items.findIndex((item) =>
-          item.msg.parent_tool_use_id === sidechainId && item.msg.type === 'assistant' &&
-          countMessageSearchMatches(extractMessageSearchSegments(item.msg), target.query) > 0,
-        )
-        return sourceIndex >= 0 ? sourceIndex : -1000
-      })()
-    : targetItemIndex
+  const sidechainTargetItemIndex = !sidechainId
+    ? targetItemIndex
+    : targetInfo.resultId === sidechainId
+      ? (() => {
+          const sourceIndex = items.findIndex((item) =>
+            item.msg.parent_tool_use_id === sidechainId && item.msg.type === 'assistant' &&
+            countMessageSearchMatches(extractMessageSearchSegments(item.msg), target.query) > 0,
+          )
+          return sourceIndex >= 0 ? sourceIndex : -1000
+        })()
+      : ownerItemIndex >= 0 && items[ownerItemIndex].msg.parent_tool_use_id === sidechainId
+        ? ownerItemIndex
+        : targetItemIndex
+
+  // The sidechain's OWN result (resultId === sidechainId) renders through the
+  // synthetic reply row, whose match space is the result's raw runs — the server
+  // ordinal applies directly. Every other hit uses the converted member ordinal
+  // (undefined when the conversion fails → no active mark, never a raw ordinal).
+  const sidechainActiveOrdinal =
+    sidechainId && targetInfo.resultId === sidechainId ? targetMatchOrdinal : hitMemberOrdinal
 
   const content = sidechainId ? (
     <MessageList
@@ -235,7 +294,7 @@ export function SessionSearchPreview({
       showMessageHeaders={showMessageHeaders}
       searchQuery={target.query}
       searchActiveMsgIdx={sidechainTargetItemIndex}
-      searchActiveMatchInItem={sidechainTargetItemIndex >= 0 || sidechainTargetItemIndex === -1000 ? targetMatchOrdinal : undefined}
+      searchActiveMatchInItem={sidechainTargetItemIndex >= 0 || sidechainTargetItemIndex === -1000 ? sidechainActiveOrdinal : undefined}
       replayReady
       emptyStateContent={
         <div className="search-preview-state">No sidechain messages in this page</div>
