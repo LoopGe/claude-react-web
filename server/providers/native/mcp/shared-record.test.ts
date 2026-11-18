@@ -12,10 +12,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { captureBirthTime, processIdentity } from '../../../win32-job.js'
+import { processIdentity } from '../../../win32-job.js'
 import { disableLogRing, enableLogRing, getLogConfig, readLogRing, setLogConfig } from '../../../log.js'
 import type { NativeMcpServerConfig } from './connections.js'
-import { SharedRecord, sharingKey } from './shared-record.js'
+import { SharedRecord, childIdentity, sharingKey } from './shared-record.js'
 import { SharedRegistry } from './shared-registry.js'
 
 const fixturePath = fileURLToPath(new URL('./fixtures/stdio-server.mjs', import.meta.url))
@@ -98,21 +98,6 @@ async function expectChildGone(pid: number, ms = 5000): Promise<void> {
     }
   }
   throw new Error(`pid ${pid} still alive after ${ms}ms`)
-}
-
-/** Platform liveness/identity probe mirroring the record's default: win32
- *  reads the birth-time identity via `captureBirthTime` (FFI identity with a
- *  PowerShell fallback; null only when BOTH sources fail), POSIX probes
- *  `kill(pid, 0)` and reports an 'alive' sentinel (no birth-time identity is
- *  available there). */
-function childIdentity(pid: number): string | null {
-  if (process.platform === 'win32') return captureBirthTime(pid)
-  try {
-    process.kill(pid, 0)
-    return 'alive'
-  } catch {
-    return null
-  }
 }
 
 function stdioConfig(byePath: string, mode?: string): NativeMcpServerConfig {
@@ -504,4 +489,21 @@ describe('SharedRecord cleanup death gate', () => {
     expect(ignoreExitCount(byePath)).toBe(1)
     expectChildAlive(pid)
   }, 15_000)
+
+  // R5 regression pin: with the koffi FFI available, dead-pid identity reads
+  // must stay on the microsecond FFI path — a per-read PowerShell fallback
+  // (~0.5-0.9s each, blocking spawnSync) would stall every healthy close.
+  // 10 reads in <500ms tolerates heavy load but fails by an order of
+  // magnitude if the PS leg comes back. Runs only where FFI is available
+  // (the same clean self-PID probe the capability gate uses); on koffi-absent
+  // hosts the PS leg IS the intended rescue, so there is nothing to pin.
+  it.runIf(process.platform === 'win32' && processIdentity(process.pid) !== null)(
+    'dead-pid identity reads stay FFI-fast (no per-close PowerShell stall)',
+    () => {
+      const started = Date.now()
+      for (let i = 0; i < 10; i++) expect(childIdentity(0x7fffffff)).toBeNull()
+      expect(Date.now() - started).toBeLessThan(500)
+    },
+    15_000,
+  )
 })

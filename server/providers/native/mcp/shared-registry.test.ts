@@ -12,10 +12,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { captureBirthTime, processIdentity } from '../../../win32-job.js'
+import { processIdentity } from '../../../win32-job.js'
 import { metrics } from '../../../metrics.js'
 import type { NativeMcpServerConfig } from './connections.js'
-import type { SharedRecord } from './shared-record.js'
+import { childIdentity, type SharedRecord } from './shared-record.js'
 import { SharedRegistry } from './shared-registry.js'
 
 const fixturePath = fileURLToPath(new URL('./fixtures/stdio-server.mjs', import.meta.url))
@@ -100,21 +100,6 @@ async function expectChildGone(pid: number, ms = 5000): Promise<void> {
     }
   }
   throw new Error(`pid ${pid} still alive after ${ms}ms`)
-}
-
-/** Platform liveness/identity probe mirroring the record's default: win32
- *  reads the birth-time identity via `captureBirthTime` (FFI identity with a
- *  PowerShell fallback; null only when BOTH sources fail), POSIX probes
- *  `kill(pid, 0)` and reports an 'alive' sentinel (no birth-time identity is
- *  available there). */
-function childIdentity(pid: number): string | null {
-  if (process.platform === 'win32') return captureBirthTime(pid)
-  try {
-    process.kill(pid, 0)
-    return 'alive'
-  } catch {
-    return null
-  }
 }
 
 function stdioConfig(byePath: string, mode?: string): NativeMcpServerConfig {

@@ -35,11 +35,14 @@
 //   - Cleanup is fail-closed: `close()` races `client.close()` against
 //     `closeTimeoutMs`, then confirms the stdio child actually exited by
 //     polling its birth-time identity under a second `closeTimeoutMs` window.
-//     The identity source is `captureBirthTime` (FFI `processIdentity` with a
-//     PowerShell fallback), so koffi-absent hosts still read a live child. A
-//     child still alive at that deadline sets `cleanupFailed` (no automatic
-//     force-kill — the gate guards replacement). A `cleanupFailed` record
-//     refuses manual `reconnect()` until the child's death is confirmed: the
+//     The identity source is capability-gated: a sticky self-PID probe decides
+//     once per process whether the koffi FFI works — available reads go through
+//     `processIdentity` directly (microsecond death confirmation, no
+//     PowerShell on the teardown path), and only koffi-absent hosts fall back
+//     to `captureBirthTime`'s PowerShell leg. A child still alive at that
+//     deadline sets `cleanupFailed` (no automatic force-kill — the gate
+//     guards replacement). A `cleanupFailed` record refuses manual
+//     `reconnect()` until the child's death is confirmed: the
 //     identity must read null, so a recycled PID (a different birth-time
 //     identity) can never pass. Only an allowed reconnect clears the flag,
 //     and the gate runs INSIDE the serialized mutation queue so it observes
@@ -54,7 +57,7 @@ import { CallToolResultSchema, type CallToolResult } from '@modelcontextprotocol
 import { createMcpTransport, isMcpAuthError, type McpTransportTarget } from '../../../mcp-config.js'
 import { mcpToolFqn } from '../../../../shared/mcp-fqn.js'
 import { createLogger } from '../../../log.js'
-import { captureBirthTime } from '../../../win32-job.js'
+import { captureBirthTime, processIdentity } from '../../../win32-job.js'
 import type { NativeMcpServerConfig, NativeMcpStatus, NativeMcpToolInfo } from './connections.js'
 
 const log = createLogger('native-mcp-shared')
@@ -85,21 +88,39 @@ export function sharingKey(config: NativeMcpServerConfig): string {
   ])
 }
 
+/** Sticky FFI-availability capability probe: the self PID is always alive and
+ *  readable when the koffi bindings work, so a non-null
+ *  `processIdentity(process.pid)` proves FFI availability; null means koffi is
+ *  absent. Cached for the process lifetime, mirroring the stickiness of
+ *  win32-job's capability failures. */
+let ffiAvailable: boolean | undefined
+function ffiIdentityAvailable(): boolean {
+  ffiAvailable ??= processIdentity(process.pid) !== null
+  return ffiAvailable
+}
+
 /** Liveness + identity probe for one child PID, the default behind the
- *  cleanup death gate. Win32 reads the creation-time identity via
- *  `captureBirthTime` — the FFI `processIdentity` with a PowerShell
- *  StartTime.ToFileTime() fallback (same UTC 100ns ticks), so koffi-absent or
- *  access-denied hosts still read a LIVE child's identity instead of failing
- *  open. A recycled PID reads a DIFFERENT identity and can never impersonate
- *  the captured child. Residual degraded edge: null comes back only when BOTH
- *  sources fail, and that doubly-degraded read cannot distinguish a dead
- *  child from an unreadable live one — the gate then treats it as death, so
- *  fail-closed is NOT claimed for that rare case. POSIX has no birth-time
- *  identity through that win32-only check, so `kill(pid, 0)` liveness stands
- *  in with an 'alive' sentinel (null once gone; EPERM means alive-but-not-ours).
- *  PID-reuse fencing is therefore win32-only. */
+ *  cleanup death gate. The win32 identity source is CAPABILITY-GATED: when
+ *  the sticky self-PID probe confirms the koffi FFI, reads go through
+ *  `processIdentity(pid)` directly — null means dead, microsecond reads, no
+ *  PowerShell on the teardown path. Only when koffi is ABSENT does the probe
+ *  fall back to `captureBirthTime`'s PowerShell StartTime.ToFileTime() leg
+ *  (same UTC 100ns ticks), the rescue for hosts without the optional native
+ *  addon. FFI-direct loses no safety: an access-denied FFI read is
+ *  access-denied to Get-Process too (same-or-stronger access rights), so the
+ *  PS leg would not rescue it either — both sources fail together. A
+ *  recycled PID reads a DIFFERENT identity and can never impersonate the
+ *  captured child. Residual degraded edge: null when BOTH sources fail cannot
+ *  distinguish a dead child from an unreadable live one — the gate then
+ *  treats it as death, so fail-closed is NOT claimed for that rare case.
+ *  POSIX has no birth-time identity through that win32-only check, so
+ *  `kill(pid, 0)` liveness stands in with an 'alive' sentinel (null once
+ *  gone; EPERM means alive-but-not-ours). PID-reuse fencing is therefore
+ *  win32-only. */
 export function childIdentity(pid: number): string | null {
-  if (process.platform === 'win32') return captureBirthTime(pid)
+  if (process.platform === 'win32') {
+    return ffiIdentityAvailable() ? processIdentity(pid) : captureBirthTime(pid)
+  }
   try {
     process.kill(pid, 0)
     return 'alive'
