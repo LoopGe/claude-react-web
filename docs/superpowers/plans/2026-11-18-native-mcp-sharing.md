@@ -76,11 +76,12 @@ export class SharedRecord {
   serverInfo?: { name: string; version: string }
   tools: NativeMcpToolInfo[]          // currently registered (emptied on give-up)
   cachedTools: NativeMcpToolInfo[]    // last-good discovery, served during outage
-  readonly abort: AbortController     // bounds connect + all calls; replaced per connect attempt
+  abort: AbortController              // bounds connect + all calls; replaced per connect attempt (mutable)
+  readonly ready: Promise<void>       // settles when the INITIAL connect attempt settles; callers await this
   pid: number | null                  // stdio child PID (transport.pid after start)
   cleanupFailed: boolean
   constructor(key: string, config: NativeMcpServerConfig, opts?: SharedRecordOptions)
-  connect(): Promise<void>            // connect + discover; never rejects (failure → status failed/needs-auth)
+  connect(): Promise<void>            // connect + discover; never rejects (failure → status failed/needs-auth); sets ready
   callTool(rawName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<CallToolResult>
   readResource(uri: string): Promise<unknown>
   close(): Promise<void>              // bounded deadline + child-exit confirm; idempotent; sets cleanupFailed on hung close
@@ -126,7 +127,7 @@ Expected: FAIL — cannot resolve `./shared-record.js`.
 
 - [ ] **Step 4: Implement `shared-record.ts` (core, no reconnect supervisor yet)**
 
-Port the connect/discover/close logic from `connections.ts` (`connectRecord`/`openConnection`/`raceConnect`/`discoverTools`/`closeServer`/`closeResources`, :336-455) into `SharedRecord`, adapted: after `client.connect(transport)`, capture `this.pid = (transport as StdioClientTransport).pid ?? null` for stdio; on successful discovery set both `tools` and `cachedTools`. `callTool` uses `AbortSignal.any([signal, this.abort.signal])` and the record's `toolTimeoutMs`; if `status !== 'connected'` throw `MCP_SERVER_UNAVAILABLE` (fail-fast). `close()` aborts first, then closes the client under `closeTimeoutMs` (Task 4 adds the death confirmation; here a plain bounded close is enough to pass the bye-marker test). `sharingKey` per Global Constraints. Reconnect supervisor is Task 3 — for now a crash leaves `status:'failed'` (no auto-retry).
+Port the connect/discover/close logic from `connections.ts` (`connectRecord`/`openConnection`/`raceConnect`/`discoverTools`/`closeServer`/`closeResources`, :336-455) into `SharedRecord`, adapted: after `client.connect(transport)`, capture `this.pid = (transport as StdioClientTransport).pid ?? null` for stdio; on successful discovery set both `tools` and `cachedTools`. `callTool` uses `AbortSignal.any([signal, this.abort.signal])` and the record's `toolTimeoutMs`; if `status !== 'connected'` throw `MCP_SERVER_UNAVAILABLE` (fail-fast). `close()` aborts first, then closes the client under `closeTimeoutMs` (Task 4 adds the death confirmation; here a plain bounded close is enough to pass the bye-marker test). `connect()` exposes its settlement as `ready` (resolved when the initial connect attempt settles, success or failure). `sharingKey` per Global Constraints. Reconnect supervisor is Task 3 — for now a crash leaves `status:'failed'` (no auto-retry).
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -156,7 +157,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 ```ts
 export class SharedRegistry {
   constructor(opts?: SharedRecordOptions)
-  acquire(config: NativeMcpServerConfig): SharedRecord  // key=sharingKey; users++; connect if first; returns the record
+  acquire(config: NativeMcpServerConfig): SharedRecord  // key=sharingKey; users++; connect if first; returns the record (await record.ready for initial connect)
   release(record: SharedRecord): Promise<void>          // users--; at 0 close + remove from map
   get(key: string): SharedRecord | undefined
   get size(): number                                     // active record count (metrics gauge)
@@ -172,6 +173,7 @@ it('two acquires of the same config share one child; release semantics', async (
   const reg = new SharedRegistry()
   const a = reg.acquire(cfg); const b = reg.acquire(cfg)
   expect(a).toBe(b); expect(a.users).toBe(2); expect(reg.size).toBe(1)
+  await a.ready
   const pid = a.pid!
   await reg.release(a)                       // users 1, child alive
   expect(processIdentity(pid)).not.toBeNull()
