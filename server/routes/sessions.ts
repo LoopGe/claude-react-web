@@ -705,6 +705,12 @@ export function buildSessionRouter(
       const afterCount = limit - 1 - beforeCount
       const page = await sm.getTranscriptWindowAround(id, seq, beforeCount, afterCount)
       if (!page) throw new HttpError(404, `message at seq ${seq} not found`)
+      // Authoritative post-reconcile check: the page's generation is final even
+      // when a cold session reconciled mid-request or a concurrent rebuild moved
+      // the generation after the pre-check above (spec §11).
+      if (genRaw != null && /^\d+$/.test(genRaw) && page.generation !== Number(genRaw)) {
+        throw new HttpError(409, 'stale-generation')
+      }
       recordHistoryPageImages(page.messages.map((m) => m.msg))
       return c.json({ ...page, aroundSeq: seq })
     }
@@ -819,7 +825,9 @@ export function buildSessionRouter(
   // rebuild-failed session from the sidecar's committed prefix without a server
   // restart. 503 when the retry still fails (retryable).
   app.post('/sessions/:id/transcript/reconcile', async (c) => {
-    const result = await sm.retryTranscriptReconcile(c.req.param('id'))
+    const id = c.req.param('id')
+    sm.get(id) // live-or-persisted existence check; unknown → 404 (don't create an empty holder)
+    const result = await sm.retryTranscriptReconcile(id)
     if (result.degraded) return c.json({ error: 'transcript reconcile failed', ...result }, 503)
     return c.json({ ok: true, ...result })
   })
