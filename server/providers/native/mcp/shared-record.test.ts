@@ -7,7 +7,7 @@
 // win32, `process.kill(pid, 0)` on POSIX).
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,6 +16,7 @@ import { processIdentity } from '../../../win32-job.js'
 import { disableLogRing, enableLogRing, getLogConfig, readLogRing, setLogConfig } from '../../../log.js'
 import type { NativeMcpServerConfig } from './connections.js'
 import { SharedRecord, sharingKey } from './shared-record.js'
+import { SharedRegistry } from './shared-registry.js'
 
 const fixturePath = fileURLToPath(new URL('./fixtures/stdio-server.mjs', import.meta.url))
 
@@ -53,6 +54,16 @@ async function waitFor(check: () => boolean, ms: number, label: string): Promise
   throw new Error(`timed out after ${ms}ms waiting for ${label}`)
 }
 
+/** Prove a child is still running: win32 reads its creation-time identity
+ *  (null once dead / unreadable), POSIX probes `kill(pid, 0)`. */
+function expectChildAlive(pid: number): void {
+  if (process.platform === 'win32') {
+    expect(processIdentity(pid)).not.toBeNull()
+    return
+  }
+  expect(() => process.kill(pid, 0)).not.toThrow()
+}
+
 /** Prove the child is gone: win32 reads its creation-time identity (null once
  *  dead / unreadable), POSIX polls `kill(pid, 0)` until it throws. */
 async function expectChildGone(pid: number, ms = 5000): Promise<void> {
@@ -75,6 +86,24 @@ async function expectChildGone(pid: number, ms = 5000): Promise<void> {
 function stdioConfig(byePath: string, mode?: string): NativeMcpServerConfig {
   return { type: 'stdio', command: 'node', args: mode ? [fixturePath, byePath, mode] : [fixturePath, byePath] }
 }
+
+/** --flaky: spawn 1 crashes on a `slow` call, spawns 2..(1+budget) fail before
+ *  the handshake, later spawns are healthy. The budget is argv[4]. */
+function flakyConfig(byePath: string, budget: number): NativeMcpServerConfig {
+  return { type: 'stdio', command: 'node', args: [fixturePath, byePath, '--flaky', String(budget)] }
+}
+
+/** The --flaky spawn counter the fixture persists, so a test can prove exactly
+ *  which attempts ran (and that none ran after give-up / close). */
+function flakyCount(byePath: string): number {
+  return parseInt(readFileSync(`${byePath}.flaky`, 'utf8'), 10)
+}
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Fast reconnect policy so real-process outage/retry tests stay well under the
+ *  15s lane budget. The production default is 500ms / 30s / 10 attempts. */
+const fastReconnect = { enabled: true, initialDelayMs: 20, maxDelayMs: 50, maxAttempts: 3 }
 
 const freshSignal = () => new AbortController().signal
 
@@ -213,5 +242,113 @@ describe('SharedRecord', () => {
       disableLogRing()
       setLogConfig(prevConfig)
     }
+  }, 15_000)
+})
+
+describe('SharedRecord reconnect supervisor', () => {
+  it('crash rejects in-flight calls, keeps cached tools registered, reconnects with a fresh child', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const rec = makeRecord(stdioConfig(byePath, '--crash'), { reconnect: fastReconnect })
+
+    await rec.connect()
+    expect(rec.status).toBe('connected')
+    const oldPid = rec.pid!
+    expect(oldPid).toBeGreaterThan(0)
+    expect(rec.cachedTools.length).toBeGreaterThan(0)
+
+    // A `slow` call never answers on its own; the fixture exits when it is
+    // called, so the crash is guaranteed to land while this call is in flight.
+    const inFlight = rec.callTool('slow', {}, freshSignal())
+    await expect(inFlight).rejects.toThrow('MCP_CONNECTION_CLOSED')
+
+    // Phase 1 (retry window): cached tools stay registered, status is pending
+    // with the attempt budget in error, and NEW calls fail fast.
+    expect(rec.status).toBe('pending')
+    expect(rec.error).toMatch(/reconnecting \(attempt 1\/3\)/)
+    expect(rec.tools).toEqual(rec.cachedTools)
+    expect(rec.tools.length).toBeGreaterThan(0)
+    await expect(rec.callTool('echo', { text: 'x' }, freshSignal())).rejects.toThrow('MCP_SERVER_UNAVAILABLE')
+
+    // The crashed child is really gone, and backoff reconnects a fresh one.
+    await expectChildGone(oldPid)
+    await waitFor(() => rec.status === 'connected', 5000, 'the supervisor to reconnect')
+    expect(rec.pid).toBeGreaterThan(0)
+    expect(rec.pid).not.toBe(oldPid)
+    expectChildAlive(rec.pid!)
+    expect(rec.tools.length).toBeGreaterThan(0)
+    expect(rec.error).toBeUndefined()
+  }, 15_000)
+
+  it('late acquirer during outage sees cached tools', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const config = flakyConfig(byePath, 3)
+    const reg = new SharedRegistry({ reconnect: fastReconnect })
+    const rec = reg.acquire(config)
+    openRecords.push(rec)
+    await rec.ready
+    expect(rec.status).toBe('connected')
+    expect(rec.cachedTools.length).toBeGreaterThan(0)
+
+    // Crash the connected child; the record enters the retry window.
+    const inFlight = rec.callTool('slow', {}, freshSignal())
+    await expect(inFlight).rejects.toThrow('MCP_CONNECTION_CLOSED')
+    expect(rec.status).toBe('pending')
+
+    // A session acquiring the SAME config mid-outage gets the SAME record with
+    // the cached last-good tools still registered — not zero — and its calls
+    // fail fast rather than queueing on a dead connection.
+    const late = reg.acquire(config)
+    expect(late).toBe(rec)
+    expect(late.users).toBe(2)
+    expect(late.tools.length).toBeGreaterThan(0)
+    expect(late.tools).toEqual(rec.cachedTools)
+    await expect(late.callTool('echo', { text: 'x' }, freshSignal())).rejects.toThrow('MCP_SERVER_UNAVAILABLE')
+
+    // Closing mid-outage cancels the supervisor: once close() settles, no
+    // further reconnect attempt spawns a child (quiescent teardown).
+    await rec.close()
+    const countAfterClose = flakyCount(byePath)
+    await delay(120) // > maxDelayMs: a stray timer would have fired by now
+    expect(flakyCount(byePath)).toBe(countAfterClose)
+  }, 15_000)
+
+  it('give-up unregisters tools and stays failed until manual reconnect', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    // budget 3: spawns 2..4 fail before the handshake, spawn 5 is healthy.
+    const rec = makeRecord(flakyConfig(byePath, 3), { reconnect: fastReconnect })
+
+    await rec.connect()
+    expect(rec.status).toBe('connected')
+    const cached = rec.cachedTools
+    expect(cached.length).toBeGreaterThan(0)
+
+    const inFlight = rec.callTool('slow', {}, freshSignal())
+    await expect(inFlight).rejects.toThrow('MCP_CONNECTION_CLOSED')
+
+    // maxAttempts exhausted → give-up: tools unregistered, status failed,
+    // cachedTools retained for a future manual reconnect.
+    await waitFor(() => rec.status === 'failed', 5000, 'the supervisor to give up')
+    expect(rec.tools).toEqual([])
+    expect(rec.cachedTools).toEqual(cached)
+    await expect(rec.callTool('echo', { text: 'x' }, freshSignal())).rejects.toThrow('MCP_SERVER_UNAVAILABLE')
+
+    // Exactly spawn 1 (initial) + 3 failed attempts ran; after give-up the
+    // supervisor is quiescent — no stray backoff timer spawns another child.
+    expect(flakyCount(byePath)).toBe(4)
+    await delay(120) // > maxDelayMs: any stray timer would have fired by now
+    expect(flakyCount(byePath)).toBe(4)
+    expect(rec.status).toBe('failed')
+
+    // Manual reconnect (spawn 5 is healthy) restores the connection and tools,
+    // spawning exactly one fresh child.
+    await rec.reconnect()
+    expect(rec.status).toBe('connected')
+    expect(rec.tools.length).toBeGreaterThan(0)
+    expect(rec.error).toBeUndefined()
+    expectChildAlive(rec.pid!)
+    expect(flakyCount(byePath)).toBe(5)
   }, 15_000)
 })

@@ -22,10 +22,17 @@
 //   - Discovery populates both `tools` (currently registered) and `cachedTools`
 //     (last-good, served during an outage). The stdio child PID is captured from
 //     the transport for the cleanup death gate.
-//
-// A crash currently leaves the record `failed` with no auto-retry; the bounded
-// reconnect supervisor and the cleanup death confirmation are layered on top of
-// this core.
+//   - A bounded-backoff reconnect supervisor watches the live client's `onclose`.
+//     An unexpected loss aborts the current generation (in-flight calls reject
+//     `MCP_CONNECTION_CLOSED`), keeps `tools = cachedTools` registered with
+//     `status:'pending'`, and retries with a fresh `Client` + transport per
+//     attempt (`error` carries `reconnecting (attempt n/N)`). During the retry
+//     window new calls fail fast (`MCP_SERVER_UNAVAILABLE`); on give-up
+//     (attempt > maxAttempts) `tools` empties and `status:'failed'` until a
+//     manual `reconnect()`. `cachedTools` is retained throughout. A `needs-auth`
+//     failure does not auto-retry. The attempt budget resets only after
+//     sustained uptime past `maxDelayMs`. The cleanup death confirmation is
+//     layered on top of this core (Task 4).
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
@@ -42,6 +49,12 @@ const CLIENT_INFO = { name: 'claude-react-web-native', version: '1.0.0' }
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000
 const DEFAULT_CLOSE_TIMEOUT_MS = 5_000
+const DEFAULT_RECONNECT: ReconnectPolicy = {
+  enabled: true,
+  initialDelayMs: 500,
+  maxDelayMs: 30_000,
+  maxAttempts: 10,
+}
 
 /** The host-global identity of a shared stdio config: command + args + env.
  *  Env entries are sorted so insertion order does not split one server into two
@@ -98,6 +111,28 @@ export class SharedRecord {
   private readonly connectTimeoutMs: number
   private readonly toolTimeoutMs: number
   private readonly closeTimeoutMs: number
+  private readonly policy: ReconnectPolicy
+  /** Reconnect attempt count within the active outage. Reset ONLY by sustained
+   *  uptime past `maxDelayMs` or a manual `reconnect()` — never by a new loss,
+   *  so a flapping server still burns its budget and gives up. */
+  private attempt = 0
+  /** Set by `close()`; suppresses the supervisor so a closed record never retries. */
+  private closed = false
+  private backoffTimer?: ReturnType<typeof setTimeout>
+  private uptimeTimer?: ReturnType<typeof setTimeout>
+  /** Bumped by `reconnect()`; a supervisor attempt whose run token is stale
+   *  stands down instead of scheduling over the manual reconnect. */
+  private supervisorRun = 0
+  /** Per-generation identity + loss marker, replaced on every connect attempt.
+   *  `callTool` captures it so an in-flight call rejects `MCP_CONNECTION_CLOSED`
+   *  when ITS generation is lost, and a stale backoff timer recognizes that a
+   *  newer generation has taken over. */
+  private gen = { lost: false }
+  /** Serializes connect / reconnect / supervisor attempts / close teardown so
+   *  two attempts never overlap (the `enqueue` pattern from `connections.ts`).
+   *  `close()` still aborts synchronously BEFORE awaiting, so teardown never
+   *  waits out a hung handshake. */
+  private queue: Promise<void> = Promise.resolve()
   /** Non-secret diagnostic tag. The sharing `key` embeds env values (API keys),
    *  so it must never reach a log; this label carries only the command plus a
    *  one-way hash of the key, which keeps distinct configs — including ones that
@@ -115,42 +150,42 @@ export class SharedRecord {
     this.connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     this.toolTimeoutMs = opts.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
     this.closeTimeoutMs = opts.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS
+    this.policy = opts.reconnect ?? DEFAULT_RECONNECT
     this.ready = new Promise<void>((resolve) => {
       this.settleReady = resolve
     })
   }
 
   /** Connect + discover tools. Never rejects: every failure is recorded on the
-   *  record and its resources closed. Settles `ready` when the attempt settles. */
+   *  record and its resources closed. Settles `ready` when the attempt settles.
+   *  Serialized on the mutation queue; tears down any prior live generation
+   *  BEFORE spawning a replacement, so a reconnect never overlaps two children. */
   async connect(): Promise<void> {
-    this.abort = new AbortController()
-    this.status = 'pending'
+    return this.enqueue(async () => {
+      try {
+        if (this.closed) return
+        const outcome = await this.runAttempt()
+        if (!outcome.ok && !this.closed) this.applyTerminalFailure(outcome.err)
+      } finally {
+        // Resolving an already-settled promise is a no-op, so later attempts
+        // (reconnects) leave `ready` pinned to the INITIAL settlement.
+        this.settleReady()
+      }
+    })
+  }
+
+  /** Manual reconnect: cancel any pending backoff, invalidate the supervisor's
+   *  current run, and run a fresh connect (which tears down the old generation
+   *  first). Revives a gave-up record; a later crash re-arms the supervisor.
+   *  Task 4 adds the cleanup death gate. */
+  async reconnect(): Promise<void> {
+    this.cancelBackoff()
+    this.clearUptimeTimer()
+    this.supervisorRun++
+    this.closed = false
+    this.attempt = 0
     this.error = undefined
-    this.serverInfo = undefined
-    this.tools = []
-    this.pid = null
-    const client = new Client(CLIENT_INFO, { capabilities: {} })
-    this.client = client
-    try {
-      await this.raceConnect(this.openConnection(client))
-      const discovered = await this.discoverTools(client)
-      this.tools = discovered
-      this.cachedTools = discovered
-      const version = client.getServerVersion()
-      if (version) this.serverInfo = { name: version.name, version: version.version }
-      this.status = 'connected'
-      log.info(`[${this.label}] connected (${discovered.length} tools)`)
-    } catch (err) {
-      await this.closeResources()
-      this.error = errorMessage(err)
-      this.tools = []
-      this.status = isMcpAuthError(err) ? 'needs-auth' : 'failed'
-      log.warn(`[${this.label}] ${this.status}: ${this.error}`)
-    } finally {
-      // Resolving an already-settled promise is a no-op, so later attempts
-      // (reconnects) leave `ready` pinned to the INITIAL settlement.
-      this.settleReady()
-    }
+    await this.connect()
   }
 
   /** Invoke a tool by its bare server-side name. Fails fast when the record is
@@ -161,37 +196,193 @@ export class SharedRecord {
     args: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<CallToolResult> {
-    if (this.status !== 'connected' || !this.client) {
+    const client = this.client
+    if (this.status !== 'connected' || !client) {
       throw new Error('MCP_SERVER_UNAVAILABLE')
     }
-    // The declared return type is the union of the parsed result and the legacy
-    // compatibility shape regardless of the schema passed; asking for
-    // CallToolResultSchema means the former is what actually comes back.
-    return (await this.client.callTool(
-      { name: rawName, arguments: args },
-      CallToolResultSchema,
-      { timeout: this.toolTimeoutMs, signal: AbortSignal.any([signal, this.abort.signal]) },
-    )) as CallToolResult
+    const gen = this.gen
+    try {
+      // The declared return type is the union of the parsed result and the legacy
+      // compatibility shape regardless of the schema passed; asking for
+      // CallToolResultSchema means the former is what actually comes back.
+      return (await client.callTool(
+        { name: rawName, arguments: args },
+        CallToolResultSchema,
+        { timeout: this.toolTimeoutMs, signal: AbortSignal.any([signal, this.abort.signal]) },
+      )) as CallToolResult
+    } catch (err) {
+      // The caller's own abort stays local (sibling-safe). Otherwise, if THIS
+      // call's generation was lost, surface MCP_CONNECTION_CLOSED regardless of
+      // which SDK path rejected first (the transport-close handler or the
+      // generation abort).
+      if (!signal.aborted && gen.lost) {
+        throw new Error('MCP_CONNECTION_CLOSED', { cause: err })
+      }
+      throw err
+    }
   }
 
   /** Forward a resource read to the connected server, result unchanged. */
   async readResource(uri: string): Promise<unknown> {
-    if (this.status !== 'connected' || !this.client) {
+    const client = this.client
+    if (this.status !== 'connected' || !client) {
       throw new Error('MCP server is not connected')
     }
-    return this.client.readResource({ uri })
+    return client.readResource({ uri })
   }
 
   /** Abort in-flight work, then close the client under a bounded deadline.
    *  Idempotent; never throws. Aborting BEFORE awaiting is what keeps teardown
-   *  from waiting out an in-flight handshake or `listTools` page. */
+   *  from waiting out an in-flight handshake or `listTools` page. Cancels the
+   *  reconnect supervisor so a closed record never retries. */
   async close(): Promise<void> {
+    this.closed = true
+    this.cancelBackoff()
+    this.clearUptimeTimer()
     this.abort.abort()
-    await this.closeResources()
-    this.tools = []
+    await this.enqueue(async () => {
+      await this.closeResources()
+      this.tools = []
+    })
   }
 
   // ── internals ──────────────────────────────────────────────────────────
+
+  /** Run `task` after every earlier mutation has settled. The returned promise
+   *  carries the task's rejection to its caller, but the queue itself never
+   *  rejects, so one failed task cannot poison the next. */
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(task, task)
+    this.queue = run.then(noop, noop)
+    return run
+  }
+
+  /** One fresh-generation connect attempt: tear down the previous generation,
+   *  then handshake + discover. Never rejects; returns the error on failure for
+   *  the caller to apply its status policy (terminal vs outage). Does NOT clear
+   *  `tools`/`error` at start, so cached tools stay registered and the attempt
+   *  count stays visible throughout a reconnect attempt. */
+  private async runAttempt(): Promise<{ ok: true } | { ok: false; err: unknown }> {
+    // Tear down the previous generation BEFORE spawning a replacement so a
+    // reconnect never overlaps two children (and a freed child is gone first).
+    this.abort.abort()
+    await this.closeResources()
+    this.abort = new AbortController()
+    this.gen = { lost: false }
+    this.status = 'pending'
+    this.pid = null
+    const client = new Client(CLIENT_INFO, { capabilities: {} })
+    this.client = client
+    client.onclose = () => this.handleLoss(client)
+    try {
+      await this.raceConnect(this.openConnection(client))
+      const discovered = await this.discoverTools(client)
+      this.tools = discovered
+      this.cachedTools = discovered
+      const version = client.getServerVersion()
+      if (version) this.serverInfo = { name: version.name, version: version.version }
+      this.status = 'connected'
+      this.error = undefined
+      this.armUptimeReset()
+      log.info(`[${this.label}] connected (${discovered.length} tools)`)
+      return { ok: true }
+    } catch (err) {
+      await this.closeResources()
+      return { ok: false, err }
+    }
+  }
+
+  /** Terminal failure policy: unregister tools and record failed / needs-auth. */
+  private applyTerminalFailure(err: unknown): void {
+    this.error = errorMessage(err)
+    this.tools = []
+    this.status = isMcpAuthError(err) ? 'needs-auth' : 'failed'
+    log.warn(`[${this.label}] ${this.status}: ${this.error}`)
+  }
+
+  /** The live client closed. Only an UNEXPECTED loss of a connected generation
+   *  enters the outage: a stale generation (already replaced / deliberately
+   *  disposed) or a loss during an in-flight attempt is ignored — the attempt's
+   *  own failure path owns that retry. */
+  private handleLoss(client: Client): void {
+    if (this.client !== client || this.closed) return
+    if (this.status !== 'connected') return
+    this.gen.lost = true
+    // Abort synchronously so in-flight calls reject NOW (callTool translates to
+    // MCP_CONNECTION_CLOSED), not after the backoff delay.
+    this.abort.abort()
+    this.clearUptimeTimer()
+    log.warn(`[${this.label}] connection lost; entering reconnect outage`)
+    this.scheduleReconnect(new Error('connection lost'))
+  }
+
+  /** Schedule the next bounded-backoff reconnect attempt, or give up when the
+   *  budget is exhausted. Keeps cached tools registered during the retry window. */
+  private scheduleReconnect(lastErr: unknown): void {
+    this.cancelBackoff()
+    if (!this.policy.enabled) {
+      this.applyTerminalFailure(lastErr)
+      return
+    }
+    this.attempt++
+    if (this.attempt > this.policy.maxAttempts) {
+      this.tools = []
+      this.status = 'failed'
+      this.error = `reconnect gave up after ${this.policy.maxAttempts} attempts: ${errorMessage(lastErr)}`
+      log.warn(`[${this.label}] reconnect gave up after ${this.policy.maxAttempts} attempts`)
+      return
+    }
+    const delay = Math.min(this.policy.maxDelayMs, this.policy.initialDelayMs * 2 ** (this.attempt - 1))
+    this.status = 'pending'
+    this.tools = this.cachedTools
+    this.error = `reconnecting (attempt ${this.attempt}/${this.policy.maxAttempts})`
+    log.info(`[${this.label}] ${this.error} in ${delay}ms`)
+    const gen = this.gen
+    const run = this.supervisorRun
+    this.backoffTimer = setTimeout(() => {
+      this.backoffTimer = undefined
+      // Stand down if closed, superseded by a manual reconnect, or a newer
+      // generation has taken over since this timer was armed.
+      if (this.closed || run !== this.supervisorRun || this.gen !== gen) return
+      void this.enqueue(() => this.runReconnectAttempt(run))
+    }, delay)
+  }
+
+  /** One supervisor reconnect attempt. On success the uptime reset is armed by
+   *  runAttempt; on a non-auth failure schedule the next backoff (or give up).
+   *  needs-auth does not auto-retry. */
+  private async runReconnectAttempt(run: number): Promise<void> {
+    if (this.closed || run !== this.supervisorRun) return
+    const outcome = await this.runAttempt()
+    if (this.closed || run !== this.supervisorRun) return
+    if (outcome.ok) return
+    if (isMcpAuthError(outcome.err)) {
+      this.applyTerminalFailure(outcome.err)
+      return
+    }
+    this.scheduleReconnect(outcome.err)
+  }
+
+  /** Reset the attempt budget only after the connection has stayed up past
+   *  maxDelayMs, so a server that flaps faster than that still burns its budget. */
+  private armUptimeReset(): void {
+    this.clearUptimeTimer()
+    if (!this.policy.enabled) return
+    this.uptimeTimer = setTimeout(() => {
+      this.uptimeTimer = undefined
+      if (this.status === 'connected') this.attempt = 0
+    }, this.policy.maxDelayMs)
+  }
+
+  private cancelBackoff(): void {
+    if (this.backoffTimer) clearTimeout(this.backoffTimer)
+    this.backoffTimer = undefined
+  }
+
+  private clearUptimeTimer(): void {
+    if (this.uptimeTimer) clearTimeout(this.uptimeTimer)
+    this.uptimeTimer = undefined
+  }
 
   /** Build the transport and run the handshake, capturing the stdio child PID. */
   private async openConnection(client: Client): Promise<void> {

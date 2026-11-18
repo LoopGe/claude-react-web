@@ -1,17 +1,26 @@
 // Test-only MCP server over stdio (native provider connection-manager tests).
 //
-/* global process, setTimeout -- Node globals are not configured for non-TS server files */
+/* global process -- Node globals are not configured for non-TS server files */
 //
-// argv: [byePath, mode?]
+// argv: [byePath, mode?, flakyBudget?]
 //   byePath  file written when the child is asked to stop, so a test can prove
 //            the spawned process really terminated (no leaked child).
 //   --hang   never answer `initialize` (no MCP server is created at all) so the
 //            client's connect timeout has to fire.
 //   --hang-tools  answer `initialize`, then never answer `tools/list`, so tool
 //            discovery — not the handshake — is what is in flight.
-//   --crash  answer `initialize` and `tools/list` normally, then `process.exit(1)`
-//            ~50 ms after the handshake, so a connected client that has already
-//            discovered tools loses the server mid-life (reconnect tests).
+//   --crash  answer `initialize` and `tools/list` normally, and register a
+//            `slow` tool that never answers and exits the process when called.
+//            A test places an in-flight `slow` call and the crash is guaranteed
+//            to land under it — strictly after the handshake AND discovery, so
+//            load cannot turn "crash after discovery" into a connect failure
+//            (the old fixed exit timer armed at transport setup could).
+//   --flaky  spawn 1 behaves like --crash; spawns 2..(1+budget) exit(1) BEFORE
+//            the handshake (budget = argv[4], default 3), so a reconnect
+//            supervisor burns its attempt budget deterministically; later
+//            spawns are healthy. The spawn count persists in `${byePath}.flaky`
+//            so a test can prove exactly which attempts ran (and that none
+//            ran after give-up / close).
 //
 // The marker is written on every way out: a POSIX signal handler, stdin EOF
 // (which is how a stdio transport's `close()` reaches the child), and the
@@ -22,7 +31,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { z } from 'zod'
 
 const byePath = process.argv[2]
@@ -57,6 +66,25 @@ process.stdin.on('end', () => {
   process.exit(0)
 })
 
+// --flaky spawn accounting, before any exit path so every spawn is counted.
+// Attempts are serialized by the supervisor, so the read-increment-write is
+// never concurrent.
+if (mode === '--flaky') {
+  const countPath = `${byePath}.flaky`
+  let prev = 0
+  try {
+    prev = parseInt(readFileSync(countPath, 'utf8'), 10) || 0
+  } catch {
+    // first spawn: no counter file yet
+  }
+  const spawn = prev + 1
+  markOnce(countPath, String(spawn))
+  const budget = parseInt(process.argv[4] ?? '3', 10)
+  if (spawn >= 2 && spawn <= 1 + budget) {
+    process.exit(1)
+  }
+}
+
 if (mode === '--hang') {
   // Consume input and never answer: `initialize` is left pending.
   process.stdin.resume()
@@ -85,12 +113,20 @@ if (mode === '--hang') {
     },
     async ({ text }) => ({ content: [{ type: 'text', text }] }),
   )
-  await server.connect(new StdioServerTransport())
-  if (mode === '--crash') {
-    // The handshake (and the client's immediate `tools/list`) complete well
-    // within this window; the exit then drops the connection under a client
-    // that already considers the server connected. The `exit` hook above still
-    // writes the `bye` marker.
-    setTimeout(() => process.exit(1), 50)
+  if (mode === '--crash' || mode === '--flaky') {
+    server.registerTool(
+      'slow',
+      {
+        description: 'Never answers; calling it crashes the server.',
+        inputSchema: {},
+      },
+      () => {
+        // The handler runs on receipt of the call and no response is ever
+        // sent, so the call is in flight by construction when the exit lands.
+        // The `exit` hook above still writes the `bye` marker.
+        process.exit(1)
+      },
+    )
   }
+  await server.connect(new StdioServerTransport())
 }
