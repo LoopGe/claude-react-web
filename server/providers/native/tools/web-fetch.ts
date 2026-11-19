@@ -1,11 +1,12 @@
 // server/providers/native/tools/web-fetch.ts
 //
 // WebFetch: fetch one public page, reduce it to text, and answer the model's
-// prompt over that text with a second (auxiliary) Anthropic call. It is a
-// per-session factory rather than a static ToolDef because the aux call needs
-// the session's model and profile credentials.
-import { callAnthropicMessages } from '../../../anthropic-api.js'
+// prompt over that text with a second (auxiliary) LLM call through the
+// injected AuxLlmPort. It is a per-session factory rather than a static
+// ToolDef because the aux call needs the session's model and profile
+// credentials.
 import type { ProviderProfile } from '../../../../shared/profile.js'
+import type { NativeAuxLlmPort } from '../ports.js'
 import { capToolText } from './bash.js'
 import { ToolInputError, type ToolDef } from './types.js'
 import { fetchWeb } from './web.js'
@@ -13,8 +14,8 @@ import { fetchWeb } from './web.js'
 export const WEB_FETCH_GUIDANCE =
   'WebFetch fetches a public HTTP(S) page, reduces it to text, and answers the prompt from that text; private addresses, credentials in the URL and cross-origin redirects are refused.'
 
-/** The auxiliary call gets the turn's signal AND its own deadline:
- *  `callAnthropicMessages` replaces its built-in 30s timeout whenever a
+/** The auxiliary call gets the turn's signal AND its own deadline: the
+ *  port's host implementation replaces its built-in 30s timeout whenever a
  *  signal is supplied, so combining both keeps an interrupt able to cancel
  *  the call while a stalled endpoint still times out. */
 const AUX_TIMEOUT_MS = 30_000
@@ -24,6 +25,8 @@ export interface WebFetchDeps {
   model: () => string
   profile?: ProviderProfile
   credentials: () => { baseUrl: string; authToken: string }
+  /** The injected auxiliary LLM port; the host adapter owns the wire call. */
+  auxLlm: NativeAuxLlmPort
 }
 
 export type WebFetchInput = {
@@ -84,7 +87,7 @@ export function createWebFetchTool(deps: WebFetchDeps): ToolDef<WebFetchInput> {
             : `no text content at ${page.url}`,
         )
       }
-      const result = await callAnthropicMessages({
+      const result = await deps.auxLlm.call({
         model: deps.profile?.recapModel || deps.model(),
         system: page.text,
         userContent: input.prompt,

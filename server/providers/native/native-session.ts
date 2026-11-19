@@ -19,7 +19,6 @@
 
 import { createPushable, type Pushable } from '../../pushable.js'
 import { createLogger } from '../../log.js'
-import { callAnthropicMessages } from '../../anthropic-api.js'
 import type { ProviderProfile } from '../../../shared/profile.js'
 import { effortLevelsForModel, supportsFastModeForModel } from '../../../shared/model-capability.js'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
@@ -443,6 +442,7 @@ export class NativeSession implements ProviderSessionHandle {
       model: () => this.model,
       profile: opts.profile,
       credentials: opts.credentials,
+      auxLlm: opts.ports.auxLlm,
     })
     this.webSearchTool = createWebSearchTool()
     this.todoWriteTool = createTodoWriteTool({ todos: [] })
@@ -1793,13 +1793,12 @@ export class NativeSession implements ProviderSessionHandle {
     return this.currentSkillView().commands()
   }
 
-  /** Auto-title through the shared auxiliary caller — the same wire contract
-   *  recap / commit-message use. The model is resolved at CALL time: the
-   *  profile's recapModel when set, else the session's CURRENT model (a live
-   *  switch must reach this call). The manager trims and persists the
-   *  returned first text block. */
+  /** Auto-title through the injected auxiliary LLM port. The model is
+   *  resolved at CALL time: the profile's recapModel when set, else the
+   *  session's CURRENT model (a live switch must reach this call). The
+   *  manager trims and persists the returned first text block. */
   async generateTitle(description: string): Promise<unknown> {
-    return callAnthropicMessages({
+    return this.opts.ports.auxLlm.call({
       model: this.opts.profile?.recapModel || this.model,
       system: TITLE_PROMPT,
       userContent: description,

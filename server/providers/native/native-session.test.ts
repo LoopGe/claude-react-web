@@ -9,6 +9,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
+import type { NativeAuxLlmPort } from './ports.js'
 import type { NativeMcpConnections, NativeMcpServerInstance } from './mcp/connections.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
@@ -5501,20 +5502,24 @@ describe('NativeSession', () => {
       commitMessageModel: '',
     })
 
-    const stubAuxFetch = (requests: Array<Record<string, unknown>>, text = 'First title') =>
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-          requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
-          return new Response(JSON.stringify({ content: [{ type: 'text', text }] }), {
-            headers: { 'content-type': 'application/json' },
-          })
-        }),
-      )
+    /** A stub auxLlm port recording every request and answering with a canned
+     *  title — the wire body is the host adapter's concern. Injected over the
+     *  real ports so the session's call site is observed at the boundary. */
+    const stubAuxLlm = (text = 'First title') => {
+      const requests: Array<Parameters<NativeAuxLlmPort['call']>[0]> = []
+      const port: NativeAuxLlmPort = {
+        call: async (req) => {
+          requests.push(req)
+          return text
+        },
+      }
+      return { port, requests }
+    }
 
     it('generateTitle asks the aux caller with profile.recapModel', async () => {
       const dir = await tempDir('native-title-')
-      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const { port: auxLlm, requests } = stubAuxLlm()
+      const provider = new NativeProvider({ stateDir: dir, ports: { ...makeNativePorts({ stateDir: dir }), auxLlm } })
       expect(provider.capabilities.supportsSessionTitle).toBe(true)
       const session = provider.createSession({
         id: 'title-1',
@@ -5522,36 +5527,34 @@ describe('NativeSession', () => {
         model: 'session-model',
         profile: profile('recap-model'),
       })
-      const requests: Array<Record<string, unknown>> = []
-      stubAuxFetch(requests)
       try {
         await expect(session.generateTitle?.('describe the session')).resolves.toBe('First title')
         expect(requests).toHaveLength(1)
         expect(requests[0]).toMatchObject({
           model: 'recap-model',
-          max_tokens: 64,
+          maxTokens: 64,
           temperature: 0.3,
           system:
             'Generate a concise session title in the same language as the request. Return only the title, without quotes, a prefix, or trailing punctuation.',
-          messages: [{ role: 'user', content: 'describe the session' }],
+          userContent: 'describe the session',
+          caller: 'session-title',
+          target: { baseUrl: 'https://api.example.test', authToken: 'tok' },
         })
       } finally {
         await session.destroy()
-        vi.unstubAllGlobals()
       }
     })
 
     it('generateTitle falls back to the CURRENT session model when recapModel is empty', async () => {
       const dir = await tempDir('native-title-model-')
-      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const { port: auxLlm, requests } = stubAuxLlm()
+      const provider = new NativeProvider({ stateDir: dir, ports: { ...makeNativePorts({ stateDir: dir }), auxLlm } })
       const session = provider.createSession({
         id: 'title-2',
         cwd: dir,
         model: 'm1',
         profile: profile(''),
       })
-      const requests: Array<Record<string, unknown>> = []
-      stubAuxFetch(requests)
       try {
         // A live switch after construction must reach the title call.
         await session.setModel?.('m2')
@@ -5559,7 +5562,6 @@ describe('NativeSession', () => {
         expect(requests[0].model).toBe('m2')
       } finally {
         await session.destroy()
-        vi.unstubAllGlobals()
       }
     })
 

@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { brotliCompressSync, deflateSync, gzipSync } from 'node:zlib'
 import type { ProviderProfile } from '../../../config.js'
+import type { NativeAuxLlmPort } from '../ports.js'
 import { ToolInputError, type ToolContext } from './types.js'
 import { htmlToText, isNonPublicIp, webSafeLookup } from './web.js'
 import { createWebFetchTool, WEB_FETCH_GUIDANCE } from './web-fetch.js'
@@ -11,8 +12,9 @@ import { fakeWebCalls, resetFakeWebTransport, setFakeWebHandler } from './web-te
 // WebFetch/WebSearch page requests go through the built-in node:http(s)
 // transport, so the tests stub `request` on those modules (the real Agents
 // stay in place — their `lookup` is the production DNS gate). The auxiliary
-// Anthropic call still uses global `fetch`, stubbed separately. DNS is stubbed
-// so a hostname never leaves the process.
+// LLM call goes through the injected auxLlm port, stubbed below; global
+// `fetch` is stubbed as a guard so any stray wire call fails loudly. DNS is
+// stubbed so a hostname never leaves the process.
 const lookupMock = vi.hoisted(() => vi.fn())
 vi.mock('node:dns/promises', () => ({ lookup: lookupMock }))
 vi.mock('node:https', async (importOriginal) => {
@@ -40,13 +42,6 @@ function htmlResponse(html: string, init: ResponseInit = {}): Response {
   return new Response(html, {
     ...init,
     headers: { 'content-type': 'text/html; charset=utf-8', ...(init.headers ?? {}) },
-  })
-}
-
-function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
-  return new Response(JSON.stringify(body), {
-    ...init,
-    headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
   })
 }
 
@@ -79,8 +74,8 @@ function stubFetch(
   handler: (url: string, init: RequestInit | undefined) => Response | Promise<Response>,
 ): FetchMock {
   resetFakeWebTransport()
-  // Page requests reach the fake transport; global fetch only sees the
-  // auxiliary `/v1/messages` call (and routes through the same handler).
+  // Page requests reach the fake transport; global fetch is a guard — no
+  // path here should use it (the aux call goes through the port stub).
   setFakeWebHandler((url) => handler(url, undefined))
   fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError')
@@ -90,31 +85,38 @@ function stubFetch(
   return fetchMock
 }
 
-/** Route the auxiliary Anthropic call to a canned answer and every other
- *  request to `page`. */
-function stubPage(page: () => Response, answer = 'ANSWER'): FetchMock {
-  return stubFetch((url) => {
-    if (url.endsWith('/v1/messages')) {
-      return jsonResponse({ content: [{ type: 'text', text: answer }] })
-    }
-    return page()
-  })
+type AuxReq = Parameters<NativeAuxLlmPort['call']>[0]
+
+let auxCalls: AuxReq[]
+let auxAnswer: string
+
+/** The injected port stub records every auxiliary request and answers with
+ *  the canned answer; the wire body is the host adapter's concern. */
+const auxLlm: NativeAuxLlmPort = {
+  call: async (req) => {
+    auxCalls.push(req)
+    return auxAnswer
+  },
 }
 
-function auxRequest(mock: FetchMock): { url: string; body: Record<string, unknown>; init: RequestInit } {
-  const call = mock.mock.calls.find(([url]) => String(url).endsWith('/v1/messages'))
-  if (!call) throw new Error('no auxiliary request was made')
-  return {
-    url: String(call[0]),
-    init: call[1] as RequestInit,
-    body: JSON.parse(String((call[1] as RequestInit).body)) as Record<string, unknown>,
-  }
+/** Route the auxiliary call to a canned answer through the port stub; page
+ *  requests reach the fake transport. */
+function stubPage(page: () => Response, answer = 'ANSWER'): FetchMock {
+  auxAnswer = answer
+  return stubFetch(() => page())
+}
+
+function auxRequest(): AuxReq {
+  if (auxCalls.length === 0) throw new Error('no auxiliary request was made')
+  return auxCalls[0]
 }
 
 beforeEach(() => {
   lookupMock.mockReset()
   lookupMock.mockResolvedValue(PUBLIC_ADDRESS)
   resetFakeWebTransport()
+  auxCalls = []
+  auxAnswer = 'ANSWER'
 })
 
 afterEach(() => {
@@ -130,6 +132,7 @@ function webFetch(deps?: {
     model: deps?.model ?? (() => 'session-model'),
     profile: deps?.profile ?? profile(),
     credentials: deps?.credentials ?? (() => ({ baseUrl: 'https://api.example.test', authToken: 'tok' })),
+    auxLlm,
   })
 }
 
@@ -219,15 +222,17 @@ describe('createWebFetchTool', () => {
     expect(out.bytes).toBeGreaterThan(0)
     expect(typeof out.durationMs).toBe('number')
 
-    const aux = auxRequest(fetchMock)
-    expect(aux.body.model).toBe('session-model')
-    expect(aux.body.temperature).toBe(0.2)
-    expect(aux.body.max_tokens).toBe(1024)
-    expect(aux.body.system).toContain('Hello')
-    expect(aux.body.system).toContain('World')
-    expect(aux.body.system).not.toContain('evil()')
-    expect((aux.body.messages as Array<{ content: string }>)[0].content).toBe('Summarize')
-    expect((aux.init.headers as Record<string, string>).Authorization).toBe('Bearer tok')
+    const aux = auxRequest()
+    expect(aux.model).toBe('session-model')
+    expect(aux.temperature).toBe(0.2)
+    expect(aux.maxTokens).toBe(1024)
+    expect(aux.system).toContain('Hello')
+    expect(aux.system).toContain('World')
+    expect(aux.system).not.toContain('evil()')
+    expect(aux.userContent).toBe('Summarize')
+    expect(aux.caller).toBe('web-fetch')
+    expect(aux.target).toEqual({ baseUrl: 'https://api.example.test', authToken: 'tok' })
+    expect(aux.signal).toBeInstanceOf(AbortSignal)
 
     // The page request used the browser UA and the pinned transport agent.
     const pageCall = fakeWebCalls().find((call) => call.url.includes('docs.example.test'))!
@@ -239,14 +244,14 @@ describe('createWebFetchTool', () => {
     stubPage(() => htmlResponse(PAGE_HTML))
     const tool = webFetch({ profile: profile({ recapModel: 'recap-model' }) })
     await tool.run({ url: 'https://docs.example.test/page', prompt: 'q' }, ctx())
-    expect(auxRequest(fetchMock).body.model).toBe('recap-model')
+    expect(auxRequest().model).toBe('recap-model')
   })
 
   it('slices the decoded text at offset before the auxiliary call', async () => {
     stubPage(() => htmlResponse('<p>0123456789</p>'))
     const tool = webFetch()
     await tool.run({ url: 'https://docs.example.test/page', prompt: 'q', offset: 4 }, ctx())
-    expect(auxRequest(fetchMock).body.system).toBe('456789')
+    expect(auxRequest().system).toBe('456789')
   })
 
   it('applies offset BEFORE the 100k window cap', async () => {
@@ -254,7 +259,7 @@ describe('createWebFetchTool', () => {
     stubPage(() => new Response(body, { headers: { 'content-type': 'text/plain' } }))
     const tool = webFetch()
     await tool.run({ url: 'https://docs.example.test/long', prompt: 'q', offset: 100_000 }, ctx())
-    const system = auxRequest(fetchMock).body.system as string
+    const system = auxRequest().system
     expect(system).toBe(`${'a'.repeat(50)}TAIL`)
     expect(system).toHaveLength(54)
   })
@@ -276,6 +281,7 @@ describe('createWebFetchTool', () => {
     )
     expect(fetchMock).not.toHaveBeenCalled()
     expect(fakeWebCalls()).toHaveLength(0)
+    expect(auxCalls).toHaveLength(0)
   })
 
   it('rejects a URL with embedded credentials without touching the network', async () => {
@@ -287,6 +293,7 @@ describe('createWebFetchTool', () => {
     ).rejects.toThrow(/embedded credentials/)
     expect(fetchMock).not.toHaveBeenCalled()
     expect(fakeWebCalls()).toHaveLength(0)
+    expect(auxCalls).toHaveLength(0)
   })
 
   it('rejects a URL longer than 2048 characters', async () => {
@@ -297,6 +304,7 @@ describe('createWebFetchTool', () => {
     await expect(webFetch().run({ url, prompt: 'q' }, ctx())).rejects.toThrow(/exceeds 2048/)
     expect(fetchMock).not.toHaveBeenCalled()
     expect(fakeWebCalls()).toHaveLength(0)
+    expect(auxCalls).toHaveLength(0)
   })
 
   it('blocks private IP literals before connecting', async () => {
@@ -310,6 +318,7 @@ describe('createWebFetchTool', () => {
     }
     expect(fetchMock).not.toHaveBeenCalled()
     expect(fakeWebCalls()).toHaveLength(0)
+    expect(auxCalls).toHaveLength(0)
   })
 
   it('blocks a hostname that resolves to a private address', async () => {
@@ -322,6 +331,7 @@ describe('createWebFetchTool', () => {
     ).rejects.toThrow(/blocked non-public address 10\.0\.0\.5/)
     expect(fetchMock).not.toHaveBeenCalled()
     expect(fakeWebCalls()).toHaveLength(0)
+    expect(auxCalls).toHaveLength(0)
   })
 
   it('rejects a cross-origin redirect', async () => {
@@ -338,7 +348,6 @@ describe('createWebFetchTool', () => {
     stubFetch((url) => {
       if (url === 'https://a.example.test/start') return redirect('/final')
       if (url === 'https://a.example.test/final') return htmlResponse(PAGE_HTML)
-      if (url.endsWith('/v1/messages')) return jsonResponse({ content: [{ type: 'text', text: 'OK' }] })
       throw new Error(`unexpected url ${url}`)
     })
     const out = parse<{ url: string }>((await webFetch().run({ url: 'https://a.example.test/start', prompt: 'q' }, ctx())).text)
@@ -396,7 +405,7 @@ describe('createWebFetchTool', () => {
       )
       const tool = webFetch()
       const out = parse<{ bytes: number }>((await tool.run({ url: 'https://docs.example.test/page', prompt: 'q' }, ctx())).text)
-      expect(auxRequest(fetchMock).body.system, encoding).toContain('compressed hello')
+      expect(auxRequest().system, encoding).toContain('compressed hello')
       // `bytes` keeps fetch-like semantics: decoded (decompressed) bytes.
       expect(out.bytes, encoding).toBe(Buffer.byteLength(page))
       expect(fakeWebCalls()[0].headers['accept-encoding'], encoding).toBe('gzip, deflate, br')
