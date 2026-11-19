@@ -72,8 +72,18 @@ export interface Win32Job {
 
 // ── Lazy koffi bindings ────────────────────────────────────────────────────
 
-type Koffi = (typeof import('koffi'))['default']
-type KoffiType = ReturnType<Koffi['pointer']>
+/** Minimal structural shape of the koffi surface used below. Declared locally
+ *  so typecheck never requires the optional native package to be installed —
+ *  koffi's absence is a real deployment state (the capability fallback), and
+ *  the runtime load still resolves the real module on Windows. */
+type KoffiType = object
+interface Koffi {
+  pointer(name: string | KoffiType): KoffiType
+  struct(name: string, fields: Record<string, string>): KoffiType
+  load(dll: string): {
+    func(convention: string, name: string, result: KoffiType | string, args: Array<KoffiType | string>): unknown
+  }
+}
 
 /** Koffi hands back native pointers as BigInt addresses on 64-bit Windows. */
 type Handle = bigint
@@ -103,7 +113,7 @@ interface Win32Bindings {
 // koffi's type registry is global per process: the named FILETIME struct is
 // registered once and cached at module level, so a binding-table rebuild
 // after a partial load failure never re-registers the name.
-let cachedFileTime: ReturnType<Koffi['struct']> | undefined
+let cachedFileTime: KoffiType | undefined
 let cachedBindings: Win32Bindings | undefined
 
 function bindings(): Win32Bindings {
