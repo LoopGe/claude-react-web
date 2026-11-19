@@ -92,9 +92,12 @@ export class TranscriptSidecar {
   }
 
   /** Load every row from the ndjson file. A torn/corrupt line (crash mid-
-   *  append) is skipped with a warning — append-only design means a torn
-   *  tail can only ever lose the very last in-flight row, never corrupt
-   *  earlier ones. ENOENT (no sidecar yet) is an empty load, not an error. */
+   *  append) is skipped with a warning. A torn tail WITHOUT a trailing newline
+   *  also fuses with the next append's first row, so the loss is not confined
+   *  to the last row: recoverTail clips the incomplete physical tail before
+   *  the next write (byte-exact), and a committed batch left row-short by a
+   *  buried tear is demoted by the fold and rebuilt from the provider log —
+   *  never a fatal degrade. ENOENT (no sidecar yet) is an empty load. */
   async load(): Promise<SidecarRow[]> {
     if (!this.file) return []
     let raw: string
