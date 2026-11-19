@@ -13,9 +13,9 @@ afterEach(() => {
 // per-entry `--brand-<id>` fill variable is the seam that tokens.css owns —
 // a variable renamed here without the stylesheet (or vice versa) fails below.
 describe('BRAND_ICONS', () => {
-  it('exposes the five editor/terminal brands', () => {
+  it('exposes the six editor/terminal brands', () => {
     expect(Object.keys(BRAND_ICONS).sort()).toEqual(
-      ['cursor', 'iterm2', 'vscode', 'windowsterminal', 'zed'].sort(),
+      ['cursor', 'iterm2', 'kiro', 'vscode', 'windowsterminal', 'zed'].sort(),
     )
   })
 

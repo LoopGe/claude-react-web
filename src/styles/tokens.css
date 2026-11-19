@@ -75,6 +75,7 @@
      must stay paired — tokens.brand-vars.test.ts pins the set and the hexes. */
   --brand-vscode: #007acc;         /* official #007ACC: safe on both themes */
   --brand-cursor: #ffffff;         /* official #000000: invisible on dark */
+  --brand-kiro: #9046ff;           /* official #9046FF (kiro.dev): safe on both themes */
   --brand-zed: #4b80f2;            /* official #084CCF lightened, same hue */
   --brand-iterm2: #ffffff;         /* official #000000: invisible on dark */
   --brand-windowsterminal: #cccccc; /* official #4D4D4D → official light gray */
@@ -417,6 +418,7 @@
   /* Brand marks — official hexes (see the :root block for provenance). */
   --brand-vscode: #007acc;
   --brand-cursor: #000000;
+  --brand-kiro: #9046ff;
   --brand-zed: #084ccf;
   --brand-iterm2: #000000;
   --brand-windowsterminal: #4d4d4d;

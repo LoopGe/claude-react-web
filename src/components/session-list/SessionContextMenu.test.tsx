@@ -185,7 +185,7 @@ describe('SessionContextMenu open-in group', () => {
 
   const enableAll = (): void => {
     vi.mocked(useOpenPathCapability).mockReturnValue(true)
-    vi.mocked(useOpenPathApps).mockReturnValue(['vscode', 'cursor', 'zed', 'iterm2', 'windowsterminal'])
+    vi.mocked(useOpenPathApps).mockReturnValue(['vscode', 'cursor', 'kiro', 'zed', 'iterm2', 'windowsterminal'])
   }
 
   it('renders an Open-in parent plus every available app in its flyout', () => {
@@ -200,6 +200,7 @@ describe('SessionContextMenu open-in group', () => {
       'Open in Terminal',
       'Open in VS Code',
       'Open in Cursor',
+      'Open in Kiro',
       'Open in Zed',
       'Open in iTerm2',
       'Open in Windows Terminal',

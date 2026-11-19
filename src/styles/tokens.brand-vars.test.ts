@@ -40,10 +40,11 @@ function varsOf(body: string): Map<string, string> {
 
 // Official hexes in the LIGHT theme, keyed by the BrandIcons id. The DARK
 // theme intentionally carries lightened variants for the low-contrast marks;
-// only VS Code's blue is safe on both.
+// VS Code's blue and Kiro's purple are safe on both.
 const OFFICIAL: Record<string, string> = {
   vscode: '#007acc',
   cursor: '#000000',
+  kiro: '#9046ff',
   zed: '#084ccf',
   iterm2: '#000000',
   windowsterminal: '#4d4d4d',

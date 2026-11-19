@@ -18,7 +18,7 @@ import { resolve } from 'node:path'
 type SpawnChild = EventEmitter & { unref: () => void }
 
 const { execFileMock, spawnMock, platformMock, extractIconMock } = vi.hoisted(() => ({
-  execFileMock: vi.fn<(file: string, args: string[], opts: unknown, cb: (err: Error | null) => void) => void>(),
+  execFileMock: vi.fn<(file: string, args: string[], opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => void>(),
   spawnMock: vi.fn<(file: string, args: string[], opts: unknown) => SpawnChild>(),
   platformMock: vi.fn<() => string>(),
   extractIconMock: vi.fn<(target: string, platform: string) => Promise<{ bytes: Buffer; contentType: string } | null>>(),
@@ -34,7 +34,7 @@ vi.mock('../open-path-icons.js', () => ({
 }))
 
 // Import the router AFTER the mocks are registered.
-const { buildOpenPathRouter, availableAppsFor } = await import('./open-path.js')
+const { buildOpenPathRouter, availableAppsFor, openCommandsFor } = await import('./open-path.js')
 const { createErrorHandler } = await import('../errors.js')
 
 function makeApp() {
@@ -76,7 +76,7 @@ beforeEach(async () => {
   extractIconMock.mockReset()
   platformMock.mockReset()
   platformMock.mockReturnValue('darwin')
-  execFileMock.mockImplementation((_file, _args, _opts, cb) => cb(null))
+  execFileMock.mockImplementation((_file, _args, _opts, cb) => cb(null, '', ''))
   stubSpawnEvent('spawn')
   tmpDir = await mkdtemp('/tmp/open-path-test-')
 })
@@ -480,6 +480,57 @@ describe('brand targets', () => {
     expect(res.status).toBe(200)
     expect(spawned).toEqual(['open', 'code'])
   })
+
+  it('spawns `open -a Kiro` for kiro on darwin', async () => {
+    const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'kiro' }, '127.0.0.1')
+    expect(res.status).toBe(200)
+    expect(execFileMock).toHaveBeenCalledWith('open', ['-a', 'Kiro', tmpDir], expect.anything(), expect.anything())
+  })
+
+  // A custom-directory install: the registry is the ONLY proof, and the
+  // launch must use the registry-resolved exe (real fs verifies it exists).
+  // The stub answers ONLY the query whose script names the given exe — a
+  // query for a different app gets an empty answer, so one app's registry
+  // fact can never incidentally prove another.
+  function stubAppPaths(exeName: string, exePath: string): void {
+    execFileMock.mockImplementation((file, args, _opts, cb) => {
+      if (file === 'powershell.exe' && (args as string[]).some((a) => a.includes(`\\${exeName}`))) {
+        cb(null, `${exePath}\r\n\r\n`, '')
+      } else {
+        cb(null, '', '')
+      }
+    })
+  }
+
+  it('POST launches the registry-resolved VS Code exe for a custom-directory install', async () => {
+    platformMock.mockReturnValue('win32')
+    const exe = `${tmpDir}/Code.exe`
+    await writeFile(exe, 'fake exe')
+    stubAppPaths('Code.exe', exe)
+    const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
+    expect(res.status).toBe(200)
+    expect(execFileMock).toHaveBeenCalledWith(exe, [tmpDir], expect.anything(), expect.anything())
+  })
+
+  it('GET /apps offers vscode proven only by the registry', async () => {
+    platformMock.mockReturnValue('win32')
+    const exe = `${tmpDir}/Code.exe`
+    await writeFile(exe, 'fake exe')
+    stubAppPaths('Code.exe', exe)
+    const res = await req(makeApp(), 'GET', '/open-path/apps')
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { apps: string[] }).apps).toContain('vscode')
+  })
+
+  it('POST launches the registry-resolved Kiro.exe for a custom-directory install', async () => {
+    platformMock.mockReturnValue('win32')
+    const exe = `${tmpDir}/Kiro.exe`
+    await writeFile(exe, 'fake exe')
+    stubAppPaths('Kiro.exe', exe)
+    const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'kiro' }, '127.0.0.1')
+    expect(res.status).toBe(200)
+    expect(execFileMock).toHaveBeenCalledWith(exe, [tmpDir], expect.anything(), expect.anything())
+  })
 })
 
 describe('GET /open-path/apps', () => {
@@ -489,7 +540,7 @@ describe('GET /open-path/apps', () => {
     const body = (await res.json()) as { apps: string[] }
     expect(Array.isArray(body.apps)).toBe(true)
     for (const id of body.apps) {
-      expect(['vscode', 'cursor', 'zed', 'iterm2', 'windowsterminal']).toContain(id)
+      expect(['vscode', 'cursor', 'kiro', 'zed', 'iterm2', 'windowsterminal']).toContain(id)
     }
   })
 })
@@ -507,10 +558,12 @@ describe('availableAppsFor', () => {
   function deps(
     files: readonly string[] = [],
     dirs: readonly string[] = [],
+    appPaths: ReadonlyMap<string, string> = new Map(),
   ): {
     fileExists: (p: string) => Promise<boolean>
     dirExists: (p: string) => Promise<boolean>
     executableExists: (p: string) => Promise<boolean>
+    appPathsTarget: (exeName: string) => Promise<string | null>
   } {
     return {
       fileExists: async (p) => files.includes(p),
@@ -518,6 +571,9 @@ describe('availableAppsFor', () => {
       // Executability defaults to the same fixture set: the tests below that
       // care pin it explicitly.
       executableExists: async (p) => files.includes(p),
+      // Registry-proven executables (App Paths): empty by default, so tests
+      // that care inject the exe-name → resolved-path facts.
+      appPathsTarget: async (exeName) => appPaths.get(exeName) ?? null,
     }
   }
 
@@ -583,10 +639,88 @@ describe('availableAppsFor', () => {
       {
         fileExists: async () => true,
         dirExists: async () => false,
-        executableExists: async (p) => p !== '/opt/bin/code' && p !== '/opt/bin/cursor',
+        executableExists: async (p) => p !== '/opt/bin/code' && p !== '/opt/bin/cursor' && p !== '/opt/bin/kiro',
+        appPathsTarget: async () => null,
       },
     )
     expect(apps).toEqual(['zed'])
+  })
+
+  // A custom-directory install (neither default path exists) is proven by
+  // the installer's App Paths registry key alone — the win32 locator chain
+  // must accept that fact, not just the two fixed paths.
+  const winEnv = Object.freeze({ LOCALAPPDATA: '/w/LocalAppData', ProgramFiles: '/w/ProgramFiles', PATH: '/w' })
+
+  it('detects win32 vscode proven only by the App Paths registry', async () => {
+    const apps = await availableAppsFor(
+      'win32',
+      winEnv,
+      '/home/u',
+      deps([], [], new Map([['Code.exe', 'D:/custom/Microsoft VS Code/Code.exe']])),
+    )
+    expect(apps).toEqual(['vscode'])
+  })
+
+  it('still detects win32 vscode via the fixed paths when the registry proves nothing', async () => {
+    const apps = await availableAppsFor(
+      'win32',
+      winEnv,
+      '/home/u',
+      deps(['/w/LocalAppData/Programs/Microsoft VS Code/Code.exe']),
+    )
+    expect(apps).toEqual(['vscode'])
+  })
+
+  it('detects a macOS Kiro bundle', async () => {
+    const apps = await availableAppsFor('darwin', noopEnv, '/home/u', deps([], ['/Applications/Kiro.app']))
+    expect(apps).toContain('kiro')
+  })
+
+  it('detects the linux kiro CLI on PATH', async () => {
+    const apps = await availableAppsFor('linux', Object.freeze({ PATH: '/opt/bin' }), '/home/u', deps(['/opt/bin/kiro']))
+    expect(apps).toContain('kiro')
+  })
+
+  it('detects win32 Kiro proven only by the App Paths registry', async () => {
+    const apps = await availableAppsFor(
+      'win32',
+      winEnv,
+      '/home/u',
+      deps([], [], new Map([['Kiro.exe', 'D:/software/Kiro/Kiro.exe']])),
+    )
+    expect(apps).toContain('kiro')
+  })
+
+  it('detects the default per-user Kiro install path', async () => {
+    const apps = await availableAppsFor('win32', winEnv, '/home/u', deps(['/w/LocalAppData/Programs/Kiro/Kiro.exe']))
+    expect(apps).toContain('kiro')
+  })
+})
+
+// The launch side of the app-paths locator: the registry-resolved exe is the
+// FIRST candidate (it is the verified install), the fixed paths stay behind
+// it as ENOENT fall-through. A registry that proves nothing drops out.
+describe('openCommandsFor app-paths resolution', () => {
+  const winEnv = Object.freeze({ LOCALAPPDATA: '/w/LocalAppData', ProgramFiles: '/w/ProgramFiles', PATH: '/w' })
+
+  it('launches the registry-resolved exe first, fixed paths as fall-through', async () => {
+    const cmds = await openCommandsFor('win32', 'vscode', '/proj', winEnv, async (exe) =>
+      exe === 'Code.exe' ? 'D:/custom/Microsoft VS Code/Code.exe' : null,
+    )
+    expect(cmds.map((c) => c.file)).toEqual([
+      'D:/custom/Microsoft VS Code/Code.exe',
+      '/w/LocalAppData/Programs/Microsoft VS Code/Code.exe',
+      '/w/ProgramFiles/Microsoft VS Code/Code.exe',
+    ])
+    expect(cmds[0]!.args).toEqual(['/proj'])
+  })
+
+  it('skips the registry row when it proves nothing', async () => {
+    const cmds = await openCommandsFor('win32', 'vscode', '/proj', winEnv, async () => null)
+    expect(cmds.map((c) => c.file)).toEqual([
+      '/w/LocalAppData/Programs/Microsoft VS Code/Code.exe',
+      '/w/ProgramFiles/Microsoft VS Code/Code.exe',
+    ])
   })
 })
 

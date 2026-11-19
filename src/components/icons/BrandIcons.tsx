@@ -18,8 +18,10 @@ interface BrandIconProps {
 }
 
 /** Build one brand icon component from vetted path data. Private factory:
- *  the public surface is the named components and the BRAND_ICONS map. */
-function brandIcon(id: string, d: string): ComponentType<BrandIconProps> {
+ *  the public surface is the named components and the BRAND_ICONS map.
+ *  `transform` scales/centers an asset whose native viewBox is not 24×24
+ *  into the shared box (the SVG-native way — no coordinate rewriting). */
+function brandIcon(id: string, d: string, transform?: string): ComponentType<BrandIconProps> {
   function Icon({ size = 14 }: BrandIconProps) {
     return (
       <svg
@@ -29,7 +31,7 @@ function brandIcon(id: string, d: string): ComponentType<BrandIconProps> {
         aria-hidden
         focusable="false"
       >
-        <path fill={`var(--brand-${id})`} d={d} />
+        <path fill={`var(--brand-${id})`} d={d} transform={transform} />
       </svg>
     )
   }
@@ -48,6 +50,18 @@ export const IconVscode = brandIcon(
 export const IconCursor = brandIcon(
   'cursor',
   'M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23',
+)
+
+/** Kiro — official product asset (the `kiricons` kiro.svg shipped in the
+ *  app, identical to the kiro.dev favicon mark); simple-icons carries no
+ *  Kiro entry. The source's three subpaths (ghost outline ring + two eyes)
+ *  combine into one path — nonzero fill preserves the ring and the eyes.
+ *  Native viewBox is 17×16; the transform scales it to ~20px tall, centered
+ *  in the shared 24×24 box. Official hex #9046FF (kiro.dev favicon ground). */
+export const IconKiro = brandIcon(
+  'kiro',
+  'M8.74842 1C10.9904 0.997658 13.2522 2.35131 14.0873 4.98145L14.1635 5.24024L14.2631 5.65918C14.5302 6.92198 14.9273 10.1 13.1898 13.249L13.1888 13.25C12.6834 14.1641 11.7454 15.0605 10.7611 15.459C10.2633 15.6604 9.62658 15.7841 8.99744 15.5586C8.737 15.4652 8.51267 15.3237 8.32166 15.1465C7.29212 15.6815 6.13882 15.8407 5.18983 15.4424C4.52211 15.1621 3.99817 14.61 3.80799 13.8301C3.7494 13.5896 3.72834 13.3402 3.73572 13.084C3.20222 13.0354 2.72563 12.8114 2.39197 12.3281C2.12296 11.9385 2.05135 11.4999 2.06385 11.1397C2.07645 10.7768 2.17568 10.4166 2.33729 10.1113L2.34022 10.1064L2.62537 9.56934C2.69173 9.43932 2.7378 9.34011 2.77772 9.23438C2.93103 8.8105 2.97379 8.57168 3.04041 8.11328L3.04139 8.11133L3.08631 7.77051C3.12624 7.43395 3.15342 7.10561 3.19569 6.72657C3.24643 6.27143 3.31804 5.77596 3.46424 5.28809C4.13106 2.4575 6.43044 1.00258 8.74842 1ZM13.1986 5.50391C11.9212 0.832507 5.53387 0.824247 4.43494 5.52735C4.17712 6.35134 4.1734 7.28628 4.03065 8.25684L3.97694 8.59864C3.92246 8.91789 3.85695 9.19102 3.71717 9.57715C3.6061 9.87417 3.45901 10.1355 3.22108 10.5791L3.15858 10.7148C2.88165 11.4262 3.12847 12.5525 4.89881 11.9063L5.06776 11.8311C3.75892 14.732 6.55455 15.4597 8.61658 13.7607C9.18562 15.5472 11.2185 14.4089 12.1439 13.042L12.3138 12.7666C13.8864 9.9168 13.5268 7.01816 13.2875 5.87891L13.1986 5.50391Z M8.86245 7.52841C8.33877 7.52841 8.25943 6.90239 8.25943 6.52994C8.25943 6.19316 8.31894 5.92769 8.43399 5.75732C8.53317 5.60676 8.67996 5.53148 8.86245 5.53148C9.04495 5.53148 9.20364 5.60676 9.31472 5.76128C9.44167 5.93562 9.50912 6.20108 9.50912 6.52994C9.50912 7.15597 9.26711 7.52841 8.86642 7.52841H8.86245Z M11.0166 7.52841C10.4929 7.52841 10.4136 6.90239 10.4136 6.52994C10.4136 6.19316 10.4731 5.92769 10.5881 5.75732C10.6873 5.60676 10.8341 5.53148 11.0166 5.53148C11.1991 5.53148 11.3578 5.60676 11.4689 5.76128C11.5958 5.93562 11.6633 6.20108 11.6633 6.52994C11.6633 7.15597 11.4213 7.52841 11.0206 7.52841H11.0166Z',
+  'translate(0.8 0.67) scale(1.346)',
 )
 
 /** Zed — simple-icons slug `zedindustries` (v15.15.0; the editor logo lives
@@ -79,6 +93,7 @@ export const IconWindowsTerminal = brandIcon(
 export const BRAND_ICONS: Record<string, ComponentType<BrandIconProps>> = {
   vscode: IconVscode,
   cursor: IconCursor,
+  kiro: IconKiro,
   zed: IconZed,
   iterm2: IconIterm2,
   windowsterminal: IconWindowsTerminal,

@@ -17,6 +17,7 @@
 
 import { join } from 'node:path'
 import { joinForPlatform } from './platform-path.js'
+import { expandEnvReferences } from './env-expand.js'
 import { mkdtemp, readdir, readFile, rm, writeFile, stat, lstat, readlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { execFile } from 'node:child_process'
@@ -137,12 +138,7 @@ const PS_SCRIPT = [
 ].join('\r\n')
 
 function expandTemplate(template: string, env: NodeJS.ProcessEnv): string | null {
-  let unset = false
-  const expanded = template.replace(/\$\{([^}]+)\}/g, (_m, name: string) => {
-    if (env[name] === undefined) unset = true
-    return env[name] ?? ''
-  })
-  return unset ? null : expanded
+  return expandEnvReferences(template, env, /\$\{([^}]+)\}/g)
 }
 
 const WIN32_EXES: Record<OpenPathGlyphTarget, string> = {

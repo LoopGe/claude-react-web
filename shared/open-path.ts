@@ -15,6 +15,7 @@ export const OPEN_PATH_TARGETS = [
   // not installed must never be offered (launching it would 500).
   'vscode',
   'cursor',
+  'kiro',
   'zed',
   'iterm2',
   'windowsterminal',
@@ -27,7 +28,7 @@ export const OPEN_PATH_TARGETS = [
  *  two OS-generic entries, which always exist on their platforms, and the
  *  browser entry, which has no install probe — the OS default browser always
  *  exists). */
-export const OPEN_PATH_APP_TARGETS = ['vscode', 'cursor', 'zed', 'iterm2', 'windowsterminal'] as const
+export const OPEN_PATH_APP_TARGETS = ['vscode', 'cursor', 'kiro', 'zed', 'iterm2', 'windowsterminal'] as const
 
 /** The two OS glyphs served by GET /open-path/icons/:target as extracted
  *  real-OS icons (everything else in the target set renders client-side
@@ -40,6 +41,7 @@ export type OpenPathGlyphTarget = 'finder' | 'terminal'
 export const OPEN_PATH_APP_LABELS: Readonly<Record<(typeof OPEN_PATH_APP_TARGETS)[number], string>> = {
   vscode: 'Open in VS Code',
   cursor: 'Open in Cursor',
+  kiro: 'Open in Kiro',
   zed: 'Open in Zed',
   iterm2: 'Open in iTerm2',
   windowsterminal: 'Open in Windows Terminal',

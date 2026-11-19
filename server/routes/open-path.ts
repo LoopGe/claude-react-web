@@ -37,6 +37,8 @@ import {
   type OpenPathTarget,
 } from '../../shared/open-path.js'
 import { extractTargetIcon, hostIconDeps, type ExtractedIcon, type OpenPathGlyphTarget } from '../open-path-icons.js'
+import { readAppPathsTarget, hostAppPathsRun, hostAppPathsFileExists } from '../app-paths.js'
+import { expandEnvReferences } from '../env-expand.js'
 
 const log = createLogger('open-path')
 
@@ -91,12 +93,7 @@ function assertLocal(c: Context): void {
 /** Expand `${VAR}` against the given environment; null when a referenced
  *  variable is unset (the candidate is then unusable, not defaulted). */
 function expandTemplate(template: string, env: NodeJS.ProcessEnv): string | null {
-  let unset = false
-  const expanded = template.replace(/\$\{([^}]+)\}/g, (_m, name: string) => {
-    if (env[name] === undefined) unset = true
-    return env[name] ?? ''
-  })
-  return unset ? null : expanded
+  return expandEnvReferences(template, env, /\$\{([^}]+)\}/g)
 }
 
 /** PATH-separator per platform (win32 uses ';'). */
@@ -105,20 +102,26 @@ function pathDelimiter(platformName: string): string {
 }
 
 /**
- * One launchable row for a brand-app target. The command/args pair is the
- * launch argv (the directory is appended by the caller); `probe` is the
- * availability fact the /apps route evaluates — the SAME row serves both, so
+ * Where one catalog row finds its launcher — the SINGLE descriptor serving
+ * both the /apps availability probe and the launch-command resolution, so
  * the menu only offers what `openCommandsFor` would actually try to launch.
- * `probe` kinds: `mac-app` (bundle dir under /Applications or ~/Applications),
- * `file` (env-expanded executable path), `path` (name resolvable on PATH).
+ * Kinds: `mac-app` (bundle dir under /Applications or ~/Applications,
+ * launched via `open -a`), `file` (env-expanded executable path), `path`
+ * (name resolvable on PATH), `app-paths` (Windows registry App Paths key —
+ * the launcher is the registry-resolved exe, so a custom-directory install
+ * is discoverable; see server/app-paths.ts).
  */
+type AppLocator =
+  | { readonly kind: 'mac-app'; readonly name: string }
+  | { readonly kind: 'file'; readonly path: string }
+  | { readonly kind: 'path'; readonly name: string }
+  | { readonly kind: 'app-paths'; readonly exe: string }
+
+/** One launchable row for a brand-app target: its locator plus the launch
+ *  argv prefix (the directory is appended by the caller). */
 interface AppCandidate {
-  readonly command: string
   readonly args: readonly string[]
-  readonly probe:
-    | { readonly kind: 'mac-app'; readonly name: string }
-    | { readonly kind: 'file'; readonly path: string }
-    | { readonly kind: 'path'; readonly name: string }
+  readonly locator: AppLocator
   /**
    * macOS `open -a` reports a missing application as a NONZERO EXIT, not a
    * spawn ENOENT — and a missing app is indistinguishable from any other
@@ -131,17 +134,22 @@ interface AppCandidate {
 }
 
 function macOpen(name: string): AppCandidate {
-  return { command: 'open', args: ['-a', name], probe: { kind: 'mac-app', name }, fallThroughOnExit: true }
+  return { args: ['-a', name], locator: { kind: 'mac-app', name }, fallThroughOnExit: true }
 }
 
-/** Env-expanded executable probe+command, one row per install location. */
+/** Env-expanded executable locator, one row per install location. */
 function exe(template: string): AppCandidate {
-  return { command: template, args: [], probe: { kind: 'file', path: template } }
+  return { args: [], locator: { kind: 'file', path: template } }
 }
 
-/** PATH-name probe+command (CLI shims, Windows execution aliases). */
+/** PATH-name locator (CLI shims, Windows execution aliases). */
 function onPath(name: string): AppCandidate {
-  return { command: name, args: [], probe: { kind: 'path', name } }
+  return { args: [], locator: { kind: 'path', name } }
+}
+
+/** Windows App Paths registry locator — proves installs in ANY directory. */
+function appPaths(exeName: string): AppCandidate {
+  return { args: [], locator: { kind: 'app-paths', exe: exeName } }
 }
 
 /**
@@ -155,6 +163,13 @@ const APP_CATALOG: Readonly<
   vscode: {
     darwin: [macOpen('Visual Studio Code'), onPath('code')],
     win32: [
+      // Registry first: the installer's App Paths key proves the install in
+      // ANY directory (the two fixed paths below only cover the installer
+      // defaults). When the registry proves nothing its row drops out and
+      // the fixed paths carry the chain; behind a resolved exe they remain
+      // only for the ENOENT race, since the reader already verified the
+      // resolved file exists.
+      appPaths('Code.exe'),
       exe('${LOCALAPPDATA}/Programs/Microsoft VS Code/Code.exe'),
       exe('${ProgramFiles}/Microsoft VS Code/Code.exe'),
     ],
@@ -165,6 +180,16 @@ const APP_CATALOG: Readonly<
     win32: [exe('${LOCALAPPDATA}/Programs/cursor/Cursor.exe')],
     linux: [onPath('cursor')],
   },
+  kiro: {
+    darwin: [macOpen('Kiro')],
+    win32: [
+      // Same registry-first chain as vscode: Kiro's installer registers
+      // App Paths\Kiro.exe, proving custom-directory installs too.
+      appPaths('Kiro.exe'),
+      exe('${LOCALAPPDATA}/Programs/Kiro/Kiro.exe'),
+    ],
+    linux: [onPath('kiro')],
+  },
   zed: {
     darwin: [macOpen('Zed'), macOpen('Zed Preview')],
     win32: [exe('${LOCALAPPDATA}/Programs/Zed/Zed.exe')],
@@ -174,7 +199,7 @@ const APP_CATALOG: Readonly<
     darwin: [macOpen('iTerm')],
   },
   windowsterminal: {
-    win32: [{ command: 'wt', args: ['-d'], probe: { kind: 'path', name: 'wt' } }],
+    win32: [{ args: ['-d'], locator: { kind: 'path', name: 'wt' } }],
   },
 }
 
@@ -184,13 +209,16 @@ const APP_CATALOG: Readonly<
  *  alternative first, then falls back to the common DE terminals (the first
  *  binary that exists wins — most non-Debian distros ship none of the
  *  alternatives symlink). Brand targets resolve through APP_CATALOG rows,
- *  with the directory appended to the launch argv. */
-export function openCommandsFor(
+ *  with the directory appended to the launch argv. Async because an
+ *  `app-paths` row's launch file is the registry-resolved exe (a row whose
+ *  registry lookup proves nothing drops out of the chain). */
+export async function openCommandsFor(
   platformName: string,
   target: OpenPathTarget,
   path: string,
-  env: NodeJS.ProcessEnv = process.env,
-): Array<{ file: string; args: string[]; fallThroughOnExit?: boolean }> {
+  env: NodeJS.ProcessEnv,
+  appPathsTarget: AvailabilityDeps['appPathsTarget'],
+): Promise<Array<{ file: string; args: string[]; fallThroughOnExit?: boolean }>> {
   if (target === 'browser') {
     const url = pathToFileURL(path).href
     if (platformName === 'darwin') return [{ file: 'open', args: [url] }]
@@ -219,7 +247,7 @@ export function openCommandsFor(
   if (!rows) return []
   const candidates: Array<{ file: string; args: string[]; fallThroughOnExit?: boolean }> = []
   for (const row of rows) {
-    const file = expandTemplate(row.command, env)
+    const file = await launchFileFor(row.locator, env, appPathsTarget)
     if (file === null) continue
     candidates.push({
       file,
@@ -228,6 +256,27 @@ export function openCommandsFor(
     })
   }
   return candidates
+}
+
+/** The launch file one locator resolves to, or null when it proves nothing
+ *  usable here (unset template variable, registry key absent/stale). The
+ *  OS-generic `open` launcher and PATH names need no existence proof — the
+ *  launch chain's ENOENT fall-through handles a missing binary. */
+async function launchFileFor(
+  locator: AppLocator,
+  env: NodeJS.ProcessEnv,
+  appPathsTarget: AvailabilityDeps['appPathsTarget'],
+): Promise<string | null> {
+  switch (locator.kind) {
+    case 'mac-app':
+      return 'open'
+    case 'file':
+      return expandTemplate(locator.path, env)
+    case 'path':
+      return locator.name
+    case 'app-paths':
+      return appPathsTarget(locator.exe)
+  }
 }
 
 /** Async existence/executability probes injectable for deterministic tests. */
@@ -239,33 +288,38 @@ export interface AvailabilityDeps {
    *  reparse points are not stat()-isFile anyway, which is exactly why this
    *  dep exists: `wt.exe` resolves only through access()). */
   readonly executableExists: (path: string) => Promise<boolean>
+  /** Registry-proven executable path for an App Paths locator (verified on
+   *  disk by the reader), or null when no root proves a launcher. */
+  readonly appPathsTarget: (exeName: string) => Promise<string | null>
 }
 
 async function probeCandidate(
-  candidate: AppCandidate,
+  locator: AppLocator,
   platformName: string,
   env: NodeJS.ProcessEnv,
   home: string,
   deps: AvailabilityDeps,
 ): Promise<boolean> {
-  switch (candidate.probe.kind) {
+  switch (locator.kind) {
     case 'mac-app':
       for (const root of ['/Applications', joinForPlatform('darwin', home, 'Applications')]) {
-        if (await deps.dirExists(joinForPlatform('darwin', root, `${candidate.probe.name}.app`))) return true
+        if (await deps.dirExists(joinForPlatform('darwin', root, `${locator.name}.app`))) return true
       }
       return false
     case 'file': {
-      const path = expandTemplate(candidate.probe.path, env)
+      const path = expandTemplate(locator.path, env)
       return path !== null && deps.fileExists(path)
     }
     case 'path': {
       const paths = (env.PATH ?? '').split(pathDelimiter(platformName)).filter((p) => p !== '')
       for (const dir of paths) {
-        const exeName = platformName === 'win32' ? `${candidate.probe.name}.exe` : candidate.probe.name
+        const exeName = platformName === 'win32' ? `${locator.name}.exe` : locator.name
         if (await deps.executableExists(joinForPlatform(platformName, dir, exeName))) return true
       }
       return false
     }
+    case 'app-paths':
+      return (await deps.appPathsTarget(locator.exe)) !== null
   }
 }
 
@@ -280,22 +334,26 @@ export async function availableAppsFor(
   home: string,
   deps: AvailabilityDeps,
 ): Promise<OpenPathTarget[]> {
-  const apps: OpenPathTarget[] = []
-  for (const target of OPEN_PATH_APP_TARGETS) {
-    // The generic `terminal` target already launches `wt -d` on win32, so a
-    // `windowsterminal` brand row would render two identical menu entries —
-    // the id stays POST-valid but /apps never advertises it.
-    if (target === 'windowsterminal' && platformName === 'win32') continue
-    const rows = APP_CATALOG[target]?.[platformName as NodeJS.Platform]
-    if (!rows) continue
-    for (const row of rows) {
-      if (await probeCandidate(row, platformName, env, home, deps)) {
-        apps.push(target)
-        break
+  // Targets probe CONCURRENTLY — the probes are independent facts, and
+  // registry-backed brands each pay a query subprocess cold start, so
+  // overlapping them keeps /apps at roughly one cold start instead of one
+  // per brand. Within a target the rows stay sequential (first proof wins),
+  // and the map order preserves catalog order in the answer.
+  const probed = await Promise.all(
+    OPEN_PATH_APP_TARGETS.map(async (target): Promise<OpenPathTarget | null> => {
+      // The generic `terminal` target already launches `wt -d` on win32, so a
+      // `windowsterminal` brand row would render two identical menu entries —
+      // the id stays POST-valid but /apps never advertises it.
+      if (target === 'windowsterminal' && platformName === 'win32') return null
+      const rows = APP_CATALOG[target]?.[platformName as NodeJS.Platform]
+      if (!rows) return null
+      for (const row of rows) {
+        if (await probeCandidate(row.locator, platformName, env, home, deps)) return target
       }
-    }
-  }
-  return apps
+      return null
+    }),
+  )
+  return probed.filter((target): target is OpenPathTarget => target !== null)
 }
 
 function launchBrowser(file: string, args: string[]): Promise<void> {
@@ -320,6 +378,11 @@ export function buildOpenPathRouter(): Hono {
   // process), one extraction attempt per target per instance lifetime.
   const iconCache = new Map<string, Promise<ExtractedIcon | null>>()
 
+  // The App Paths registry fact shared by the /apps probe and the POST launch
+  // resolution — one reader, so both surfaces agree on what is installed.
+  const appPathsTarget: AvailabilityDeps['appPathsTarget'] = (exeName) =>
+    readAppPathsTarget(exeName, { run: hostAppPathsRun, fileExists: hostAppPathsFileExists, env: process.env })
+
   // Capability probe for the client UI: show the Reveal/Open buttons only
   // when THIS request comes from the server machine. Same gate as the POST.
   app.get('/open-path/capability', (c) => {
@@ -333,13 +396,7 @@ export function buildOpenPathRouter(): Hono {
     // enumerate installed editors either.
     assertLocal(c)
     const apps = await availableAppsFor(platform(), process.env, homedir(), {
-      fileExists: async (p) => {
-        try {
-          return (await stat(p)).isFile()
-        } catch {
-          return false
-        }
-      },
+      fileExists: hostAppPathsFileExists,
       dirExists: async (p) => {
         try {
           return (await stat(p)).isDirectory()
@@ -355,6 +412,7 @@ export function buildOpenPathRouter(): Hono {
           return false
         }
       },
+      appPathsTarget,
     })
     const payload: OpenPathAppsPayload = { apps }
     return c.json(payload)
@@ -418,7 +476,7 @@ export function buildOpenPathRouter(): Hono {
     }
 
     if (target === 'browser') {
-      const [{ file, args }] = openCommandsFor(platform(), target, path)
+      const [{ file, args }] = await openCommandsFor(platform(), target, path, process.env, appPathsTarget)
       log.info(`open target=browser file=${file} path=${path}`)
       try {
         await launchBrowser(file, args)
@@ -429,7 +487,7 @@ export function buildOpenPathRouter(): Hono {
       }
     }
 
-    const candidates = openCommandsFor(platform(), target, path)
+    const candidates = await openCommandsFor(platform(), target, path, process.env, appPathsTarget)
     if (candidates.length === 0) {
       // A brand target with no launch rows on this platform: the menu should
       // never have offered it (GET /apps gates that), so this is abuse or a
