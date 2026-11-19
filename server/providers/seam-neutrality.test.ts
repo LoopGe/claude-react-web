@@ -23,8 +23,8 @@ describe('provider seam neutrality', () => {
     ).toBe(false)
   })
 
-  it('neutral attachment-types imports only the host attachment contract', () => {
-    expect(importSpecifiers(here('./attachment-types.ts'))).toEqual(['../agent-message.js'])
+  it('neutral attachment-types imports only the neutral attachment contract', () => {
+    expect(importSpecifiers(here('./attachment-types.ts'))).toEqual(['../../shared/attachment-types.js'])
   })
 
   it('neutral hook-types imports only the shared hook contract', () => {
