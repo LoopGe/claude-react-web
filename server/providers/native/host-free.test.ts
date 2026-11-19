@@ -74,22 +74,24 @@ function allNamedType(clause: string): boolean {
 }
 
 /** Every import/export-from/dynamic-import reference in a source file, with
- *  its value-vs-type-only classification. The clause patterns exclude quote
- *  characters so a match cannot span a string literal. */
+ *  its value-vs-type-only classification. Both quote styles are accepted —
+ *  nothing in verify enforces single quotes, so a single-quote-only scan
+ *  would let a double-quoted host import through. The clause patterns exclude
+ *  quote characters so a match cannot span a string literal. */
 function importRefs(path: string): ImportRef[] {
   const src = readFileSync(path, 'utf8')
   const refs: ImportRef[] = []
-  for (const m of src.matchAll(/\bimport\s+(type\s+)?([^'"]*?)\s*from\s*'([^']+)'/g)) {
+  for (const m of src.matchAll(/\bimport\s+(type\s+)?([^'"]*?)\s*from\s*['"]([^'"]+)['"]/g)) {
     refs.push({ specifier: m[3], typeOnly: m[1] !== undefined || allNamedType(m[2]) })
   }
-  for (const m of src.matchAll(/\bexport\s+(type\s+)?([^'"]*?)\s*from\s*'([^']+)'/g)) {
+  for (const m of src.matchAll(/\bexport\s+(type\s+)?([^'"]*?)\s*from\s*['"]([^'"]+)['"]/g)) {
     refs.push({ specifier: m[3], typeOnly: m[1] !== undefined || allNamedType(m[2]) })
   }
   // Side-effect and dynamic imports execute the module: always value.
-  for (const m of src.matchAll(/\bimport\s*'([^']+)'/g)) {
+  for (const m of src.matchAll(/\bimport\s*['"]([^'"]+)['"]/g)) {
     refs.push({ specifier: m[1], typeOnly: false })
   }
-  for (const m of src.matchAll(/\bimport\s*\(\s*'([^']+)'/g)) {
+  for (const m of src.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]/g)) {
     refs.push({ specifier: m[1], typeOnly: false })
   }
   return refs

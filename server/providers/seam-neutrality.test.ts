@@ -9,10 +9,12 @@ import { fileURLToPath } from 'node:url'
 
 const here = (rel: string) => fileURLToPath(new URL(rel, import.meta.url))
 
-/** Every import/export-from specifier in a source file. */
+/** Every import/export-from specifier in a source file. Both quote styles
+ *  are accepted — nothing in verify enforces single quotes, so a
+ *  single-quote-only scan would miss a double-quoted import. */
 function importSpecifiers(path: string): string[] {
   const src = readFileSync(path, 'utf8')
-  return [...src.matchAll(/from\s+'([^']+)'/g)].map(m => m[1])
+  return [...src.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(m => m[1])
 }
 
 describe('provider seam neutrality', () => {
