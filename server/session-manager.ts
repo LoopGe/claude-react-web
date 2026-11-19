@@ -227,6 +227,10 @@ const TRANSIENT_TERMINATED_REASONS = new Set([
   // Quiesced for a transcript rebuild retry (spec §10): resumable once the
   // reconcile succeeds — no server restart needed.
   'transcript_rebuild_required',
+  // GC stuck-escalation force-unload: the subprocess was wedged mid-turn, but
+  // the SDK transcript is intact on disk — a fresh CLI re-spawned from it
+  // clears the wedge, so a manual resume recovers (same posture as a crash).
+  'stuck',
 ])
 
 function isTransientTerminatedReason(reason?: string): boolean {

@@ -5181,6 +5181,26 @@ describe('SessionManager', () => {
     expect(after.error).toBeUndefined()
   })
 
+  it('resume() allows resuming a GC-stuck terminated session when the transcript still exists', async () => {
+    // The stuck-session GC force-unloads a wedged mid-turn session with
+    // reason 'stuck'. The SDK transcript is intact on disk, so a manual
+    // resume should re-spawn from it (a fresh CLI clears the wedge) — 'stuck'
+    // belongs with the transient reasons, not the hard-terminal set.
+    const info = await sm.create({ cwd: TEST_CWD, model: 'm1' })
+    await sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    mockHandles[0].finish()
+    await tick()
+    await sm.unload(info.id)
+    store.upsert({ ...store.get(info.id)!, terminated: true, terminatedReason: 'stuck' })
+
+    const resumed = await sm.resume(info.id)
+    expect(resumed.terminated).toBe(false)
+    const after = store.get(info.id)!
+    expect(after.terminated).toBe(false)
+    expect(after.terminatedReason).toBeUndefined()
+  })
+
   it('resume() of a transiently-terminated session with a missing transcript falls back to transcript_missing 410', async () => {
     // Transient reason lets resume() past the guard, but the on-disk
     // transcript is gone — the hasSdkTranscript probe must catch it,
