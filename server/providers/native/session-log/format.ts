@@ -12,7 +12,7 @@ import { isSdkAgentPermissionMode } from '../../../../shared/agent-definitions.j
 import type { SessionToolProfile } from '../../../../shared/tool-profile.js'
 import { NATIVE_AGENT_EFFORT_LEVELS } from '../agent-profile.js'
 import type { NativeAgentBase, NativeAgentProfile, NativeAgentSelectionEvent } from '../agent-profile.js'
-import type { ResolvedFileAttachment } from '../../../agent-message.js'
+import type { NativeFileAttachment, NativeFileBlock } from '../../attachment-types.js'
 
 export const NATIVE_SESSION_LOG_VERSION = 1
 export const NATIVE_SESSION_LOG_V2 = 2
@@ -41,15 +41,7 @@ export interface NativeUsage {
   output_tokens: number
 }
 
-export interface NativeFileAttachment extends ResolvedFileAttachment {
-  /** Assigned once before the occurrence is first persisted; never rewritten. */
-  modelForm: 'handle' | 'pdf-document'
-}
-
-export interface NativeFileBlock {
-  type: 'file'
-  attachment: NativeFileAttachment
-}
+export type { NativeFileAttachment, NativeFileBlock } from '../../attachment-types.js'
 
 /** Hidden authorization catalog. It never enters model history, renderable
  *  transcript lines, search, or the transcript seq backfill. */

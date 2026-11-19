@@ -7,7 +7,7 @@ import { AttachmentObjectStore, AttachmentStoreError } from '../../../attachment
 import { resolveAuthorizedAttachment } from '../../../attachment-access.js'
 import { HttpError } from '../../../errors.js'
 import { createLogger } from '../../../log.js'
-import type { NativeAttachmentReferenceIndex } from '../../../attachment-reference-index.js'
+import type { NativeAttachmentReferenceIndex } from '../attachment-reference-index.js'
 import type { UploadStore } from '../../../upload-store.js'
 import {
   PDF_MAX_BASE64_CHARS,

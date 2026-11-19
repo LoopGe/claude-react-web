@@ -1,4 +1,5 @@
-// Derived native attachment-reference index.
+// Derived native attachment-reference index. Lives in the native provider
+// because it indexes native JSONL logs; the host imports it one-way.
 //
 // The native JSONL logs remain the only source of truth. This in-memory index
 // accelerates upload-deletion checks and tracks sends that have not reached a
@@ -6,14 +7,14 @@
 
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { createLogger } from './log.js'
-import { loadNativeSessionLog } from './providers/native/session-log/log.js'
+import { createLogger } from '../../log.js'
+import { loadNativeSessionLog } from './session-log/log.js'
 import type {
   NativeEventInput,
   NativeFileAttachment,
   NativeFileBlock,
   NativeLogEvent,
-} from './providers/native/session-log/format.js'
+} from './session-log/format.js'
 
 const log = createLogger('attachment-references')
 

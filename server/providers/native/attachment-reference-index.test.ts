@@ -6,13 +6,13 @@ import {
   NativeAttachmentReferenceIndex,
   nativeAttachmentOccurrences,
 } from './attachment-reference-index.js'
-import { NativeSessionLog } from './providers/native/session-log/log.js'
-import { nativeSessionDir } from './providers/native/session-log/paths.js'
+import { NativeSessionLog } from './session-log/log.js'
+import { nativeSessionDir } from './session-log/paths.js'
 import type {
   NativeEventInput,
   NativeFileAttachment,
   NativeLogEvent,
-} from './providers/native/session-log/format.js'
+} from './session-log/format.js'
 
 const dirs: string[] = []
 afterEach(async () => {
