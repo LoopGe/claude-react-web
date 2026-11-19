@@ -59,6 +59,18 @@ function backgroundAcknowledgement(toolUseId: string, taskId: string, content: s
   } as unknown as SDKMessage
 }
 
+// The pump's teardown tail (clean stream end → terminate) zeroes
+// pendingTurns/turnActive, so a stamp can only be observed AT STAMP TIME —
+// capture the session state inside the broadcastInfo mock, which the stamp
+// calls synchronously on the 0→1 transition.
+function captureStampingBroadcasts(session: Session) {
+  const seen: Array<{ pendingTurns: number; workingSince?: number; turnActive?: boolean }> = []
+  const broadcastInfo = vi.fn(() => {
+    seen.push({ pendingTurns: session.pendingTurns, workingSince: session.workingSince, turnActive: session.turnActive })
+  })
+  return { broadcastInfo, seen }
+}
+
 // ---------------------------------------------------------------------------
 // Unaccounted main-thread turn stamping
 //
@@ -75,18 +87,6 @@ function backgroundAcknowledgement(toolUseId: string, taskId: string, content: s
 describe('pump: unaccounted main-thread turn stamping', () => {
   const asstFrame = (parent: string | null = null, uuid = 'a1'): SDKMessage =>
     ({ type: 'assistant', parent_tool_use_id: parent, uuid, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } } as unknown as SDKMessage)
-
-  // The pump's teardown tail (clean stream end → terminate) zeroes
-  // pendingTurns/turnActive, so the stamp can only be observed AT STAMP
-  // TIME — capture the session state inside the broadcastInfo mock, which
-  // the stamp calls synchronously on the 0→1 transition.
-  function captureStampingBroadcasts(session: Session) {
-    const seen: Array<{ pendingTurns: number; workingSince?: number; turnActive?: boolean }> = []
-    const broadcastInfo = vi.fn(() => {
-      seen.push({ pendingTurns: session.pendingTurns, workingSince: session.workingSince, turnActive: session.turnActive })
-    })
-    return { broadcastInfo, seen }
-  }
 
   it('stamps working on a main-thread assistant frame while pendingTurns is 0', async () => {
     const { session } = makePumpSession([asstFrame()])
@@ -180,6 +180,109 @@ describe('pump: unaccounted main-thread turn stamping', () => {
 
     expect(seen).toEqual([])
     expect(broadcastInfo).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Frame-origin classification at ingestion (agent note
+// 2026-11-19-user-frame-origin-identity). Host echoes are identified by
+// send-ledger uuid membership; CLI synthetic frames (compact summary,
+// <local-command-stdout>, skill injection) are forwarded as themselves with
+// server-stamped visibility markers — never paired onto the ledger, never
+// arming turn state. Shapes verified live against SDK 0.3.311 / CLI 2.1.311.
+// ---------------------------------------------------------------------------
+describe('pump: user-frame origin classification', () => {
+  const boundary = { type: 'system', subtype: 'compact_boundary', uuid: 'cb-1' } as unknown as SDKMessage
+  const summaryFrame = {
+    type: 'user', uuid: 'sum-1', parent_tool_use_id: null, isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: 'This session is being continued from a previous conversation.' }] },
+  } as unknown as SDKMessage
+  const stdoutFrame = {
+    type: 'user', uuid: 'out-1', parent_tool_use_id: null, isReplay: true,
+    message: { role: 'user', content: '<local-command-stdout>Compacted </local-command-stdout>' },
+  } as unknown as SDKMessage
+  const skillFrame = (uuid: string) => ({
+    type: 'user', uuid, parent_tool_use_id: null, isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: 'Base directory for this skill: /tmp/s' }] },
+  } as unknown as SDKMessage)
+
+  it('stamps isCompactSummary on the first synthetic user frame after a compact_boundary and forwards it', async () => {
+    const { session } = makePumpSession([boundary, summaryFrame, skillFrame('skill-2')])
+    const onPromptEcho = vi.fn()
+    const { broadcastInfo, seen } = captureStampingBroadcasts(session)
+    await pump(session, makePumpDeps({ onPromptEcho, broadcastInfo }))
+
+    const sum = session.history.find((m) => (m as { uuid?: string }).uuid === 'sum-1') as { isCompactSummary?: boolean } | undefined
+    expect(sum?.isCompactSummary).toBe(true)
+    // the flag is consumed: a later synthetic frame is NOT a summary
+    const skill = session.history.find((m) => (m as { uuid?: string }).uuid === 'skill-2') as { isCompactSummary?: boolean; isMeta?: boolean } | undefined
+    expect(skill?.isCompactSummary).toBeUndefined()
+    expect(skill?.isMeta).toBe(true)
+    expect(onPromptEcho).not.toHaveBeenCalled()
+    expect(seen).toEqual([]) // no turn stamp from synthetic frames
+  })
+
+  it('forwards a post-result <local-command-stdout> frame without arming a turn', async () => {
+    const result = { type: 'result', subtype: 'success', uuid: 'r1', num_turns: 1, result: 'ok' } as unknown as SDKMessage
+    const { session } = makePumpSession([result, stdoutFrame])
+    session.pendingTurns = 1
+    session.turnActive = true
+    const onPromptEcho = vi.fn()
+    const { broadcastInfo, seen } = captureStampingBroadcasts(session)
+    await pump(session, makePumpDeps({ onPromptEcho, broadcastInfo }))
+
+    const out = session.history.find((m) => (m as { uuid?: string }).uuid === 'out-1') as { isCompactSummary?: boolean; isMeta?: boolean } | undefined
+    expect(out).toBeDefined()
+    expect(out?.isCompactSummary).toBeUndefined()
+    expect(onPromptEcho).not.toHaveBeenCalled()
+    expect(seen).toEqual([]) // the result cleared; the stdout must not re-stamp
+  })
+
+  it('stamps isMeta on a synthetic skill-injection frame with no preceding boundary', async () => {
+    const { session } = makePumpSession([skillFrame('skill-1')])
+    const onPromptEcho = vi.fn()
+    await pump(session, makePumpDeps({ onPromptEcho }))
+
+    const skill = session.history.find((m) => (m as { uuid?: string }).uuid === 'skill-1') as { isMeta?: boolean } | undefined
+    expect(skill?.isMeta).toBe(true)
+    expect(onPromptEcho).not.toHaveBeenCalled()
+  })
+
+  it('drops a ledger-uuid echo and pairs it by exact uuid', async () => {
+    const echo = { type: 'user', uuid: 'sent-1', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: 'hello' }] } } as unknown as SDKMessage
+    const { session } = makePumpSession([echo])
+    session.promptUuids = [{ u: 'sent-1' }]
+    const onPromptEcho = vi.fn()
+    await pump(session, makePumpDeps({ onPromptEcho }))
+
+    expect(session.history.find((m) => (m as { uuid?: string }).uuid === 'sent-1')).toBeUndefined()
+    expect(onPromptEcho).toHaveBeenCalledWith(session, 'sent-1')
+  })
+
+  it('forwards a foreign unmarked frame (cli-other) without pairing or stamping', async () => {
+    const foreign = { type: 'user', uuid: 'foreign', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: 'plain' }] } } as unknown as SDKMessage
+    const { session } = makePumpSession([foreign])
+    session.promptUuids = [{ u: 'sent-1' }]
+    const onPromptEcho = vi.fn()
+    const { broadcastInfo, seen } = captureStampingBroadcasts(session)
+    await pump(session, makePumpDeps({ onPromptEcho, broadcastInfo }))
+
+    const f = session.history.find((m) => (m as { uuid?: string }).uuid === 'foreign') as { isMeta?: boolean; isCompactSummary?: boolean } | undefined
+    expect(f).toBeDefined()
+    expect(f?.isMeta).toBeUndefined()
+    expect(f?.isCompactSummary).toBeUndefined()
+    expect(onPromptEcho).not.toHaveBeenCalled()
+    expect(seen).toEqual([])
+  })
+
+  it('still dedups the SDK echo of an app-broadcast compact seed', async () => {
+    const seed = { type: 'user', uuid: 'seed-app', isSynthetic: true, isCompactSummary: true, message: { role: 'user', content: 'SEED' } } as unknown as SDKMessage
+    const seedEcho = { type: 'user', uuid: 'seed-disk', isSynthetic: true, isCompactSummary: true, message: { role: 'user', content: 'SEED' } } as unknown as SDKMessage
+    const { session } = makePumpSession([seedEcho])
+    session.history.push(seed)
+    await pump(session, makePumpDeps({}))
+
+    expect(session.history.filter((m) => (m as { message?: { content?: unknown } }).message?.content === 'SEED')).toHaveLength(1)
   })
 })
 

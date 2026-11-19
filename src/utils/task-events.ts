@@ -8,7 +8,6 @@ export {
   buildTaskStateMapFromItems,
   countTaskEvents,
   filterVisibleTasks,
-  isGenuineUserInputFrame,
   mergeTaskList,
   normalizeStatus,
   parseTaskId,

@@ -4315,24 +4315,20 @@ export class SessionManager {
     // its SDK uuid `v` is known, which happens at echo time).
   }
 
-  /** Pair the SDK echo uuid `v` with the oldest still-unpaired sent prompt `u`
-   *  in `session.promptUuids`, then persist the sidecar. Called from the pump's
-   *  top-level-user-echo drop-filter (the SDK echoes each persisted prompt back
-   *  through the Query stream in FIFO order, so the oldest unpaired `u` is the
-   *  match). On a resume replay, every loaded entry is already paired (v set),
-   *  so this is a no-op. */
+  /** Pair the SDK echo uuid `v` with the sent prompt `u` it echoes, by EXACT
+   *  uuid match, then persist the sidecar. Called from the pump's origin
+   *  classifier only for frames whose uuid is in the send ledger, so the
+   *  match is the identity itself — no FIFO ordering assumption (synthetic
+   *  CLI frames used to cut the FIFO line and pair onto unrelated sends).
+   *  On a resume replay, every loaded entry is already paired (v set), so
+   *  this is a no-op. The echo does NOT arm turn state: consumption is the
+   *  turn-start signal (onInputConsumed), cleared on `result` (pump). */
   private onPromptEcho(s: Session, echoUuid: string): void {
     const list = s.promptUuids
     if (!list || list.length === 0) return
-    const idx = list.findIndex((e) => e.v == null)
-    if (idx === -1) return // no unpaired send (resume replay, or echo for a non-send frame)
-    if (list.some((e) => e.v === echoUuid)) return // already paired (defensive against a double echo)
+    const idx = list.findIndex((e) => e.u === echoUuid && e.v == null)
+    if (idx === -1) return // already paired, or no such send (resume replay)
     list[idx] = { ...list[idx], v: echoUuid }
-    // The echo proves the CLI took the message and the turn is under way —
-    // flag it so interrupt()'s cancelQueued clear can tell "queued, nothing
-    // running" from "turn in flight, aborted result still owed". Cleared on
-    // `result` (pump) and every teardown that zeroes pendingTurns.
-    s.turnActive = true
     void this.promptUuidStore.save(s.id, list)
   }
 

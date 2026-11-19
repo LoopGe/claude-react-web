@@ -32,8 +32,9 @@ import { broadcastTasksSnapshot } from './session-broadcaster.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 import { isEmptyResultFrame, localCommandOf } from '../shared/results.js'
 import { summarizeTurnResult } from '../shared/turn-summary.js'
-import { isTaskNotificationUserMessage, parseTaskNotificationInjection, userMessageText } from '../shared/user-frames.js'
-import { isGenuineUserInputFrame, taskToolUseId } from '../shared/task-list.js'
+import { classifyUserFrameOrigin, isTaskNotificationUserMessage, parseTaskNotificationInjection, userMessageText } from '../shared/user-frames.js'
+import { isLocalCommandLogUserMessage } from '../shared/message-visibility.js'
+import { taskToolUseId } from '../shared/task-list.js'
 
 const MAX_HOOK_OUTPUT_CHARS = 20_000
 
@@ -1034,6 +1035,12 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
   // was lost between the CLI and us — log it (diagnostic only; the turn still
   // settles via whatever frames arrived).
   let lastResultIndex: number | undefined
+  // The SDK contract after a compaction: compact_boundary → summary user
+  // frame → command stdout → result. The live summary frame lacks the
+  // disk-only isCompactSummary marker, so the pump stamps it on the first
+  // synthetic user frame after the boundary (agent note
+  // 2026-11-19-user-frame-origin-identity).
+  let pendingCompactSummary = false
   // Pump-local: ids of tool_use blocks for filesystem-mutating tools.
   // Populated when we see the assistant's tool_use, drained when the
   // matching tool_result lands (which is when we know git status may
@@ -1119,40 +1126,17 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         lastNextResolvedAt = resolvedAt
         const msg = step.value
         const msgSubtype = (msg as unknown as { subtype?: string }).subtype
-        // The SDK may echo top-level user input back through the Query
-        // stream (sometimes as SDKUserMessageReplay with isReplay=true,
-        // sometimes — notably the very first turn after spawn — as a plain
-        // SDKUserMessage with no replay marker). We already broadcast our
-        // own user messages via SessionManager.send() / sendContent(), so
-        // forwarding the SDK's echo would paint the bubble twice — we must
-        // drop it.
+        if (msg.type === 'system' && msgSubtype === 'compact_boundary') pendingCompactSummary = true
+        // Null-parent user frames are classified by ORIGIN below
+        // (classifyUserFrameOrigin): a host echo (uuid in the send ledger)
+        // is dropped — we already broadcast our own user messages via
+        // SessionManager.send() / sendContent(), so forwarding the echo
+        // would paint the bubble twice. tool_result carriers and
+        // <task-notification> injections are NOT echoes and fall through
+        // to their normal paths (dropping a main-thread tool_result would
+        // strand its tool card on 'running' forever — SDK 0.3.143 emits
+        // those with a null parent too).
         //
-        // We CANNOT key the drop on `parent_tool_use_id == null` alone:
-        // SDK 0.3.143 emits MAIN-THREAD tool_results as user frames with
-        // `parent_tool_use_id: null` too (only subagent-internal tool hops
-        // carry a non-null parent). Dropping those strands the tool card on
-        // 'running' forever — the frontend seeds 'running' from the
-        // assistant's tool_use but never sees the result to flip it (the
-        // "tool stuck running" bug). Verified against SDK 0.3.143: a Bash
-        // tool_result arrives as { type:'user', parent_tool_use_id:null,
-        // content:[tool_result] }.
-        //
-        // The robust discriminator is the CONTENT: a genuine input echo
-        // carries the user's text/image blocks and never a tool_result
-        // block, while every tool_result frame (main-thread or subagent)
-        // carries at least one. So drop only null-parent user frames that
-        // carry NO tool_result block.
-        //
-        // EXCEPTION: a `<task-notification>` user message is also a null-
-        // parent text-only user frame, but it is NOT an echo of something
-        // we broadcast — the harness injects it as the background
-        // subagent's result delivery for the model to consume on its next
-        // turn. Dropping it would silently lose the result from the
-        // transcript; forwarding it lets the client render it as a
-        // task-result card (see isTaskNotificationUserMessage). SDK 0.3.x
-        // emits task completion as a `system`/`task_notification` frame
-        // (already forwarded), so this guard only matters for harnesses
-        // that use the user-role injection path.
         // App-generated compact seeds are manually broadcast once, then the
         // SDK echoes them with its on-disk uuid. Do not append that echo again.
         const duplicateCompactSummary = (msg as { isSynthetic?: boolean }).isSynthetic === true &&
@@ -1163,21 +1147,52 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
               userMessageText(prior) === userMessageText(msg)
           })
         if (duplicateCompactSummary) continue
-        if (isGenuineUserInputFrame(msg)) {
-          // Before dropping the SDK's echo of a top-level user prompt, hand its
-          // on-disk uuid (`v`) to the manager so it can pair it with the
-          // server-minted `u` recorded at send() time (FIFO order). That pairs
-          // the disk uuid with the ring/cache uuid, which resume() uses to
-          // rewrite the disk-seed ring so the client's uuid-anchored replay
-          // overlap detection works after a restart. No-op on a resume replay
-          // (every loaded entry is already paired).
-          const echoUuid = (msg as { uuid?: string }).uuid
-          if (echoUuid) deps.onPromptEcho?.(session, echoUuid)
-          // A genuine top-level user message just landed — the stale
-          // boundary moved, so the snapshot's precomputed flags refresh.
-          deps.onTaskListChanged?.(session.id)
-          log.debug(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid: string }).uuid}`)
-          continue
+        // Frame-origin classification (agent note 2026-11-19-user-frame-origin-
+        // identity). An echo is identified POSITIVELY — its uuid is in the
+        // host's send ledger — never inferred from content shape. CLI
+        // synthetic frames (compact summaries, <local-command-stdout> logs,
+        // skill injections) are forwarded as themselves with server-stamped
+        // visibility markers matching disk truth; they never pair onto the
+        // ledger and never arm turn state.
+        if (msg.type === 'user' && getParentToolUseId(msg) == null) {
+          const origin = classifyUserFrameOrigin(
+            msg,
+            (u) => (session.promptUuids ?? []).some((e) => e.u === u),
+          )
+          if (origin === 'host-echo') {
+            // Hand the echo's on-disk uuid (`v`) to the manager so it can pair
+            // it with the server-minted `u` recorded at send() time (exact
+            // uuid match). resume() uses the mapping to rewrite the disk-seed
+            // ring so the client's uuid-anchored replay overlap detection
+            // works after a restart. No-op on a resume replay (every loaded
+            // entry is already paired).
+            const echoUuid = (msg as { uuid?: string }).uuid
+            if (echoUuid) deps.onPromptEcho?.(session, echoUuid)
+            deps.onTaskListChanged?.(session.id)
+            log.debug(`[session ${session.id}] dropping echoed top-level user message uuid=${echoUuid}`)
+            continue
+          }
+          if (origin === 'cli-synthetic') {
+            const m = msg as { isCompactSummary?: boolean; isMeta?: boolean }
+            if (pendingCompactSummary) {
+              m.isCompactSummary = true
+              pendingCompactSummary = false
+            } else if (!isLocalCommandLogUserMessage(msg)) {
+              // Skill injections / caveats: the disk copies carry isMeta; the
+              // live stream strips it. Stamp to keep live and disk replay
+              // classification identical.
+              m.isMeta = true
+            }
+            deps.onTaskListChanged?.(session.id)
+          } else if (origin === 'cli-other') {
+            // Fail-visible residue: a foreign uuid with no markers. Empty on
+            // the pinned SDK; forward unchanged and log so a new frame class
+            // is diagnosable instead of silently hijacking turn state.
+            log.debug(`[session ${session.id}] forwarding unmarked foreign user frame uuid=${(msg as { uuid?: string }).uuid} (cli-other)`)
+            deps.onTaskListChanged?.(session.id)
+          }
+          // tool-result / task-notification origins fall through to the
+          // existing handling below (notification stamping, ring append).
         }
         // A <task-notification> injection arriving while no turn is accounted
         // IS the CLI starting a continuation turn — the injection is the

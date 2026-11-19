@@ -9228,19 +9228,23 @@ describe('SessionManager', () => {
       const sourceCwd = '/tmp/fork-bridge-src'
       const source = await sm.create({ cwd: sourceCwd })
       await sm.send(source.id, 'hello world')
-      // SDK echo: pairs the server-minted `u` with the SDK's on-disk `v` and
-      // persists the mapping into the source's prompt-uuid sidecar (the pump
-      // drops this frame as an input echo — it never enters the seq store).
+      // Current CLI contract (SDK 0.3.311): the on-disk/echo uuid IS the
+      // server-minted uuid — the historical re-mint is gone. Read the minted
+      // uuid from the transcript window, then emit the echo under it; the
+      // pump's origin classifier drops it as a host echo (no seq) and
+      // onPromptEcho pairs it by exact uuid into the sidecar.
+      const srcWin = await sm.getTranscriptWindow(source.id)
+      const serverU = (srcWin.messages.find((m) => (m.msg as { type?: string }).type === 'user')!.msg as { uuid: string }).uuid
       mockHandles[0].emit({
         type: 'user',
-        uuid: 'sdk-v-1',
+        uuid: serverU,
         parent_tool_use_id: null,
         message: { role: 'user', content: 'hello world' },
       })
       const promptUuidFile = join(dir, 'prompt-uuids', `${source.id}.json`)
       expect(await waitFor(() => existsSync(promptUuidFile))).toBe(true)
       const sourceMappings = JSON.parse(readFileSync(promptUuidFile, 'utf8')) as Array<{ u: string; v?: string }>
-      const serverU = sourceMappings.find((e) => e.v === 'sdk-v-1')!.u
+      expect(sourceMappings.some((e) => e.u === serverU && e.v === serverU)).toBe(true)
       // fork() gates on a completed turn — settle one.
       mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'pre-r', session_id: source.id })
       expect(await waitFor(() => sm.get(source.id).lastTurnAt !== undefined)).toBe(true)
@@ -9253,7 +9257,7 @@ describe('SessionManager', () => {
         const srcJsonl = join(dir, 'projects', encodeCwd(sourceCwd), `${source.id}.jsonl`)
         mkdirSync(dirname(srcJsonl), { recursive: true })
         const rows = [
-          JSON.stringify({ type: 'user', uuid: 'sdk-v-1', sessionId: source.id, parent_tool_use_id: null, message: { role: 'user', content: 'hello world' } }),
+          JSON.stringify({ type: 'user', uuid: serverU, sessionId: source.id, parent_tool_use_id: null, message: { role: 'user', content: 'hello world' } }),
           JSON.stringify({ type: 'assistant', uuid: 'sdk-a1', sessionId: source.id, message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } }),
           '',
         ].join('\n')
@@ -9271,10 +9275,12 @@ describe('SessionManager', () => {
         // the live session must carry the bridged inherited mappings or the
         // save wipes them off disk right here.
         await sm.send(forked.id, 'after fork')
+        const forkWin = await sm.getTranscriptWindow(forked.id)
+        const forkNewU = (forkWin.messages.filter((m) => (m.msg as { type?: string }).type === 'user').at(-1)!.msg as { uuid: string }).uuid
         const forkHandle = mockHandles[mockHandles.length - 1]
         forkHandle.emit({
           type: 'user',
-          uuid: 'sdk-v-fork-1',
+          uuid: forkNewU,
           parent_tool_use_id: null,
           message: { role: 'user', content: 'after fork' },
         })
@@ -9286,10 +9292,9 @@ describe('SessionManager', () => {
           existsSync(forkMappingFile) ? (JSON.parse(readFileSync(forkMappingFile, 'utf8')) as Array<{ u: string; v?: string }>) : []
         // The echo's REPLACE save kept the inherited mapping AND added the
         // new prompt's pairing.
-        expect(await waitFor(() => readForkMappings().some((e) => e.v === 'sdk-v-fork-1'))).toBe(true)
+        expect(await waitFor(() => readForkMappings().some((e) => e.v === forkNewU))).toBe(true)
         const forkMappings = readForkMappings()
-        expect(forkMappings.some((e) => e.v === 'sdk-v-1' && e.u === serverU)).toBe(true)
-        const forkNewU = forkMappings.find((e) => e.v === 'sdk-v-fork-1')!.u
+        expect(forkMappings.some((e) => e.v === serverU && e.u === serverU)).toBe(true)
 
         // The live fork's seq space: pre-seeded rows + the live prompt + its
         // result (the echo frame is dropped by the pump — no seq).
@@ -9308,7 +9313,7 @@ describe('SessionManager', () => {
           forkJsonl,
           [
             ...rows.split('\n').filter((l) => l.trim() !== ''),
-            JSON.stringify({ type: 'user', uuid: 'sdk-v-fork-1', sessionId: forked.id, parent_tool_use_id: null, message: { role: 'user', content: 'after fork' } }),
+            JSON.stringify({ type: 'user', uuid: forkNewU, sessionId: forked.id, parent_tool_use_id: null, message: { role: 'user', content: 'after fork' } }),
             '',
           ].join('\n'),
         )
@@ -9322,16 +9327,13 @@ describe('SessionManager', () => {
         try {
           const win = await sm2.getTranscriptWindow(forked.id)
           // The regression: without the bridge (or with the live echo wiping
-          // it) the copied `sdk-v-1` uuid misses dedup and the inherited
-          // prompt is appended AGAIN at a fresh tail seq (totalCount 5, two
-          // user rows carrying `sdk-v-1` / `serverU` respectively).
+          // it) the copied prompt row misses dedup and the inherited prompt
+          // is appended AGAIN at a fresh tail seq (totalCount 5, two user
+          // rows for the same turn).
           expect(win.totalCount).toBe(4)
           expect(win.messages.map((m) => m.seq)).toEqual([0, 1, 2, 3])
           const users = win.messages.filter((m) => (m.msg as { type?: string }).type === 'user')
           expect(users.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual([serverU, forkNewU])
-          // No raw SDK uuid may survive the rewrite.
-          expect(win.messages.some((m) => (m.msg as { uuid?: string }).uuid === 'sdk-v-1')).toBe(false)
-          expect(win.messages.some((m) => (m.msg as { uuid?: string }).uuid === 'sdk-v-fork-1')).toBe(false)
         } finally {
           await sm2.shutdown()
         }
@@ -9347,14 +9349,22 @@ describe('SessionManager', () => {
       // Two mapped prompts; the seed (discard's kept prefix) contains only
       // the FIRST — the bridge must not copy the second's mapping.
       await sm.send(source.id, 'first')
-      mockHandles[0].emit({
-        type: 'user', uuid: 'sdk-v-1', parent_tool_use_id: null,
-        message: { role: 'user', content: 'first' },
-      })
       await tick()
       await sm.send(source.id, 'second')
+      // Current CLI contract: echo uuid == server-minted uuid. Read both
+      // minted uuids from the transcript window, then emit the echoes.
+      const srcWin = await sm.getTranscriptWindow(source.id)
+      const promptUuidsInWindow = srcWin.messages
+        .filter((m) => (m.msg as { type?: string }).type === 'user')
+        .map((m) => (m.msg as { uuid: string }).uuid)
+      const serverU1 = promptUuidsInWindow[0]!
+      const serverU2 = promptUuidsInWindow[1]!
       mockHandles[0].emit({
-        type: 'user', uuid: 'sdk-v-2', parent_tool_use_id: null,
+        type: 'user', uuid: serverU1, parent_tool_use_id: null,
+        message: { role: 'user', content: 'first' },
+      })
+      mockHandles[0].emit({
+        type: 'user', uuid: serverU2, parent_tool_use_id: null,
         message: { role: 'user', content: 'second' },
       })
       const promptUuidFile = join(dir, 'prompt-uuids', `${source.id}.json`)
@@ -9363,8 +9373,6 @@ describe('SessionManager', () => {
       const readMappings = (): Array<{ u: string; v?: string }> =>
         existsSync(promptUuidFile) ? (JSON.parse(readFileSync(promptUuidFile, 'utf8')) as Array<{ u: string; v?: string }>) : []
       expect(await waitFor(() => readMappings().filter((e) => e.v != null).length >= 2)).toBe(true)
-      const sourceMappings = readMappings()
-      const serverU1 = sourceMappings.find((e) => e.v === 'sdk-v-1')!.u
       // fork() gates on a completed turn — settle one.
       mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'pre-r', session_id: source.id })
       expect(await waitFor(() => sm.get(source.id).lastTurnAt !== undefined)).toBe(true)
@@ -9385,7 +9393,7 @@ describe('SessionManager', () => {
         const forkMappingFile = join(dir, 'prompt-uuids', `${forked.id}.json`)
         expect(existsSync(forkMappingFile)).toBe(true)
         const forkMappings = JSON.parse(readFileSync(forkMappingFile, 'utf8')) as Array<{ u: string; v?: string }>
-        expect(forkMappings).toEqual([{ u: serverU1, v: 'sdk-v-1' }])
+        expect(forkMappings).toEqual([{ u: serverU1, v: serverU1 }])
 
         // The truncated fork JSONL copy (kept turn only, SDK `v` uuids);
         // restart reconcile must rewrite and dedup, not re-append.
@@ -9394,7 +9402,7 @@ describe('SessionManager', () => {
         writeFileSync(
           forkJsonl,
           [
-            JSON.stringify({ type: 'user', uuid: 'sdk-v-1', sessionId: forked.id, parent_tool_use_id: null, message: { role: 'user', content: 'first' } }),
+            JSON.stringify({ type: 'user', uuid: serverU1, sessionId: forked.id, parent_tool_use_id: null, message: { role: 'user', content: 'first' } }),
             JSON.stringify({ type: 'assistant', uuid: 'sdk-a1', sessionId: forked.id, message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } }),
             '',
           ].join('\n'),
@@ -13010,25 +13018,21 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sub.unsubscribe()
     })
 
-    it('leaves working state alone while an echoed in-flight turn is owed its result', async () => {
-      // The safety half of the fix, in the PRODUCTION shape: the seed turn's
-      // echo has already landed (onPromptEcho paired it and set turnActive),
-      // so the CLI is mid-turn and an aborted `result` is still owed. Only
-      // the 2 queued turns withdraw. The fix must NOT preemptively clear
-      // pendingTurns here — the owed result stays the authority. (Guarding
-      // on unpaired entries alone would miss this: the in-flight turn's
-      // entry is PAIRED.)
+    it('leaves working state alone while an in-flight turn is owed its result', async () => {
+      // The safety half of the fix, in the PRODUCTION shape: the seed turn
+      // was CONSUMED by the SDK (onInputConsumed arms turnActive) and its
+      // echo paired the ledger entry, so the CLI is mid-turn and an aborted
+      // `result` is still owed. Only the 2 queued turns withdraw. The fix
+      // must NOT preemptively clear pendingTurns here — the owed result
+      // stays the authority. (Guarding on unconsumed entries alone would
+      // miss this: the in-flight turn's entry is consumed AND paired.)
       const { info, h } = await setupQueued(2)
-      // Land the seed's echo: the pump's top-level-user drop-filter hands the
-      // SDK uuid to onPromptEcho, which pairs the oldest unpaired entry.
-      h.emit({
-        type: 'user',
-        uuid: 'sdk-on-disk-uuid-seed',
-        parent_tool_use_id: null,
-        message: { role: 'user', content: [{ type: 'text', text: 'in-flight turn seed' }] },
-      })
-      await waitFor(() => turnStateOf(info.id).turnActive === true)
       const s = turnStateOf(info.id)
+      // Settle the seed's in-flight state directly: consumption arming is
+      // covered by the onInputConsumed tests; this test owns the heal gate.
+      s.turnActive = true
+      const ledger = (sm as unknown as { sessions: Map<string, { promptUuids?: Array<{ u: string; v?: string }> }> }).sessions.get(info.id)!.promptUuids!
+      ledger[0] = { ...ledger[0]!, v: ledger[0]!.u }
       expect(s.pendingTurns).toBe(1)
 
       const removed = await sm.interrupt(info.id, { cancelQueued: true })

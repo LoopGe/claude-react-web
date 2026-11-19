@@ -13,10 +13,10 @@ import {
   buildTaskStateMapFromItems,
   countTaskEvents,
   filterVisibleTasks,
-  isGenuineUserInputFrame,
   mergeTaskList,
   type TasklistSnapshotPayload,
 } from './task-list'
+import { isHumanUserMessage } from './user-frames'
 
 type Loose = Record<string, unknown>
 function assistant(blocks: unknown[]): Loose {
@@ -214,27 +214,6 @@ describe('countTaskEvents', () => {
   })
 })
 
-describe('isGenuineUserInputFrame', () => {
-  it('true for a null-parent text-only user frame', () => {
-    expect(isGenuineUserInputFrame({ type: 'user', message: { content: [{ type: 'text', text: 'go' }] } })).toBe(true)
-  })
-  it('false for tool_result carriers (main-thread results are null-parent too)', () => {
-    expect(isGenuineUserInputFrame(toolResult('t1', 'ok'))).toBe(false)
-  })
-  it('false for sidechain frames (parent_tool_use_id set)', () => {
-    expect(isGenuineUserInputFrame({ type: 'user', parent_tool_use_id: 'p1', message: { content: [{ type: 'text', text: 'go' }] } })).toBe(false)
-  })
-  it('false for <task-notification> injections (closing tag required by the regex)', () => {
-    expect(isGenuineUserInputFrame({
-      type: 'user',
-      message: { content: [{ type: 'text', text: '<task-notification>done</task-notification>' }] },
-    })).toBe(false)
-  })
-  it('false for non-user frames', () => {
-    expect(isGenuineUserInputFrame({ type: 'assistant', message: { content: [] } })).toBe(false)
-  })
-})
-
 describe('mergeTaskList', () => {
   const snap = (tasks: TasklistSnapshotPayload['tasks']): TasklistSnapshotPayload => ({ rev: 1, tasks })
 
@@ -388,7 +367,7 @@ describe('cross-layer regression: the full ghost-checklist chain', () => {
     const merged = mergeTaskList(snapshot, window)
     let lastUserInputIdx = -1
     for (let i = main.length - 1; i >= 0; i--) {
-      if (isGenuineUserInputFrame(main[i] as Parameters<typeof isGenuineUserInputFrame>[0])) { lastUserInputIdx = i; break }
+      if (isHumanUserMessage(main[i] as Parameters<typeof isHumanUserMessage>[0])) { lastUserInputIdx = i; break }
     }
     expect(filterVisibleTasks(merged, lastUserInputIdx)).toEqual([])
   })

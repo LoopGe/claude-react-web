@@ -13,12 +13,6 @@
 //      the server-assigned `#N` appears only in the create's tool_result
 //      text; TaskUpdate mutates by that id, status 'deleted' removes.
 
-import {
-  userMessageHasToolResult,
-  isTaskNotificationUserMessage,
-  type UserFrameShape,
-} from './user-frames.js'
-
 export interface TaskState {
   id: string
   subject: string
@@ -325,31 +319,6 @@ export function countTaskEvents(messages: readonly unknown[]): number {
     }
   }
   return n
-}
-
-/** Server-side criterion for a genuine top-level HUMAN input frame — the
- *  LIVE-wire discriminator: the pump's echo drop-filter calls this directly
- *  (the echo is droppable exactly when the frame is not a genuine human
- *  input). Covers: null parent, no tool_result block, no
- *  <task-notification> injection — so background-subagent result
- *  injections and tool_result carriers never qualify. Live sidechain
- *  frames carry a non-null parent_tool_use_id, so they are excluded
- *  without an isSidechain check; the DISK form (subagent-transcript lines
- *  carry isSidechain:true but NO parent_tool_use_id — that field exists
- *  only on live wire frames) is excluded separately by the disk fold's
- *  boundary scan in deriveTaskListFromLines. Keeping this predicate free
- *  of isSidechain is deliberate: reusing it for live frames must not
- *  change how frames with the (disk-only) marker are forwarded.
- *  (The client's window cleanup uses the richer isHumanUserMessage;
- *  snapshot entries carry the server's precomputed flag instead, so the
- *  two never compare across coordinate systems.) */
-export function isGenuineUserInputFrame(msg: UserFrameShape): boolean {
-  if (msg.type !== 'user') return false
-  if (msg.isCompactSummary === true) return false
-  if (msg.parent_tool_use_id != null) return false
-  if (userMessageHasToolResult(msg)) return false
-  if (isTaskNotificationUserMessage(msg)) return false
-  return true
 }
 
 /** Visibility cleanup over a merged task map — the ONE filter TodoChecklist
