@@ -552,13 +552,45 @@ describe('sidecar v2 batch commits / fold / crash recovery (spec §8.2/§9)', ()
     expect(salvaged).toEqual([])
   })
 
-  it('a complete commit record with a bad checksum is not truncatable; fold throws corrupt-sidecar', () => {
+  it('a bad-checksum commit is demoted: fold falls back to v1, truncate skips the corrupt anchor', () => {
     const g0 = [msgRow('g0', 0, 'a')]
     const badCommit = { ...genCommit('g0', 0, g0), checksum: 'deadbeef' }
     const raw = lines(...g0, badCommit)
-    expect(() => truncateToLastCommit(raw)).toThrow(/corrupt-sidecar/)
+    const { prefix, salvaged } = truncateToLastCommit(raw)
+    expect(prefix).toBe('') // no valid anchor → nothing committed survives
+    expect(salvaged.map((r) => r.batchId)).toContain('g0')
     const rows = raw.split('\n').filter(Boolean).map((l) => JSON.parse(l))
-    expect(() => foldSidecarRowsV2(rows)).toThrow(/corrupt-sidecar/)
+    const folded = foldSidecarRowsV2(rows)
+    expect(folded.hasCommittedGeneration).toBe(false)
+    expect(folded.corrupt.map((c) => c.batchId)).toEqual(['g0'])
+  })
+
+  it('demotes a count-mismatched committed generation and adopts the previous valid one', () => {
+    const g1 = [msgRow('g1', 0, 'a')]
+    const g2 = [msgRow('g2', 0, 'a'), msgRow('g2', 1, 'b')]
+    const badG2 = { ...genCommit('g2', 2, g2), count: 3 } // declares 3 rows, carries 2
+    const folded = foldSidecarRowsV2([...g1, genCommit('g1', 1, g1), ...g2, badG2])
+    expect(folded.generation).toBe(1)
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['a']) // g2 rows excluded
+    expect(folded.corrupt.map((c) => c.batchId)).toEqual(['g2'])
+  })
+
+  it('no valid generation survives a corrupt commit → hasCommittedGeneration false', () => {
+    const g1 = [msgRow('g1', 0, 'a')]
+    const bad = { ...genCommit('g1', 1, g1), count: 2 }
+    const folded = foldSidecarRowsV2([...g1, bad])
+    expect(folded.hasCommittedGeneration).toBe(false)
+    expect(folded.corrupt.map((c) => c.batchId)).toEqual(['g1'])
+  })
+
+  it('checksum mismatch demotes like count mismatch', () => {
+    const g1 = [msgRow('g1', 0, 'a')]
+    const g2 = [msgRow('g2', 0, 'b')]
+    const badG2 = { ...genCommit('g2', 2, g2), checksum: 'deadbeef' }
+    const folded = foldSidecarRowsV2([...g1, genCommit('g1', 1, g1), ...g2, badG2])
+    expect(folded.generation).toBe(1)
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['a'])
+    expect(folded.corrupt).toHaveLength(1)
   })
 
   it('v1 duplicate base seq fails with duplicate-seq', () => {

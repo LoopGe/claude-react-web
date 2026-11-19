@@ -347,21 +347,33 @@ interface ParsedBatch {
   commit: SidecarRow | null
 }
 
-function validateCommit(b: ParsedBatch): void {
+/** Validate a complete commit record. Returns the corruption reason, or null
+ *  when valid. A count/checksum mismatch is crash damage (a torn tail ate a
+ *  row), NOT a fatal state — the caller demotes the batch and rebuilds from
+ *  the authoritative provider log rather than permanently degrading. */
+function validateCommit(b: ParsedBatch): string | null {
   const c = b.commit!
   if (typeof c.count !== 'number' || c.count !== b.rows.length) {
-    throw new Error(`corrupt-sidecar: batch ${b.batchId} count mismatch`)
+    return `batch ${b.batchId} count mismatch`
   }
   if (batchChecksum(b.rows) !== c.checksum) {
-    throw new Error(`corrupt-sidecar: batch ${b.batchId} checksum mismatch`)
+    return `batch ${b.batchId} checksum mismatch`
   }
+  return null
 }
 
 /** Group v2 rows into batches in file order; a commit record closes its batch.
- *  A complete-but-invalid commit throws corrupt-sidecar. Trailing batches with
- *  no commit record are returned uncommitted (commit:null). v1 rows are skipped. */
-function parseBatches(rows: readonly SidecarRow[]): ParsedBatch[] {
+ *  A complete-but-INVALID commit is demoted: its batch (and rows) are excluded
+ *  from `batches` and reported in `corrupt` — the fold then adopts the latest
+ *  VALID committed generation (or falls back to v1), and reconcile rebuilds.
+ *  Trailing batches with no commit record are returned uncommitted
+ *  (commit:null). v1 rows are skipped. */
+function parseBatches(rows: readonly SidecarRow[]): {
+  batches: ParsedBatch[]
+  corrupt: Array<{ batchId: string; reason: string }>
+} {
   const committed: ParsedBatch[] = []
+  const corrupt: Array<{ batchId: string; reason: string }> = []
   const open = new Map<string, ParsedBatch>()
   for (const row of rows) {
     if (row.v !== 2) continue
@@ -370,8 +382,14 @@ function parseBatches(rows: readonly SidecarRow[]): ParsedBatch[] {
     if (row.commit === true) {
       const b = open.get(batchId) ?? { batchId, rows: [], commit: null }
       b.commit = row
-      validateCommit(b)
-      committed.push(b)
+      const reason = validateCommit(b)
+      if (reason !== null) {
+        // Demote: drop the batch and its rows entirely (the fold's
+        // committedBatchIds gate would exclude them anyway).
+        corrupt.push({ batchId, reason })
+      } else {
+        committed.push(b)
+      }
       open.delete(batchId)
     } else {
       const b = open.get(batchId) ?? { batchId, rows: [], commit: null }
@@ -379,7 +397,7 @@ function parseBatches(rows: readonly SidecarRow[]): ParsedBatch[] {
       open.set(batchId, b)
     }
   }
-  return [...committed, ...open.values()]
+  return { batches: [...committed, ...open.values()], corrupt }
 }
 
 /** Fold v2 rows: adopt the latest committed generation, then replay every row
@@ -387,7 +405,9 @@ function parseBatches(rows: readonly SidecarRow[]): ParsedBatch[] {
  *  live/recovery/lifecycle/input batches AND the v1 suffix that live ingest /
  *  eviction still append after a rebuild (spec §8.2). The pre-migration v1
  *  prefix and any superseded earlier generations are ignored. Uncommitted
- *  trailing batches are ignored. Complete-invalid commits throw.
+ *  trailing batches are ignored. Complete-invalid commits are demoted (their
+ *  rows excluded, reported in `corrupt`) — the caller rebuilds from the
+ *  provider log rather than degrading to an empty window.
  *
  *  `hasCommittedGeneration` is false when no v2 generation has committed yet
  *  (e.g. a crash before the first commit) — the caller must then fall back to
@@ -399,8 +419,9 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
   history: GenerationRecord[]
   hasCommittedGeneration: boolean
   aliases: Array<{ uuid: string; seq: number }>
+  corrupt: Array<{ batchId: string; reason: string }>
 } {
-  const batches = parseBatches(rows)
+  const { batches, corrupt } = parseBatches(rows)
   const committed = batches.filter((b) => b.commit !== null)
   const genBatches = committed.filter(
     (b) => b.commit!.batchType === 'generation' || b.commit!.batchType === 'reset',
@@ -463,7 +484,7 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
         && b.rows.some((r) => typeof r.seq === 'number' && r.msg !== undefined),
     )
     if (!hasV2Messages) {
-      return { entries: [], generation: 0, history: [], hasCommittedGeneration: false, aliases: [] }
+      return { entries: [], generation: 0, history: [], hasCommittedGeneration: false, aliases: [], corrupt }
     }
     generation = 0
     history = []
@@ -498,14 +519,15 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
     }
   }
   const entries = [...bySeq.values()].sort((a, b) => a.seq - b.seq)
-  return { entries, generation, history, hasCommittedGeneration: true, aliases }
+  return { entries, generation, history, hasCommittedGeneration: true, aliases, corrupt }
 }
 
 /** Truncate raw sidecar text to the last VALID commit record of ANY batchType
  *  (spec §8.2). Returns the committed prefix and the salvaged uncommitted tail
- *  rows. A complete-but-invalid commit record is NOT truncatable — it throws
- *  corrupt-sidecar (the caller must fail closed, not hide corruption). A torn
- *  final line is dropped (it is after the last commit). */
+ *  rows. A complete-but-invalid commit (crash damage) is NOT an anchor: it is
+ *  skipped, its rows fall into the salvaged tail, and the caller rebuilds from
+ *  the provider log — discarding the corrupt projection, not publishing it. A
+ *  torn final line is dropped (it is after the last commit). */
 export function truncateToLastCommit(raw: string): { prefix: string; salvaged: SidecarRow[] } {
   const lines = raw.split('\n')
   const parsed: Array<{ row: SidecarRow; idx: number }> = []
@@ -518,11 +540,13 @@ export function truncateToLastCommit(raw: string): { prefix: string; salvaged: S
       /* torn line — part of the uncommitted tail, dropped from the prefix */
     }
   }
-  // Validates every complete commit; throws corrupt-sidecar on a bad one.
-  parseBatches(parsed.map((p) => p.row))
+  // Corrupt commits are demoted (parseBatches reports them); they must not
+  // serve as a truncation anchor.
+  const { corrupt } = parseBatches(parsed.map((p) => p.row))
+  const corruptIds = new Set(corrupt.map((c) => c.batchId))
   let lastCommitIdx = -1
   for (const { row, idx } of parsed) {
-    if (row.v === 2 && row.commit === true) lastCommitIdx = idx
+    if (row.v === 2 && row.commit === true && !corruptIds.has(row.batchId as string)) lastCommitIdx = idx
   }
   if (lastCommitIdx === -1) return { prefix: '', salvaged: parsed.map((p) => p.row) }
   const prefix = lines.slice(0, lastCommitIdx + 1).join('\n') + '\n'
