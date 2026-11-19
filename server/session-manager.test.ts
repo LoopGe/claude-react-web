@@ -2555,14 +2555,15 @@ describe('SessionManager', () => {
     expect(boundary.handoff).toBeUndefined()
   })
 
-  it('compact() re-guards the phase after the summarize await (a message raced the window)', async () => {
-    // The entry guard cannot see input that arrives DURING the tens-of-seconds
-    // summarize await (another tab / a scheduled send firing). Without the
-    // post-await re-check that message is silently drained by doClear and
-    // lost in the X→Y swap — the 409 turns the race into a loud retryable
-    // error and X survives with its message intact. summarizeForCompact is
-    // held open (mockImplementationOnce overrides beforeEach's immediate
-    // mockResolvedValue) so the send genuinely lands mid-summarize.
+  it('compact() re-guards the phase after the summarize await (activity raced the window)', async () => {
+    // The send gate (requireSendable) rejects user input during the handoff
+    // summarize window, but CLI-driven activity can still flip the phase
+    // mid-await — an unaccounted main-thread assistant frame stamps the
+    // session working. Without the post-await re-check doClear would drain
+    // that turn and lose it in the X→Y swap; the 409 turns the race into a
+    // loud retryable error and X survives. summarizeForCompact is held open
+    // (mockImplementationOnce overrides beforeEach's immediate
+    // mockResolvedValue) so the frame genuinely lands mid-summarize.
     let release!: (v: string) => void
     vi.mocked(summarizeForCompact).mockImplementationOnce(
       () => new Promise<string>((resolve) => { release = resolve }),
@@ -2570,13 +2571,14 @@ describe('SessionManager', () => {
     const info = await sm.create({})
 
     const pending = sm.compact(info.id, { handoff: true })
-    // Input lands in X's queue WHILE the summarize is still in flight.
-    await sm.send(info.id, 'raced the window')
+    await vi.waitFor(() => expect(summarizeForCompact).toHaveBeenCalledTimes(1))
+    // CLI-driven continuation lands WHILE the summarize is still in flight.
+    mockHandles[0].emit({ type: 'assistant', uuid: 'raced', message: { content: 'raced the window' } })
     await tick()
     release('SUMMARY')
 
     await expect(pending).rejects.toMatchObject({ status: 409 })
-    // X was NOT cleared: the raced message stays in the session, undrained.
+    // X was NOT cleared: the raced activity stays in the session, undrained.
     expect(sm.get(info.id)).toBeDefined()
     expect(store.get(info.id)).toBeDefined()
   })
@@ -2678,7 +2680,7 @@ describe('SessionManager', () => {
     // The /handoff client POST waits past the default HTTP timeout for this
     // leg, so a long conversation on a slow aux model gets minutes — not the
     // auxiliary caller's 30s default.
-    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
     try {
       vi.mocked(summarizeForCompact).mockResolvedValueOnce('HAND-OFF')
       const info = await sm.create({})
@@ -2686,13 +2688,126 @@ describe('SessionManager', () => {
       mockHandles[0].emit({ type: 'result', session_id: info.id })
       await tick()
       await sm.compact(info.id, { handoff: true })
-      const deadlineCall = timeoutSpy.mock.calls.findIndex(([ms]) => ms === COMPACT_SUMMARY_TIMEOUT_MS)
-      expect(deadlineCall).toBeGreaterThanOrEqual(0)
-      const opts = vi.mocked(summarizeForCompact).mock.calls[0][2]
-      expect(opts?.signal).toBe(timeoutSpy.mock.results[deadlineCall].value)
+      expect(timeoutSpy.mock.calls.some(([, ms]) => ms === COMPACT_SUMMARY_TIMEOUT_MS)).toBe(true)
+      expect(vi.mocked(summarizeForCompact).mock.calls[0][2]?.signal).toBeInstanceOf(AbortSignal)
     } finally {
       timeoutSpy.mockRestore()
     }
+  })
+
+  it('the handoff deadline timer aborts the summarize with a 504', async () => {
+    // Pins the timer CALLBACK's behavior (abort reason → 504), not just its
+    // scheduling: the mock wires the signal the way the real fetch does.
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+    try {
+      vi.mocked(summarizeForCompact).mockImplementationOnce((_msgs, _target, o) =>
+        new Promise<string>((_, reject) => {
+          o?.signal?.addEventListener('abort', () => reject(o.signal!.reason))
+        }),
+      )
+      const info = await sm.create({})
+      mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+      mockHandles[0].emit({ type: 'result', session_id: info.id })
+      await tick()
+      const pending = sm.compact(info.id, { handoff: true })
+      await vi.waitFor(() => expect(summarizeForCompact).toHaveBeenCalledTimes(1))
+      const deadlineCall = timeoutSpy.mock.calls.find(([, ms]) => ms === COMPACT_SUMMARY_TIMEOUT_MS)
+      expect(deadlineCall).toBeDefined()
+      // Fire the deadline callback now instead of waiting ten minutes.
+      ;(deadlineCall![0] as () => void)()
+      await expect(pending).rejects.toMatchObject({
+        status: 504,
+        message: 'handoff summary timed out after 10 minutes',
+      })
+      expect(sm.get(info.id).phase).toBe('idle')
+    } finally {
+      timeoutSpy.mockRestore()
+    }
+  })
+
+  it('compact({handoff}) marks the session working during summarize and rejects sends', async () => {
+    // The busy marker closes the race window: input arriving mid-summarize
+    // 409s early instead of being drained (or 409ing the seeded clear after
+    // the full aux round-trip).
+    let releaseSummary!: (summary: string) => void
+    vi.mocked(summarizeForCompact).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { releaseSummary = resolve }),
+    )
+    const info = await sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+
+    const pending = sm.compact(info.id, { handoff: true })
+    await vi.waitFor(() => expect(summarizeForCompact).toHaveBeenCalledTimes(1))
+    expect(sm.get(info.id).phase).toBe('working')
+    await expect(sm.send(info.id, 'race')).rejects.toMatchObject({ status: 409 })
+
+    releaseSummary('HAND-OFF')
+    const next = await pending
+    expect(next.id).not.toBe(info.id)
+    expect(sm.get(next.id).phase).toBe('idle')
+  })
+
+  it('cancelHandoff aborts the summarize; the handoff rejects 409 and X survives', async () => {
+    // The mock wires the caller signal the way the real fetch does: an abort
+    // rejects with the signal's reason (the 409 the cancel endpoint carries).
+    vi.mocked(summarizeForCompact).mockImplementationOnce((_msgs, _target, o) =>
+      new Promise<string>((_, reject) => {
+        o?.signal?.addEventListener('abort', () => reject(o.signal!.reason))
+      }),
+    )
+    const info = await sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+
+    const pending = sm.compact(info.id, { handoff: true })
+    await vi.waitFor(() => expect(summarizeForCompact).toHaveBeenCalledTimes(1))
+    expect(sm.cancelHandoff(info.id)).toBe(true)
+    await expect(pending).rejects.toMatchObject({ status: 409, message: 'handoff cancelled' })
+
+    // X is untouched: still live, idle, history intact, marker released.
+    expect(sm.get(info.id).phase).toBe('idle')
+    expect(sm.getHistory(info.id)!).toHaveLength(2)
+    expect(sm.cancelHandoff(info.id)).toBe(false)
+    await expect(sm.send(info.id, 'after cancel')).resolves.toMatchObject({
+      message: { content: 'after cancel' },
+    })
+  })
+
+  it('cancelHandoff is a no-op outside the handoff summarize window', async () => {
+    const info = await sm.create({})
+    // Nothing in flight.
+    expect(sm.cancelHandoff(info.id)).toBe(false)
+    // Plugin-style compact (no handoff flag) is not cancellable through it.
+    let releaseSummary!: (summary: string) => void
+    vi.mocked(summarizeForCompact).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { releaseSummary = resolve }),
+    )
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    const pending = sm.compact(info.id)
+    await vi.waitFor(() => expect(summarizeForCompact).toHaveBeenCalledTimes(1))
+    expect(sm.cancelHandoff(info.id)).toBe(false)
+    releaseSummary('HAND-OFF')
+    const next = await pending
+    // Past summarize (the clear/spawn tail finished): still a no-op.
+    expect(sm.cancelHandoff(next.id)).toBe(false)
+  })
+
+  it('a failed handoff summarize releases the busy marker', async () => {
+    vi.mocked(summarizeForCompact).mockRejectedValueOnce(new Error('aux unavailable'))
+    const info = await sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    await expect(sm.compact(info.id, { handoff: true })).rejects.toThrow('aux unavailable')
+    expect(sm.get(info.id).phase).toBe('idle')
+    await expect(sm.send(info.id, 'still sendable')).resolves.toMatchObject({
+      message: { content: 'still sendable' },
+    })
   })
 
   it('compact() without handoff (idle-compact plugin) keeps the aux default deadline', async () => {

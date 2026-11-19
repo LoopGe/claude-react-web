@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { ElapsedTimer } from './ElapsedTimer'
 
 /** Center-of-transcript "Handing off…" pill, mounted by Chat only while a
@@ -6,11 +7,17 @@ import { ElapsedTimer } from './ElapsedTimer'
  *  wait needs a visible, moving signal beyond the shared clearing blur —
  *  the elapsed counter ticks every second and stays legible (and honest)
  *  even under `prefers-reduced-motion`, where the CSS spinner is suppressed.
- *  Purely informational: `pointer-events: none` in CSS, the composer lockout
- *  is the actual input gate. The tick lives in the shared memoized
- *  ElapsedTimer leaf (startedAt absent → falls back to mount time), so this
- *  card does not re-render each second; mount/unmount IS the reset. */
-export function HandoffOverlay() {
+ *  The veil itself is `pointer-events: none`; the cancel button re-enables
+ *  events for itself only, so the blurred transcript behind stays inert.
+ *  The tick lives in the shared memoized ElapsedTimer leaf (startedAt absent
+ *  → falls back to mount time), so this card does not re-render each second;
+ *  mount/unmount IS the reset. */
+export function HandoffOverlay({ onCancel }: { onCancel: () => Promise<boolean> }) {
+  // Disabled while the cancel POST is in flight AND after it succeeds — a
+  // double-click must not race two cancel POSTs against the summarize
+  // window's closing edge. A FAILED cancel (false / network error) re-enables
+  // the button so the user can retry instead of waiting out the deadline.
+  const [cancelling, setCancelling] = useState(false)
   return (
     <div className="handoff-veil">
       <span className="handoff-veil-spinner" aria-hidden />
@@ -21,6 +28,18 @@ export function HandoffOverlay() {
           (visual-only; sighted users see it tick). */}
       <span className="handoff-veil-label" role="status">Handing off…</span>
       <ElapsedTimer live fallbackToMount className="handoff-veil-elapsed" />
+      <button
+        type="button"
+        className="handoff-veil-cancel"
+        aria-label="Cancel handoff"
+        disabled={cancelling}
+        onClick={() => {
+          setCancelling(true)
+          void onCancel().then((ok) => { if (!ok) setCancelling(false) })
+        }}
+      >
+        Cancel
+      </button>
     </div>
   )
 }

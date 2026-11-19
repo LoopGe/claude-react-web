@@ -847,6 +847,16 @@ export function buildSessionRouter(
     return c.json({ ok: true, session })
   })
 
+  // Cancel an in-flight /handoff summarisation. `cancelled: false` is the
+  // idempotent no-op once the summarize window has closed (nothing in flight,
+  // or already in the non-cancellable clear/spawn tail) — the client keeps
+  // waiting for the handoff POST's own outcome in that case.
+  app.post('/sessions/:id/handoff/cancel', async (c) => {
+    const id = c.req.param('id')
+    sm.get(id) // live-or-persisted existence check; unknown → 404
+    return c.json({ ok: true, cancelled: sm.cancelHandoff(id) })
+  })
+
   // `!` bash mode — run a shell command directly in the session's cwd.
   // Requires confirm:true (destructive-verb convention from git write
   // routes). The command runs unsandboxed in the user's shell; the confirm

@@ -19,13 +19,33 @@ recap/commit-message calls, not a whole-transcript hand-off.
 The deadline is per-caller, owned by the call site that knows who is waiting:
 
 - **Interactive `/handoff`** (`SessionManager.compact(id, { handoff: true })`)
-  passes `AbortSignal.timeout(COMPACT_SUMMARY_TIMEOUT_MS)` — 10 minutes — into
-  `summarizeForCompact` → `callAnthropicMessages`. The client's `/handoff` POST
-  uses `HANDOFF_POST_TIMEOUT_MS` = that deadline + 60 s of headroom for the
-  clear/spawn tail, so the server's result/error wins the race instead of the
-  browser cutting the POST off mid-summarize and orphaning the late X→Y swap.
-  Both constants live in `shared/compact-deadline.ts` so the headroom invariant
-  is structural, not two unlinked magic numbers.
+  creates one `AbortController` stored on the session as `handoffAbort`. A
+  `setTimeout` of `COMPACT_SUMMARY_TIMEOUT_MS` (10 minutes,
+  `shared/compact-deadline.ts`) aborts it with a 504; the cancel endpoint
+  aborts it with a 409. One controller owns both the deadline and the cancel
+  handle, and its PRESENCE is the busy marker: `phaseOf` maps it to 'working'
+  and `requireSendable` 409s sends ("session is handing off"), so input cannot
+  race the seeded clear. The marker is released before `doClear` — the
+  clear/spawn tail is not cancellable. The client's `/handoff` POST uses
+  `HANDOFF_POST_TIMEOUT_MS` = the deadline + 60 s of headroom for that tail,
+  so the server's result/error wins the race instead of the browser cutting
+  the POST off mid-summarize and orphaning the late X→Y swap. Both constants
+  live in the shared module so the headroom invariant is structural.
+- **Cancel surface**: the center "Handing off…" veil pill carries a Cancel
+  button (the veil is `pointer-events: none`; the button re-enables events
+  for itself only). It POSTs `/sessions/:id/handoff/cancel`, which answers
+  `{ cancelled: true }` when the summarize window was aborted — the handoff
+  POST then rejects with the 409 carried as the abort reason and X survives
+  untouched — and `{ cancelled: false }` outside the window (idempotent
+  no-op; the client keeps waiting for the handoff POST's own outcome). The
+  button disables while the cancel POST is in flight and after success, and
+  re-enables on failure so the user can retry. App recognizes the deliberate
+  cancel by the rejection's IDENTITY (409 + 'handoff cancelled',
+  `isDeliberateHandoffCancel`) and skips the error toast — an optimistic
+  client flag could eat a genuine failure racing the cancel response.
+  `unload()` (sleep/delete/shutdown) aborts the marker with 'session closed'
+  on the same lifecycle bound as `execAbort`, so a torn-down session's aux
+  call does not keep burning tokens.
 - **Every other compact caller keeps the auxiliary 30s default** (no caller
   signal): the send-blocking native auto-compact (`runAutoCompact`) is fail-open
   and a user's send awaits it, and the idle-compact plugin's automatic compact
@@ -59,19 +79,28 @@ defect is the text-only total deadline. A gateway silent for 60 s mid-stream is
 the dead-connection case the idle cap exists for; loosening it is a separate
 product decision.
 
+**`AbortSignal.any([cancel, AbortSignal.timeout(...)])`.** Rejected: the
+package's engine floor is Node 20.0.0 and `AbortSignal.any` only exists from
+20.3. A plain `setTimeout` aborting the one controller works on every supported
+Node and yields a clearer 504 message than the DOMException timeout reason.
+
 ## Consequences
 
-- A handoff can now wait up to 10 minutes with the panel blurred and the
-  composer locked. There is no cancel affordance yet (the veil is
-  informational, and no server endpoint aborts an in-flight compact); at this
-  wait length that is a real usability gap, tracked as follow-up work together
-  with a busy/compacting marker for the summarize window.
-- The summarize window leaves the session idle and sendable. A scheduled send
-  or another-tab send landing mid-window makes the seeded clear 409 after the
-  full aux round-trip — a pre-existing race the longer window amplifies. The
-  409 guard keeps it safe (no input is destroyed); the cost is wasted aux work.
+- A handoff can wait up to 10 minutes with the panel blurred and the composer
+  locked; the veil's Cancel button is the escape hatch, and it only reaches
+  the summarize leg — once the clear/spawn tail starts, the swap completes.
+- Sends during the handoff summarize window (other tabs, scheduled sends)
+  409 early at `requireSendable` instead of racing the seeded clear after the
+  full aux round-trip. A scheduled send firing mid-window is marked failed.
+  The `doClear` seeded guard remains as the backstop for activity the send
+  gate cannot stop (CLI-driven continuation flipping the phase mid-await).
 - The client and server deadlines cannot drift apart silently: both derive
   from `shared/compact-deadline.ts`.
+- The veil + composer lockout are App-local to the initiating panel. Other
+  tabs open on the same session see it as idle (`working` derives from
+  `pendingTurns`, and no frame fires on marker transitions); their sends
+  409 with the explicit 'handing off' message. Multi-tab handoff visibility
+  would need a SessionInfo surface + broadcast — separate work.
 
 ## Testing
 
@@ -79,5 +108,12 @@ product decision.
 default; `anthropic-api.test.ts` pins the 30 s default itself, caller-signal
 precedence over it, and external-abort propagation through the streaming idle
 deadline; `session-manager.test.ts` pins the long deadline for
-`compact({ handoff })` and the short default for both the plugin-style
-`compact()` and the send-blocking auto-compact.
+`compact({ handoff })`, the short default for both the plugin-style
+`compact()` and the send-blocking auto-compact, the busy marker (working
+phase + send 409 during the window, released on success and failure), the
+cancel abort (409 'handoff cancelled', X survives, sendable again), the 504
+deadline callback, and the no-op cancel outside the window;
+`sessions-handoff.test.ts` pins the cancel route's response shape and 404;
+`reset-completion.test.ts` pins `isDeliberateHandoffCancel`'s error-identity
+match; `HandoffOverlay.test.tsx` pins the Cancel button's single-fire +
+disable-on-success and re-enable-on-failure behavior.

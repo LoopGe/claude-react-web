@@ -361,6 +361,14 @@ export interface Session {
    *  trigger racing the first (two results settling back-to-back). Runtime-only
    *  — never persisted, reset to false in the trigger's finally. */
   autoCompacting: boolean
+  /** Abort handle + busy marker for the app-side /handoff summarize window.
+   *  Set by compact({handoff:true}) for the duration of the aux summarisation
+   *  ONLY: its presence maps phaseOf to 'working' and makes requireSendable
+   *  409, so input cannot race the seeded clear, and POST /handoff/cancel
+   *  aborts the summarisation through it (the clear/spawn tail is not
+   *  cancellable). Cleared before doClear runs and in finally on every exit
+   *  path. Runtime-only; never persisted. */
+  handoffAbort?: AbortController
   /** Plugin load failures reported by the CLI on `system/init` (SDK 0.3.295
    *  `plugin_errors`). Latest-wins per init frame — the key is omitted when
    *  the load was clean, so an init frame without it CLEARS the list. Not

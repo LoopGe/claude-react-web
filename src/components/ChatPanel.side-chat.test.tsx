@@ -128,6 +128,7 @@ const basePanelProps = {
   onRequestResumeForPanel: noop,
   onClearSession: noop,
   onHandoffSession: noop,
+  onCancelHandoff: async () => true,
   onOpenSettingsTab: noop,
   onShowHelp: noop,
   onOpenSettings: noop,

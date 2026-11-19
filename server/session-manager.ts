@@ -5239,12 +5239,31 @@ export class SessionManager {
     // summarizer always saw subagent tool frames; it still sees subagent
     // frames, including the now-forwarded text/thinking ones).
     const merged = this.mergedHistoryForCompaction(s)
-    // The long deadline is for the interactive /handoff only. The idle-compact
-    // plugin's automatic compact (no handoff flag) rides a 60s host-RPC cap,
-    // and the send-blocking native auto-compact is fail-open — both keep the
-    // auxiliary caller's short 30s default.
-    const signal = opts?.handoff === true ? AbortSignal.timeout(COMPACT_SUMMARY_TIMEOUT_MS) : undefined
-    const summary = await this.summarizeMergedForCompact(s, merged, signal)
+    // Interactive /handoff: one controller owns both the cancel handle and
+    // the deadline, and its presence on the session is the busy marker
+    // (phaseOf → working, requireSendable → 409) so input cannot race the
+    // seeded clear. The marker is released BEFORE doClear — the clear/spawn
+    // tail is not cancellable. The plugin's automatic compact (no handoff
+    // flag) rides a 60s host-RPC cap and the send-blocking native auto-compact
+    // is fail-open, so both keep the auxiliary caller's short 30s default.
+    const handoff = opts?.handoff === true ? new AbortController() : undefined
+    let summary: string
+    if (handoff) {
+      s.handoffAbort = handoff
+      const timer = setTimeout(
+        () => handoff.abort(new HttpError(504, `handoff summary timed out after ${COMPACT_SUMMARY_TIMEOUT_MS / 60_000} minutes`)),
+        COMPACT_SUMMARY_TIMEOUT_MS,
+      )
+      timer.unref?.()
+      try {
+        summary = await this.summarizeMergedForCompact(s, merged, handoff.signal)
+      } finally {
+        clearTimeout(timer)
+        s.handoffAbort = undefined
+      }
+    } else {
+      summary = await this.summarizeMergedForCompact(s, merged)
+    }
     // No post-await phase re-check here: doClear owns that invariant (a
     // seeded clear 409s when input raced the summarize window) and runs it
     // under the op lock immediately before its drain — a check here would
@@ -5264,6 +5283,18 @@ export class SessionManager {
     log.info(`[session ${id}] compact: summarised ${merged.length} messages, seeding fresh session`)
     const attachments = s.handle.getAttachmentCatalog?.()
     return this.clear(id, { seedText: summary, handoff: opts?.handoff === true, attachments })
+  }
+
+  /** Abort an in-flight /handoff summarisation (POST /handoff/cancel).
+   *  Returns true when the abort fired — the handoff POST rejects with the
+   *  409 carried as the abort reason and X survives untouched. False when no
+   *  summarize window is open: nothing in flight, a plugin-style compact, or
+   *  already past it (the clear/spawn tail is not cancellable). Idempotent. */
+  cancelHandoff(id: string): boolean {
+    const s = this.sessions.get(id)
+    if (!s?.handoffAbort) return false
+    s.handoffAbort.abort(new HttpError(409, 'handoff cancelled'))
+    return true
   }
 
   /** Seed a freshly-spawned session Y with a compact hand-off summary.
@@ -5560,12 +5591,13 @@ export class SessionManager {
    *
    *  Reuses the private `unload()` dormant path verbatim; the only added
    *  logic is the idle guard. `phaseOf` returns `'working'` for `clearing`,
-   *  `pendingTurns > 0`, `queueDepth > 0`, `pending.size > 0`, and a live
-   *  background-subagent watcher, so a single `!== 'idle'` check rejects
-   *  every mid-turn race (in-flight turn, queued input, unanswered
-   *  permission prompt, still-running async subagent) — sleeping any of
-   *  those would drop an in-flight assistant response, strand a permission
-   *  awaiter, or abandon a background subagent's completion watcher.
+   *  `handoffAbort` (an in-flight /handoff summarize), `pendingTurns > 0`,
+   *  `queueDepth > 0`, `pending.size > 0`, and a live background-subagent
+   *  watcher, so a single `!== 'idle'` check rejects every mid-turn race
+   *  (in-flight turn, queued input, unanswered permission prompt, still-running
+   *  async subagent, handoff summarize) — sleeping any of those would drop an
+   *  in-flight assistant response, strand a permission awaiter, or abandon a
+   *  background subagent's completion watcher.
    *  Terminated sessions fail `requireLive` (410); already-dormant sessions
    *  aren't in the live map, so `requireLive` → `require` throws 404. */
   async sleep(id: string): Promise<SessionInfo> {
@@ -9348,6 +9380,10 @@ export class SessionManager {
     // fires the SIGKILL promptly rather than letting the orphan run to its
     // timeout / natural completion.
     s.execAbort?.abort()
+    // Abort an in-flight /handoff summarize on the same lifecycle bound: its
+    // aux call must not keep burning tokens against a session being torn down
+    // (the compact tail would 404 anyway once the store entry is gone).
+    s.handoffAbort?.abort(new HttpError(409, 'session closed'))
     // Stop polling any background subagents' transcripts — a late completion
     // must not broadcast into a session being torn down.
     this.stopBackgroundSubagentWatchers(id)
@@ -9874,6 +9910,9 @@ export class SessionManager {
     if (s.recovering) {
       throw new HttpError(409, `session ${id} is recovering from a crash; retry shortly`)
     }
+    if (s.handoffAbort) {
+      throw new HttpError(409, `session ${id} is handing off; retry when the new session is ready`)
+    }
     if (s.handle.closed) {
       log.warn(`[session ${id}] send rejected — provider input is closed`)
       throw new HttpError(409, `session ${id} is not ready for input; retry shortly`)
@@ -10154,6 +10193,7 @@ export class SessionManager {
     // "working" — none of those are safe moments to summarise the
     // conversation (the transcript is still being appended to).
     if (s.clearing) return 'working'
+    if (s.handoffAbort) return 'working'
     if (s.pendingTurns > 0) return 'working'
     if (s.handle.queueDepth > 0) return 'working'
     if (s.pending.size > 0) return 'working'

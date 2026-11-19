@@ -73,3 +73,14 @@ export function shouldClearResetPendingOnError(args: {
 }): boolean {
   return !(args.deleteTranscript === true && args.status === 409)
 }
+
+/** A /handoff POST rejection that IS the user's deliberate cancel: the veil's
+ *  Cancel button aborted the server's summarize, and the 409 carries the abort
+ *  reason's message verbatim. Keyed on the error identity rather than an
+ *  optimistic client flag — a flag set when the cancel POST fires could eat a
+ *  genuine failure (aux 500, the 504 deadline) racing the cancel response. */
+export function isDeliberateHandoffCancel(kind: 'clear' | 'handoff', err: unknown): boolean {
+  return kind === 'handoff'
+    && (err as { status?: number } | null)?.status === 409
+    && (err as Error | null)?.message === 'handoff cancelled'
+}

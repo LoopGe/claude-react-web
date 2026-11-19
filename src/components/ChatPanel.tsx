@@ -194,6 +194,10 @@ export interface ChatPanelProps {
   /** True while this panel's /handoff POST is in flight (App-owned state).
    *  Drives Chat's "Handing off…" pill + composer lockout. */
   handoffing?: boolean
+  /** Cancel this panel's in-flight /handoff summarisation (the veil's Cancel
+   *  button). Resolves true when the server aborted the summarize window;
+   *  App recognizes the resulting 409 abort reason and skips its error toast. */
+  onCancelHandoff: (panelSessionId: string) => Promise<boolean>
   /** Discard every message after a given assistant message (right-click
    *  "discard from here"). Server forks from the anchor and swaps the
    *  panel id; `deleteOriginal` also unlinks the source transcript. */
@@ -312,6 +316,7 @@ export const ChatPanel = memo(function ChatPanel({
   onClearSession,
   onHandoffSession,
   handoffing,
+  onCancelHandoff,
   onDiscard,
   onOpenSettingsTab,
   onShowHelp,
@@ -1323,6 +1328,7 @@ export const ChatPanel = memo(function ChatPanel({
             onClearSession={onClearSession}
             onHandoffSession={onHandoffSession}
             handoffing={handoffing}
+            onCancelHandoff={onCancelHandoff}
             onDiscard={onDiscard}
             onOpenSettingsTab={onOpenSettingsTab}
             onShowHelp={onShowHelp}

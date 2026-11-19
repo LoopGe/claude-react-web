@@ -258,9 +258,11 @@
   }
 }
 /* /handoff wait pill — centered over the blurred transcript while the
-   handoff POST runs (the summarize leg can take tens of seconds; an
-   unmarked blur reads as a frozen panel). Purely informational
-   (pointer-events: none) — the composer lockout is the input gate. The
+   handoff POST runs (the summarize leg can take up to ten minutes; an
+   unmarked blur reads as a frozen panel). The veil is pointer-events: none
+   so the blurred transcript stays inert; the Cancel button inside re-enables
+   events for itself only (.handoff-veil-cancel). The composer lockout is the
+   panel-local input gate; the server also 409s sends during the window. The
    elapsed counter ticks in JS (HandoffOverlay) and stays legible under
    reduced motion, where the spinner is suppressed. Sibling of MessageList
    inside .chat-messages-area (anchored by its position:relative), so the
@@ -314,6 +316,26 @@
 .handoff-veil-elapsed {
   font-variant-numeric: tabular-nums;
   min-width: 3ch;
+}
+/* The only interactive element inside the pointer-events:none veil — the
+   blurred transcript behind it stays inert. */
+.handoff-veil-cancel {
+  pointer-events: auto;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.handoff-veil-cancel:hover:not(:disabled) {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.handoff-veil-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .handoff-veil-spinner {
   width: 12px;

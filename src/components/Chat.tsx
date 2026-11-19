@@ -259,9 +259,13 @@ interface Props {
   onHandoffSession: (panelSessionId: string) => void
   /** True while this panel's /handoff POST is in flight. Renders the
    *  "Handing off…" pill over the blurred transcript AND locks the composer —
-   *  a message sent during the wait would be drained by doClear and silently
-   *  lost in the X→Y swap. */
+   *  the server also 409s sends during the summarize window, so input cannot
+   *  race the X→Y swap from this or any other tab. */
   handoffing?: boolean
+  /** Cancel this panel's in-flight /handoff summarisation — the veil's Cancel
+   *  button. Resolves true when the server aborted the summarize window;
+   *  false (or a failed request) re-enables the button for a retry. */
+  onCancelHandoff: (panelSessionId: string) => Promise<boolean>
   /** Nonce-stamped request to switch the settings tab ?forwarded to
    *  SettingsPanel, which applies it when the nonce changes. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
@@ -469,7 +473,7 @@ export const Chat = memo(function Chat({
   worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, handoffing, settingsTabRequest, messageJumpTarget, searchOpen, onOpenSearch, onCloseSearch, focused, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, composerControls, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, onCancelHandoff, handoffing, settingsTabRequest, messageJumpTarget, searchOpen, onOpenSearch, onCloseSearch, focused, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, composerControls, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -2200,11 +2204,13 @@ export const Chat = memo(function Chat({
           emptyStateExtra={emptyStateExtra}
         />
         </TurnChangesProvider>
-        {/* /handoff wait pill — centered over the blurred transcript. The
-            composer is locked (below); the pill is why. pointer-events:none
-            keeps the context menu working during the wait. Conditional MOUNT
-            (not an `active` prop) — remounting resets the elapsed counter. */}
-        {handoffing ? <HandoffOverlay /> : null}
+        {/* /handoff wait pill — centered over the blurred transcript, with the
+            Cancel button as its only interactive surface. The composer is
+            locked (below); the veil's pointer-events:none keeps the transcript
+            inert while the button re-enables events for itself. Conditional
+            MOUNT (not an `active` prop) — remounting resets the elapsed
+            counter and the button's disabled state. */}
+        {handoffing ? <HandoffOverlay onCancel={() => onCancelHandoff(session.id)} /> : null}
         </div>
         {discardConfirm && (
           <ConfirmDialog

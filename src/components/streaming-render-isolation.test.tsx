@@ -213,7 +213,7 @@ describe('live-turn streaming re-renders only the leaves', () => {
             onOpenSearch={noop}
             onCloseSearch={noop}
             onClearSession={noop}
-            onHandoffSession={noop}
+            onHandoffSession={noop} onCancelHandoff={async () => true}
             focused
           />
         </Profiler>
@@ -404,7 +404,7 @@ describe('live-turn streaming re-renders only the leaves', () => {
           onOpenSearch={noop}
           onCloseSearch={noop}
           onClearSession={noop}
-          onHandoffSession={noop}
+          onHandoffSession={noop} onCancelHandoff={async () => true}
           focused
         />
       </ToastProvider>,
@@ -445,7 +445,7 @@ describe('live-turn streaming re-renders only the leaves', () => {
           onOpenSearch={noop}
           onCloseSearch={noop}
           onClearSession={noop}
-          onHandoffSession={noop}
+          onHandoffSession={noop} onCancelHandoff={async () => true}
           focused
         />
       </ToastProvider>,

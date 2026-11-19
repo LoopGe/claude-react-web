@@ -143,7 +143,7 @@ import { applyAnimationSpeedToDocument } from './utils/motion-preference-dom'
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { evictFromGroups, inheritGroupId, inheritSidebarOrderId, joinGroupOfSource, placeInGroupId } from './utils/session-slot'
-import { resetCompletion, reconcileSnapshotPending, shouldClearResetPendingOnError } from './utils/reset-completion'
+import { resetCompletion, reconcileSnapshotPending, shouldClearResetPendingOnError, isDeliberateHandoffCancel } from './utils/reset-completion'
 import { buildNewLikeThisForm, buildRestartSessionBody } from './utils/new-like-this'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
@@ -732,7 +732,7 @@ export function App() {
   // Subset of clearingIds currently in a /handoff POST (same lifecycle: armed
   // in resetSession('handoff'), released in its finally alongside clearingIds).
   // Drives Chat's "Handing off…" pill + composer lockout — the summarize leg
-  // can run tens of seconds, so the wait needs its own visible state beyond
+  // can run up to ten minutes, so the wait needs its own visible state beyond
   // the shared blur. Cleared sessions never enter this set.
   const [handoffingIds, setHandoffingIds] = useState<Set<string>>(new Set())
   // Set by the guarded `session-removed` handler when the server has confirmed
@@ -4790,7 +4790,13 @@ export function App() {
             })
           }
         }
-        toast.error(`Couldn't ${kind} session: ${(e as Error).message}`)
+        // A deliberate cancel (the veil's Cancel button) rejects the POST with
+        // the server's 409 abort reason — the panel returning to normal IS the
+        // feedback. Keyed on the error identity, so a genuine failure racing
+        // the cancel POST still surfaces its toast.
+        if (!isDeliberateHandoffCancel(kind, e)) {
+          toast.error(`Couldn't ${kind} session: ${(e as Error).message}`)
+        }
       } finally {
         // Release the guard + blur only when this is the last in-flight clear
         // for id. A short-circuited second call (same-tab double-/clear) leaves
@@ -4813,6 +4819,22 @@ export function App() {
 
   const handleClear = useCallback((id: string, opts?: ClearSessionOptions) => resetSession(id, 'clear', opts), [resetSession])
   const handleHandoff = useCallback((id: string) => resetSession(id, 'handoff'), [resetSession])
+
+  /** Cancel an in-flight /handoff summarisation (the veil's Cancel button).
+   *  Resolves true when the server aborted the summarize window — the handoff
+   *  POST then rejects with the 409 'handoff cancelled' abort reason, which
+   *  resetSession's catch recognizes and skips the error toast for. Resolves
+   *  false outside the window (the handoff POST settles on its own) or when
+   *  the cancel request itself fails; the veil re-enables its button so the
+   *  user can retry. */
+  const cancelHandoff = useCallback(async (id: string): Promise<boolean> => {
+    try {
+      const res = await api.post<{ ok: boolean; cancelled: boolean }>(`/sessions/${id}/handoff/cancel`, {})
+      return res.cancelled
+    } catch {
+      return false
+    }
+  }, [])
 
   /** Discard every message after a given assistant message (right-click
    *  "discard from here"). The server forks from the anchor (inclusive) and
@@ -5506,6 +5528,7 @@ export function App() {
                       onClearSession={handleClear}
                       onHandoffSession={handleHandoff}
                       handoffing={handoffingIds.has(s.id)}
+                      onCancelHandoff={cancelHandoff}
                       onDiscard={handleDiscard}
                       onOpenSettingsTab={openSettingsTab}
                       onShowHelp={showHelpWithCommands}

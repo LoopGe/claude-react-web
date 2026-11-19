@@ -48,3 +48,40 @@ describe('session handoff route', () => {
     expect(res.status).toBe(410)
   })
 })
+
+describe('session handoff cancel route', () => {
+  function makeCancelApp(opts: { exists?: boolean; cancelled?: boolean }) {
+    const sm = {
+      get: vi.fn(() => {
+        if (opts.exists === false) throw new HttpError(404, 'unknown session')
+        return {}
+      }),
+      cancelHandoff: vi.fn(() => opts.cancelled ?? false),
+    }
+    const app = new Hono()
+    app.onError(createErrorHandler('[sessions-handoff-cancel-test]'))
+    app.route('/', buildSessionRouter(sm as unknown as SessionManager))
+    return { app, sm }
+  }
+
+  it('reports cancelled:true when the summarize window was aborted', async () => {
+    const { app, sm } = makeCancelApp({ cancelled: true })
+    const res = await app.request('/sessions/X/handoff/cancel', { method: 'POST' })
+    expect(res.status).toBe(200)
+    await expect(res.json()).resolves.toEqual({ ok: true, cancelled: true })
+    expect(sm.cancelHandoff).toHaveBeenCalledWith('X')
+  })
+
+  it('reports cancelled:false outside the summarize window (idempotent no-op)', async () => {
+    const { app } = makeCancelApp({ cancelled: false })
+    const res = await app.request('/sessions/X/handoff/cancel', { method: 'POST' })
+    expect(res.status).toBe(200)
+    await expect(res.json()).resolves.toEqual({ ok: true, cancelled: false })
+  })
+
+  it('404 for an unknown session', async () => {
+    const { app } = makeCancelApp({ exists: false })
+    const res = await app.request('/sessions/ghost/handoff/cancel', { method: 'POST' })
+    expect(res.status).toBe(404)
+  })
+})

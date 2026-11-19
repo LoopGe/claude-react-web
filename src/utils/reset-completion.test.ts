@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resetCompletion, reconcileSnapshotPending, shouldClearResetPendingOnError, snapshotPendingAction } from './reset-completion'
+import { resetCompletion, reconcileSnapshotPending, shouldClearResetPendingOnError, snapshotPendingAction, isDeliberateHandoffCancel } from './reset-completion'
 
 describe('resetCompletion — how the /clear|/handoff POST continuation finishes the X→Y swap', () => {
   it('swaps when the server created Y and X still hosts an open panel', () => {
@@ -7,8 +7,8 @@ describe('resetCompletion — how the /clear|/handoff POST continuation finishes
   })
 
   it('tears X down when the server created Y but the panel closed mid-wait', () => {
-    // /handoff's summarize leg widens the window from ~100ms to tens of
-    // seconds. swapSession needs an open panel, so the swap is skipped — but
+    // /handoff's summarize leg widens the window from ~100ms to minutes.
+    // swapSession needs an open panel, so the swap is skipped — but
     // the client must NOT no-op: the clearingIds guard swallowed
     // session-removed(X) (X is still in `sessions`) and session-created(Y)
     // parked Y behind an evicting pending marker that only swapSession
@@ -71,5 +71,22 @@ describe('shouldClearResetPendingOnError', () => {
   it('clears an owned pending replacement for other failures', () => {
     expect(shouldClearResetPendingOnError({ deleteTranscript: true, status: 500 })).toBe(true)
     expect(shouldClearResetPendingOnError({ status: 409 })).toBe(true)
+  })
+})
+
+describe('isDeliberateHandoffCancel', () => {
+  const apiError = (status: number, message: string) => Object.assign(new Error(message), { status })
+
+  it('matches only the handoff cancel abort reason (409 + exact message)', () => {
+    expect(isDeliberateHandoffCancel('handoff', apiError(409, 'handoff cancelled'))).toBe(true)
+  })
+
+  it('does not match other 409s, the 504 deadline, or clear errors', () => {
+    // A genuine failure racing the cancel POST must still surface its toast.
+    expect(isDeliberateHandoffCancel('handoff', apiError(409, 'session X is working; retry when idle'))).toBe(false)
+    expect(isDeliberateHandoffCancel('handoff', apiError(504, 'handoff summary timed out after 10 minutes'))).toBe(false)
+    expect(isDeliberateHandoffCancel('handoff', apiError(500, 'Anthropic API 500'))).toBe(false)
+    expect(isDeliberateHandoffCancel('clear', apiError(409, 'handoff cancelled'))).toBe(false)
+    expect(isDeliberateHandoffCancel('handoff', new Error('network down'))).toBe(false)
   })
 })
