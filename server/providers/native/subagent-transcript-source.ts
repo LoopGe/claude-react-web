@@ -1,5 +1,5 @@
 import type { AgentMessage } from '../../agent-message.js'
-import type { RawLine } from '../../history-reader.js'
+import type { RawLine } from '../../../shared/transcript-format.js'
 import { createPushable } from '../../pushable.js'
 import type {
   SubagentTranscriptFrame,

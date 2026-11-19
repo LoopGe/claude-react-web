@@ -33,8 +33,7 @@
 // past a '\n', so the slice starts on a UTF-8 boundary.
 
 import { readFile, stat } from 'node:fs/promises'
-import type { RawLine } from '../../../history-reader.js'
-import { isRenderableSdkMessage } from '../../../history-utils.js'
+import { isRenderableSdkMessage, type RawLine } from '../../../../shared/transcript-format.js'
 import { NativeSessionStorageError } from './errors.js'
 import { isSidechainEvent, parseEventLine } from './format.js'
 import type { NativeLogEvent } from './format.js'

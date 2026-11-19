@@ -25,7 +25,7 @@
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { normalize, paginateRenderable } from '../../../history-reader.js'
-import type { HistoryEntry, HistoryPage, HistoryReadResult, RawLine } from '../../../history-reader.js'
+import type { HistoryEntry, HistoryPage, HistoryReadResult, RawLine } from '../../../../shared/transcript-format.js'
 import { nativeHistoryCache } from './cache.js'
 import { isSidechainEvent, parseEventLine, parseHeaderLine } from './format.js'
 import type { NativeCompactEvent } from './format.js'

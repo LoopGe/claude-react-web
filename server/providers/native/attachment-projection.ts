@@ -1,4 +1,4 @@
-import type { RawLine } from '../../history-reader.js'
+import type { RawLine } from '../../../shared/transcript-format.js'
 import type { UploadStore } from '../../upload-store.js'
 import { createLogger } from '../../log.js'
 import type { NativeFileAttachment } from './session-log/format.js'

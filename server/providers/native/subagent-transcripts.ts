@@ -3,7 +3,7 @@
 // the reader selects one agent's direct conversation from the shared cache and
 // reuses the Claude transcript normalizer for its wire shape.
 
-import type { RawLine } from '../../history-reader.js'
+import type { RawLine } from '../../../shared/transcript-format.js'
 import { normalizeSubagentLine } from '../../subagent-transcripts.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import type { NativeSubagentCatalogEntry } from './session-log/subagents.js'

@@ -43,7 +43,9 @@
 import { open, readFile, readdir, stat, unlink, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { claudeConfigDir } from './claude-config-dir.js'
-import { isRenderableSdkMessage, trimLargeToolResults } from './history-utils.js'
+import { trimLargeToolResults } from './history-utils.js'
+import { isRenderableSdkMessage, isSafeSessionId } from '../shared/transcript-format.js'
+import type { HistoryEntry, HistoryPage, HistoryReadResult, RawLine } from '../shared/transcript-format.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createLogger } from './log.js'
 import { condensePromptPreview } from '../shared/prompt-preview.js'
@@ -52,51 +54,11 @@ import { extractMessageSearchSegments } from '../shared/search/extract.js'
 
 const log = createLogger('history')
 
-export interface HistoryPage {
-  /** Renderable messages in chronological order, normalized to the live
-   *  SDKMessage wire shape. */
-  messages: unknown[]
-  /** Total number of renderable messages in the transcript. */
-  totalCount: number
-  /** Disk index of the first message in `messages` (0-based). */
-  startIndex: number
-  /** True when there are older messages before `startIndex`. */
-  hasMore: boolean
-}
-
-export interface HistoryEntry {
-  /** Renderable-message index in chronological order after clear-boundary filtering. */
-  index: number
-  /** 0-based RAW log line / native event ordinal BEFORE afterUuid/renderability
-   *  filtering (spec §4). Stable identity for UUID-less provider rows; filtering
-   *  must never renumber it. */
-  sourceOrdinal: number
-  message: unknown
-}
-
-/** Ordered-reconcile history read (spec §7.1). `missing` is only ENOENT/no
- *  transcript; permission/IO/mid-parse errors throw. `boundary-not-found` means
- *  an explicit afterUuid was absent. `tornTail` marks a crash-torn final line
- *  whose verified prefix is returned. */
-export interface HistoryReadResult {
-  status: 'ok' | 'missing' | 'boundary-not-found'
-  entries: HistoryEntry[]
-  tornTail?: boolean
-}
-
-export interface RawLine {
-  type?: string
-  subtype?: string
-  uuid?: string
-  sessionId?: string
-  session_id?: string
-  isMeta?: boolean
-  isSidechain?: boolean
-  /** CLI compaction-summary frame — not a user prompt. */
-  isCompactSummary?: boolean
-  message?: { role?: string; content?: unknown }
-  [k: string]: unknown
-}
+// The transcript-format types + the session-id guard live in
+// shared/transcript-format.ts (neutral, host-free); this module re-exports
+// them so host consumers can keep importing from here.
+export type { HistoryEntry, HistoryPage, HistoryReadResult, RawLine } from '../shared/transcript-format.js'
+export { isSafeSessionId } from '../shared/transcript-format.js'
 
 export interface TranscriptFile {
   path: string
@@ -450,11 +412,6 @@ export async function deleteTranscriptFile(sessionId: string): Promise<boolean> 
   }
 }
 
-export function isSafeSessionId(sessionId: string): boolean {
-  const safeSessionId = path.basename(sessionId)
-  return Boolean(safeSessionId) && safeSessionId === sessionId && safeSessionId !== '.' && safeSessionId !== '..'
-}
-
 /** Strictly delete a session's main transcript and its companion directory
  *  (including subagent transcripts). Unlike deleteTranscriptFile(), failures
  *  propagate so a permanent-delete caller cannot report a partial cleanup as
@@ -498,7 +455,7 @@ function toolResultParentId(content: unknown): string | null {
 
 /** True if a raw JSONL line should appear in the rendered transcript.
  *  Delegates to the shared isRenderableSdkMessage predicate in
- *  history-utils.ts (BROADCAST_SYSTEM_SUBTYPES + tool_use_summary +
+ *  shared/transcript-format.ts (BROADCAST_SYSTEM_SUBTYPES + tool_use_summary +
  *  interrupt-placeholder + isMeta/isSidechain gates) — the SAME judgment the
  *  live seq-store ingest uses, so disk pages and the seq window can't drift
  *  apart. `result` lines don't exist on disk (the SDK never writes them);

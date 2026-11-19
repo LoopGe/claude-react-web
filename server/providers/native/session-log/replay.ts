@@ -9,7 +9,7 @@
 // dependency, used to mint synthetic event identities.
 
 import { randomUUID } from 'node:crypto'
-import type { RawLine } from '../../../history-reader.js'
+import type { RawLine } from '../../../../shared/transcript-format.js'
 import { isRetainedThinkingBlock } from '../frames.js'
 import { isSidechainEvent } from './format.js'
 import type { NativeCompactEvent, NativeLogEvent, NativeUserEvent } from './format.js'
