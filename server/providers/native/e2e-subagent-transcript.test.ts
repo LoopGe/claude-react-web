@@ -236,6 +236,7 @@ function makeHub(fx: Fixture): ProviderSubagentTranscriptHub {
       stateDir: fx.stateDir,
       subscribeLive: (id, emit, onTermination) =>
         fx.sm.subscribeLiveSubagentFrames(id, emit, onTermination),
+      transcriptPort: makeNativePorts().transcript,
     }),
   })
   hubs.push(hub)

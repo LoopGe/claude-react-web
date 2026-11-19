@@ -12,6 +12,7 @@ import { api } from '../hooks/useApi'
 import { nativeHistoryCache } from '../../server/providers/native/session-log/cache'
 import { NativeSessionLog } from '../../server/providers/native/session-log/log'
 import { readNativeSubagentTranscript } from '../../server/providers/native/subagent-transcripts'
+import { makeNativePorts } from '../../server/providers/native-host-adapters'
 
 // 不 mock hook 本体——灌真实 store,验证 MessageList 从草稿 store 渲染。
 vi.mock('../hooks/useWsHub', () => ({
@@ -116,7 +117,7 @@ describe('SubagentTranscriptDialog', () => {
       })
       await log.flush()
 
-      const messages = await readNativeSubagentTranscript(stateDir, sessionId, agentId)
+      const messages = await readNativeSubagentTranscript(stateDir, sessionId, agentId, makeNativePorts().transcript)
       expect(messages.map((frame) => (frame as { uuid?: unknown }).uuid)).toEqual([
         `native-subagent-prompt:${agentId}`,
         'native-assistant',

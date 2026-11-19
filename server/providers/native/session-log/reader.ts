@@ -24,7 +24,7 @@
 
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { normalize, paginateRenderable } from '../../../history-reader.js'
+import type { NativeTranscriptPort } from '../ports.js'
 import type { HistoryEntry, HistoryPage, HistoryReadResult, RawLine } from '../../../../shared/transcript-format.js'
 import { nativeHistoryCache } from './cache.js'
 import { isSidechainEvent, parseEventLine, parseHeaderLine } from './format.js'
@@ -173,6 +173,7 @@ function filterAfterUuid(lines: readonly RawLine[], afterUuid?: string): RawLine
 export async function readNativeHistoryEntries(
   stateDir: string,
   id: string,
+  transcriptPort: NativeTranscriptPort,
   opts: { afterUuid?: string } = {},
 ): Promise<HistoryEntry[]> {
   const lines = await loadFlooredLines(stateDir, id)
@@ -193,7 +194,7 @@ export async function readNativeHistoryEntries(
       sourceOrdinal: index,
       // No trim: this path feeds search, which reads content to build snippets
       // and never ships the full message over WS.
-      message: normalize(line, id, false),
+      message: transcriptPort.normalize(line, id, false),
     })
   }
   return entries
@@ -202,12 +203,13 @@ export async function readNativeHistoryEntries(
 export async function readNativeHistoryPage(
   stateDir: string,
   id: string,
+  transcriptPort: NativeTranscriptPort,
   opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string },
 ): Promise<HistoryPage> {
   const lines = await loadFlooredLines(stateDir, id)
   if (!lines) return emptyPage()
   const stream = filterAfterUuid(withRepair(lines), opts.afterUuid).map(publicNativeHistoryLine)
-  return paginateRenderable(stream, id, opts)
+  return transcriptPort.paginateRenderable(stream, id, opts)
 }
 
 /** The compact boundary occurrence the live native path emits but the public
@@ -253,6 +255,7 @@ async function nativeLogTornTail(stateDir: string, id: string): Promise<boolean>
 export async function readNativeHistorySnapshot(
   stateDir: string,
   id: string,
+  transcriptPort: NativeTranscriptPort,
   opts: { afterUuid?: string } = {},
 ): Promise<HistoryReadResult> {
   const loaded = await nativeHistoryCache.load(stateDir, id)
@@ -273,7 +276,7 @@ export async function readNativeHistorySnapshot(
   const entries: HistoryEntry[] = []
   for (const [index, line] of stream.entries()) {
     if (isSidechainEvent(line)) continue
-    entries.push({ index, sourceOrdinal: index, message: normalize(line, id, false) })
+    entries.push({ index, sourceOrdinal: index, message: transcriptPort.normalize(line, id, false) })
   }
   const tornTail = await nativeLogTornTail(stateDir, id)
   return tornTail ? { status: 'ok', entries, tornTail: true } : { status: 'ok', entries }

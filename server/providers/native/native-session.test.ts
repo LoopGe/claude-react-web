@@ -72,6 +72,8 @@ vi.mock('node:http', async (importOriginal) => {
   return { ...actual, request: fakeRequest }
 })
 
+const transcriptPort = makeNativePorts().transcript
+
 function textTurn(text: string): CanonicalEvent[] {
   return [
     { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
@@ -986,7 +988,7 @@ describe('NativeSession', () => {
     expect(rebuilt.at(-1)?.role).toBe('assistant')
     // Not a renderable line: the transcript reader excludes it.
     await (session as unknown as { log: { flush: () => Promise<void> } }).log.flush()
-    const entries = await readNativeHistoryEntries(dir, 'steer')
+    const entries = await readNativeHistoryEntries(dir, 'steer', transcriptPort)
     expect(entries.length).toBeGreaterThan(0)
     expect(entries.some((entry) => JSON.stringify(entry.message).includes('[ADDITIONAL GUIDANCE]'))).toBe(false)
     await session.destroy()
@@ -5647,10 +5649,10 @@ describe('NativeSession', () => {
         expect(JSON.stringify(toolResult)).toContain('integrity')
         expect(JSON.stringify(frames)).not.toContain(path)
         await vi.waitFor(async () => {
-          const entries = await readNativeHistoryEntries(dir, 'attachment-read')
+          const entries = await readNativeHistoryEntries(dir, 'attachment-read', transcriptPort)
           expect(JSON.stringify(entries)).toContain('attachment-call')
         })
-        expect(JSON.stringify(await readNativeHistoryEntries(dir, 'attachment-read'))).not.toContain(path)
+        expect(JSON.stringify(await readNativeHistoryEntries(dir, 'attachment-read', transcriptPort))).not.toContain(path)
 
         await provider.deleteTranscript('attachment-read')
         expect(uploadStore.attachmentReferences.hasReference('upload-1')).toBe(false)

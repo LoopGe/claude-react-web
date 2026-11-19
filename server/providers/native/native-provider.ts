@@ -141,7 +141,7 @@ export class NativeProvider implements AgentProvider {
       return loaded?.subagents.entries.map((entry) => entry.agentId) ?? []
     },
     readTranscript: (ref: ProviderSessionRef, agentId: string): Promise<unknown[]> =>
-      readNativeSubagentTranscript(this.stateDir, ref.id, agentId),
+      readNativeSubagentTranscript(this.stateDir, ref.id, agentId, this.ports.transcript),
   }
 
   /** Test seam: when set, replaces the real network streamer for every turn.
@@ -301,15 +301,15 @@ export class NativeProvider implements AgentProvider {
     id: string,
     opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string },
   ): Promise<HistoryPage> {
-    return readNativeHistoryPage(this.stateDir, id, opts)
+    return readNativeHistoryPage(this.stateDir, id, this.ports.transcript, opts)
   }
 
   readHistoryEntries(id: string, opts: { afterUuid?: string }): Promise<HistoryEntry[]> {
-    return readNativeHistoryEntries(this.stateDir, id, opts)
+    return readNativeHistoryEntries(this.stateDir, id, this.ports.transcript, opts)
   }
 
   readHistoryForReconcile(id: string, opts: { afterUuid?: string }): Promise<HistoryReadResult> {
-    return readNativeHistorySnapshot(this.stateDir, id, opts)
+    return readNativeHistorySnapshot(this.stateDir, id, this.ports.transcript, opts)
   }
 
   hasTranscript(meta: SessionMeta): Promise<boolean> {

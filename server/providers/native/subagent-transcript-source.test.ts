@@ -9,6 +9,9 @@ import type { NativeEventInput } from './session-log/format.js'
 import { NativeSessionLog } from './session-log/log.js'
 import { NativeSubagentTranscriptSource } from './subagent-transcript-source.js'
 import { readNativeSubagentTranscript } from './subagent-transcripts.js'
+import { makeNativePorts } from '../native-host-adapters.js'
+
+const transcriptPort = makeNativePorts().transcript
 
 const SESSION = 'native-live-session'
 const AGENT = 'agent-live'
@@ -67,7 +70,7 @@ function makeSource(
     terminate?: LiveTerminate,
   ) => (() => void) | null = subscribeLive,
 ): NativeSubagentTranscriptSource {
-  const source = new NativeSubagentTranscriptSource({ stateDir, subscribeLive: subscribe })
+  const source = new NativeSubagentTranscriptSource({ stateDir, subscribeLive: subscribe, transcriptPort })
   sources.add(source)
   return source
 }
@@ -267,7 +270,7 @@ describe('NativeSubagentTranscriptSource', () => {
     publish(outerErrorResult())
     await vi.waitFor(() => expect(received.frames).toHaveLength(2))
 
-    const disk = await readNativeSubagentTranscript(stateDir, SESSION, AGENT)
+    const disk = await readNativeSubagentTranscript(stateDir, SESSION, AGENT, transcriptPort)
     const diskUuids = disk.map((frame) => (frame as { uuid?: unknown }).uuid)
     expect(uuids(received.frames)).toEqual(diskUuids)
     expect(diskUuids).toEqual(['genuine-live'])
@@ -282,7 +285,7 @@ describe('NativeSubagentTranscriptSource', () => {
     publish(genuinePrompt())
     await vi.waitFor(() => expect(received.frames).toHaveLength(2))
 
-    const disk = await readNativeSubagentTranscript(stateDir, SESSION, AGENT)
+    const disk = await readNativeSubagentTranscript(stateDir, SESSION, AGENT, transcriptPort)
     const diskUuids = disk.map((frame) => (frame as { uuid?: unknown }).uuid)
     expect(uuids(received.frames)).toEqual(diskUuids)
     expect(diskUuids).toEqual(['genuine-live'])
