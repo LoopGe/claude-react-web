@@ -9224,6 +9224,49 @@ describe('SessionManager', () => {
       expect(win.totalCount).toBe(4)
     })
 
+    it('post-compact send is delivered, not stranded; the summary carries its marker (stuck-session capstone)', async () => {
+      // The 2026-11-19 stuck session: manual /compact, then "继续" steered
+      // into a phantom turn and never delivered, rendered as recap context.
+      // Probe-verified CLI sequence (SDK 0.3.311 / CLI 2.1.311): boundary →
+      // unmarked synthetic summary → empty local-command result → isReplay
+      // stdout AFTER the result (the frame that used to re-arm turnActive).
+      const info = await sm.create({ cwd: TEST_CWD })
+      const h = mockHandles[0]
+      await sm.send(info.id, '/compact')
+      h.emit({ type: 'system', subtype: 'compact_boundary', uuid: 'cb-1' })
+      h.emit({
+        type: 'user', uuid: 'sum-1', parent_tool_use_id: null, isSynthetic: true,
+        message: { role: 'user', content: [{ type: 'text', text: 'This session is being continued from a previous conversation.' }] },
+      })
+      h.emit({ type: 'result', subtype: 'success', uuid: 'r-compact', num_turns: 0, result: '', local_command: 'compact' })
+      h.emit({
+        type: 'user', uuid: 'out-1', parent_tool_use_id: null, isReplay: true,
+        message: { role: 'user', content: '<local-command-stdout>Compacted </local-command-stdout>' },
+      })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      const s = (sm as unknown as { sessions: Map<string, { turnActive?: boolean; pendingTurns: number; workingSince?: number; steeredInFlight: Map<string, unknown>; history: Array<{ uuid?: string; consumedAt?: number; isCompactSummary?: boolean }> }> }).sessions.get(info.id)!
+      expect(s.turnActive).toBe(false)
+      expect(s.pendingTurns).toBe(0)
+
+      const sent = await sm.send(info.id, '继续') as { uuid: string }
+      // Delivered through the SDK input queue, not the supplement queue.
+      expect(s.steeredInFlight.size).toBe(0)
+      await waitFor(() => h.consumed.some((m) => (m as { uuid?: string }).uuid === sent.uuid))
+      const ringEntry = s.history.find((m) => m.uuid === sent.uuid)
+      expect(ringEntry?.consumedAt).toEqual(expect.any(Number))
+      // The summary is in the ring, marked; the user message is NOT a summary.
+      const sum = s.history.find((m) => m.uuid === 'sum-1')
+      expect(sum?.isCompactSummary).toBe(true)
+      expect(ringEntry?.isCompactSummary).toBeUndefined()
+      // The stdout forwarded too (hidden at render, but present).
+      expect(s.history.some((m) => m.uuid === 'out-1')).toBe(true)
+
+      // The next result clears the turn through the normal path.
+      h.emit({ type: 'result', subtype: 'success', uuid: 'r-2', num_turns: 1, result: 'ok' })
+      await waitFor(() => s.pendingTurns === 0)
+      expect(s.workingSince).toBeUndefined()
+    })
+
     it('fork restart reconcile never re-appends an inherited prompt (v→u bridge)', async () => {
       const sourceCwd = '/tmp/fork-bridge-src'
       const source = await sm.create({ cwd: sourceCwd })

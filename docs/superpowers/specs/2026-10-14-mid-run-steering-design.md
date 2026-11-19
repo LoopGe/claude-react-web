@@ -4,6 +4,14 @@
 - 状态：对话中逐节评审通过，待 spec 审阅
 - 来源：multica `claude_supplement.go` 模式移植 + 本仓库 SDK 0.3.296 能力验证
 
+> **2026-11-19 修订**：本文的「queued 消息按 FIFO 顺序 echo」不变量已退役——pinned SDK
+> （0.3.311 / CLI 2.1.311）实测不再回声宿主 prompt，流回的 top-level user 帧全是 CLI
+> 合成帧。`promptUuids` 配对改为 echo 时 exact-uuid（`onPromptEcho`），消费事实 `c`
+> （`onInputConsumed`）驱动撤回资格与 interrupt 死状态自愈；turn 终结语义由 pump 显式
+> 传递 `settlesTurn`（local-command 的 empty result 是 turn 终结，须关 admission）。
+> 详见 [user-frame-origin-identity](../../../.agents/notes/implemented/architecture/2026-11-19-user-frame-origin-identity.md)。
+> 下文保留历史设计原文，FIFO 相关注释以本修订为准。
+
 ## 1. 背景与动机
 
 现状：agent 工作期间用户发送的消息进入 Pushable 输入队列，等当前轮 `result` 落地后才作为下一轮 prompt 被 SDK 消费。用户无法在 agent 跑偏时即时纠偏——只能干等或 interrupt。
@@ -30,7 +38,7 @@ multica 在生产验证了该模式的全部边界（子代理继承、admission
 
 1. mid-turn 纯文本消息在下一个钩子边界被模型消化并影响当前轮行为
 2. UI 如实呈现注入状态（注入中 → 已注入 / 已转为下一轮）
-3. 不破坏现有语义：queued 消息流转、`promptUuids` FIFO 配对、rewind anchor、snapshot 捕获、disk replay、interrupt withdrawal
+3. 不破坏现有语义：queued 消息流转、`promptUuids` 配对（2026-11-19 起 exact-uuid + 消费事实 c，见顶部修订）、rewind anchor、snapshot 捕获、disk replay、interrupt withdrawal
 4. 零丢失：任何未被注入的消息最终要么转为下一轮 prompt，要么被用户显式撤回
 
 **非目标（v1 明确不做）**
@@ -141,7 +149,7 @@ steering 开(config) ∧ s.handle.supportsSteering ∧ 纯文本 ∧ mid-turn(s.
        steeredInFlight.set(uuid, userMsg)     // manager 侧 uuid→消息映射（requeue 时取原文）
        steeredStore.record(...)               // sidecar 立即落盘
        【跳过】handle.enqueueUserMessage（不进 SDK 输入队列）
-       【跳过】recordPromptUuid（永不 echo，进 FIFO 会永久卡配对）
+       【跳过】recordPromptUuid（steer 不进 SDK 队列、不被消费，无 ledger 条目；requeue 时补录）
        【跳过】snapshot anchor 捕获 / rewind（不改文件，无 anchor 语义）
      拒绝（admission closed）：落到原路径（排队）
   → 否则：原路径一字不改
@@ -164,7 +172,7 @@ for each uuid:
   handle.enqueueUserMessage({ ...userMsg })   // 原文转投 SDK 输入队列，下一轮正常消费
   ring 条目：steeredAt → requeuedAt           // 客户端回到正常 queued→consumed 流转
   广播 message-steered {uuid, state:'requeued'}
-  recordPromptUuid(s, userMsg)                // 【易漏】现在才会 echo，必须补录进 FIFO 配对
+  recordPromptUuid(s, userMsg)                // 【易漏】requeue 后才进 SDK 队列被消费，必须补录 ledger（消费事实 c 的落点）
   sidecar 更新（requeuedAt）
   steeredInFlight.delete(uuid)
 ```
