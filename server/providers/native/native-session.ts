@@ -20,9 +20,7 @@
 import { createPushable, type Pushable } from '../../pushable.js'
 import { createLogger } from '../../log.js'
 import { callAnthropicMessages } from '../../anthropic-api.js'
-import { config, DEFAULT_PROFILE } from '../../config.js'
 import type { ProviderProfile } from '../../../shared/profile.js'
-import { resolveActiveProfile } from '../../profiles.js'
 import { effortLevelsForModel, supportsFastModeForModel } from '../../../shared/model-capability.js'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { ProviderAttachmentOccurrence, ProviderInterruptReceipt, ProviderResetBaseSettings, ProviderSessionHandle } from '../types.js'
@@ -237,15 +235,15 @@ export interface NativeSessionOptions {
    *  starting point: `applyFlagSettings({fastMode})` keeps a live field. */
   fastMode?: boolean
   /** The resolved provider profile, threaded from the manager. `supportedModels`
-   *  prefers its model list; absent (unit tests) = the global config's. */
+   *  prefers its model list; absent = the ConfigPort's active profile / model list. */
   profile?: ProviderProfile
   /** Shared route-capacity resolver owned by the provider. Direct unit
    * sessions without one retain the 200K fallback. */
   modelContext?: NativeModelContextResolver
   /** Host-service ports threaded from the provider (stored on opts; the
-   *  per-service call sites consume them). Absent in direct unit sessions
-   *  that construct the handle without a provider. */
-  ports?: NativeHostPorts
+   *  per-service call sites consume them). Config reads (profile resolution,
+   *  fidelity flags, auto-compact ratio, model list) go through ports.config. */
+  ports: NativeHostPorts
   /** Resolved lazily, on the first real network turn — a session must be
    *  creatable on an unconfigured machine (the failure surfaces as a loud
    *  turn error, not a create-time throw). */
@@ -431,7 +429,7 @@ export class NativeSession implements ProviderSessionHandle {
     this.baseSkillPolicy = Array.isArray(opts.skills) ? [...opts.skills] : opts.skills
     this.baseToolProfile = opts.toolProfile ? structuredClone(opts.toolProfile) : undefined
     this.model = this.baseModel
-    this.profile = opts.profile ?? resolveActiveProfile(config.profiles, config.activeProfileId, DEFAULT_PROFILE)
+    this.profile = opts.profile ?? opts.ports.config.activeProfile()
     this.permissionMode = this.basePermissionMode ?? 'default'
     this.thinking = opts.thinking
     this.thinkingDisplay = opts.thinking && 'display' in opts.thinking ? opts.thinking.display : undefined
@@ -1243,7 +1241,7 @@ export class NativeSession implements ProviderSessionHandle {
           const assigned = assignPdfModelForms(
             normalized.content,
             this.pdfBudgets,
-            config.nativeAttachmentFidelity && config.nativePdfDocuments,
+            this.opts.ports.config.nativeAttachmentFidelity && this.opts.ports.config.nativePdfDocuments,
           )
           pending.persisted = { ...normalized, content: assigned.content }
           pending.pdfReservations = assigned.reservations
@@ -1752,7 +1750,7 @@ export class NativeSession implements ProviderSessionHandle {
         maxTokens: contextWindow,
         model,
         autoCompactThreshold: outputReservedWindow > 0
-          ? Math.min(Math.floor(contextWindow * config.nativeAutoCompactRatio), outputReservedWindow)
+          ? Math.min(Math.floor(contextWindow * this.opts.ports.config.nativeAutoCompactRatio), outputReservedWindow)
           : 0,
       }
     }
@@ -1823,11 +1821,11 @@ export class NativeSession implements ProviderSessionHandle {
   /** The model report, in the SDK's camelCase shape (the manager translates
    *  it to the wire's snake_case). The native provider has no CLI to ask, so
    *  the list is the configured one (`opts.profile?.modelList ??
-   *  config.modelList`) and the capabilities come from the SAME model-id
+   *  ports.config.modelList`) and the capabilities come from the SAME model-id
    *  classification the request builder gates effort/fast mode on — the
    *  picker and the wire can therefore never disagree about a model. */
   async supportedModels(): Promise<unknown> {
-    return (this.opts.profile?.modelList ?? config.modelList).map((value) => {
+    return (this.opts.profile?.modelList ?? this.opts.ports.config.modelList).map((value) => {
       const levels = effortLevelsForModel(value) ?? []
       return {
         value,

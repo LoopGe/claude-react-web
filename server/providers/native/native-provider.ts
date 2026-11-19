@@ -5,9 +5,6 @@
 // Registration lives in ../default-providers.ts alongside ClaudeProvider.
 
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
-import { config, DEFAULT_PROFILE, type ServerConfig } from '../../config.js'
-import type { ProviderProfile } from '../../../shared/profile.js'
-import { resolveActiveProfile } from '../../profiles.js'
 import { HttpError } from '../../errors.js'
 import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../../../shared/transcript-format.js'
 import type { SessionMeta } from '../../persistence.js'
@@ -166,11 +163,11 @@ export class NativeProvider implements AgentProvider {
   readonly uploadStore?: UploadStore
   readonly attachmentReferences: NativeAttachmentReferenceIndex
   /** Host-service ports injected by the wiring layer (default-providers /
-   *  tests); threaded into every session this provider creates. The real
-   *  adapters live host-side in ../native-host-adapters.ts. */
-  readonly ports?: NativeHostPorts
+   *  tests); threaded into every session this provider creates. Config reads
+   *  (fidelity flags, profile resolution, model list) go through ports.config.
+   *  The real adapters live host-side in ../native-host-adapters.ts. */
+  readonly ports: NativeHostPorts
   private readonly modelContext: NativeModelContextResolver
-  private readonly fallbackProfiles = new WeakMap<ServerConfig, ProviderProfile>()
   /** One host-global shared MCP registry per provider (the provider is
    *  one-per-host). Every session's connection view delegates its external
    *  stdio entries here, so identical configs across sessions share one child.
@@ -183,8 +180,8 @@ export class NativeProvider implements AgentProvider {
     agentStore?: AgentDefinitionStore
     uploadStore?: UploadStore
     modelContext?: NativeModelContextResolver
-    ports?: NativeHostPorts
-  } = {}) {
+    ports: NativeHostPorts
+  }) {
     this.stateDir = resolveNativeStateDir(opts.stateDir)
     this.authFor = opts.authFor
     this.mcpRegistry = new SharedRegistry()
@@ -199,24 +196,6 @@ export class NativeProvider implements AgentProvider {
     })
     this.attachmentReferences = opts.uploadStore?.attachmentReferences
       ?? new NativeAttachmentReferenceIndex({ stateDir: this.stateDir })
-  }
-
-  private fallbackProfile(): ProviderProfile {
-    const cached = this.fallbackProfiles.get(config)
-    if (cached) return cached
-    // Legacy/unloaded config has no profile objects. Snapshot its scalar values
-    // once per config generation so requests and discovery share one route.
-    const profile = {
-      ...DEFAULT_PROFILE,
-      authToken: config.authToken ?? '',
-      baseUrl: config.baseUrl,
-      modelList: config.modelList,
-      modelGroups: config.modelGroups,
-      recapModel: config.recapModel,
-      commitMessageModel: config.commitMessageModel,
-    }
-    this.fallbackProfiles.set(config, profile)
-    return profile
   }
 
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
@@ -241,7 +220,8 @@ export class NativeProvider implements AgentProvider {
       createEditTool(readState),
       ...STATIC_TOOLS,
     ]
-    const tools = config.nativeAttachmentFidelity && this.uploadStore
+    const configPort = this.ports.config
+    const tools = configPort.nativeAttachmentFidelity && this.uploadStore
       ? [...sessionTools, createAttachmentReadTool({
           uploadStore: this.uploadStore,
           stateDir: this.stateDir,
@@ -249,7 +229,7 @@ export class NativeProvider implements AgentProvider {
           sessionId: opts.id,
           pdfBudgets,
           preparedPdfs,
-          pdfDocumentsEnabled: () => config.nativeAttachmentFidelity && config.nativePdfDocuments,
+          pdfDocumentsEnabled: () => configPort.nativeAttachmentFidelity && configPort.nativePdfDocuments,
         })]
       : sessionTools
     const system = renderSystem({ withAgentSection: true, systemPromptAppend }, tools)
@@ -266,9 +246,7 @@ export class NativeProvider implements AgentProvider {
     // fork log). The queued connect has no owner then, so it must be torn down
     // here or it would run forever and leak its children. `closeAll` closes the
     // local connects AND releases any shared-registry refs the load acquired.
-    const profile = opts.profile ?? (config.profiles.length > 0
-      ? resolveActiveProfile(config.profiles, config.activeProfileId, DEFAULT_PROFILE)
-      : this.fallbackProfile())
+    const profile = opts.profile ?? (configPort.hasProfiles ? configPort.activeProfile() : configPort.fallbackProfile())
     const credentials = () => {
       if (opts.profile === undefined && !profile.authToken) {
         // Preserve the lazy missing-token failure without consulting a newer
@@ -278,7 +256,7 @@ export class NativeProvider implements AgentProvider {
       return { baseUrl: profile.baseUrl, authToken: profile.authToken }
     }
     try {
-      const SessionClass = config.nativeAttachmentFidelity ? NativeSession : LegacyNativeSession
+      const SessionClass = configPort.nativeAttachmentFidelity ? NativeSession : LegacyNativeSession
       return new SessionClass({
         id: opts.id,
         cwd: opts.cwd ?? process.cwd(),

@@ -1,8 +1,9 @@
 // Behavior pin for the host-side ConfigPort adapter: its resolved profiles
-// must match what NativeProvider resolves TODAY (the provider is the oracle —
-// its createSession profile branch, including the private fallbackProfile
-// cache), and its getters must observe runtime config reload through the live
-// binding. The remaining ports get a delegation smoke check.
+// must match the host resolution functions (resolveActiveProfile for a loaded
+// config, the DEFAULT_PROFILE-derived legacy fallback for an empty one), and
+// NativeProvider.createSession must delegate its profile branch to the port.
+// Its getters must observe runtime config reload through the live binding.
+// The remaining ports get a delegation smoke check.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -17,6 +18,7 @@ import { isMcpAuthError } from '../mcp-config.js'
 import { NativeProvider } from './native/native-provider.js'
 import type { ProviderSessionHandle } from './types.js'
 import { createNativeHostPorts, makeNativePorts } from './native-host-adapters.js'
+import type { NativeConfigPort, NativeHostPorts } from './native/ports.js'
 
 const dirs: string[] = []
 const sessions: ProviderSessionHandle[] = []
@@ -54,9 +56,9 @@ function profileOf(id: string, overrides: Partial<ProviderProfile> = {}): Provid
   }
 }
 
-/** The provider's OWN createSession resolution — the current-behavior oracle.
- *  `profile` is private on NativeSession; the pin reads it the same way the
- *  suite reads other internal seams. */
+/** The provider's createSession resolution, which now delegates to the injected
+ *  ConfigPort. `profile` is private on NativeSession; the pin reads it the same
+ *  way the suite reads other internal seams. */
 async function providerResolvedProfile(stateDir: string, ports = makeNativePorts({ stateDir })): Promise<ProviderProfile> {
   const provider = new NativeProvider({ stateDir, ports })
   const session = provider.createSession({ id: `pin-${sessions.length}`, cwd: stateDir })
@@ -121,15 +123,29 @@ describe('ConfigPort adapter mirrors the provider resolution', () => {
     expect(await providerResolvedProfile(dir, ports)).toEqual(ports.config.fallbackProfile())
   })
 
-  it('injecting ports does not change the provider resolution (ports stored, unused)', async () => {
+  it('createSession resolves through the injected ConfigPort, not the config singleton', async () => {
     const dir = await tempDir()
-    __setConfigForTest({ profiles: [], authToken: 'same-token', baseUrl: 'https://same.example' })
-    const withPorts = await providerResolvedProfile(dir)
-    const provider = new NativeProvider({ stateDir: dir })
-    const session = provider.createSession({ id: 'pin-no-ports', cwd: dir })
-    sessions.push(session)
-    const withoutPorts = (session as unknown as { profile: ProviderProfile }).profile
-    expect(withPorts).toEqual(withoutPorts)
+    // The singleton points at a legacy fallback; the injected port disagrees,
+    // so a provider still reading the singleton would resolve the wrong route.
+    __setConfigForTest({ profiles: [], authToken: 'singleton-token', baseUrl: 'https://singleton.example' })
+    const injected = profileOf('injected')
+    const stubConfig = (hasProfiles: boolean): NativeConfigPort => ({
+      nativeAttachmentFidelity: false,
+      nativePdfDocuments: false,
+      nativeAutoCompactRatio: 0.5,
+      modelList: ['injected-model'],
+      hasProfiles,
+      activeProfile: () => injected,
+      fallbackProfile: () => injected,
+    })
+    // Both branches of the provider's profile ternary must read the port.
+    for (const hasProfiles of [true, false]) {
+      const ports: NativeHostPorts = { ...makeNativePorts({ stateDir: dir }), config: stubConfig(hasProfiles) }
+      const provider = new NativeProvider({ stateDir: dir, ports })
+      const session = provider.createSession({ id: `pin-injected-${hasProfiles}`, cwd: dir })
+      sessions.push(session)
+      expect((session as unknown as { profile: ProviderProfile }).profile).toBe(injected)
+    }
   })
 })
 
