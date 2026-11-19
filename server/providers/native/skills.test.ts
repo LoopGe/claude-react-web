@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { parseSkillFrontmatter } from '../../skills.js'
+import { parseSkillFrontmatter } from '../../../shared/skills.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import { NativeSkillCatalog } from './skills.js'
 
 // Skills are discovered from the CLI's config dir (user scope) and the
@@ -60,7 +61,7 @@ function canonicalBody(name: string, body = `# ${name}`): string {
 }
 
 async function load(policy: string[] | 'all' | undefined): Promise<NativeSkillCatalog> {
-  const catalog = new NativeSkillCatalog(project)
+  const catalog = new NativeSkillCatalog(project, makeNativePorts().skill)
   catalog.configure(policy)
   await catalog.reload()
   return catalog
@@ -131,7 +132,7 @@ describe('NativeSkillCatalog — spawn policy', () => {
 
   it('re-reads the policy lazily, so configure() after reload() still applies', async () => {
     await writeSkill('alpha')
-    const catalog = new NativeSkillCatalog(project)
+    const catalog = new NativeSkillCatalog(project, makeNativePorts().skill)
     await catalog.reload()
 
     expect(catalog.section()).toBe('<available_skills>\n- alpha\n</available_skills>')
@@ -355,7 +356,7 @@ describe('NativeSkillCatalog — discovery', () => {
       return realReadFile(file, ...rest)
     }) as unknown as typeof fsp.readFile)
     try {
-      const catalog = new NativeSkillCatalog(project)
+      const catalog = new NativeSkillCatalog(project, makeNativePorts().skill)
       catalog.configure('all')
 
       // The unreadable record is skipped, not fatal: the pass still resolves

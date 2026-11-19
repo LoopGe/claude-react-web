@@ -7,11 +7,6 @@ import { NativeSkillCatalog } from './skills.js'
 
 const listSkillsMock = vi.hoisted(() => vi.fn())
 
-vi.mock('../../skills.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../skills.js')>()
-  return { ...actual, listSkills: listSkillsMock }
-})
-
 interface Deferred<T> {
   promise: Promise<T>
   resolve(value: T): void
@@ -82,7 +77,7 @@ describe('NativeSkillCatalog — reload generations', () => {
     const first = deferred<SkillsListResponse>()
     const second = deferred<SkillsListResponse>()
     listSkillsMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
-    const catalog = new NativeSkillCatalog(project)
+    const catalog = new NativeSkillCatalog(project, { listSkills: listSkillsMock })
     catalog.configure('all')
 
     const reloadA = catalog.reload()
@@ -100,7 +95,7 @@ describe('NativeSkillCatalog — reload generations', () => {
     const first = deferred<SkillsListResponse>()
     const second = deferred<SkillsListResponse>()
     listSkillsMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
-    const catalog = new NativeSkillCatalog(project)
+    const catalog = new NativeSkillCatalog(project, { listSkills: listSkillsMock })
     catalog.configure('all')
 
     const reloadA = catalog.reload()
@@ -114,7 +109,7 @@ describe('NativeSkillCatalog — reload generations', () => {
   })
 
   it('keeps the last good catalog when the latest reload rejects with no older scan pending', async () => {
-    const catalog = new NativeSkillCatalog(project)
+    const catalog = new NativeSkillCatalog(project, { listSkills: listSkillsMock })
     catalog.configure('all')
     listSkillsMock.mockResolvedValueOnce(await writeSkill('v1'))
     await catalog.reload()
@@ -133,7 +128,7 @@ describe('NativeSkillCatalog — reload generations', () => {
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise)
       .mockReturnValueOnce(third.promise)
-    const catalog = new NativeSkillCatalog(project)
+    const catalog = new NativeSkillCatalog(project, { listSkills: listSkillsMock })
     catalog.configure('all')
 
     const reloadA = catalog.reload()
@@ -154,7 +149,7 @@ describe('NativeSkillCatalog — reload generations', () => {
   })
 
   it('keeps a pre-reload snapshot immutable while the live catalog advances', async () => {
-    const catalog = new NativeSkillCatalog(project)
+    const catalog = new NativeSkillCatalog(project, { listSkills: listSkillsMock })
     catalog.applyOverrides({ alpha: 'on' })
     listSkillsMock.mockResolvedValueOnce(await writeSkill('v1'))
     await catalog.reload()

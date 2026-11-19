@@ -449,7 +449,7 @@ export class NativeSession implements ProviderSessionHandle {
     // Skills are discovered before the first turn can ask for them. The
     // policy is stored separately from discovery (the catalog resolves state
     // lazily), so configure-before/after-reload makes no difference.
-    this.skills = new NativeSkillCatalog(opts.cwd)
+    this.skills = new NativeSkillCatalog(opts.cwd, opts.ports.skill)
     this.skills.configure(opts.skills)
     this.skillsReady = this.startSkillReload()
     this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
