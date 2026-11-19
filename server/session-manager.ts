@@ -4483,17 +4483,17 @@ export class SessionManager {
       `workingFor=${s.workingSince ? Date.now() - s.workingSince : 0}ms` +
       `${opts?.cancelQueued ? ', cancelQueued=1' : ''}`,
     )
-    // User turns are exactly the still-unpaired promptUuids entries (recorded
-    // in recordPromptUuid at dispatch, paired by onPromptEcho when the SDK
-    // echoes the prompt back). Restricting withdrawal to that set keeps (a)
-    // control messages that ride the same input queue — the compact hand-off
-    // seed goes through sendControlMessage and never gets a promptUuids
-    // entry — and (b) CLI-internal uuids, and (c) prompts whose echo already
-    // landed (they were dispatched into a turn and are durably on disk; the
-    // receipt only ever lists queued/pending-dispatch messages, but a
-    // conservative filter keeps the live ring and the transcript consistent
-    // even if that ever changes) out of the removal set.
-    const queuedUserUuids = new Set((s.promptUuids ?? []).filter((e) => e.v == null).map((e) => e.u))
+    // User turns are exactly the still-UNCONSUMED promptUuids entries
+    // (recorded in recordPromptUuid at dispatch, `c` stamped by
+    // onInputConsumed when the SDK reads the prompt). Restricting withdrawal
+    // to that set keeps (a) control messages that ride the same input queue
+    // — the compact hand-off seed goes through sendControlMessage and never
+    // gets a promptUuids entry — and (b) CLI-internal uuids, and (c) prompts
+    // the SDK already took (they are dispatched into a turn and durably on
+    // disk; the receipt only ever lists queued/pending-dispatch messages,
+    // but a conservative filter keeps the live ring and the transcript
+    // consistent even if that ever changes) out of the removal set.
+    const queuedUserUuids = new Set((s.promptUuids ?? []).filter((e) => e.c == null).map((e) => e.u))
     // Steer pending 先于一切（spec §6.4 竞态对策）：drain 清空后，interrupt
     // 期间并发的 hook 边界只见空队列——这是 multica writing-flag 串行化的
     // 进程内等价物。plain interrupt 与「queued 消息在 Stop 后存活」语义对齐
@@ -4514,16 +4514,16 @@ export class SessionManager {
       >(s, 'interrupt', 'interrupt', 'supportsInterrupt')
       const receipt = await fn(opts)
       // Withdraw leg 2 (CLI queue) — the receipt's uuids, filtered through
-      // the still-unpaired check (the await above let the pump pair entries
-      // concurrently; everything from here on is synchronous).
-      const stillUnpaired = (u: string): boolean =>
-        (s.promptUuids ?? []).some((e) => e.u === u && e.v == null)
+      // the still-unconsumed check (the await above let the pump consume
+      // entries concurrently; everything from here on is synchronous).
+      const stillUnconsumed = (u: string): boolean =>
+        (s.promptUuids ?? []).some((e) => e.u === u && e.c == null)
       const uuids = new Set<string>()
       for (const u of drainedUuids) {
-        if (stillUnpaired(u)) uuids.add(u)
+        if (stillUnconsumed(u)) uuids.add(u)
       }
       for (const u of receipt?.cancelledQueued ?? []) {
-        if (stillUnpaired(u)) uuids.add(u)
+        if (stillUnconsumed(u)) uuids.add(u)
       }
       // Steer 撤回（cancelQueued 路径）：steered 消息从不在 promptUuids 里
       // （dispatch 即跳过记录，requeue 时才补录——而被撤回的不会再 requeue），
@@ -4539,13 +4539,12 @@ export class SessionManager {
       let removed = 0
       if (uuids.size > 0) {
         removed = removeFromHistory(s.history, uuids)
-        // Drop the matching unpaired promptUuids entries — a withdrawn prompt
-        // is never echoed, so its entry would stay v-less forever and the
-        // next FIFO echo (onPromptEcho pairs the oldest unpaired) would pair
-        // a live prompt with a withdrawn uuid, shifting every later
-        // mapping. Unpaired entries are memory-only (the sidecar
-        // persists at echo time), so no save is needed here.
-        s.promptUuids = (s.promptUuids ?? []).filter((e) => !(e.v == null && uuids.has(e.u)))
+        // Drop the matching unconsumed promptUuids entries — a withdrawn
+        // prompt is never consumed, so its entry would stay c-less forever
+        // and keep the heal probe reading "work still queued". Unconsumed
+        // entries are memory-only (the sidecar persists at echo time), so no
+        // save is needed here.
+        s.promptUuids = (s.promptUuids ?? []).filter((e) => !(e.c == null && uuids.has(e.u)))
         // Remember the withdrawal (capped) so a tab that reconnects after the
         // stop still evicts its bubbles — no later frame or page ever re-sends
         // the withdrawn messages, so the synthetic replay of withdrawnUuids is
@@ -4568,13 +4567,12 @@ export class SessionManager {
         this.evictTranscriptAndBroadcast(id, [...uuids])
       }
       // If the interrupt left the session in a DEAD working state — nothing
-      // queued (no unpaired promptUuids, empty input queue) and no turn in
-      // flight (`turnActive` is set by onPromptEcho when the CLI takes a sent
-      // message, and by the pump's unaccounted-turn stamp for CLI-driven turns
-      // whose prompt never streams — no echo lands for those; cleared on
-      // `result`) — then NO `result` frame will ever
-      // arrive: the pending turns were cancelled before the CLI started them
-      // (their echoes never landed). pendingTurns was set at dispatch
+      // queued (no unconsumed promptUuids entries, empty input queue) and no
+      // turn in flight (`turnActive` is set by onInputConsumed when the SDK
+      // takes a sent message, and by the pump's unaccounted-turn stamp for
+      // CLI-driven turns whose prompt never streams; cleared on `result`) —
+      // then NO `result` frame will ever arrive: the pending turns were
+      // cancelled before the CLI took them. pendingTurns was set at dispatch
       // (pushToSession) and its only normal clear path is the pump's result
       // handler, so without this reset the session sticks at working=true
       // forever (WorkingBubble pinned, phase-gated routes 409ing, health
@@ -4589,7 +4587,7 @@ export class SessionManager {
         s.pendingTurns > 0 &&
         s.handle.queueDepth === 0 &&
         !s.turnActive &&
-        !(s.promptUuids ?? []).some((e) => e.v == null)
+        !(s.promptUuids ?? []).some((e) => e.c == null)
       ) {
         log.info(
           `[session ${id}] interrupt left no pending or in-flight turn — ` +

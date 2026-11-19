@@ -13053,6 +13053,49 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(turnStateOf(info.id).turnActive).toBe(false)
     })
 
+    it('never withdraws a consumed prompt even if the interrupt receipt lists it', async () => {
+      // Consumption is the dispatch fact: a prompt the SDK read is durably on
+      // its way into a turn (or on disk) — withdrawal eligibility reads c,
+      // not echo pairing (on the pinned SDK every live send stays v-less).
+      const { info, h } = await setupQueued(0)
+      const seedUuid = ringOf(info.id).find((m) => (m as { type?: string }).type === 'user')!.uuid as string
+      h.interrupt.mockResolvedValueOnce({ cancelled: [seedUuid] })
+      const removed = await sm.interrupt(info.id, { cancelQueued: true })
+      expect(removed).toBe(0)
+      expect(ringOf(info.id).map((m) => m.uuid)).toContain(seedUuid)
+    })
+
+    it('heals working state when Stop withdraws the last unconsumed work (consumption probe)', async () => {
+      // The dead-state shape: a turn vanished without a result (turnActive
+      // cleared, pendingTurns pinned) and the only remaining work is an
+      // unconsumed queued prompt. Stop withdraws it; the probe must then read
+      // "nothing queued, nothing in flight, nothing unconsumed" and clear —
+      // the consumed seed's ledger entry (c set, v unset on the pinned SDK)
+      // must NOT block the heal the way the old unpaired-v check did.
+      const { info, h, queuedUuids } = await setupQueued(1)
+      const s = turnStateOf(info.id)
+      s.turnActive = false // the seed turn vanished without a result
+      h.interrupt.mockResolvedValueOnce({ cancelled: [queuedUuids[0]] })
+
+      const updates: Array<{ kind?: string; session?: { id?: string; working?: boolean } }> = []
+      const sub = sm.subscribeGlobal()
+      void (async () => {
+        for await (const v of sub.iterable) updates.push(v as (typeof updates)[number])
+      })()
+
+      const removed = await sm.interrupt(info.id, { cancelQueued: true })
+      expect(removed).toBe(1)
+      expect(s.pendingTurns).toBe(0)
+      expect(s.workingSince).toBeUndefined()
+      const listed = sm.list().find((x) => x.id === info.id)!
+      expect(listed.working).toBe(false)
+      expect(listed.phase).toBe('idle')
+      await waitFor(() =>
+        updates.some((u) => u.kind === 'update' && u.session?.id === info.id && u.session?.working === false),
+      )
+      sub.unsubscribe()
+    })
+
     it('heals an already-stuck session on a repeat Stop (state probe, not withdrawal count)', async () => {
       // A session stuck by the pre-fix bug (pendingTurns=1 with no turn ever
       // started, nothing queued, no unpaired entries) must unstick on the

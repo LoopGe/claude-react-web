@@ -36,6 +36,14 @@ describe('rewriteSeedPromptUuids (exact v→u lookup)', () => {
     expect(out[1].uuid).toBe('a1') // assistant untouched
   })
 
+  it('a consumption fact c coexisting with a re-minted v does not disturb the rewrite', () => {
+    // Historical re-minted mapping (v !== u) plus the consumption fact the
+    // live path stamps: the bridge reads v only.
+    const seed = [userPrompt('V1', 'hi')]
+    const out = rewriteSeedPromptUuids(seed, [{ u: 'U1', v: 'V1', c: 1795067610448 }])
+    expect(out[0].uuid).toBe('U1')
+  })
+
   it('rewrites multiple prompts by exact uuid, including same-text prompts (no shift)', () => {
     // The #1 regression: two same-text "ok" prompts. Exact v→u lookup maps
     // each disk V to its own server U — no positional shift, unlike the old
