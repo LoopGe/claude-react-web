@@ -593,6 +593,81 @@ describe('sidecar v2 batch commits / fold / crash recovery (spec §8.2/§9)', ()
     expect(folded.corrupt).toHaveLength(1)
   })
 
+  it('appendBatch after a no-newline torn tail writes a clean intact batch', async () => {
+    const dir = await tmpDir()
+    const file = path.join(dir, 'transcripts', 'sid-1.ndjson')
+    const sc = new TranscriptSidecar(dir, 'sid-1')
+    await sc.appendRow({ seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a', message: { role: 'user', content: 'hi' } } })
+    await sc.close()
+    // A crash mid-write leaves a torn fragment WITHOUT a trailing newline.
+    await appendFile(file, '{"v":2,"batchId":"dead","seq":9')
+    const sc2 = new TranscriptSidecar(dir, 'sid-1')
+    await sc2.load() // derives the durable boundary, clipping the torn tail
+    const rows = [msgRow('g1', 0, 'b')]
+    await sc2.appendBatch(rows, genCommit('g1', 1, rows))
+    await sc2.close()
+    const raw = await readFile(file, 'utf8')
+    // No fused line: every non-empty physical line parses.
+    for (const line of raw.split('\n')) {
+      if (line.trim()) expect(() => JSON.parse(line)).not.toThrow()
+    }
+    const folded = foldSidecarRowsV2(await new TranscriptSidecar(dir, 'sid-1').load())
+    expect(folded.corrupt).toEqual([])
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['b'])
+  })
+
+  it('goodOffset is byte-exact with multibyte UTF-8 content', async () => {
+    const dir = await tmpDir()
+    const file = path.join(dir, 'transcripts', 'sid-1.ndjson')
+    const sc = new TranscriptSidecar(dir, 'sid-1')
+    const cjk = { seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a', message: { role: 'user', content: '继续 🚀 café' } } }
+    await sc.appendRow(cjk)
+    const rows = [msgRow('g1', 1, 'b')]
+    await sc.appendBatch(rows, genCommit('g1', 1, rows))
+    await sc.close()
+    const raw = await readFile(file, 'utf8')
+    for (const line of raw.split('\n')) {
+      if (line.trim()) expect(() => JSON.parse(line)).not.toThrow()
+    }
+    const folded = foldSidecarRowsV2(await new TranscriptSidecar(dir, 'sid-1').load())
+    expect(folded.corrupt).toEqual([])
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['b'])
+  })
+
+  it('boundary truncation preserves a committed v1 suffix after a generation batch', async () => {
+    const dir = await tmpDir()
+    const sc = new TranscriptSidecar(dir, 'sid-1')
+    const g = [msgRow('g0', 0, 'a')]
+    await sc.appendBatch(g, genCommit('g0', 0, g))
+    // v1 live-ingest suffix appended after the generation commit.
+    await sc.appendRow({ seq: 1, uuid: 'c', type: 'assistant', msg: { type: 'assistant', uuid: 'c', message: { role: 'assistant', content: [] } } })
+    await sc.close()
+    const sc2 = new TranscriptSidecar(dir, 'sid-1')
+    await sc2.load()
+    const live = [msgRow('l1', 2, 'd')]
+    await sc2.appendBatch(live, liveCommit('l1', 0, live))
+    await sc2.close()
+    const folded = foldSidecarRowsV2(await new TranscriptSidecar(dir, 'sid-1').load())
+    expect(folded.corrupt).toEqual([])
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['a', 'c', 'd'])
+  })
+
+  it('recoverTail truncates a torn v1 tail byte-exact (multibyte row survives)', async () => {
+    const dir = await tmpDir()
+    const file = path.join(dir, 'transcripts', 'sid-1.ndjson')
+    const sc = new TranscriptSidecar(dir, 'sid-1')
+    const cjk = { seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a', message: { role: 'user', content: '继续 🚀 café' } } }
+    await sc.appendRow(cjk)
+    await sc.close()
+    await appendFile(file, '{"seq":1,"uuid":"b"') // torn v1 tail, no newline
+    const sc2 = new TranscriptSidecar(dir, 'sid-1')
+    await sc2.appendRow({ seq: 1, uuid: 'b', type: 'user', msg: { type: 'user', uuid: 'b', message: { role: 'user', content: 'ok' } } })
+    await sc2.close()
+    const rows = await new TranscriptSidecar(dir, 'sid-1').load()
+    expect(rows.map((r) => r.uuid)).toEqual(['a', 'b'])
+    expect((rows[0].msg as { message: { content: string } }).message.content).toBe('继续 🚀 café')
+  })
+
   it('v1 duplicate base seq fails with duplicate-seq', () => {
     const rows = [
       { seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a' } },

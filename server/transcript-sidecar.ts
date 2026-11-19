@@ -201,9 +201,15 @@ export class TranscriptSidecar {
     return this.handle
   }
 
-  /** Truncate an uncommitted/torn tail back to the last valid commit (v2) or
-   *  the last complete line (v1), then fsync. A complete-but-invalid v2 commit
-   *  throws corrupt-sidecar (fail closed). No-op for an empty/missing file. */
+  /** Drop only an incomplete physical tail (a crash mid-write leaves a final
+   *  line WITHOUT a trailing newline) so the next append never concatenates
+   *  onto it. Keeps every complete line — including the committed v1 suffix
+   *  that legitimately follows the last v2 generation commit (the fold replays
+   *  it, spec §8.2); truncating to the last commit instead would discard the
+   *  final turn's rows. Uncommitted v2 batches left intact are ignored by the
+   *  fold, and a corrupt committed batch is demoted there — neither needs
+   *  physical truncation. Byte-exact (UTF-8), so a multibyte row is never
+   *  clipped mid-character. No-op for an empty/missing/clean file. */
   private async recoverTail(): Promise<void> {
     if (!this.file) return
     let raw: string
@@ -215,18 +221,11 @@ export class TranscriptSidecar {
       throw err
     }
     if (raw.length === 0) return
-    let prefix: string
-    if (raw.includes('"commit":true')) {
-      // v2: cut to the last valid commit of any batch type (throws on a
-      // complete-but-invalid commit).
-      prefix = truncateToLastCommit(raw).prefix
-    } else {
-      // v1: drop a torn trailing partial line (keep up to the last newline).
-      const lastNl = raw.lastIndexOf('\n')
-      prefix = lastNl >= 0 ? raw.slice(0, lastNl + 1) : ''
-    }
-    if (prefix.length < raw.length) {
-      await truncate(this.file, prefix.length)
+    const lastNl = raw.lastIndexOf('\n')
+    const prefix = lastNl >= 0 ? raw.slice(0, lastNl + 1) : ''
+    const prefixBytes = Buffer.byteLength(prefix, 'utf8')
+    if (prefixBytes < Buffer.byteLength(raw, 'utf8')) {
+      await truncate(this.file, prefixBytes)
       const h = await open(this.file, 'r+')
       try {
         await h.sync()
