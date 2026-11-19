@@ -57,8 +57,9 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import { CallToolResultSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js'
-import { createMcpTransport, isMcpAuthError, type McpTransportTarget } from '../../../mcp-config.js'
+import type { McpTransportTarget } from '../../../../shared/mcp-transport.js'
 import { mcpToolFqn } from '../../../../shared/mcp-fqn.js'
+import type { NativeMcpTransportPort } from '../ports.js'
 import { createLogger } from '../../../log.js'
 import { capToolText } from '../tools/bash.js'
 import { sharingKey, type SharedRecord } from './shared-record.js'
@@ -126,6 +127,9 @@ export type NativeMcpSetServersResult = {
 }
 
 export interface NativeMcpConnectionsOptions {
+  /** Host MCP transport construction + auth-failure classification. Required:
+   *  the native provider owns no transport implementation of its own. */
+  transportPort: NativeMcpTransportPort
   /** OAuth provider for a remote server, when the host stores credentials. */
   authFor?: (name: string) => OAuthClientProvider | undefined
   connectTimeoutMs?: number
@@ -174,6 +178,7 @@ interface SharedEntry {
 type Entry = ServerRecord | SharedEntry
 
 export class NativeMcpConnections {
+  private readonly transportPort: NativeMcpTransportPort
   private readonly authFor?: (name: string) => OAuthClientProvider | undefined
   private readonly connectTimeoutMs: number
   private readonly toolTimeoutMs: number
@@ -183,7 +188,8 @@ export class NativeMcpConnections {
   private queue: Promise<void> = Promise.resolve()
   private closing = false
 
-  constructor(opts: NativeMcpConnectionsOptions = {}) {
+  constructor(opts: NativeMcpConnectionsOptions) {
+    this.transportPort = opts.transportPort
     this.authFor = opts.authFor
     this.connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     this.toolTimeoutMs = opts.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
@@ -555,7 +561,7 @@ export class NativeMcpConnections {
       if (this.closing) return
       rec.error = errorMessage(err)
       rec.tools = []
-      rec.status = isMcpAuthError(err) ? 'needs-auth' : 'failed'
+      rec.status = this.transportPort.isAuthError(err) ? 'needs-auth' : 'failed'
       log.warn(`[${rec.name}] ${rec.status}: ${rec.error}`)
     }
   }
@@ -570,7 +576,7 @@ export class NativeMcpConnections {
       await client.connect(clientSide)
       return
     }
-    const transport = createMcpTransport(transportTarget(rec.config), {
+    const transport = this.transportPort.createTransport(transportTarget(rec.config), {
       authProvider: this.authFor?.(rec.name),
       preferAuthProvider: true,
     })
@@ -602,8 +608,8 @@ export class NativeMcpConnections {
       signal.addEventListener('abort', onAbort, { once: true })
       work.then(
         () => finish(null),
-        // Reject with the original instance: `isMcpAuthError` narrows on the
-        // SDK's error classes.
+        // Reject with the original instance: the transport port's `isAuthError`
+        // narrows on the SDK's error classes.
         (err) => finish(err instanceof Error ? err : new Error(String(err))),
       )
     })

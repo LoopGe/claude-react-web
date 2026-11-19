@@ -15,10 +15,15 @@ import { fileURLToPath } from 'node:url'
 import { processIdentity } from '../../../win32-job.js'
 import { disableLogRing, enableLogRing, getLogConfig, readLogRing, setLogConfig } from '../../../log.js'
 import type { NativeMcpServerConfig } from './connections.js'
-import { SharedRecord, childIdentity, sharingKey } from './shared-record.js'
+import { SharedRecord, childIdentity, sharingKey, type SharedRecordOptions } from './shared-record.js'
 import { SharedRegistry } from './shared-registry.js'
+import { makeNativePorts } from '../../native-host-adapters.js'
 
 const fixturePath = fileURLToPath(new URL('./fixtures/stdio-server.mjs', import.meta.url))
+
+// The real host transport adapter: the port is the seam, and these tests spawn
+// real stdio children over it (the adapter, not a stub).
+const transportPort = makeNativePorts().mcpTransport
 
 const tempDirs: string[] = []
 async function tempDir(): Promise<string> {
@@ -30,8 +35,8 @@ async function tempDir(): Promise<string> {
 // Every record a test opens is closed unconditionally in afterEach so a failed
 // assertion never leaks a stdio child into the process table.
 const openRecords: SharedRecord[] = []
-function makeRecord(config: NativeMcpServerConfig, opts?: ConstructorParameters<typeof SharedRecord>[2]): SharedRecord {
-  const rec = new SharedRecord(sharingKey(config), config, opts)
+function makeRecord(config: NativeMcpServerConfig, opts?: Omit<SharedRecordOptions, 'transportPort'>): SharedRecord {
+  const rec = new SharedRecord(sharingKey(config), config, { ...opts, transportPort })
   openRecords.push(rec)
   return rec
 }
@@ -316,7 +321,7 @@ describe('SharedRecord reconnect supervisor', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const config = flakyConfig(byePath, 3)
-    const reg = new SharedRegistry({ reconnect: fastReconnect })
+    const reg = new SharedRegistry({ transportPort, reconnect: fastReconnect })
     const rec = reg.acquire(config)
     openRecords.push(rec)
     await rec.ready

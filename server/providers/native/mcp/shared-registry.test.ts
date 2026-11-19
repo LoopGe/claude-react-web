@@ -17,8 +17,13 @@ import { metrics } from '../../../metrics.js'
 import type { NativeMcpServerConfig } from './connections.js'
 import { childIdentity, type SharedRecord } from './shared-record.js'
 import { SharedRegistry } from './shared-registry.js'
+import { makeNativePorts } from '../../native-host-adapters.js'
 
 const fixturePath = fileURLToPath(new URL('./fixtures/stdio-server.mjs', import.meta.url))
+
+// The real host transport adapter: the port is the seam, and these tests drive
+// real stdio children over it (the adapter, not a stub).
+const transportPort = makeNativePorts().mcpTransport
 
 // A healthy stdio child can outlive the default 5s close deadline under
 // full-suite load: the exit-confirmation then marks cleanupFailed and the
@@ -125,7 +130,7 @@ describe('SharedRegistry', () => {
   it('two acquires of the same config share one child; release semantics', async () => {
     const dir = await tempDir()
     const cfg = stdioConfig(join(dir, 'bye.txt'))
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
 
     const a = acquire(reg, cfg)
     const b = acquire(reg, cfg)
@@ -163,7 +168,7 @@ describe('SharedRegistry', () => {
   it('different env yields separate children', async () => {
     const dir = await tempDir()
     const cfg = stdioConfig(join(dir, 'bye.txt'))
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
 
     const a = acquire(reg, { ...cfg, env: { A: '1' } })
     const b = acquire(reg, { ...cfg, env: { A: '2' } })
@@ -192,7 +197,7 @@ describe('SharedRegistry', () => {
     // B is a healthy child on a DIFFERENT key (distinct args).
     const cfgA = stdioConfig(join(dir, 'a.txt'), '--ignore-exit')
     const cfgB = stdioConfig(join(dir, 'b.txt'))
-    const reg = new SharedRegistry({ closeTimeoutMs: 1500 })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: 1500 })
 
     const a = acquire(reg, cfgA)
     const b = acquire(reg, cfgB)
@@ -228,7 +233,7 @@ describe('SharedRegistry', () => {
   it('a release-at-0 cannot race a concurrent acquire of the same key', async () => {
     const dir = await tempDir()
     const cfg = stdioConfig(join(dir, 'bye.txt'))
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
 
     const a = acquire(reg, cfg)
     await a.ready
@@ -258,7 +263,7 @@ describe('SharedRegistry', () => {
     // --slow-exit holds the graceful exit ~300ms after stdin EOF, so the
     // acquire below lands DURING the healthy teardown deterministically.
     const cfg = stdioConfig(byePath, '--slow-exit')
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
 
     const a = acquire(reg, cfg)
     await a.ready
@@ -297,7 +302,7 @@ describe('SharedRegistry', () => {
     metrics.reset()
     const dir = await tempDir()
     const cfg = stdioConfig(join(dir, 'bye.txt'))
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
 
     const a = acquire(reg, cfg)
     const b = acquire(reg, cfg)
@@ -317,7 +322,7 @@ describe('SharedRegistry', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const cfg = stdioConfig(byePath, '--ignore-exit')
-    const reg = new SharedRegistry({ closeTimeoutMs: 200 })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: 200 })
 
     const a = acquire(reg, cfg)
     await a.ready
@@ -379,7 +384,7 @@ describe('SharedRegistry', () => {
 
   it('drains its per-key release queues once every release settles', async () => {
     const dir = await tempDir()
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
 
     const a = acquire(reg, stdioConfig(join(dir, 'a.txt')))
     const b = acquire(reg, stdioConfig(join(dir, 'b.txt')))

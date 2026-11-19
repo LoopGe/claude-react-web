@@ -16,8 +16,13 @@ import { z } from 'zod'
 import { NativeMcpConnections, type NativeMcpServerConfig } from './connections.js'
 import { SharedRegistry } from './shared-registry.js'
 import { childIdentity, sharingKey } from './shared-record.js'
+import { makeNativePorts } from '../../native-host-adapters.js'
 
 const fixturePath = fileURLToPath(new URL('./fixtures/stdio-server.mjs', import.meta.url))
+
+// The real host transport adapter: the port is the seam, and these tests drive
+// the real connect / discover / close lifecycle over it (the adapter, not a stub).
+const transportPort = makeNativePorts().mcpTransport
 
 // A healthy stdio child can outlive the default 5s close deadline under
 // full-suite load: the exit-confirmation then marks cleanupFailed and the
@@ -71,7 +76,7 @@ function echoServer(name = 'echo-server'): McpServer {
 
 describe('NativeMcpConnections', () => {
   it('connects an in-process server, discovers and calls its tools', async () => {
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     conns.load({ a: { type: 'sdk', instance: echoServer() } })
     await conns.whenReady()
 
@@ -98,7 +103,7 @@ describe('NativeMcpConnections', () => {
   }, 15_000)
 
   it('falls back to structured content when a tool returns no content blocks', async () => {
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     const structured = new McpServer({ name: 'structured-server', version: '1.0.0' })
     structured.registerTool(
       'structured',
@@ -118,7 +123,7 @@ describe('NativeMcpConnections', () => {
   }, 15_000)
 
   it('never returns empty text for a tool with no output at all', async () => {
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     const silent = new McpServer({ name: 'silent-server', version: '1.0.0' })
     silent.registerTool(
       'silent',
@@ -137,7 +142,7 @@ describe('NativeMcpConnections', () => {
   it('connects a real stdio server, calls a tool and kills the child on closeAll', async () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     conns.load({ ext: { type: 'stdio', command: 'node', args: [fixturePath, byePath] } })
     await conns.whenReady()
 
@@ -159,7 +164,7 @@ describe('NativeMcpConnections', () => {
   it('times out a hung connect without hanging whenReady and kills the child', async () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
-    const conns = new NativeMcpConnections({ connectTimeoutMs: 100 })
+    const conns = new NativeMcpConnections({ transportPort, connectTimeoutMs: 100 })
     conns.load({ hung: { type: 'stdio', command: 'node', args: [fixturePath, byePath, '--hang'] } })
 
     // The load must settle on its own: a server that never answers the
@@ -180,7 +185,7 @@ describe('NativeMcpConnections', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     // Default 10 s connect timeout: teardown must not wait for it.
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     conns.load({ hung: { type: 'stdio', command: 'node', args: [fixturePath, byePath, '--hang'] } })
     // Let the child spawn and the handshake get in flight.
     await new Promise((resolve) => setTimeout(resolve, 300))
@@ -200,7 +205,7 @@ describe('NativeMcpConnections', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const toolsRequested = `${byePath}.tools-requested`
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     conns.load({ stalled: { type: 'stdio', command: 'node', args: [fixturePath, byePath, '--hang-tools'] } })
 
     // The marker is written by the server's `tools/list` handler, so it proves
@@ -221,7 +226,7 @@ describe('NativeMcpConnections', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const byePath2 = join(dir, 'bye2.txt')
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     const instance = echoServer()
     const closeSpy = vi.spyOn(instance, 'close')
     conns.load({ a: { type: 'sdk', instance } })
@@ -266,7 +271,7 @@ describe('NativeMcpConnections', () => {
   it('toggles a server off and back on', async () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     conns.load({ s: { type: 'stdio', command: 'node', args: [fixturePath, byePath] } })
     await conns.whenReady()
     expect(conns.statuses()[0].status).toBe('connected')
@@ -290,7 +295,7 @@ describe('NativeMcpConnections', () => {
     // `McpServer.close()` clears its transport, so the SAME instance can be
     // connected again — not obvious from the SDK surface, and the toggle path
     // depends on it.
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     conns.load({ a: { type: 'sdk', instance: echoServer() } })
     await conns.whenReady()
 
@@ -305,7 +310,7 @@ describe('NativeMcpConnections', () => {
   }, 15_000)
 
   it('replaces a changed in-process entry (same name, new instance)', async () => {
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     const first = echoServer('first-server')
     const second = echoServer('second-server')
     const closeSpy = vi.spyOn(first, 'close')
@@ -328,7 +333,7 @@ describe('NativeMcpConnections', () => {
   }, 15_000)
 
   it('gives look-alike server names distinct FQNs while status keeps bare names', async () => {
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     conns.load({
       'a b': { type: 'sdk', instance: echoServer('space-server') },
       'a.b': { type: 'sdk', instance: echoServer('dot-server') },
@@ -358,7 +363,7 @@ describe('NativeMcpConnections', () => {
   it('never exposes env or header values in status', async () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     conns.load({
       secret: {
         type: 'stdio',
@@ -390,7 +395,7 @@ describe('NativeMcpConnections', () => {
   }, 15_000)
 
   it('closeAll is idempotent', async () => {
-    const conns = new NativeMcpConnections()
+    const conns = new NativeMcpConnections({ transportPort })
     conns.load({ a: { type: 'sdk', instance: echoServer() } })
     await conns.whenReady()
     expect(conns.tools()).toHaveLength(1)
@@ -416,9 +421,9 @@ describe('NativeMcpConnections over a shared registry', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const cfg = stdioCfg(byePath)
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
-    const v1 = new NativeMcpConnections({ registry: reg })
-    const v2 = new NativeMcpConnections({ registry: reg })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const v1 = new NativeMcpConnections({ transportPort, registry: reg })
+    const v2 = new NativeMcpConnections({ transportPort, registry: reg })
     v1.load({ ext: cfg })
     v2.load({ ext: cfg })
     await v1.whenReady()
@@ -461,9 +466,9 @@ describe('NativeMcpConnections over a shared registry', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const cfg = stdioCfg(byePath)
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
-    const v1 = new NativeMcpConnections({ registry: reg })
-    const v2 = new NativeMcpConnections({ registry: reg })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const v1 = new NativeMcpConnections({ transportPort, registry: reg })
+    const v2 = new NativeMcpConnections({ transportPort, registry: reg })
     v1.load({ ext: cfg })
     v2.load({ ext: cfg })
     await v1.whenReady()
@@ -493,8 +498,8 @@ describe('NativeMcpConnections over a shared registry', () => {
     const byePath = join(dir, 'bye.txt')
     const cfg1 = stdioCfg(byePath, { A: '1' })
     const cfg2 = stdioCfg(byePath, { A: '2' })
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
-    const v1 = new NativeMcpConnections({ registry: reg })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const v1 = new NativeMcpConnections({ transportPort, registry: reg })
     v1.load({ ext: cfg1 })
     await v1.whenReady()
     const rec1 = reg.get(sharingKey(cfg1))!
@@ -524,8 +529,8 @@ describe('NativeMcpConnections over a shared registry', () => {
   it('statuses label shared stdio global and sdk session', async () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
-    const v1 = new NativeMcpConnections({ registry: reg })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const v1 = new NativeMcpConnections({ transportPort, registry: reg })
     v1.load({ ext: stdioCfg(byePath), a: { type: 'sdk', instance: echoServer() } })
     await v1.whenReady()
 
@@ -548,8 +553,8 @@ describe('NativeMcpConnections over a shared registry', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const cfg = stdioCfg(byePath, { SECRET_TOKEN: 'super-secret-value' })
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
-    const v1 = new NativeMcpConnections({ registry: reg })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const v1 = new NativeMcpConnections({ transportPort, registry: reg })
     v1.load({ secret: cfg })
     await v1.whenReady()
 
@@ -580,8 +585,8 @@ describe('NativeMcpConnections over a shared registry', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const cfg = stdioCfg(byePath)
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
-    const v1 = new NativeMcpConnections({ registry: reg })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const v1 = new NativeMcpConnections({ transportPort, registry: reg })
     v1.load({ ext: cfg })
     await v1.whenReady()
     const rec = reg.get(sharingKey(cfg))!
@@ -618,8 +623,8 @@ describe('NativeMcpConnections over a shared registry', () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
     const cfg = stdioCfg(byePath)
-    const reg = new SharedRegistry({ closeTimeoutMs: HEALTHY_CLOSE_MS })
-    const v1 = new NativeMcpConnections({ registry: reg })
+    const reg = new SharedRegistry({ transportPort, closeTimeoutMs: HEALTHY_CLOSE_MS })
+    const v1 = new NativeMcpConnections({ transportPort, registry: reg })
     v1.load({ ext: cfg })
     await v1.whenReady()
     const rec = reg.get(sharingKey(cfg))!

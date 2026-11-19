@@ -59,8 +59,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { CallToolResultSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js'
-import { createMcpTransport, isMcpAuthError, type McpTransportTarget } from '../../../mcp-config.js'
+import type { McpTransportTarget } from '../../../../shared/mcp-transport.js'
 import { mcpToolFqn } from '../../../../shared/mcp-fqn.js'
+import type { NativeMcpTransportPort } from '../ports.js'
 import { createLogger } from '../../../log.js'
 import { captureBirthTime, processIdentity } from '../../../win32-job.js'
 import type { NativeMcpServerConfig, NativeMcpStatus, NativeMcpToolInfo } from './connections.js'
@@ -156,6 +157,9 @@ export interface ReconnectPolicy {
 }
 
 export interface SharedRecordOptions {
+  /** Host MCP transport construction + auth-failure classification. Required:
+   *  shared records are stdio-only and pass no auth opts (see openConnection). */
+  transportPort: NativeMcpTransportPort
   connectTimeoutMs?: number // default 10_000
   toolTimeoutMs?: number // default 120_000
   /** Default { enabled: true, initialDelayMs: 500, maxDelayMs: 30_000, maxAttempts: 10 }. */
@@ -197,6 +201,7 @@ export class SharedRecord {
    *  clears it. */
   cleanupFailed = false
 
+  private readonly transportPort: NativeMcpTransportPort
   private readonly connectTimeoutMs: number
   private readonly toolTimeoutMs: number
   private readonly closeTimeoutMs: number
@@ -238,10 +243,11 @@ export class SharedRecord {
   private connectTimer?: ReturnType<typeof setTimeout>
   private settleReady: () => void = noop
 
-  constructor(key: string, config: NativeMcpServerConfig, opts: SharedRecordOptions = {}) {
+  constructor(key: string, config: NativeMcpServerConfig, opts: SharedRecordOptions) {
     this.key = key
     this.config = config
     this.label = `${config.command ?? 'mcp'}#${shortHash(key)}`
+    this.transportPort = opts.transportPort
     this.connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     this.toolTimeoutMs = opts.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
     this.closeTimeoutMs = opts.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS
@@ -448,7 +454,7 @@ export class SharedRecord {
   private applyTerminalFailure(err: unknown): void {
     this.error = errorMessage(err)
     this.tools = []
-    this.status = isMcpAuthError(err) ? 'needs-auth' : 'failed'
+    this.status = this.transportPort.isAuthError(err) ? 'needs-auth' : 'failed'
     log.warn(`[${this.label}] ${this.status}: ${this.error}`)
   }
 
@@ -508,7 +514,7 @@ export class SharedRecord {
     const outcome = await this.runAttempt()
     if (this.closed || run !== this.supervisorRun) return
     if (outcome.ok) return
-    if (isMcpAuthError(outcome.err)) {
+    if (this.transportPort.isAuthError(outcome.err)) {
       this.applyTerminalFailure(outcome.err)
       return
     }
@@ -541,7 +547,7 @@ export class SharedRecord {
    *  transport takes no authProvider — OAuth belongs to the view's local
    *  sse/http entries, so there is no auth plumbing here. */
   private async openConnection(client: Client): Promise<void> {
-    const transport = createMcpTransport(transportTarget(this.config))
+    const transport = this.transportPort.createTransport(transportTarget(this.config))
     await client.connect(transport)
     if (this.config.type === 'stdio') {
       this.pid = (transport as StdioClientTransport).pid ?? null
@@ -576,8 +582,8 @@ export class SharedRecord {
       signal.addEventListener('abort', onAbort, { once: true })
       work.then(
         () => finish(null),
-        // Reject with the original instance: `isMcpAuthError` narrows on the
-        // SDK's error classes.
+        // Reject with the original instance: the transport port's `isAuthError`
+        // narrows on the SDK's error classes.
         (err) => finish(err instanceof Error ? err : new Error(String(err))),
       )
     })

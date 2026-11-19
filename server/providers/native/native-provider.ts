@@ -184,7 +184,7 @@ export class NativeProvider implements AgentProvider {
   }) {
     this.stateDir = resolveNativeStateDir(opts.stateDir)
     this.authFor = opts.authFor
-    this.mcpRegistry = new SharedRegistry()
+    this.mcpRegistry = new SharedRegistry({ transportPort: opts.ports.mcpTransport })
     this.agentStore = opts.agentStore
     this.uploadStore = opts.uploadStore
     this.ports = opts.ports
@@ -237,7 +237,7 @@ export class NativeProvider implements AgentProvider {
     // The manager has already resolved globals + inline configs + first-party
     // `injectAll` results into `mcpServers`. Connections start here and are
     // awaited per turn, so spawn never blocks on a slow server.
-    const mcp = new NativeMcpConnections({ authFor: this.authFor, registry: this.mcpRegistry })
+    const mcp = new NativeMcpConnections({ transportPort: this.ports.mcpTransport, authFor: this.authFor, registry: this.mcpRegistry })
     mcp.load(opts.mcpServers as Record<string, unknown> | undefined)
     // Spawn skill policy rides the SDK-shaped create body the manager already
     // forwards through providerExtras (`Options.skills`).
