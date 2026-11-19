@@ -687,6 +687,17 @@ export class SessionSynchronizer {
         store.dispatch({ type: 'MESSAGE_CONSUMED', uuid: frame.uuid, consumedAt: frame.consumedAt })
         break
       }
+      case 'message-queued': {
+        // A mid-turn root prompt the server accepted but has not published to
+        // the seq space yet (spec §8.1). Paint a queued bubble keyed by uuid
+        // (no seq); the materialization `message` frame replaces it by uuid.
+        // The sending tab already holds its optimistic placeholder, so the
+        // reducer's exact-uuid / already-on-screen guards make this a no-op
+        // there.
+        if (this.isStaleGeneration(frame)) break
+        store.dispatch({ type: 'MESSAGE_QUEUED', uuid: frame.uuid, message: frame.message as SdkMessage, clientOperationId: frame.clientOperationId })
+        break
+      }
       case 'message-steered': {
         // Steered delivery transition: 'injected' flips the bubble chip to
         // "injected"; 'requeued' means the turn ended before delivery and

@@ -96,25 +96,28 @@ export function applyMessage(state: SessionState, message: SdkMessage): SessionS
     workingIntent.pendingPlaceholders.size > 0 &&
     incomingParent == null
   ) {
-    // Find the oldest placeholder — Maps preserve insertion order, so the
-    // first key is the oldest send. Echoes arrive in send order, so this is
-    // the correct match. If a multi-content match (e.g. by signature) is
-    // ever needed, this is the place to add it; for now, order-based
-    // matching mirrors the pre-refactor behaviour without the brittleness
-    // of looking up by id in mirror.items.
+    // Prefer an EXACT uuid match: a server-confirmed queued bubble
+    // (MESSAGE_QUEUED, spec §8.1) is keyed by its server uuid, so its
+    // materialization echo replaces it precisely — not the FIFO oldest, which
+    // could be an unrelated optimistic send on a multi-tab panel. Optimistic
+    // placeholders (keyed by their local id, not the server uuid) fall back to
+    // the oldest-send FIFO match below.
     const oldestKey = workingIntent.pendingPlaceholders.keys().next().value
-    if (typeof oldestKey === 'string') {
+    const matchKey = messageUuid && workingIntent.pendingPlaceholders.has(messageUuid)
+      ? messageUuid
+      : oldestKey
+    if (typeof matchKey === 'string') {
       // Forward any consumedAt previously stamped on the placeholder (via a
       // MESSAGE_CONSUMED frame that landed before this echo). The placeholder
       // is the only carrier of that state when it's been ack'd before the
       // server echo — pendingConsumedMessages was already cleared on ack.
-      const placeholder = workingIntent.pendingPlaceholders.get(oldestKey)
+      const placeholder = workingIntent.pendingPlaceholders.get(matchKey)
       if (placeholder && typeof placeholder.msg.consumedAt === 'number') {
         placeholderConsumedAt = placeholder.msg.consumedAt
       }
-      placeholderSourceId = placeholder?.optimisticSourceId ?? oldestKey
+      placeholderSourceId = placeholder?.optimisticSourceId ?? matchKey
       const nextPlaceholders = new Map(workingIntent.pendingPlaceholders)
-      nextPlaceholders.delete(oldestKey)
+      nextPlaceholders.delete(matchKey)
       workingIntent = { ...workingIntent, pendingPlaceholders: nextPlaceholders }
     }
   }

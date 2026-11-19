@@ -37,6 +37,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { isAbsolute, join, resolve, sep } from 'node:path'
 import { SessionStore, coerceMemory, coerceTaskBudget, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
+import { ClientOperationStore } from './client-operation-store.js'
 import { SteeredStore, spliceSteeredIntoPage } from './steered-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
 import { SessionOpLock } from './session-op-lock.js'
@@ -148,11 +149,13 @@ import { TranscriptStore, type SeqMessage, type TranscriptWindow } from './trans
 import {
   TranscriptSidecar,
   backfillFromEntries,
+  classifyPendingInputs,
   foldSidecarRows,
   foldSidecarRowsV2,
   makeCommitV2,
   recordTranscriptMessage,
   type TranscriptHolder,
+  type PendingInputView,
 } from './transcript-sidecar.js'
 import { occurrenceIdOf, semanticMessageProjection, type ProjectionEntry } from './transcript-projection.js'
 import { createHash } from 'node:crypto'
@@ -932,6 +935,8 @@ export class SessionManager {
   private readonly attachmentSendLeases = new Map<string, Map<string, Set<string>>>()
   private readonly sendStates = new WeakMap<Session, SendLifecycleState>()
   private promptUuidStore: PromptUuidStore
+  /** Send idempotency (spec §8.3): clientOperationId → original dispatch ack. */
+  private clientOperationStore: ClientOperationStore
   private steeredStore: SteeredStore
   private turnAnchorStore: TurnAnchorStore
   private resultFrameStore: ResultFrameStore
@@ -1088,6 +1093,7 @@ export class SessionManager {
     this.store = opts.store ?? new SessionStore()
     this.uploadStore = opts.uploadStore ?? new UploadStore({ stateDir: this.store.getDir() })
     this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
+    this.clientOperationStore = new ClientOperationStore(this.store.getDir())
     // Mid-run steering 的回放 sidecar（spec §8.1）——steered 消息不在 CLI
     // JSONL 里（additionalContext 落盘为不可渲染的 attachment），这是它
     // 唯一的磁盘回放来源。
@@ -1513,6 +1519,9 @@ export class SessionManager {
     this.permBroker.denyAll(s)
     this.elicitBroker.cancelAll(s)
     this.dialogBroker.cancelAll(s)
+    // Terminal give-up: the writer-queued prompts are abandoned — release their
+    // attachment leases so the uploads are not stranded (spec §10).
+    this.releaseWriterQueuedLeases(s.id)
     this.broadcastSystemNotice(s, errorMsg)
     endAllSubscribers(s)
     this.persist(s)
@@ -2267,7 +2276,11 @@ export class SessionManager {
     // clearing degraded, so recovery still spawns. Reads the holder via the
     // map (same accessor as the other fences), not the reconcile return.
     if (this.transcriptStores.get(id)?.degraded === true) throw new HttpError(423, 'transcript-degraded')
-    return this.spawn(id, resumeOpts, undefined, historySeed, undefined, undefined, undefined, undefined, promptUuids ?? [])
+    const spawned = await this.spawn(id, resumeOpts, undefined, historySeed, undefined, undefined, undefined, undefined, promptUuids ?? [])
+    // Crash recovery (spec §7.2): re-materialize/re-dispatch prompts that were
+    // queued-not-published / enqueue-not-attempted when the prior process died.
+    await this.recoverPendingInputs(id)
+    return spawned
   }
 
   /** Respawn a FRESH conversation on an existing session id, discarding any
@@ -2869,6 +2882,7 @@ export class SessionManager {
       await this.taskResultStore.remove(id)
       await this.snapshotStore.remove(id)
       await this.promptUuidStore.remove(id)
+      await this.clientOperationStore.remove(id)
       await this.steeredStore.remove(id)
       await this.removeResetJournal(id)
       await this.forkSeedStore.remove(id)
@@ -3744,6 +3758,7 @@ export class SessionManager {
     this.resultFrameStore.revive(id)
     this.taskResultStore.revive(id)
     this.promptUuidStore.revive(id)
+    this.clientOperationStore.revive(id)
     this.steeredStore.revive(id)
     if (deferPublication) {
       this.deferredPublications.set(id, { joinGroupOf, evictingSource, replacesSource })
@@ -3820,14 +3835,22 @@ export class SessionManager {
     this.deferredPublications.delete(id)
   }
 
-  /** Send a user turn into an existing session. */
-  async send(id: string, text: string): Promise<SentUserMessage> {
+  /** Send a user turn into an existing session. `clientOperationId` (spec §8.3)
+   *  makes the send idempotent: a retry carrying the same key returns the
+   *  original dispatch's ack instead of minting a second prompt. */
+  async send(id: string, text: string, clientOperationId?: string): Promise<SentUserMessage> {
     const s = this.requireSendable(id)
     this.assertTranscriptMutable(id)
     const lifecycle = this.beginSend(s)
     return this.opLock.run(id, async () => {
       this.assertSendCurrent(s, lifecycle)
       try {
+        // Idempotency check INSIDE the op lock so concurrent retries serialize:
+        // the first dispatch records the key before the second checks it.
+        const prior = clientOperationId
+          ? await this.clientOperationStore.get(id, clientOperationId)
+          : null
+        if (prior) return { uuid: prior.promptUuid, receivedAt: prior.receivedAt } as SentUserMessage
         if (s.provider === 'native' && this.phaseOf(s) === 'idle') {
           await this.autoCompactBeforeSend(s, lifecycle)
           this.assertSendCurrent(s, lifecycle)
@@ -3849,7 +3872,22 @@ export class SessionManager {
           `input.queueDepth=${s.handle.queueDepth}, ` +
           `running=${s.running}, terminated=${s.terminated}`,
         )
-        return this.dispatchNewUserMessage(s, userMsg)
+        const sent = this.dispatchNewUserMessage(s, userMsg, undefined, clientOperationId)
+        if (clientOperationId) {
+          // Best-effort: the dispatch already succeeded. A record failure must
+          // not reject the send (HTTP 500 → client retry → double dispatch) —
+          // the idempotency entry is a dedup convenience, not dispatch state.
+          try {
+            await this.clientOperationStore.record(id, {
+              clientOperationId,
+              promptUuid: sent.uuid!,
+              receivedAt: (sent as { receivedAt?: number }).receivedAt,
+            })
+          } catch (err) {
+            log.warn(`[session ${id}] client-operation record failed (dispatch already succeeded): ${(err as Error).message ?? err}`)
+          }
+        }
+        return sent
       } finally {
         this.endSend(s, lifecycle)
       }
@@ -3896,6 +3934,21 @@ export class SessionManager {
     }
   }
 
+  /** Release the attachment send leases of writer-queued (queued-not-published)
+   *  prompts and drain them (spec §10). The host-queue lease release paths only
+   *  cover the provider handle queue; on terminal crash-recovery failure the
+   *  writer queue is a second home whose leases would otherwise strand the
+   *  uploads (409 on deletion forever). The durable input states remain for
+   *  manual recovery; recovery re-resolves attachments if the user resumes. */
+  private releaseWriterQueuedLeases(sessionId: string): void {
+    const ops = this.transcriptWriters.get(sessionId)?.drainQueued() ?? []
+    for (const op of ops) {
+      const u = (op.payload as { uuid?: unknown }).uuid
+      if (typeof u === 'string') this.releaseAttachmentLeasesForUuid(sessionId, u)
+    }
+    this.uploadStore?.attachmentReferences.setPendingInputReferences(sessionId, [])
+  }
+
   private releaseAllAttachmentLeases(sessionId: string): void {
     const messages = this.attachmentSendLeases.get(sessionId)
     if (!messages) return
@@ -3903,10 +3956,12 @@ export class SessionManager {
     this.attachmentSendLeases.delete(sessionId)
   }
 
-  /** Send a user turn with a content array (text + image + file blocks). */
+  /** Send a user turn with a content array (text + image + file blocks).
+   *  `clientOperationId` makes the send idempotent (spec §8.3, see send()). */
   async sendContent(
     id: string,
     content: ProviderInputContentBlock[],
+    clientOperationId?: string,
   ): Promise<SentUserMessage> {
     const s = this.requireSendable(id)
     this.assertTranscriptMutable(id)
@@ -3917,6 +3972,12 @@ export class SessionManager {
       let nativeLeaseRegistered = false
       let userUuid: string | undefined
       try {
+        // Idempotency before lease acquisition: a retry returns the original
+        // ack without touching attachment leases or re-dispatching.
+        const prior = clientOperationId
+          ? await this.clientOperationStore.get(id, clientOperationId)
+          : null
+        if (prior) return { uuid: prior.promptUuid, receivedAt: prior.receivedAt } as SentUserMessage
         if (s.provider === 'native' && this.phaseOf(s) === 'idle') {
           await this.autoCompactBeforeSend(s, lifecycle)
           this.assertSendCurrent(s, lifecycle)
@@ -3953,7 +4014,23 @@ export class SessionManager {
           `[session ${id}] sendContent PRE-PUSH — blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
           `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
         )
-        return this.dispatchNewUserMessage(s, userMsg, providerContent)
+        const sent = this.dispatchNewUserMessage(s, userMsg, providerContent, clientOperationId)
+        if (clientOperationId) {
+          // Best-effort: the dispatch already succeeded. A record failure must
+          // not unwind it — the outer catch would release the live attachment
+          // lease of a queued-not-published prompt and rethrow (HTTP 500 →
+          // client retry → double dispatch). The entry is a dedup convenience.
+          try {
+            await this.clientOperationStore.record(id, {
+              clientOperationId,
+              promptUuid: sent.uuid!,
+              receivedAt: (sent as { receivedAt?: number }).receivedAt,
+            })
+          } catch (err) {
+            log.warn(`[session ${id}] client-operation record failed (dispatch already succeeded): ${(err as Error).message ?? err}`)
+          }
+        }
+        return sent
       } catch (err) {
         if (s.provider === 'native') {
           if (nativeLeaseRegistered && userUuid !== undefined) {
@@ -4059,20 +4136,22 @@ export class SessionManager {
     }
   }
 
-  private dispatchNewUserMessage(s: Session, userMsg: AgentUserMessage): SentUserMessage
+  private dispatchNewUserMessage(s: Session, userMsg: AgentUserMessage, providerContent?: undefined, clientOperationId?: string): SentUserMessage
   private dispatchNewUserMessage(
     s: Session,
     userMsg: PublicAgentUserMessage,
     providerContent: ProviderContentBlock[],
+    clientOperationId?: string,
   ): SentUserMessage
   private dispatchNewUserMessage(
     s: Session,
     userMsg: AnyAgentUserMessage,
     providerContent?: readonly ProviderContentBlock[],
+    clientOperationId?: string,
   ): SentUserMessage {
     const rollbackAnchor = this.captureAnchor(s.id, s, userMsg.uuid!)
     try {
-      this.dispatchUserMessage(s, userMsg, providerContent)
+      this.dispatchUserMessage(s, userMsg, providerContent, clientOperationId)
       return userMsg as SentUserMessage
     } catch (err) {
       rollbackAnchor()
@@ -4206,6 +4285,7 @@ export class SessionManager {
     s: Session,
     userMsg: AnyAgentUserMessage,
     providerContent?: readonly ProviderContentBlock[],
+    clientOperationId?: string,
   ): void {
     // A new top-level user turn invalidates the previous turn's predicted
     // next-prompt. If we leave `lastPromptSuggestion` set, it resurfaces as
@@ -4240,7 +4320,15 @@ export class SessionManager {
     // autoResume-window carry and native direct hand-off rely on it). The
     // ledger entry is recorded NOW so withdrawal/heal probes see the pending
     // prompt; consumption is stamped at materialization (dispatchUser).
-    if (s.pendingTurns > 0 || s.turnActive === true) {
+    //
+    // The branch's premise is that a turn terminal WILL arrive to materialize
+    // the prompt. A native durable-retry pause breaks that premise: the pump
+    // loop parked a failed head prompt and only a direct enqueue releases it,
+    // so no terminal is coming even though pendingTurns is still armed (the
+    // parked prompt keeps queueDepth > 0). Queueing here would strand the retry
+    // forever; fall through to the synchronous path so the enqueue releases the
+    // pause and the retry reaches the model.
+    if ((s.pendingTurns > 0 || s.turnActive === true) && !s.handle.awaitingDurableRetry) {
       this.recordPromptUuid(s, userMsg)
       // receivedAt is the server's receive moment — queue time, not the later
       // materialization — so the published frame carries the true stamp.
@@ -4252,6 +4340,10 @@ export class SessionManager {
         kind: 'user',
         payload: userMsg,
         providerPayload: forSdk,
+        // The sending tab's optimistic placeholder is keyed by this id until
+        // the REST ack re-keys it — publishQueued carries it so that tab can
+        // recognize its own queued bubble and not paint a duplicate (§8.3).
+        ...(clientOperationId !== undefined ? { clientOperationId } : {}),
       }).catch((err) => {
         log.warn(`[session ${s.id}] queued-not-published commit failed: ${(err as Error).message ?? err}`)
       })
@@ -4630,9 +4722,46 @@ export class SessionManager {
         // Count queued-not-published withdrawals too — they never entered the
         // ring, so removeFromHistory does not see them, but they ARE withdrawn.
         removed += withdrawnQueuedOps.length
-        void this.writerFor(id).commitWithdrawnStates(withdrawnQueuedOps).catch((err) => {
+        // Await the durable withdrawn state BEFORE the eviction-triggered
+        // reconcile below, so classifyPendingInputs sees `withdrawn` (not the
+        // stale queued-not-published) and does not re-register a pending-input
+        // deletion reference for the just-withdrawn prompt.
+        let withdrawnCommitted = true
+        try {
+          await this.writerFor(id).commitWithdrawnStates(withdrawnQueuedOps)
+        } catch (err) {
+          withdrawnCommitted = false
           log.warn(`[session ${id}] withdrawn-state commit failed: ${(err as Error).message ?? err}`)
-        })
+        }
+        // Release the attachment send leases of withdrawn queued-not-published
+        // prompts (spec §10) ONLY once the durable withdrawn commit landed: the
+        // host-queue leg releases its own via withdrawHostQueue, but these never
+        // entered the host queue. On commit failure the durable state is still
+        // queued-not-published, so a later resume re-dispatches the prompt —
+        // recovery must keep owning the files (releasing here would let the
+        // upload be deleted before that re-dispatch). The visible withdrawal
+        // broadcast below still fires either way.
+        if (withdrawnCommitted) {
+          for (const op of withdrawnQueuedOps) {
+            const u = (op.payload as { uuid?: unknown }).uuid
+            if (typeof u === 'string') this.releaseAttachmentLeasesForUuid(id, u)
+          }
+          // Drop the withdrawn ops from the cached recovery view and refresh the
+          // pending-input deletion references so a withdrawn prompt's files become
+          // deletable immediately (no stale pendingInputs holder).
+          const holder = this.transcriptStores.get(id)
+          if (holder?.pendingRecovery) {
+            const gone = new Set(withdrawnQueuedOps.map((op) => op.operationId))
+            const v = holder.pendingRecovery
+            holder.pendingRecovery = {
+              queued: v.queued.filter((op) => !gone.has(op.operationId)),
+              notAttempted: v.notAttempted.filter((op) => !gone.has(op.operationId)),
+              dispatchUnknown: v.dispatchUnknown.filter((op) => !gone.has(op.operationId)),
+              withdrawn: [...v.withdrawn, ...gone],
+            }
+            this.registerPendingInputReferences(id, holder.pendingRecovery)
+          }
+        }
         // Drop the matching ledger entries — a withdrawn prompt (unconsumed
         // or consumed-but-cancelled) is dead work; keeping it would make the
         // heal probe read "work still queued" or retain a dead entry. The
@@ -5587,6 +5716,7 @@ export class SessionManager {
     // (the seq sidecar above is kept). A failed app reset is logged, not fatal.
     const sidecarResets: Array<[string, () => Promise<void>]> = [
       ['prompt-uuid', () => this.promptUuidStore.remove(s.id)],
+      ['client-operations', () => this.clientOperationStore.remove(s.id)],
       ['steered', () => this.steeredStore.remove(s.id)],
       ['turn-anchor', () => this.turnAnchorStore.remove(s.id)],
       ['result-frame', () => this.resultFrameStore.remove(s.id)],
@@ -8450,6 +8580,15 @@ export class SessionManager {
           t.store.hydrate(foldSidecarRows(rawRows.filter((r) => r.v !== 2)))
         }
         const composed = await this.composeTranscriptEntries(id)
+        // Crash-recovery classification (spec §7.2, T7b Task 6): the durable
+        // dispatch states decide which prompts to re-materialize/re-dispatch on
+        // resume vs surface for manual recovery. Canonical provider uuids are
+        // dispatch evidence (a prompt the provider already took is resolved).
+        const canonUuids = new Set(
+          composed.map((m) => (m as { uuid?: unknown }).uuid).filter((u): u is string => typeof u === 'string'),
+        )
+        t.pendingRecovery = classifyPendingInputs(rawRows, canonUuids)
+        this.registerPendingInputReferences(id, t.pendingRecovery)
         if (!this.isSessionDeleteTombstoned(id)) await this.reconcileOrdered(t, id, composed)
       } catch (err) {
         if (err instanceof TranscriptRebuildBlockedError) {
@@ -8689,6 +8828,118 @@ export class SessionManager {
       generation: head?.generation ?? t.store.generation,
       headSeq: head?.headSeq ?? t.store.headSeq,
       degraded: t.degraded,
+    }
+  }
+
+  /** Register the file attachments referenced by a session's durable pending
+   *  dispatch states with the upload reference index (spec §10), so a deletion
+   *  cannot remove a file a crash recovery is about to re-dispatch. The live
+   *  send lease covers the in-flight window; this covers the post-crash window
+   *  where the in-memory lease is gone and the prompt is not yet in the log. */
+  private registerPendingInputReferences(id: string, view: PendingInputView): void {
+    const ids = new Set<string>()
+    for (const op of [...view.queued, ...view.notAttempted, ...view.dispatchUnknown]) {
+      const content = (op.payload as { message?: { content?: unknown } })?.message?.content
+      if (!Array.isArray(content)) continue
+      for (const block of content) {
+        const b = block as { type?: unknown; attachment?: { id?: unknown } }
+        if (b.type === 'file' && typeof b.attachment?.id === 'string') ids.add(b.attachment.id)
+      }
+    }
+    this.uploadStore?.attachmentReferences.setPendingInputReferences(id, ids)
+  }
+
+  /** Rebuild the resolved provider payload for a crash-recovered prompt. The
+   *  durable input row stores only the public wire payload (file blocks stripped
+   *  of path/modelForm by publicAttachmentContent), so recovery re-runs the
+   *  send-path resolver before dispatch (spec §10). Returns undefined when the
+   *  payload carries no file blocks — text/image sends dispatch the public form
+   *  unchanged, exactly as sendContent does. */
+  private async recoveredProviderPayload(id: string, payload: unknown): Promise<unknown> {
+    const msg = payload as { message?: { content?: unknown } }
+    const content = msg?.message?.content
+    if (!Array.isArray(content) || !content.some((b) => (b as { type?: unknown }).type === 'file')) return undefined
+    const resolved = await resolveAttachmentContent(content as ProviderInputContentBlock[], {
+      sessionId: id,
+      signal: new AbortController().signal,
+      uploadStore: this.uploadStore,
+      stateDir: this.store!.getDir(),
+    })
+    return { ...(payload as object), message: { ...(msg.message as object), content: resolved } }
+  }
+
+  /** Re-materialize + re-dispatch crash-recovered prompts (spec §7.2, T7b Task 6).
+   *  Called on resume after the projection reconciles and a live handle exists.
+   *  `queued`/`notAttempted` ops materialize at the prior turn terminal (seq +
+   *  ring + broadcast) and dispatch exactly once — the materialized live row is
+   *  the durable evidence that resolves them on any later restart. `dispatchUnknown`
+   *  ops (enqueue-attempted, no evidence the provider took them) are surfaced for
+   *  manual recovery and NEVER auto re-dispatched (§7.2). */
+  private async recoverPendingInputs(id: string): Promise<void> {
+    const t = this.transcriptStores.get(id)
+    const view = t?.pendingRecovery
+    if (!view) return
+    const s = this.sessions.get(id)
+    if (!s || !s.running) return
+    const recovered = [...view.queued, ...view.notAttempted]
+      .sort((a, b) => a.dispatchOrdinal - b.dispatchOrdinal)
+    if (recovered.length > 0) {
+      const writer = this.writerFor(id)
+      // Re-resolve attachment file blocks per op (spec §10): the durable input
+      // row stores only the PUBLIC payload (publicAttachmentContent strips
+      // path/modelForm), so the provider payload must be rebuilt through the
+      // same resolver sendContent uses — dispatching the public form would
+      // durably corrupt the log with path-less file handles. Enqueue per op so
+      // a resolution failure strands only the unresolved tail (its durable
+      // state + deletion guard stay intact for a later resume), never the
+      // already-resolved prefix.
+      const handed = new Set<string>()
+      for (const op of recovered) {
+        let providerPayload: unknown
+        try {
+          providerPayload = await this.recoveredProviderPayload(id, op.payload)
+        } catch (err) {
+          log.warn(
+            `[session ${id}] pending-input attachment re-resolution failed for ${op.operationId} ` +
+            `(${recovered.length - handed.size} prompt(s) stay pending): ${(err as Error).message ?? err}`,
+          )
+          break
+        }
+        writer.enqueueRecovered([{
+          operationId: op.operationId,
+          dispatchOrdinal: op.dispatchOrdinal,
+          kind: 'user' as const,
+          payload: op.payload,
+          ...(providerPayload !== undefined ? { providerPayload } : {}),
+        }])
+        handed.add(op.operationId)
+      }
+      if (handed.size > 0) {
+        try {
+          await writer.materializeQueued()
+          log.info(`[session ${id}] recovered ${handed.size} pending prompt(s) after restart`)
+        } catch (err) {
+          log.warn(`[session ${id}] pending-input recovery failed: ${(err as Error).message ?? err}`)
+        }
+      }
+      // Consume only the ops handed to the writer: the materialized live rows
+      // (or the writer's in-memory queue on a failed materialize) own them now,
+      // so a re-reconcile cannot re-dispatch them. An unresolved tail keeps its
+      // durable state + deletion guard for a later resume.
+      if (t) {
+        t.pendingRecovery = {
+          ...view,
+          queued: view.queued.filter((op) => !handed.has(op.operationId)),
+          notAttempted: view.notAttempted.filter((op) => !handed.has(op.operationId)),
+        }
+        this.registerPendingInputReferences(id, t.pendingRecovery)
+      }
+    }
+    if (view.dispatchUnknown.length > 0) {
+      log.warn(
+        `[session ${id}] ${view.dispatchUnknown.length} dispatch-unknown prompt(s) await manual recovery ` +
+        `(enqueue-attempted with no provider evidence; not auto re-dispatched)`,
+      )
     }
   }
 
@@ -9340,6 +9591,7 @@ export class SessionManager {
           // filesystem failures behind best-effort logging.
           const removals = await Promise.allSettled([
             this.promptUuidStore.remove(id, { strict: true }),
+            this.clientOperationStore.remove(id, { strict: true }),
             this.steeredStore.remove(id, { strict: true }),
             this.turnAnchorStore.remove(id, { strict: true }),
             this.resultFrameStore.remove(id, { strict: true }),

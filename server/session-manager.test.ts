@@ -383,7 +383,7 @@ import { COMPACT_SUMMARY_TIMEOUT_MS } from '../shared/compact-deadline.js'
 import { cleanupGitFixtures, makeRepo } from './test-git-fixtures.js'
 import { branchExists } from './git.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
-import { TranscriptSidecar } from './transcript-sidecar.js'
+import { TranscriptSidecar, makeCommitV2 } from './transcript-sidecar.js'
 import { SessionSubscriptionRegistry } from './session-plugin-subscription.js'
 import { ResetJournal } from './reset-journal.js'
 import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
@@ -8928,6 +8928,49 @@ describe('SessionManager', () => {
       expect(win.generation).toBe(0)
     })
 
+    it('T7b-3: a retried send with the same clientOperationId returns the original ack and dispatches once', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const first = await sm.send(info.id, 'hello', 'op-1')
+      const retry = await sm.send(info.id, 'hello', 'op-1')
+      // Same key → original ack, no second prompt minted.
+      expect((retry as { uuid: string }).uuid).toBe((first as { uuid: string }).uuid)
+      expect(mockHandles[0].consumed).toHaveLength(1)
+      // A different key dispatches a new prompt (distinct uuid).
+      const other = await sm.send(info.id, 'world', 'op-2')
+      expect((other as { uuid: string }).uuid).not.toBe((first as { uuid: string }).uuid)
+    })
+
+    it('T7b-3: the message-queued frame carries the send\'s clientOperationId (sending-tab dedup)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await sm.send(info.id, 'turn1')
+      const frames: Array<{ kind?: string; uuid?: string; clientOperationId?: string }> = []
+      const sub = sm.subscribeMessageStatus(info.id)
+      void (async () => {
+        for await (const v of sub!.iterable) frames.push(v as { kind?: string; uuid?: string; clientOperationId?: string })
+      })()
+      const queued = await sm.send(info.id, 'turn2', 'op-queued') as { uuid: string }
+      expect(await waitFor(() => frames.some((f) => f.kind === 'message-queued'))).toBe(true)
+      const frame = frames.find((f) => f.kind === 'message-queued')!
+      expect(frame.uuid).toBe(queued.uuid)
+      // Without the key the sending tab cannot recognize its own optimistic
+      // placeholder and paints a duplicate queued bubble pre-ack.
+      expect(frame.clientOperationId).toBe('op-queued')
+      sub!.unsubscribe()
+    })
+
+    it('T7b review #2: a failed idempotency record never unwinds a successful send', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const opStore = (sm as unknown as {
+        clientOperationStore: { record: (id: string, entry: unknown) => Promise<void> }
+      }).clientOperationStore
+      vi.spyOn(opStore, 'record').mockRejectedValueOnce(new Error('disk full'))
+      // The dispatch succeeded; the record is a dedup convenience. Its failure
+      // must not reject the send (HTTP 500 → client retry → double dispatch).
+      const sent = await sm.send(info.id, 'hello', 'op-1') as { uuid: string }
+      expect(sent.uuid).toBeTruthy()
+      expect(mockHandles[0].consumed).toHaveLength(1)
+    })
+
     it('seq-assigns sent prompts and pump-ingested messages; window reads back by seq', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
       await sm.send(info.id, 'hello')
@@ -9915,6 +9958,57 @@ describe('SessionManager', () => {
       expect(r2.degraded).toBe(false)
       expect(sm.get(info.id).running).toBe(true)
       expect(uuidsOf(await sm.getTranscriptWindow(info.id))).toEqual(['A', 'R', 'N'])
+    })
+
+    it('T7b-6: crash after queued-not-published — resume materializes the prompt at the prior turn terminal, once', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const turn1Uuid = ((await sm.send(info.id, 'turn1')) as { uuid: string }).uuid // idle → seq 0
+      emitAssistant('A', 'mA', 'reply')                                              // seq 1
+      const turn2 = ((await sm.send(info.id, 'turn2')) as { uuid: string }).uuid     // queued-not-published
+      expect(await waitFor(async () =>
+        (await new TranscriptSidecar(dir, info.id).load()).some((r) => (r as { state?: string }).state === 'queued-not-published'),
+      )).toBe(true)
+      // The provider log holds the prior turn (turn1 + A); turn2 never reached it.
+      writeJsonl(info.id, [
+        JSON.stringify({ type: 'user', uuid: turn1Uuid, parent_tool_use_id: null, message: { role: 'user', content: 'turn1' } }),
+        JSON.stringify({ type: 'assistant', uuid: 'A', message: { id: 'mA', role: 'assistant', content: [{ type: 'text', text: 'reply' }] } }),
+      ])
+      await sm.unload(info.id) // simulate the process dying mid-turn
+      await sm.resume(info.id) // restart: reconcile + recover pending inputs
+      // turn2 materializes AFTER the prior turn terminal (append-only turn1,A,turn2).
+      expect(await waitFor(async () =>
+        uuidsOf(await sm.getTranscriptWindow(info.id)).includes(turn2),
+      )).toBe(true)
+      expect(uuidsOf(await sm.getTranscriptWindow(info.id))).toEqual([turn1Uuid, 'A', turn2])
+      // Dispatched exactly once to the resumed handle.
+      const resumed = mockHandles.at(-1)!
+      expect(resumed.consumed.filter((m) => (m as { uuid?: string }).uuid === turn2)).toHaveLength(1)
+    })
+
+    it('T7b-6: enqueue-attempted with no provider evidence → dispatch-unknown, never auto re-dispatched (§7.2)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const turn1Uuid = ((await sm.send(info.id, 'turn1')) as { uuid: string }).uuid
+      // A prompt whose enqueue-attempted state landed but whose materialized live
+      // row never did (crash between the state commit and the provider append),
+      // and the provider log has no trace of it. Recovery must NOT auto re-send.
+      const ghost = 'ghost-unknown-uuid'
+      const sc = new TranscriptSidecar(dir, info.id)
+      const mkInput = (state: string) => {
+        const batchId = `ghost-${state}`
+        const row = { v: 2, batchId, operationId: ghost, dispatchOrdinal: 99, state, payload: { type: 'user', uuid: ghost, message: { role: 'user', content: 'ghost' } } }
+        return sc.appendBatch([row], makeCommitV2({ batchId, batchType: 'input', generation: 0, reason: 'initial', contentPolicy: 'preserve', rows: [row] }))
+      }
+      await mkInput('enqueue-not-attempted')
+      await mkInput('enqueue-attempted')
+      writeJsonl(info.id, [
+        JSON.stringify({ type: 'user', uuid: turn1Uuid, parent_tool_use_id: null, message: { role: 'user', content: 'turn1' } }),
+      ])
+      await sm.unload(info.id)
+      await sm.resume(info.id)
+      await sm.getTranscriptWindow(info.id) // settle reconcile
+      // The ghost prompt is neither published nor dispatched — surfaced for manual recovery.
+      expect(uuidsOf(await sm.getTranscriptWindow(info.id))).not.toContain(ghost)
+      expect(mockHandles.at(-1)!.consumed.some((m) => (m as { uuid?: string }).uuid === ghost)).toBe(false)
     })
   })
   describe('degraded read-only fence (spec §10)', () => {
@@ -13054,9 +13148,12 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(h.interrupt).toHaveBeenCalledWith({ cancelQueued: true })
       // Both queued turns were withdrawn: ring entries removed + count.
       expect(removed).toBe(2)
-      // Live subscribers got the withdrawal frame with the server uuids.
-      await waitFor(() => withdrawnFrames.length > 0)
-      const frame = withdrawnFrames[0] as { kind?: string; uuids?: string[] }
+      // Live subscribers got the withdrawal frame with the server uuids. A
+      // message-queued bubble frame may legitimately precede it (the prompt was
+      // queued, then withdrawn), so find the withdrawal frame rather than
+      // assuming it is first.
+      await waitFor(() => withdrawnFrames.some((f) => f.kind === 'messages-withdrawn'))
+      const frame = withdrawnFrames.find((f) => f.kind === 'messages-withdrawn') as { kind?: string; uuids?: string[] }
       expect(frame.kind).toBe('messages-withdrawn')
       expect(frame.uuids).toEqual(expect.arrayContaining(queuedUuids))
       // The replay ring no longer carries the withdrawn turns.

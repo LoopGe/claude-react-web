@@ -688,6 +688,13 @@ export type SessionAction =
   /** The SDK read a queued user turn off its input queue. Flips the
    *  matching message's deliveryStatus from 'queued' to 'consumed'. */
   | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
+  /** A mid-turn root prompt the server accepted but has NOT yet published to
+   *  the seq space (spec §8.1 queued-not-published, server `message-queued`
+   *  frame). Renders a queued bubble on tabs that did not send it (the sending
+   *  tab already holds its optimistic placeholder). NO seq — the bubble lives
+   *  in intent.pendingPlaceholders keyed by uuid; the materialization `message`
+   *  frame (seq-carrying) replaces it by exact uuid. */
+  | { type: 'MESSAGE_QUEUED'; uuid: string; message: SdkMessage; clientOperationId?: string }
   /** A steered message's delivery transition (server `message-steered`
    *  frame): 'injected' — a tool-hook boundary delivered it into the current
    *  turn; 'requeued' — the turn ended undelivered and it was re-routed to

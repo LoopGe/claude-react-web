@@ -14,13 +14,24 @@ import {
 export { MAX_FILES_PER_MESSAGE, MAX_MESSAGE_BASE64 }
 
 export type SendBodyValidation =
-  | { ok: true; body: ScheduledSendBody }
+  | { ok: true; body: ScheduledSendBody; clientOperationId?: string }
   | { ok: false; status: 400 | 413; error: string }
+
+/** Upper bound on a clientOperationId (the browser's optimistic uuid, ~36
+ *  chars). Bounded so a malicious client cannot bloat the idempotency sidecar. */
+const MAX_CLIENT_OPERATION_ID = 128
 
 /** Validate a user-turn body shared by `POST /sessions/:id/messages` and
  *  `POST /sessions/:id/schedules`. The two routes must stay byte-identical
- *  in accepted shapes and error strings. */
-export function validateSendBody(raw: { text?: unknown; content?: unknown }): SendBodyValidation {
+ *  in accepted shapes and error strings. `clientOperationId` (spec §8.3) is
+ *  optional send idempotency keying; schedules ignore it. */
+export function validateSendBody(raw: { text?: unknown; content?: unknown; clientOperationId?: unknown }): SendBodyValidation {
+  const clientOperationId =
+    typeof raw.clientOperationId === 'string'
+    && raw.clientOperationId.length > 0
+    && raw.clientOperationId.length <= MAX_CLIENT_OPERATION_ID
+      ? raw.clientOperationId
+      : undefined
   if (Array.isArray(raw.content) && raw.content.length > 0) {
     let totalBase64 = 0
     let fileCount = 0
@@ -75,9 +86,9 @@ export function validateSendBody(raw: { text?: unknown; content?: unknown }): Se
         return { ok: false, status: 400, error: `image #${index + 1} exceeds ${MAX_IMAGE_DIMENSION} pixels per side` }
       }
     }
-    return { ok: true, body: { content: raw.content as ScheduledSendContentBlock[] } }
+    return { ok: true, body: { content: raw.content as ScheduledSendContentBlock[] }, clientOperationId }
   }
   const text = typeof raw.text === 'string' ? raw.text : ''
   if (!text.trim()) return { ok: false, status: 400, error: 'text is required' }
-  return { ok: true, body: { text } }
+  return { ok: true, body: { text }, clientOperationId }
 }

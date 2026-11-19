@@ -385,6 +385,19 @@ describe('TranscriptWriter.recordDispatchAttempt (T7b Task 1)', () => {
     expect(w.nextDispatchOrdinal()).toBe(3)
   })
 
+  it('enqueueRecovered restores the ordinal counter past the recovered max', () => {
+    const { deps } = makeDeps()
+    const w = new TranscriptWriter(deps)
+    expect(w.nextDispatchOrdinal()).toBe(1)
+    w.enqueueRecovered([
+      { operationId: 'r1', dispatchOrdinal: 40, kind: 'user', payload: userMsg('r1') },
+      { operationId: 'r2', dispatchOrdinal: 42, kind: 'user', payload: userMsg('r2') },
+    ])
+    // A new send after recovery must sort AFTER the recovered ops — restarting
+    // the counter at 2 would invert recovery materialization order across crashes.
+    expect(w.nextDispatchOrdinal()).toBe(43)
+  })
+
   it('close() fences appendDurable and no-ops in-flight commits (I3)', async () => {
     const appendBatch = vi.fn(async () => {})
     const { deps } = makeDeps({ appendBatch })

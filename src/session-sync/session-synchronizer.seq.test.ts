@@ -1309,3 +1309,46 @@ describe('SessionSynchronizer epoch convergence (spec §8.3, Task 5)', () => {
     sync.stop()
   })
 })
+
+describe('SessionSynchronizer message-queued routing (T7b-4)', () => {
+  beforeEach(() => {
+    currentSessionListeners = new Map()
+    transcripts.clear()
+    staleNext = null
+    deferredFetches = []
+    mockSubscribe.mockClear()
+    mockApiGet.mockReset()
+    mockApiGet.mockImplementation(defaultApiGetImpl)
+    void sessionStoreRegistry.clear()
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  const queuedUser = (uuid: string, consumedAt?: number) => ({
+    type: 'user', uuid, parent_tool_use_id: null, receivedAt: 100,
+    ...(consumedAt !== undefined ? { consumedAt } : {}),
+    message: { role: 'user', content: 'hi' },
+  })
+
+  it('paints a queued bubble from message-queued and replaces it on the materialization message frame', async () => {
+    const sid = 'mq-route'
+    transcript(sid).headSeq = 0
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+
+    dispatchToSession(sid, { kind: 'message-queued', sessionId: sid, uuid: 'u2', message: queuedUser('u2'), generation: 0 } as WsServerFrame)
+    const ph = store.getState().intent.pendingPlaceholders.get('u2')
+    expect(ph).toBeDefined()
+    expect(ph!.deliveryStatus).toBe('queued')
+    // Rendered (buildSnapshot merges placeholders): the queued bubble is visible.
+    expect(store.getSnapshot().messages.some((m) => (m as { uuid?: string }).uuid === 'u2')).toBe(true)
+
+    // Materialization: the seq-carrying message frame replaces the bubble by uuid.
+    dispatchToSession(sid, { kind: 'message', sessionId: sid, seq: 0, generation: 0, message: queuedUser('u2', 200) } as WsServerFrame)
+    expect(store.getState().intent.pendingPlaceholders.has('u2')).toBe(false)
+    const rendered = store.getSnapshot().messages.filter((m) => (m as { uuid?: string }).uuid === 'u2')
+    expect(rendered).toHaveLength(1)
+    sync.stop()
+  })
+})

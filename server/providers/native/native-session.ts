@@ -306,6 +306,16 @@ export class NativeSession implements ProviderSessionHandle {
   /** Monotonic explicit-enqueue marker. A pre-append failure captures this
    * value so only an enqueue observed AFTER that failure can release its pause. */
   private enqueueGeneration = 0
+  /** True while a pre-append failure has parked `pendingDurableInitial` and the
+   * pump loop is paused: no turn is in flight and none will start until a direct
+   * `enqueueUserMessage` retries the durable append. Set synchronously when the
+   * failure is classified (BEFORE the error result frame is pushed) so a send
+   * arriving even during turn/end finalization already sees the pause; cleared
+   * by the enqueue that releases it (or by withdrawal). The manager reads it via
+   * `awaitingDurableRetry` to dispatch a retry synchronously instead of stranding
+   * it in the queued-not-published path, which waits for a turn terminal that a
+   * paused loop will never emit. */
+  private durableRetryPaused = false
   private readonly ctx: FrameContext
   /** Append-only persistence for this session. Every constructor path opens it
    *  (fresh create, resume, or fork-seeded) before `system/init` is pushed. */
@@ -855,6 +865,15 @@ export class NativeSession implements ProviderSessionHandle {
     return this.input.length + (this.pendingDurableInitial ? 1 : 0)
   }
 
+  /** The durable-retry pause: a pre-append failure parked the head prompt and
+   * broke the pump loop, so no turn terminal will arrive until a direct enqueue
+   * retries it. `queueDepth` still counts the parked prompt (it is withdrawable
+   * pending input), but a mid-turn send must NOT be queued-not-published against
+   * it — the manager dispatches synchronously to release the pause. */
+  get awaitingDurableRetry(): boolean {
+    return this.durableRetryPaused
+  }
+
   get messages(): AsyncIterable<AgentMessage> {
     return this.output.iterable
   }
@@ -1364,6 +1383,10 @@ export class NativeSession implements ProviderSessionHandle {
         if (!rawAppended && this.pendingDurableInitial === pending) {
           pauseForDurableRetry = true
           pauseEnqueueGeneration = this.enqueueGeneration
+          // Arm the pause signal before the error result frame is pushed below,
+          // so a retry send dispatched while turn/end finalization is still in
+          // flight already reads the pause and takes the synchronous path.
+          this.durableRetryPaused = true
         } else if (rawAppended && this.pendingDurableInitial === pending) {
           // A skill append can fail after the raw append. Never retry the raw
           // event into a duplicate; the restored history matches disk exactly.
@@ -1416,6 +1439,9 @@ export class NativeSession implements ProviderSessionHandle {
 
   enqueueUserMessage(message: AgentUserMessage): void {
     if (this._closed) return
+    // A direct enqueue is exactly what releases a durable-retry pause: the pump
+    // loop (re)starts and retries the parked head prompt before this message.
+    this.durableRetryPaused = false
     // Arrival time only — the message is not part of the conversation until
     // the pump consumes it (see pumpLoop). The WeakMap keeps the provider's
     // AgentUserMessage contract untouched.
@@ -1595,6 +1621,8 @@ export class NativeSession implements ProviderSessionHandle {
     const pending = this.pendingDurableInitial
     for (const reservation of pending?.pdfReservations ?? []) this.pdfBudgets.release(reservation)
     this.pendingDurableInitial = null
+    // Withdrawing the parked head prompt ends any durable-retry pause.
+    this.durableRetryPaused = false
     return [...(pending ? [pending.message] : []), ...this.input.splice(0)]
   }
 

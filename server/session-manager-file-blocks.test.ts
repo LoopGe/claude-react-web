@@ -23,6 +23,7 @@ import { __setConfigForTest } from './config.js'
 import { rmRf } from './__test-utils__/index.js'
 import { buildUploadRouter } from './routes/uploads.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './providers/native/session-log/log.js'
+import { TranscriptSidecar } from './transcript-sidecar.js'
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
@@ -237,7 +238,14 @@ describe('SessionManager attachment dispatch serialization', () => {
       blocked.release()
       await first
       await second
-      expect(fx.handle.sent).toHaveLength(2)
+      // The attachment send took the idle synchronous path; the later plain
+      // send arrived once that turn was active, so it is queued-not-published
+      // — it must NOT overtake the attachment, and only materializes (provider
+      // enqueue + ring) at the prior turn's terminal.
+      expect(fx.handle.sent).toHaveLength(1)
+      expect(liveSession(fx.sm, fx.sessionId).history).toHaveLength(1)
+      emitTurnTerminal(fx)
+      await vi.waitFor(() => expect(fx.handle.sent).toHaveLength(2))
       const firstContent = fx.handle.sent[0]!.message.content as ResolvedFileBlock[]
       const resolvedFile = firstContent.find((block) => block.type === 'file')!
       expect(resolvedFile.attachment).toMatchObject({
@@ -316,6 +324,15 @@ describe('SessionManager attachment dispatch serialization', () => {
     const fx = await makeFixture()
     try {
       const first = await fx.sm.send(fx.sessionId, 'first')
+      // Synchronous queue admission — and the rollback this test guards — only
+      // happens on the IDLE dispatch path. A mid-turn send is queued-not-
+      // published and its provider enqueue runs fire-and-forget at the turn
+      // terminal (errors logged, never thrown to the sender). Settle the first
+      // turn so the attachment send below dispatches synchronously: drain the
+      // input the SDK would have consumed, then emit the turn terminal.
+      fx.handle.drainQueuedInput()
+      emitTurnTerminal(fx)
+      await vi.waitFor(() => expect(fx.sm.get(fx.sessionId)!.working).toBe(false))
       vi.spyOn(fx.handle, 'enqueueUserMessage').mockImplementationOnce(() => {
         throw new Error('admission failed')
       })
@@ -324,7 +341,10 @@ describe('SessionManager attachment dispatch serialization', () => {
       const session = liveSession(fx.sm, fx.sessionId)
       expect(session.promptUuids?.map((entry) => entry.u)).toEqual([first.uuid])
       expect(session.pendingSnapshotAnchors ?? []).toHaveLength(0)
-      expect(session.history.map((entry) => entry.uuid)).toEqual([first.uuid])
+      // The turn-terminal result emitted to reach idle is a legitimate ring
+      // entry; the guard is that the FAILED attachment send left no user bubble
+      // (its uuid was rolled back), so compare the ring's user prompts only.
+      expect(session.history.filter((entry) => entry.type === 'user').map((entry) => entry.uuid)).toEqual([first.uuid])
     } finally {
       await fx.sm.shutdown()
     }
@@ -518,6 +538,90 @@ describe('SessionManager attachment dispatch serialization', () => {
     }
   })
 
+  it('T7b review #2: a failed idempotency record keeps the queued attachment lease and the dispatch', async () => {
+    const fx = await makeFixture()
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const registry = new ProviderRegistry()
+    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store, ports: makeNativePorts({ stateDir: fx.stateDir, uploadStore: fx.store }) })
+    registry.register(native)
+    let notifyStarted!: () => void
+    const started = new Promise<void>((resolve) => { notifyStarted = resolve })
+    native._testStream = async function* (request) {
+      notifyStarted()
+      await new Promise<never>((_, reject) => {
+        request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true })
+      })
+      yield { kind: 'message_start' } as const // unreachable
+    }
+    const sessionStore = new SessionStore({ stateDir: fx.stateDir })
+    await sessionStore.load()
+    const sm = new SessionManager({ store: sessionStore, providers: registry, uploadStore: fx.store })
+    try {
+      const info = await sm.create({ provider: 'native', cwd: fx.stateDir })
+      fx.store.record([{ ...fx.entry, sessionId: info.id }])
+      await sm.send(info.id, 'keep the first turn busy')
+      await started
+      const opStore = (sm as unknown as {
+        clientOperationStore: { record: (id: string, entry: unknown) => Promise<void> }
+      }).clientOperationStore
+      vi.spyOn(opStore, 'record').mockRejectedValueOnce(new Error('disk full'))
+      // The record fails AFTER the queued-not-published dispatch succeeded: the
+      // send must still ack (no 500 → no client retry → no double dispatch), and
+      // the live lease must survive — the durable queued state still references
+      // the file, so releasing it here would let the upload be deleted before
+      // materialization.
+      const sent = await sm.sendContent(info.id, [fileBlock(fx.entry)], 'op-1')
+      expect(sent.uuid).toBeTruthy()
+      expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(true)
+      const manager = sm as unknown as { attachmentSendLeases: Map<string, Map<string, Set<string>>> }
+      expect(manager.attachmentSendLeases.get(info.id)?.has(sent.uuid!)).toBe(true)
+      await sm.interrupt(info.id, { cancelQueued: true })
+    } finally {
+      await sm.shutdown()
+      await fx.sm.shutdown()
+    }
+  })
+
+  it('T7b review #6: a failed withdrawn-state commit keeps the queued attachment lease', async () => {
+    const fx = await makeFixture()
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const registry = new ProviderRegistry()
+    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store, ports: makeNativePorts({ stateDir: fx.stateDir, uploadStore: fx.store }) })
+    registry.register(native)
+    let notifyStarted!: () => void
+    const started = new Promise<void>((resolve) => { notifyStarted = resolve })
+    native._testStream = async function* (request) {
+      notifyStarted()
+      await new Promise<never>((_, reject) => {
+        request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true })
+      })
+      yield { kind: 'message_start' } as const // unreachable
+    }
+    const sessionStore = new SessionStore({ stateDir: fx.stateDir })
+    await sessionStore.load()
+    const sm = new SessionManager({ store: sessionStore, providers: registry, uploadStore: fx.store })
+    try {
+      const info = await sm.create({ provider: 'native', cwd: fx.stateDir })
+      fx.store.record([{ ...fx.entry, sessionId: info.id }])
+      await sm.send(info.id, 'keep the first turn busy')
+      await started
+      await sm.sendContent(info.id, [fileBlock(fx.entry)])
+      expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(true)
+      const writer = (sm as unknown as {
+        transcriptWriters: Map<string, { commitWithdrawnStates: (ops: readonly unknown[]) => Promise<void> }>
+      }).transcriptWriters.get(info.id)!
+      vi.spyOn(writer, 'commitWithdrawnStates').mockRejectedValueOnce(new Error('disk full'))
+      await sm.interrupt(info.id, { cancelQueued: true })
+      // The durable withdrawn state never landed, so a later resume still
+      // re-dispatches the prompt — recovery must keep owning the file. The
+      // visible withdrawal broadcast still happened (interrupt resolved).
+      expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(true)
+    } finally {
+      await sm.shutdown()
+      await fx.sm.shutdown()
+    }
+  })
+
   it('withdraws pre-append native input before unload releases its upload lease', async () => {
     const fx = await makeFixture()
     __setConfigForTest({ nativeAttachmentFidelity: true })
@@ -620,6 +724,7 @@ describe('SessionManager attachment dispatch serialization', () => {
         sessions: Map<string, { handle: ProviderSessionHandle }>
         handleProcessExit(info: { sessionId: string; code: number; signal: null; killed: boolean }): void
         attachmentSendLeases: Map<string, Map<string, Set<string>>>
+        transcriptWriters: Map<string, { queued: Array<{ payload: unknown }>; queuedCount: number }>
       }
       const first = await sm.sendContent(info.id, [fileBlock(fx.entry)])
       await started
@@ -633,20 +738,69 @@ describe('SessionManager attachment dispatch serialization', () => {
       const internals = newHandle as unknown as {
         pendingDurableInitial: { message: AgentUserMessage } | null
         input: AgentUserMessage[]
+        log: NativeSessionLog
       }
-      expect([
-        internals.pendingDurableInitial?.message.uuid,
-        ...internals.input.map((message) => message.uuid),
-      ]).toEqual([first.uuid, second.uuid])
+      // The failed-append attachment is carried at the recovered handle's FIFO
+      // head (pendingDurableInitial). The mid-turn plain send never reached the
+      // handle — it is queued-not-published in the durable writer, which
+      // survives the in-place respawn and materializes at the recovered turn's
+      // terminal. The two homes together preserve the original dispatch order.
+      expect(internals.pendingDurableInitial?.message.uuid).toBe(first.uuid)
+      expect(internals.input).toHaveLength(0)
+      const writer = manager.transcriptWriters.get(info.id)!
+      expect(writer.queuedCount).toBe(1)
+      expect((writer.queued[0]!.payload as { uuid?: string }).uuid).toBe(second.uuid)
       expect(manager.attachmentSendLeases.get(info.id)?.has(first.uuid!)).toBe(true)
 
       releaseMigration()
       await vi.waitFor(() => expect(manager.attachmentSendLeases.has(info.id)).toBe(false))
       expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(true)
+      // FIFO end-to-end: the attachment turn ran first and the queued plain
+      // send materialized and ran second — the native log records them in order.
+      expect(
+        internals.log.events
+          .filter((event) => event.type === 'user')
+          .map((event) => event.uuid),
+      ).toEqual([first.uuid, second.uuid])
     } finally {
       releaseMigration()
       migrateSpy.mockRestore()
       await sm.shutdown()
+      await fx.sm.shutdown()
+    }
+  })
+
+  it('T7b review #1: crash recovery re-resolves queued file attachments before re-dispatch', async () => {
+    const fx = await makeFixture()
+    try {
+      await fx.sm.send(fx.sessionId, 'turn1') // idle → turn active
+      // Files-only mid-turn send → queued-not-published. The durable input row
+      // stores only the PUBLIC payload (path/modelForm stripped).
+      const queued = await fx.sm.sendContent(fx.sessionId, [fileBlock(fx.entry)]) as { uuid: string }
+      await vi.waitFor(async () => {
+        const rows = await new TranscriptSidecar(fx.stateDir, fx.sessionId).load()
+        expect(rows.some((r) => (r as { state?: string }).state === 'queued-not-published')).toBe(true)
+      })
+      await fx.sm.unload(fx.sessionId) // crash: the writer queue + leases die
+      await fx.sm.resume(fx.sessionId)
+      const resumed = fx.provider.handles[1]!
+      await vi.waitFor(() => expect(resumed.sent.some((m) => m.uuid === queued.uuid)).toBe(true))
+      const recovered = resumed.sent.find((m) => m.uuid === queued.uuid)!
+      const content = recovered.message.content as ResolvedFileBlock[]
+      const file = content.find((block) => block.type === 'file')!
+      // The recovered dispatch must carry the RESOLVED provider form (path
+      // present) — dispatching the public stripped form durably corrupts the
+      // log with path-less file handles ("Read-only path: undefined").
+      expect(file.attachment).toMatchObject({
+        id: fx.entry.id,
+        digest: fx.entry.digest,
+        path: fx.entry.path,
+      })
+      // The public ring copy stays stripped.
+      const publicCopy = liveSession(fx.sm, fx.sessionId).history.find((m) => m.uuid === queued.uuid)!
+      const publicFile = (publicCopy.message.content as FileBlock[]).find((block) => block.type === 'file')!
+      expect(publicFile.attachment).not.toHaveProperty('path')
+    } finally {
       await fx.sm.shutdown()
     }
   })
@@ -742,6 +896,22 @@ function smSendContent(fx: Fixture) {
     fileBlock(fx.entry),
     { type: 'text', text: 'after' },
   ])
+}
+
+/** Emit a turn-terminal result on the test provider's stream so the pump
+ *  settles the active turn — materializing any queued-not-published prompt.
+ *  The TestHandle has no real SDK consumer draining its input Pushable, so a
+ *  caller that needs the session to read IDLE afterwards must also drain the
+ *  input queue first (otherwise the pump's moreQueued check keeps it working). */
+function emitTurnTerminal(fx: Fixture): void {
+  fx.handle.output.push({
+    type: 'result',
+    subtype: 'success',
+    uuid: 'turn-terminal',
+    session_id: fx.sessionId,
+    num_turns: 1,
+    result: 'ok',
+  } as unknown as AgentMessage)
 }
 
 describe('native provider attachment boundary', () => {

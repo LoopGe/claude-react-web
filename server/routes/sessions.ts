@@ -571,17 +571,17 @@ export function buildSessionRouter(
   // Send user message — text or content array (multimodal).
   app.post('/sessions/:id/messages', async (c) => {
     const id = c.req.param('id')
-    const body = await safeJson<{ text?: unknown; content?: unknown }>(c.req)
+    const body = await safeJson<{ text?: unknown; content?: unknown; clientOperationId?: unknown }>(c.req)
     const v = validateSendBody(body)
     if (!v.ok) return c.json({ error: v.error }, v.status)
     if ('content' in v.body) {
       log.info(`POST /sessions/${id}/messages — content array with ${v.body.content.length} blocks`)
-      const accepted = await sm.sendContent(id, v.body.content)
-      return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
+      const accepted = await sm.sendContent(id, v.body.content, v.clientOperationId)
+      return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt, clientOperationId: v.clientOperationId } })
     }
     log.info(`POST /sessions/${id}/messages — ${v.body.text.length} chars`)
-    const accepted = await sm.send(id, v.body.text)
-    return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
+    const accepted = await sm.send(id, v.body.text, v.clientOperationId)
+    return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt, clientOperationId: v.clientOperationId } })
   })
 
   // Legacy history shim — kept one version period for old clients (spec §3:

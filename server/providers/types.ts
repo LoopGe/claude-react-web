@@ -205,6 +205,15 @@ export interface ProviderSessionHandle {
    *  to losing the pending turn. */
   drainQueuedInput?(): AgentUserMessage[]
   readonly queueDepth: number
+  /** True when the provider has parked a not-yet-persisted head prompt after a
+   * pre-append failure and paused its turn loop: no turn is in flight and NO
+   * turn terminal will arrive until a direct `enqueueUserMessage` retries the
+   * durable append. `queueDepth` still counts the parked prompt, but the manager
+   * must dispatch a new send SYNCHRONOUSLY (not queued-not-published) so the
+   * enqueue releases the pause — queueing would wait forever for a terminal the
+   * paused loop never emits. Optional: providers without such a pause omit it
+   * (undefined = never paused). */
+  readonly awaitingDurableRetry?: boolean
   readonly closed: boolean
   readonly abortSignal: AbortSignal
   /** Resolves when the underlying CLI subprocess actually exits (not merely

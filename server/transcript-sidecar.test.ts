@@ -9,6 +9,7 @@ import {
   backfillFromEntries,
   foldSidecarRows,
   foldSidecarRowsV2,
+  classifyPendingInputs,
   truncateToLastCommit,
   makeCommitV2,
   recordTranscriptMessage,
@@ -633,5 +634,92 @@ describe('sidecar v2 batch commits / fold / crash recovery (spec §8.2/§9)', ()
     await expect(sidecar2.appendBatch([msgRow('b2', 0, 'z')], genCommit('b2', 0, []))).rejects.toThrow('disk full')
     writeSpy.mockRestore()
     await sidecar2.close()
+  })
+})
+
+describe('classifyPendingInputs (T7b-6 crash-recovery classification)', () => {
+  let bid = 0
+  const inputBatch = (operationId: string, dispatchOrdinal: number, state: string, payload?: unknown) => {
+    const batchId = `in-${++bid}`
+    const row = { v: 2, batchId, operationId, dispatchOrdinal, state, ...(payload !== undefined ? { payload } : {}) }
+    return [row, makeCommitV2({ batchId, batchType: 'input', generation: 0, reason: 'initial', contentPolicy: 'preserve', rows: [row] })]
+  }
+  const lifecycleBatch = (operationId: string, state: string) => {
+    const batchId = `lc-${++bid}`
+    const row = { v: 2, batchId, operationId, state }
+    return [row, makeCommitV2({ batchId, batchType: 'lifecycle', generation: 0, reason: 'initial', contentPolicy: 'preserve', rows: [row] })]
+  }
+  const liveBatch = (seq: number, uuid: string) => {
+    const batchId = `lv-${++bid}`
+    const msg = { type: 'user', uuid, message: { role: 'user', content: uuid } }
+    const row = { v: 2, batchId, seq, uuid, type: 'user', msg }
+    return [row, makeCommitV2({ batchId, batchType: 'live', generation: 0, reason: 'initial', contentPolicy: 'preserve', rows: [row] })]
+  }
+  const payload = (uuid: string) => ({ type: 'user', uuid, message: { role: 'user', content: uuid } })
+
+  it('queued-not-published never materialized → queued (payload + ordinal recovered)', () => {
+    const rows = [...inputBatch('u2', 2, 'queued-not-published', payload('u2'))]
+    const view = classifyPendingInputs(rows)
+    expect(view.queued).toEqual([{ operationId: 'u2', dispatchOrdinal: 2, payload: payload('u2') }])
+    expect(view.notAttempted).toEqual([])
+    expect(view.dispatchUnknown).toEqual([])
+    expect(view.withdrawn).toEqual([])
+  })
+
+  it('queued-not-published then materialized (live row) → resolved, excluded', () => {
+    const rows = [...inputBatch('u2', 2, 'queued-not-published', payload('u2')), ...liveBatch(3, 'u2')]
+    expect(classifyPendingInputs(rows).queued).toEqual([])
+  })
+
+  it('queued-not-published then withdrawn → withdrawn, excluded from pending', () => {
+    const rows = [...inputBatch('u2', 2, 'queued-not-published', payload('u2')), ...inputBatch('u2', 2, 'withdrawn')]
+    const view = classifyPendingInputs(rows)
+    expect(view.withdrawn).toEqual(['u2'])
+    expect(view.queued).toEqual([])
+  })
+
+  it('enqueue-not-attempted with no evidence → notAttempted (auto-retry)', () => {
+    const rows = [...inputBatch('u1', 1, 'enqueue-not-attempted', payload('u1'))]
+    expect(classifyPendingInputs(rows).notAttempted.map((o) => o.operationId)).toEqual(['u1'])
+  })
+
+  it('enqueue-attempted with no evidence → dispatchUnknown (never auto)', () => {
+    const rows = [...inputBatch('u1', 1, 'enqueue-not-attempted', payload('u1')), ...inputBatch('u1', 1, 'enqueue-attempted')]
+    const view = classifyPendingInputs(rows)
+    expect(view.dispatchUnknown.map((o) => o.operationId)).toEqual(['u1'])
+    expect(view.notAttempted).toEqual([])
+  })
+
+  it('enqueue-attempted resolved by a consumed lifecycle row → excluded', () => {
+    const rows = [...inputBatch('u1', 1, 'enqueue-attempted', payload('u1')), ...lifecycleBatch('u1', 'consumed')]
+    expect(classifyPendingInputs(rows).dispatchUnknown).toEqual([])
+  })
+
+  it('enqueue-attempted resolved by canonical provider uuid → excluded', () => {
+    const rows = [...inputBatch('u1', 1, 'enqueue-attempted', payload('u1'))]
+    expect(classifyPendingInputs(rows, new Set(['u1'])).dispatchUnknown).toEqual([])
+  })
+
+  it('enqueue-attempted resolved by its materialized v1 message row → excluded', () => {
+    const rows = [...inputBatch('u1', 1, 'enqueue-attempted', payload('u1')), transcriptRow(0, 'u1', payload('u1'))]
+    expect(classifyPendingInputs(rows).dispatchUnknown).toEqual([])
+  })
+
+  it('ignores an uncommitted crash tail', () => {
+    const batchId = 'tail'
+    const row = { v: 2, batchId, operationId: 'u9', dispatchOrdinal: 9, state: 'queued-not-published', payload: payload('u9') }
+    // No commit record for the tail batch → ignored.
+    const rows = [...inputBatch('u2', 2, 'queued-not-published', payload('u2')), row]
+    const view = classifyPendingInputs(rows)
+    expect(view.queued.map((o) => o.operationId)).toEqual(['u2'])
+  })
+
+  it('orders pending ops by dispatchOrdinal', () => {
+    const rows = [
+      ...inputBatch('u3', 3, 'queued-not-published', payload('u3')),
+      ...inputBatch('u1', 1, 'queued-not-published', payload('u1')),
+      ...inputBatch('u2', 2, 'queued-not-published', payload('u2')),
+    ]
+    expect(classifyPendingInputs(rows).queued.map((o) => o.operationId)).toEqual(['u1', 'u2', 'u3'])
   })
 })

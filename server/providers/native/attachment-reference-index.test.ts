@@ -130,3 +130,27 @@ describe('NativeAttachmentReferenceIndex', () => {
     expect(index.hasReference('unrelated-upload')).toBe(false)
   })
 })
+
+describe('NativeAttachmentReferenceIndex pending-input references (T7b-6 §10)', () => {
+  it('blocks deletion of a file referenced by a durable pending dispatch state', async () => {
+    const index = new NativeAttachmentReferenceIndex({ stateDir: await stateDir() })
+    await index.rebuild()
+    expect(index.hasReference('upload-1')).toBe(false)
+    // A queued-not-published prompt references upload-1; after a crash the
+    // in-memory lease is gone and the prompt is not yet in the log.
+    index.setPendingInputReferences('s1', ['upload-1'])
+    expect(index.hasReference('upload-1')).toBe(true)
+    expect(index.hasReference('other')).toBe(false)
+    // Materialized/withdrawn → cleared.
+    index.setPendingInputReferences('s1', [])
+    expect(index.hasReference('upload-1')).toBe(false)
+  })
+
+  it('removeSession clears pending references', async () => {
+    const index = new NativeAttachmentReferenceIndex({ stateDir: await stateDir() })
+    await index.rebuild()
+    index.setPendingInputReferences('s1', ['upload-1'])
+    index.removeSession('s1')
+    expect(index.hasReference('upload-1')).toBe(false)
+  })
+})

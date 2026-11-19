@@ -148,3 +148,24 @@ describe('validateSendBody', () => {
     })
   })
 })
+
+describe('validateSendBody clientOperationId (spec §8.3)', () => {
+  it('passes through a valid clientOperationId on a text body', () => {
+    const v = validateSendBody({ text: 'hi', clientOperationId: 'op-1' })
+    expect(v).toEqual({ ok: true, body: { text: 'hi' }, clientOperationId: 'op-1' })
+  })
+
+  it('passes through a valid clientOperationId on a content body', () => {
+    const v = validateSendBody({ content: [{ type: 'text', text: 'hi' }], clientOperationId: 'op-2' })
+    expect(v.ok).toBe(true)
+    if (v.ok) expect(v.clientOperationId).toBe('op-2')
+  })
+
+  it('omits an absent, non-string, empty, or over-long clientOperationId', () => {
+    for (const raw of [{}, { clientOperationId: 5 }, { clientOperationId: '' }, { clientOperationId: 'x'.repeat(129) }]) {
+      const v = validateSendBody({ text: 'hi', ...raw })
+      expect(v.ok).toBe(true)
+      if (v.ok) expect(v.clientOperationId).toBeUndefined()
+    }
+  })
+})

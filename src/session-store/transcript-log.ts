@@ -360,7 +360,12 @@ export function evictMessages(state: SessionState, uuids: string[]): SessionStat
   const mirror = state.mirror
   const uuidSet = new Set(uuids)
   const items = mirror.items.filter((it) => !uuidSet.has(it.id))
-  if (items.length === mirror.items.length) return state
+  // A queued-not-published bubble (spec §8.1) lives ONLY in intent.pendingPlaceholders
+  // (no seq, no mirror.items entry). interrupt(cancelQueued) withdraws it via
+  // messages-withdrawn → EVICT_MESSAGES, so prune the placeholder too — even
+  // when no ordered-log item matches (T7b-5).
+  const intent = dropEchoedPlaceholders(state.intent, uuidSet)
+  if (items.length === mirror.items.length && intent === state.intent) return state
   const messages = mirror.messages.filter(
     (m) => !uuidSet.has((m as { uuid?: string }).uuid ?? ''),
   )
@@ -380,14 +385,18 @@ export function evictMessages(state: SessionState, uuids: string[]): SessionStat
   // frames that owned them no longer exist (unlike trimFront's soft sidechain
   // prune, which preserves in-flight records).
   const pruned = pruneIndexesToLive(mirror, live, retained, { hardSidechain: true })
-  return withMirror(state, {
-    ...pruned,
-    items,
-    messages,
-    window,
-    activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
-    pendingConsumedMessages,
-  })
+  return {
+    sessionId: state.sessionId,
+    mirror: {
+      ...pruned,
+      items,
+      messages,
+      window,
+      activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
+      pendingConsumedMessages,
+    },
+    intent,
+  }
 }
 
 // ── updateTranscriptMirror ──────────────────────────────────────────────────

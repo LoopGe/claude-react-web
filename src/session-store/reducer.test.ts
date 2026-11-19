@@ -5575,3 +5575,69 @@ describe('REBASE_TRANSCRIPT / TRANSCRIPT_RESYNC (spec §8.3)', () => {
     expect(state.intent.error).toBe('keep')
   })
 })
+
+describe('MESSAGE_QUEUED (T7b-4 multi-tab queued bubble)', () => {
+  const queuedMsg = (uuid: string): SdkMessage => ({
+    type: 'user', uuid, parent_tool_use_id: null, receivedAt: 100,
+    message: { role: 'user', content: 'hi' },
+  } as unknown as SdkMessage)
+
+  it('renders a queued placeholder (no seq) and replaces it on the materialization echo', () => {
+    let state = createInitialSessionState('s')
+    const headBefore = state.mirror.window.headSeq
+    state = reduceSessionState(state, { type: 'MESSAGE_QUEUED', uuid: 'u2', message: queuedMsg('u2') })
+    const ph = state.intent.pendingPlaceholders.get('u2')
+    expect(ph).toBeDefined()
+    expect(ph!.deliveryStatus).toBe('queued')
+    // No seq engagement: the queued bubble lives in intent, not the window.
+    expect(state.mirror.window.headSeq).toBe(headBefore)
+    expect(state.mirror.items.some((it) => it.id === 'u2')).toBe(false)
+    // The materialization echo (same uuid) drops the placeholder + appends ONE real item.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: queuedMsg('u2') })
+    expect(state.intent.pendingPlaceholders.has('u2')).toBe(false)
+    expect(renderedItems(state).filter((it) => it.id === 'u2')).toHaveLength(1)
+  })
+
+  it('is idempotent against a duplicate message-queued frame', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE_QUEUED', uuid: 'u2', message: queuedMsg('u2') })
+    state = reduceSessionState(state, { type: 'MESSAGE_QUEUED', uuid: 'u2', message: queuedMsg('u2') })
+    expect(state.intent.pendingPlaceholders.size).toBe(1)
+  })
+
+  it('does not duplicate the sending tab\'s own optimistic placeholder (clientOperationId match)', () => {
+    let state = createInitialSessionState('s')
+    // The sending tab inserted its optimistic placeholder keyed by the
+    // clientOperationId it POSTed; the ack has not re-keyed it yet.
+    state = applyOptimistic(state, 'hi', 'op-1')
+    state = reduceSessionState(state, { type: 'MESSAGE_QUEUED', uuid: 'server-u', message: queuedMsg('server-u'), clientOperationId: 'op-1' })
+    expect(state.intent.pendingPlaceholders.size).toBe(1)
+    expect(state.intent.pendingPlaceholders.has('op-1')).toBe(true)
+    expect(state.intent.pendingPlaceholders.has('server-u')).toBe(false)
+    // The ack re-keys the placeholder; the materialization echo replaces it —
+    // one bubble throughout.
+    state = reduceSessionState(state, { type: 'ACK_USER_MESSAGE', pendingId: 'op-1', serverUuid: 'server-u' })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: queuedMsg('server-u') })
+    expect(state.intent.pendingPlaceholders.size).toBe(0)
+    expect(renderedItems(state).filter((it) => it.id === 'server-u')).toHaveLength(1)
+  })
+
+  it('no-ops when the materialized item is already on screen (echo raced ahead)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: queuedMsg('u2') })
+    state = reduceSessionState(state, { type: 'MESSAGE_QUEUED', uuid: 'u2', message: queuedMsg('u2') })
+    expect(state.intent.pendingPlaceholders.has('u2')).toBe(false)
+    expect(renderedItems(state).filter((it) => it.id === 'u2')).toHaveLength(1)
+  })
+
+  it('T7b-5: EVICT_MESSAGES prunes a queued bubble living only in pendingPlaceholders (Stop withdraws it)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE_QUEUED', uuid: 'u2', message: queuedMsg('u2') })
+    expect(state.intent.pendingPlaceholders.has('u2')).toBe(true)
+    // interrupt(cancelQueued) → messages-withdrawn → EVICT_MESSAGES. The bubble
+    // has no mirror.items entry (no seq yet), so eviction must still prune it.
+    state = reduceSessionState(state, { type: 'EVICT_MESSAGES', uuids: ['u2'] })
+    expect(state.intent.pendingPlaceholders.has('u2')).toBe(false)
+    expect(renderedItems(state).some((it) => it.id === 'u2')).toBe(false)
+  })
+})

@@ -70,6 +70,11 @@ export interface TranscriptHolder {
    *  fold on hydrate and extended on rebuild. Source for the client-facing
    *  epochs (clearEpoch/rebaseEpoch) and lastFullResetGeneration. */
   generationHistory?: GenerationRecord[]
+  /** Crash-recovery classification of the durable dispatch states (spec §7.2,
+   *  T7b Task 6), computed from the sidecar input batches on reconcile. The
+   *  resume path materializes/re-dispatches `queued`/`notAttempted` and surfaces
+   *  `dispatchUnknown` for manual recovery. Undefined until reconciled. */
+  pendingRecovery?: PendingInputView
 }
 
 export class TranscriptSidecar {
@@ -519,6 +524,97 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
   // assistant duplicate; heal it exactly as the v1 fold does (I1).
   if (v1Stickiness) healDuplicateAssistantRows(entries)
   return { entries, generation, history, hasCommittedGeneration: true, aliases }
+}
+
+/** One recoverable dispatch operation parsed from the durable input batches. */
+export interface PendingInputOp {
+  operationId: string
+  dispatchOrdinal: number
+  /** The public wire payload stored on the first input row (D7); the
+   *  materialize/re-dispatch path publishes + enqueues it. */
+  payload: unknown
+}
+
+/** Crash-recovery classification of the durable dispatch states (spec §7.2/§8.1,
+ *  T7b Task 6). Per operationId the LAST committed input/lifecycle state decides:
+ *  - `queued`: queued-not-published, never materialized → materialize at the prior
+ *    turn terminal + dispatch (the prompt never reached the provider; safe).
+ *  - `notAttempted`: enqueue-not-attempted, no dispatch evidence → auto-retry.
+ *  - `dispatchUnknown`: enqueue-attempted, NO evidence the provider took it →
+ *    surface for manual recovery, NEVER auto re-dispatch (§7.2).
+ *  - `withdrawn`: a durable withdrawn state → exclude (already retracted).
+ *  Evidence that resolves an op to dispatched (excluded from every pending list):
+ *  a consumed lifecycle row, the prompt's own materialized message row, or its
+ *  uuid in the canonical provider log. */
+export interface PendingInputView {
+  queued: PendingInputOp[]
+  notAttempted: PendingInputOp[]
+  dispatchUnknown: PendingInputOp[]
+  withdrawn: string[]
+}
+
+export function classifyPendingInputs(
+  rows: readonly SidecarRow[],
+  canonicalUuids: ReadonlySet<string> = new Set(),
+): PendingInputView {
+  // Only COMMITTED v2 batches feed the state machine; an uncommitted crash tail
+  // is ignored (its states never landed). v1 message rows are durable appends.
+  const committedV2 = parseBatches(rows).filter((b) => b.commit !== null).flatMap((b) => b.rows)
+  const materializedUuids = new Set<string>()
+  const collectMsgUuid = (r: SidecarRow): void => {
+    const m = r.msg as { type?: unknown; uuid?: unknown } | undefined
+    if (m && m.type === 'user' && typeof m.uuid === 'string') materializedUuids.add(m.uuid)
+  }
+  for (const r of committedV2) if (r.msg !== undefined) collectMsgUuid(r)
+  for (const r of rows) if (r.v !== 2 && r.msg !== undefined) collectMsgUuid(r)
+
+  interface Acc {
+    dispatchOrdinal: number
+    payload: unknown
+    inputState?: string
+    lifecycleState?: string
+  }
+  const byOp = new Map<string, Acc>()
+  const accOf = (op: string, ordinal: number): Acc => {
+    let a = byOp.get(op)
+    if (!a) { a = { dispatchOrdinal: ordinal, payload: undefined }; byOp.set(op, a) }
+    return a
+  }
+  for (const r of committedV2) {
+    const op = typeof r.operationId === 'string' ? r.operationId : null
+    if (op === null) continue
+    const state = typeof r.state === 'string' ? r.state : null
+    if (state === null) continue
+    if (typeof r.dispatchOrdinal === 'number') {
+      // Input row: carries dispatchOrdinal (+ payload on the first state row).
+      const a = accOf(op, r.dispatchOrdinal)
+      a.inputState = state
+      if (r.payload !== undefined && a.payload === undefined) a.payload = r.payload
+    } else {
+      // Lifecycle row (consumed/steered/requeued): no dispatchOrdinal.
+      accOf(op, byOp.get(op)?.dispatchOrdinal ?? 0).lifecycleState = state
+    }
+  }
+
+  const view: PendingInputView = { queued: [], notAttempted: [], dispatchUnknown: [], withdrawn: [] }
+  for (const [operationId, a] of byOp) {
+    if (a.inputState === undefined) continue
+    if (a.inputState === 'withdrawn') { view.withdrawn.push(operationId); continue }
+    const resolved =
+      a.lifecycleState === 'consumed'
+      || materializedUuids.has(operationId)
+      || canonicalUuids.has(operationId)
+    if (resolved) continue
+    const op: PendingInputOp = { operationId, dispatchOrdinal: a.dispatchOrdinal, payload: a.payload }
+    if (a.inputState === 'queued-not-published') view.queued.push(op)
+    else if (a.inputState === 'enqueue-not-attempted') view.notAttempted.push(op)
+    else if (a.inputState === 'enqueue-attempted') view.dispatchUnknown.push(op)
+  }
+  const byOrdinal = (x: PendingInputOp, y: PendingInputOp): number => x.dispatchOrdinal - y.dispatchOrdinal
+  view.queued.sort(byOrdinal)
+  view.notAttempted.sort(byOrdinal)
+  view.dispatchUnknown.sort(byOrdinal)
+  return view
 }
 
 /** Truncate raw sidecar text to the last VALID commit record of ANY batchType

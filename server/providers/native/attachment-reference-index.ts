@@ -63,6 +63,12 @@ export class NativeAttachmentReferenceIndex {
   private readonly stateDir: string
   private readonly persisted = new Map<string, NativeFileAttachment[]>()
   private readonly leases = new Map<string, number>()
+  /** File ids referenced by durable pending dispatch states (queued-not-published
+   *  / enqueue-*, spec §10 T7b Task 6). A crash loses the in-memory send leases
+   *  and the prompt is not yet in the native log, so without this a deletion
+   *  could remove a file a recovery is about to re-dispatch. Cleared when the
+   *  prompt materializes (enters the log) or is withdrawn. */
+  private readonly pendingInputs = new Map<string, Set<string>>()
   private readonly unreadableSessions = new Set<string>()
   private rootUnreadable = false
 
@@ -112,7 +118,17 @@ export class NativeAttachmentReferenceIndex {
    * session's persisted references. Ordinary unload/clear leaves the log. */
   removeSession(id: string): void {
     this.persisted.delete(id)
+    this.pendingInputs.delete(id)
     this.unreadableSessions.delete(id)
+  }
+
+  /** Register the file ids a session's durable pending dispatch states reference
+   *  (spec §10). An empty set clears the session's pending references (the
+   *  prompts materialized into the log or were withdrawn). */
+  setPendingInputReferences(id: string, ids: Iterable<string>): void {
+    const set = new Set(ids)
+    if (set.size === 0) this.pendingInputs.delete(id)
+    else this.pendingInputs.set(id, set)
   }
 
   occurrencesForSession(id: string): readonly NativeFileAttachment[] {
@@ -135,6 +151,9 @@ export class NativeAttachmentReferenceIndex {
     if ((this.leases.get(id) ?? 0) > 0) return true
     for (const occurrences of this.persisted.values()) {
       if (occurrences.some((occurrence) => occurrence.id === id)) return true
+    }
+    for (const ids of this.pendingInputs.values()) {
+      if (ids.has(id)) return true
     }
     return false
   }

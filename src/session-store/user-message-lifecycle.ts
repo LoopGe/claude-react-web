@@ -80,6 +80,38 @@ export function applyOptimisticUserMessage(state: SessionState, message: SdkMess
   return withIntent(state, { ...state.intent, pendingPlaceholders: next })
 }
 
+/** Render a server-confirmed queued prompt (spec §8.1 `message-queued` frame)
+ *  on a tab that did NOT send it. The prompt is durable but not yet published
+ *  to the seq space, so the bubble lives in intent.pendingPlaceholders keyed by
+ *  its server uuid — NO seq, NO mirror.items write. deliveryStatus derives
+ *  'queued' from the receivedAt the server stamped at queue time. The
+ *  materialization `message` frame later replaces it by exact uuid
+ *  (applyMessage). Mirror-only intent write; idempotent against a duplicate
+ *  frame, against a materialization echo that already landed, and against the
+ *  sending tab's own optimistic placeholder (matched by clientOperationId). */
+export function applyQueuedMessage(
+  state: SessionState,
+  uuid: string,
+  message: SdkMessage,
+  clientOperationId?: string,
+): SessionState {
+  // The real item is already on screen (materialization raced ahead of this
+  // frame, or a replay carried it) — the queued bubble is moot.
+  if (state.mirror.items.some((it) => it.id === uuid)) return state
+  if (state.intent.pendingPlaceholders.has(uuid)) return state
+  // The SENDING tab's own optimistic placeholder is keyed by the
+  // clientOperationId it POSTed until the REST ack re-keys it to the server
+  // uuid. Recognize it so the tab does not paint a second bubble for its own
+  // send (spec §8.3); the ack + materialization echo reconcile the original.
+  if (clientOperationId !== undefined && state.intent.pendingPlaceholders.has(clientOperationId)) return state
+  const item = toTranscriptItem(message)
+  if (!item) return state
+  const placeholder: TranscriptItem = { ...item, receivedAt: item.receivedAt ?? Date.now() }
+  const next = new Map(state.intent.pendingPlaceholders)
+  next.set(uuid, placeholder)
+  return withIntent(state, { ...state.intent, pendingPlaceholders: next })
+}
+
 /** Ack an optimistic user message: the REST POST returned the server-side
  *  uuid. Re-key the placeholder to the server uuid, strip `sending`, and
  *  stamp receivedAt/consumedAt from what we know.

@@ -116,6 +116,7 @@ import type { GitStatusResponse } from '../../shared/git-types'
 import type { ScheduledSendBody } from '../../shared/scheduled-send'
 import { buildOutgoingBody } from '../utils/message-body'
 import { intakeComposerFiles } from '../utils/image-intake'
+import { randomId } from '../utils/uuid'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { ClearSessionOptions, SettingsTabName } from '../local-commands'
@@ -449,6 +450,7 @@ interface SendMessageResponse {
   message?: {
     uuid?: string
     receivedAt?: number
+    clientOperationId?: string
   }
 }
 
@@ -1574,6 +1576,11 @@ export const Chat = memo(function Chat({
     // count.
     const isFirstUserTurn = !messagesRef.current.some(isHumanUserMessage)
     const pendingId = full.trim() ? insertUserMessage(full) : null
+    // Idempotency key for the POST (spec §8.3): the optimistic placeholder id
+    // when one exists, else a fresh key. A text-less images/files-only send has
+    // no placeholder, but the recovering-409 retry loop below still re-POSTs the
+    // same body — without a key the server would mint a duplicate prompt.
+    const clientOperationId = pendingId ?? `optimistic:${randomId()}`
 
     // POST with a bounded retry for the crash-recovery window: the server
     // 409s sends while a session is `recovering` (the old handle is dead).
@@ -1599,9 +1606,13 @@ export const Chat = memo(function Chat({
     }
 
     try {
-      const res: SendMessageResponse = await postMessage(
-        buildOutgoingBody(full, pastedImages.images, fileDrafts.ready),
-      )
+      // clientOperationId (spec §8.3): the server dedups a retried POST (the
+      // recovering-409 loop above, or a lost ACK the user re-sends) so it cannot
+      // mint a second prompt. Always sent — see the mint above for the text-less
+      // case. Ack reconciliation still uses pendingId (null for text-less is
+      // fine: the WS echo handles that bubble).
+      const outgoing = buildOutgoingBody(full, pastedImages.images, fileDrafts.ready)
+      const res: SendMessageResponse = await postMessage({ ...outgoing, clientOperationId })
       if (pendingId && typeof res.message?.uuid === 'string') {
         ackUserMessage(pendingId, res.message.uuid, res.message.receivedAt)
       }

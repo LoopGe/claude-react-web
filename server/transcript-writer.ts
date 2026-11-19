@@ -379,6 +379,18 @@ export class TranscriptWriter {
     return this.queued.splice(0)
   }
 
+  /** Seed crash-recovered ops (Task 6) into the queue for materialization at the
+   *  prior turn terminal. The caller follows with materializeQueued(). Restored
+   *  ops keep their pre-crash ordinals, so the counter resumes past the recovered
+   *  max — a new send restarting at 1 would sort BEFORE them and invert the
+   *  recovery materialization order across crashes. */
+  enqueueRecovered(ops: readonly DispatchOp[]): void {
+    for (const op of ops) {
+      if (op.dispatchOrdinal > this.dispatchOrdinalCounter) this.dispatchOrdinalCounter = op.dispatchOrdinal
+    }
+    this.queued.push(...ops)
+  }
+
   /** Commit a durable `withdrawn` input state per drained op (interrupt
    *  cancelQueued success path), chained on dispatchQueue so it lands AFTER any
    *  in-flight queued-not-published commit — crash recovery then sees

@@ -33,6 +33,7 @@ import { applyMessage } from './message-pipeline'
 // user-message actions here; SESSION_TERMINATED uses clearSendingPlaceholders.
 import {
   applyOptimisticUserMessage,
+  applyQueuedMessage,
   ackUserMessage,
   applyMessageConsumed,
   applyMessageSteered,
@@ -140,6 +141,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     }
     case 'MESSAGE_CONSUMED':
       return applyMessageConsumed(state, action.uuid, action.consumedAt)
+    case 'MESSAGE_QUEUED':
+      return applyQueuedMessage(state, action.uuid, action.message, action.clientOperationId)
     case 'MESSAGE_STEERED':
       return applyMessageSteered(state, action.uuid, action.state)
     case 'ERROR':
