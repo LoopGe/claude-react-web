@@ -3,10 +3,11 @@
 // retains only the requested line window; no text escapes before EOF validation.
 
 import { TextDecoder } from 'node:util'
-import { AttachmentObjectStore, AttachmentStoreError } from '../../../attachment-object-store.js'
+import { AttachmentObjectStore } from '../../../attachment-object-store.js'
 import { resolveAuthorizedAttachment } from '../../../attachment-access.js'
 import { HttpError } from '../../../errors.js'
 import { createLogger } from '../../../log.js'
+import { AttachmentStoreError } from '../../../../shared/attachment-store-error.js'
 import type { NativeAttachmentReferenceIndex } from '../attachment-reference-index.js'
 import type { UploadStore } from '../../../upload-store.js'
 import {

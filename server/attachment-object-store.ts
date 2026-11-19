@@ -18,8 +18,16 @@ import {
   objectPathOf,
   sanitizeStoredName,
 } from './attachment-paths.js'
+import { AttachmentStoreError } from '../shared/attachment-store-error.js'
+import type { VerifyFileInput } from '../shared/attachment-store-error.js'
 
-export type AttachmentStoreErrorCode = 'too-large' | 'write-failed' | 'corrupt' | 'missing'
+// The error class/codes and verified-read input live in
+// shared/attachment-store-error.ts (neutral, host-free); this module
+// re-exports them so host consumers can keep importing from here. The class
+// has a single definition, so native instanceof checks match the errors
+// thrown here.
+export { AttachmentStoreError } from '../shared/attachment-store-error.js'
+export type { AttachmentStoreErrorCode, VerifyFileInput } from '../shared/attachment-store-error.js'
 
 /** A digest is a bare lowercase sha256 — the object file name and the first
  *  path segment of every alias. Anything else could escape the store root. */
@@ -29,17 +37,6 @@ const DIGEST_PATTERN = /^[a-f0-9]{64}$/
  *  proof is per process, so a directory another process created but has not
  *  synced is never mistaken for a durable boundary. */
 const durableHomes = new Set<string>()
-
-export class AttachmentStoreError extends Error {
-  constructor(
-    readonly code: AttachmentStoreErrorCode,
-    message: string,
-    options?: { cause?: unknown },
-  ) {
-    super(message, options)
-    this.name = 'AttachmentStoreError'
-  }
-}
 
 export interface PublishStreamInput {
   /** Raw upload bytes, consumed chunk by chunk — never buffered whole. */
@@ -57,13 +54,6 @@ export interface PublishedAttachment {
   /** The sanitized leaf name actually used for the alias. */
   name: string
   size: number
-}
-
-export interface VerifyFileInput {
-  path: string
-  digest: string
-  size: number
-  signal?: AbortSignal
 }
 
 function errorCode(err: unknown): string | undefined {

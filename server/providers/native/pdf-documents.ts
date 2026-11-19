@@ -1,7 +1,8 @@
-import { AttachmentObjectStore, AttachmentStoreError } from '../../attachment-object-store.js'
+import { AttachmentObjectStore } from '../../attachment-object-store.js'
 import { resolveAuthorizedAttachment } from '../../attachment-access.js'
 import { HttpError } from '../../errors.js'
-import type { ResolvedFileAttachment } from '../../agent-message.js'
+import { AttachmentStoreError } from '../../../shared/attachment-store-error.js'
+import type { ResolvedFileAttachment } from '../../../shared/attachment-types.js'
 import type { UploadStore } from '../../upload-store.js'
 import type { NativeFileAttachment, NativeLogEvent } from './session-log/format.js'
 
