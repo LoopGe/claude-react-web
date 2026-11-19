@@ -12996,11 +12996,10 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       try {
         const info = await smSmall.create({ cwd: dir })
         const h0 = mockHandles.at(-1)!
-        // Each turn is awaited before the next prompt. T7b: dispatch is async
-        // (durable-before-publish), so the send must be awaited before the
-        // mock's synchronous completeTurn emits — otherwise the assistant
-        // frames race the prompt's seq allocation. (Production provider streams
-        // are I/O macrotasks, so the prompt seq always precedes the assistant.)
+        // Each turn is awaited before the next prompt so the mock's synchronous
+        // completeTurn emits land after the prompt's seq allocation (awaiting
+        // the send is harmless hardening; dispatch itself is synchronous in
+        // T7b Task 1).
         await smSmall.send(info.id, 'first prompt')
         completeTurn(h0, info.id, 'asst-1')
         await waitFor(async () => (await anchorsOf(info.id)).length >= 1)

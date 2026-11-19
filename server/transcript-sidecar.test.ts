@@ -507,6 +507,29 @@ describe('sidecar v2 batch commits / fold / crash recovery (spec §8.2/§9)', ()
     expect(folded.history.map((h) => h.generation)).toEqual([0, 1])
   })
 
+  it('T7b: gen-0 fold mixes v1 pump rows with committed v2 live batches (no generation batch)', () => {
+    // A fresh session: pump v1 ingest + the writer's durable v2 user-prompt
+    // live batch at gen 0, with NO generation/reset batch. The fold must union
+    // them in seq order (not drop the v2 rows via the v1 fallback).
+    const v1a = { seq: 0, uuid: 'a', type: 'assistant', msg: { type: 'assistant', uuid: 'a', message: { role: 'assistant', content: [] } } }
+    const live = [msgRow('l1', 1, 'b')]
+    const v1c = { seq: 2, uuid: 'c', type: 'assistant', msg: { type: 'assistant', uuid: 'c', message: { role: 'assistant', content: [] } } }
+    const rows = [v1a, ...live, liveCommit('l1', 0, live), v1c]
+    const folded = foldSidecarRowsV2(rows)
+    expect(folded.hasCommittedGeneration).toBe(true)
+    expect(folded.generation).toBe(0)
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['a', 'b', 'c'])
+    expect(folded.entries.map((e) => e.seq)).toEqual([0, 1, 2])
+  })
+
+  it('T7b: input-only v2 batches (no message rows) still fall back to v1', () => {
+    const v1a = { seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a', message: { role: 'user', content: 'hi' } } }
+    const inputRow = { v: 2, batchId: 'i1', operationId: 'a', dispatchOrdinal: 1, state: 'enqueue-attempted' }
+    const inputCommit = makeCommitV2({ batchId: 'i1', batchType: 'input', generation: 0, reason: 'initial', contentPolicy: 'preserve', rows: [inputRow] })
+    const folded = foldSidecarRowsV2([v1a, inputRow, inputCommit])
+    expect(folded.hasCommittedGeneration).toBe(false)
+  })
+
   it('uncommitted batch is ignored by fold; truncate returns prior committed prefix + salvaged tail', () => {
     const g0 = [msgRow('g0', 0, 'a')]
     const orphan = [msgRow('orphan', 1, 'x')]

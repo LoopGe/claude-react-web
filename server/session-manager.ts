@@ -4351,9 +4351,10 @@ export class SessionManager {
     // Seq-assign the prompt at ingestion, BEFORE the subscriber broadcast
     // (Task 3). The pump drops the SDK's echo of top-level user input, so
     // this ring append is the only copy — without recording here, user
-    // prompts would never enter the seq space. Legacy path (steering / local
-    // exec / mid-turn until T7b Task 2); the idle send path uses the writer's
-    // durable-before-publish appendDurable instead (publishUserMessage, D1).
+    // prompts would never enter the seq space. T7b Task 1 keeps this synchronous
+    // path for ALL sends (behavior-preserving) and adds fire-and-forget durable
+    // dispatch states via the writer; the durable-before-publish appendDurable
+    // publish path (D1) lands in Task 2.
     this.recordTranscriptFor(s.id, ringMessage)
     for (const sub of s.subscribers.values()) sub.push(ringMessage)
     this.afterUserMessagePublished(s)
@@ -4407,6 +4408,9 @@ export class SessionManager {
           appendBatch: (rows, commit) => holder().sidecar.appendBatch(rows, commit),
           recordSeq: (uuid, msg) => {
             const t = holder()
+            // Degraded fence (D5): a failed-reconcile holder accepts no durable
+            // append (mirrors recordTranscriptFor's degraded skip).
+            if (t.degraded) throw new Error('degraded: transcript holder fenced')
             const seq = t.store.record(uuid, msg)
             if (msg !== null && typeof msg === 'object') {
               this.seqByMessage.set(msg, { seq, generation: t.store.generation })
@@ -4442,6 +4446,14 @@ export class SessionManager {
       this.transcriptWriters.set(id, w)
     }
     return w
+  }
+
+  /** Fence + drop the session's dispatch writer on teardown (I3): close() makes
+   *  in-flight commits no-op so they cannot resurrect a fresh holder/sidecar
+   *  after unload/discard/retry. */
+  private dropTranscriptWriter(id: string): void {
+    this.transcriptWriters.get(id)?.close()
+    this.transcriptWriters.delete(id)
   }
 
   /** Interrupt the current assistant turn.
@@ -8512,7 +8524,7 @@ export class SessionManager {
     }
     this.transcriptStores.delete(id)
     this.transcriptReconciles.delete(id)
-    this.transcriptWriters.delete(id)
+    this.dropTranscriptWriter(id)
     // Drop the cached journal so a transient load failure (a poisoned `ready`
     // promise) is re-read from disk on the retry rather than staying rejected
     // for the process lifetime. The journal FILE persists for the fence.
@@ -8969,7 +8981,7 @@ export class SessionManager {
     if (sidecars.size === 0) sidecars.add(new TranscriptSidecar(this.store?.getDir(), id))
     this.transcriptStores.delete(id)
     this.transcriptReconciles.delete(id)
-    this.transcriptWriters.delete(id)
+    this.dropTranscriptWriter(id)
     const removals = await Promise.allSettled([...sidecars].map((sidecar) => sidecar.remove(opts)))
     const failed = removals.find((r) => r.status === 'rejected')
     if (failed) throw failed.reason
@@ -9383,7 +9395,7 @@ export class SessionManager {
     // from the sidecar + JSONL instead of rebuilding it.
     this.transcriptStores.delete(id)
     this.transcriptReconciles.delete(id)
-    this.transcriptWriters.delete(id)
+    this.dropTranscriptWriter(id)
     metrics.gauge('sessions_active', this.sessions.size)
     // Clear the recap state. The session is no longer in the manager's
     // map so getPhase will return 'unknown' from inside the manager —

@@ -76,6 +76,7 @@ export class TranscriptWriter {
   private pending: PendingOperation[] = []
   private degradedFlag = false
   private rebuildingFlag = false
+  private closedFlag = false
   readonly ledger: GenerationLedger
   clearEpoch = 0
   rebaseEpoch = 0
@@ -125,11 +126,22 @@ export class TranscriptWriter {
   }
 
   /** Serial durable commit; the chain stays alive even if one batch fails, but
-   *  the error propagates to the caller (durable-before-publish barrier). */
+   *  the error propagates to the caller (durable-before-publish barrier). A
+   *  closed writer no-ops: an in-flight commit queued before unload/discard
+   *  must not resurrect a fresh holder/sidecar after teardown (I3). */
   private commit(rows: object[], commit: object): Promise<void> {
-    const run = this.writerQueue.then(() => this.deps.appendBatch(rows, commit))
+    const run = this.writerQueue.then(() => {
+      if (this.closedFlag) return
+      return this.deps.appendBatch(rows, commit)
+    })
     this.writerQueue = run.catch(() => {})
     return run
+  }
+
+  /** Fence the writer on teardown (unload/discard/retry): in-flight commits
+   *  no-op instead of re-resolving a fresh holder and appending after close. */
+  close(): void {
+    this.closedFlag = true
   }
 
   /** Per-session monotonic dispatch ordinal (D6): orders queued prompts at
@@ -160,8 +172,12 @@ export class TranscriptWriter {
       operationId: op.operationId,
       dispatchOrdinal: op.dispatchOrdinal,
       state,
-      // Carry the payload so crash recovery can re-materialize the prompt (D7).
-      payload: op.payload,
+      // Carry the payload only on the FIRST state row per operationId (and on
+      // queued-not-published) so crash recovery can re-materialize (D7) without
+      // duplicating multi-MB image payloads on every state row (I4: the sidecar
+      // is append-only and fully parsed on every reconcile). The classifier
+      // joins back to this row for the payload; enqueue-attempted omits it.
+      ...(state !== 'enqueue-attempted' ? { payload: op.payload } : {}),
       ...(route ? { route } : {}),
     }
     return this.commit(
@@ -173,6 +189,7 @@ export class TranscriptWriter {
   /** Allocate seq, fsync the batch+commit, THEN publish (spec §8.1). Rejects in
    *  degraded state and on write failure (nothing published). */
   async appendDurable(msg: unknown): Promise<{ seq: number } | null> {
+    if (this.closedFlag) throw new Error('closed: transcript writer fenced')
     if (this.degradedFlag) throw new Error('degraded: transcript writer fenced')
     const uuid = typeof (msg as { uuid?: unknown })?.uuid === 'string' ? (msg as { uuid: string }).uuid : null
     const seq = this.deps.recordSeq(uuid, msg)

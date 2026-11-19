@@ -186,3 +186,38 @@ describe('TranscriptWriter.resetGeneration (spec §8.3)', () => {
     }
   })
 })
+
+describe('TranscriptWriter.recordDispatchAttempt (T7b Task 1)', () => {
+  it('commits not-attempted (with payload) then attempted (no payload duplication)', async () => {
+    const batches: Array<{ rows: object[]; commit: { batchType?: string } }> = []
+    const { deps } = makeDeps({ appendBatch: vi.fn(async (rows, commit) => { batches.push({ rows, commit: commit as { batchType?: string } }) }) })
+    const w = new TranscriptWriter(deps)
+    const payload = { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } }
+    await w.recordDispatchAttempt({ operationId: 'u1', dispatchOrdinal: w.nextDispatchOrdinal(), kind: 'user', payload })
+    const inputBatches = batches.filter((b) => b.commit.batchType === 'input')
+    expect(inputBatches).toHaveLength(2)
+    const states = inputBatches.map((b) => (b.rows[0] as { state: string }).state)
+    expect(states).toEqual(['enqueue-not-attempted', 'enqueue-attempted'])
+    // Payload only on the first row (I4: no multi-MB duplication per state).
+    expect((inputBatches[0].rows[0] as { payload?: unknown }).payload).toEqual(payload)
+    expect((inputBatches[1].rows[0] as { payload?: unknown }).payload).toBeUndefined()
+  })
+
+  it('nextDispatchOrdinal is monotonic within a writer', () => {
+    const { deps } = makeDeps()
+    const w = new TranscriptWriter(deps)
+    expect(w.nextDispatchOrdinal()).toBe(1)
+    expect(w.nextDispatchOrdinal()).toBe(2)
+    expect(w.nextDispatchOrdinal()).toBe(3)
+  })
+
+  it('close() fences appendDurable and no-ops in-flight commits (I3)', async () => {
+    const appendBatch = vi.fn(async () => {})
+    const { deps } = makeDeps({ appendBatch })
+    const w = new TranscriptWriter(deps)
+    w.close()
+    await expect(w.appendDurable({ type: 'user', uuid: 'u' })).rejects.toThrow(/closed/)
+    await w.recordDispatchAttempt({ operationId: 'u', dispatchOrdinal: 1, kind: 'user', payload: {} })
+    expect(appendBatch).not.toHaveBeenCalled()
+  })
+})
