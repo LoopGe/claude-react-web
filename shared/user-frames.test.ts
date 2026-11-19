@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   classifyTaskNotificationInjection,
+  classifyUserFrameOrigin,
   imagePayloadOfContent,
   imagePayloadOfMessage,
+  isHumanUserMessage,
   parseTaskNotificationInjection,
 } from './user-frames'
 
@@ -137,5 +139,60 @@ describe('imagePayloadOfMessage', () => {
   it('tolerates a missing or string content', () => {
     expect(imagePayloadOfMessage(null)).toEqual({ images: 0, bytes: 0 })
     expect(imagePayloadOfMessage({ message: { content: 'text' } })).toEqual({ images: 0, bytes: 0 })
+  })
+})
+
+// Origin classification for null-parent user frames at ingestion. Shapes are
+// the ones verified live against SDK 0.3.311 / CLI 2.1.311 (see the agent note
+// 2026-11-19-user-frame-origin-identity): synthetic frames carry isSynthetic /
+// isReplay but NOT the disk-only isCompactSummary / isMeta markers.
+type ClassifierFrame = Parameters<typeof classifyUserFrameOrigin>[0]
+const userText = (uuid: string, text = 'hello'): ClassifierFrame =>
+  ({ type: 'user', uuid, parent_tool_use_id: null, message: { content: [{ type: 'text', text }] } }) as ClassifierFrame
+const toolResultFrame = (toolUseId: string): ClassifierFrame =>
+  ({ type: 'user', uuid: 'tr-1', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'ok' }] } }) as ClassifierFrame
+const taskNotificationFrame = (): ClassifierFrame =>
+  userText('notif-1', '<task-notification><tool-use-id>tu1</tool-use-id><status>completed</status><result>R</result></task-notification>')
+const isSent = (u: string) => u === 'sent-1'
+
+describe('classifyUserFrameOrigin', () => {
+  it('a ledger uuid with no markers is a host echo', () => {
+    expect(classifyUserFrameOrigin(userText('sent-1'), isSent)).toBe('host-echo')
+  })
+
+  it('isSynthetic marks a CLI synthetic frame regardless of uuid', () => {
+    expect(classifyUserFrameOrigin({ ...userText('foreign'), isSynthetic: true }, isSent)).toBe('cli-synthetic')
+    // marker outranks ledger membership
+    expect(classifyUserFrameOrigin({ ...userText('sent-1'), isSynthetic: true }, isSent)).toBe('cli-synthetic')
+  })
+
+  it('isReplay marks a CLI synthetic frame (the /compact stdout shape)', () => {
+    expect(classifyUserFrameOrigin({ ...userText('foreign'), isReplay: true }, isSent)).toBe('cli-synthetic')
+  })
+
+  it('isCompactSummary marks a CLI synthetic frame', () => {
+    expect(classifyUserFrameOrigin({ ...userText('foreign'), isCompactSummary: true }, isSent)).toBe('cli-synthetic')
+  })
+
+  it('a foreign uuid with no markers is cli-other (fail-visible, never an echo)', () => {
+    expect(classifyUserFrameOrigin(userText('foreign'), isSent)).toBe('cli-other')
+  })
+
+  it('tool_result carriers classify ahead of the ledger', () => {
+    expect(classifyUserFrameOrigin(toolResultFrame('t1'), isSent)).toBe('tool-result')
+  })
+
+  it('task-notification injections classify ahead of the ledger', () => {
+    expect(classifyUserFrameOrigin(taskNotificationFrame(), isSent)).toBe('task-notification')
+  })
+})
+
+describe('isHumanUserMessage (shared)', () => {
+  it('excludes a synthetic skill-injection frame', () => {
+    expect(isHumanUserMessage({ ...userText('x', 'Base directory for this skill: /tmp/s'), isSynthetic: true })).toBe(false)
+  })
+
+  it('accepts a plain human prompt', () => {
+    expect(isHumanUserMessage(userText('x'))).toBe(true)
   })
 })

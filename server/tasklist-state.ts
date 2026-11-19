@@ -27,10 +27,10 @@ import { createLogger } from './log.js'
 import {
   buildTaskStateMap,
   countTaskEvents,
-  isGenuineUserInputFrame,
   type TasklistSnapshotPayload,
   type TasklistSnapshotTask,
 } from '../shared/task-list.js'
+import { isHumanUserMessage } from '../shared/user-frames.js'
 
 const log = createLogger('tasklist')
 
@@ -47,8 +47,8 @@ const log = createLogger('tasklist')
 export function deriveTaskListFromLines(lines: readonly unknown[]): TasklistSnapshotPayload {
   let boundary = -1
   for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i] as Parameters<typeof isGenuineUserInputFrame>[0]
-    if (isGenuineUserInputFrame(line) && line.isSidechain !== true) {
+    const line = lines[i] as Parameters<typeof isHumanUserMessage>[0]
+    if (isHumanUserMessage(line) && line.isSidechain !== true) {
       boundary = i
       break
     }

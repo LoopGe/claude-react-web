@@ -286,3 +286,132 @@ export function classifyTaskNotificationInjection(msg: UserFrameShape): TaskNoti
     hasPayload: Boolean(raw.result?.trim() || raw.event?.trim()),
   }
 }
+
+// ---------------------------------------------------------------------------
+// Frame-origin classification (the ingestion decision point).
+//
+// Verified against SDK 0.3.311 / CLI 2.1.311 (agent note
+// 2026-11-19-user-frame-origin-identity): host prompt echoes do not stream in
+// local-subprocess mode; the CLI's synthetic user frames (compact summaries,
+// <local-command-stdout> logs, skill injections) DO stream, carrying
+// isSynthetic / isReplay live but NOT the disk-only isCompactSummary / isMeta
+// markers. An echo is therefore identified POSITIVELY — its uuid is in the
+// host's send ledger — never inferred from content shape.
+// ---------------------------------------------------------------------------
+
+/** Structural slice for the origin classifier: UserFrameShape plus the
+ *  identity and live-stream markers the ladder reads. */
+export interface UserFrameClassifierShape extends UserFrameShape {
+  uuid?: unknown
+  isSynthetic?: unknown
+  isReplay?: unknown
+}
+
+export type UserFrameOrigin =
+  | 'tool-result'
+  | 'task-notification'
+  | 'host-echo'
+  | 'cli-synthetic'
+  | 'cli-other'
+
+/** Classify a NULL-PARENT user frame (the caller checks `type === 'user' &&
+ *  parent_tool_use_id == null` first). Ladder, most-structural first:
+ *  tool_result carrier → task-notification injection → SDK synthetic marker
+ *  → send-ledger uuid membership (host echo) → cli-other.
+ *
+ *  `cli-other` is the fail-visible residue: a foreign uuid with no markers.
+ *  Empty on the pinned SDK; callers forward it as a CLI-origin frame and log
+ *  it — never pair it onto the ledger or arm turn state with it. */
+export function classifyUserFrameOrigin(
+  msg: UserFrameClassifierShape,
+  isSentUuid: (uuid: string) => boolean,
+): UserFrameOrigin {
+  if (userMessageHasToolResult(msg)) return 'tool-result'
+  if (isTaskNotificationUserMessage(msg)) return 'task-notification'
+  if (msg.isSynthetic === true || msg.isReplay === true || msg.isCompactSummary === true) return 'cli-synthetic'
+  if (typeof msg.uuid === 'string' && isSentUuid(msg.uuid)) return 'host-echo'
+  return 'cli-other'
+}
+
+// ---------------------------------------------------------------------------
+// Render-side human classification (moved from the client's normalize.ts so
+// the server's task-staleness fold and the client's window fold share ONE
+// implementation; dependencies were already shared).
+// ---------------------------------------------------------------------------
+
+/** Matches the CLI's local-command log markup: the leading text block of a
+ *  user-role message that is NOT human input but a recorded slash-command
+ *  invocation / output (`<command-name>`, `<local-command-stdout>`,
+ *  `<local-command-caveat>`). The CLI marks command-name/stdout non-isMeta
+ *  (the model may reference them), so they survive disk replay and would
+ *  otherwise render as "you" bubbles. */
+const LOCAL_COMMAND_LOG_RE = /^\s*<(command-name|local-command-stdout|local-command-caveat)\b/i
+
+/** The first text a `user` message carries (string content, or the first
+ *  `text` block). Used to sniff synthetic injections by their leading markup
+ *  without scanning the whole body. Returns null when there's no text. */
+function leadingUserText(msg: UserFrameShape): string | null {
+  const content = frameContent(msg)
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    for (const block of content as Array<{ type?: unknown; text?: unknown }>) {
+      if (block && block.type === 'text' && typeof block.text === 'string') return block.text
+    }
+  }
+  return null
+}
+
+/** True when a top-level `user` message is a CLI local-command log entry
+ *  (e.g. the `/model` slash command that `setModel` triggers), not real human
+ *  input. One classification, both live and disk sources. */
+export function isLocalCommandLogUserMessage(msg: UserFrameShape): boolean {
+  if (msg.type !== 'user') return false
+  if (msg.parent_tool_use_id != null) return false
+  if (userMessageHasToolResult(msg)) return false
+  const text = leadingUserText(msg)
+  return !!text && LOCAL_COMMAND_LOG_RE.test(text)
+}
+
+/** The SDK `origin.kind` stamped on `SDKUserMessage` (sdk.d.ts:
+ *  SDKMessageOrigin = 'human' | 'task-notification' | 'peer' | 'channel'
+ *  | 'coordinator' | 'auto-continuation'). Returns undefined when the SDK
+ *  didn't stamp origin (notably SDK 0.3.x at runtime), so callers can fall
+ *  back to structural / content sniffing. */
+export function userMessageOriginKind(msg: UserFrameClassifierShape): string | undefined {
+  if (msg.type !== 'user') return undefined
+  const origin = (msg as { origin?: { kind?: unknown } }).origin
+  if (origin && typeof origin === 'object' && typeof origin.kind === 'string') return origin.kind
+  return undefined
+}
+
+/** True ONLY for a genuine human-typed user message — never for the
+ *  synthetic user-role frames the SDK/harness injects (tool_results,
+ *  subagent-internal hops, `<task-notification>` result deliveries,
+ *  auto-continuations, peer messages). The "you" bubble, delivery badges,
+ *  prompt dedup, and navigate-to-user-message must all gate on this so a
+ *  synthetic injection can't be misrendered as something the human sent.
+ *
+ *  Discriminator ladder (most-explicit first):
+ *    1. parent_tool_use_id != null  → subagent-internal frame, not human.
+ *    2. carries a tool_result block → tool output fed back to the model.
+ *    3. SDK `origin.kind` present    → human iff kind === 'human'.
+ *    4. SDK `isSynthetic: true`      → not human.
+ *    5. content sniff `<task-notification>` → harness result injection.
+ *    6. content sniff `<command-name>`/`<local-command-stdout>` → CLI
+ *       slash-command log (e.g. `/model`), not human input.
+ *    7. fallback → human. Preserves behaviour for SDK versions that don't
+ *      stamp origin/isSynthetic on real human input (0.3.x), so the only
+ *      messages redirected away from "you" are ones the SDK explicitly
+ *      marks synthetic or that match a known injection signature. */
+export function isHumanUserMessage(msg: UserFrameClassifierShape): boolean {
+  if (msg.type !== 'user') return false
+  if (msg.isCompactSummary === true) return false
+  if (msg.parent_tool_use_id != null) return false
+  if (userMessageHasToolResult(msg)) return false
+  const kind = userMessageOriginKind(msg)
+  if (kind !== undefined) return kind === 'human'
+  if (msg.isSynthetic === true) return false
+  if (isTaskNotificationUserMessage(msg)) return false
+  if (isLocalCommandLogUserMessage(msg)) return false
+  return true
+}

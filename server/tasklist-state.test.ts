@@ -53,6 +53,19 @@ describe('deriveTaskListFromLines (pure)', () => {
     expect(snap.tasks[0]!.stale).toBe(true)
   })
 
+  it('a synthetic skill-injection frame after the last real prompt does NOT move the boundary', () => {
+    const lines = [
+      humanInput('first request'),
+      assistant([create('c1', 'current task')]),
+      toolResult('c1', 'Task #1 created successfully: current task'),
+      humanInput('second request'), // the true boundary
+      assistant([update('1', { status: 'completed' })]), // touched in the current turn
+      { type: 'user', isSynthetic: true, message: { content: [{ type: 'text', text: 'Base directory for this skill: /tmp/s' }] } },
+    ]
+    // If the synthetic frame became the boundary, the completion would read stale.
+    expect(deriveTaskListFromLines(lines).tasks[0]!.stale).toBe(false)
+  })
+
   it('a task touched in the current turn (at/after the boundary) is NOT stale', () => {
     const lines = [
       humanInput('request'),

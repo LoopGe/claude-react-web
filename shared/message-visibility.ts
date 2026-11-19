@@ -9,8 +9,13 @@
  */
 import {
   classifyTaskNotificationInjection,
-  userMessageHasToolResult,
+  isLocalCommandLogUserMessage,
 } from './user-frames.js'
+
+// The local-command log classification lives in user-frames.ts (one
+// implementation for the origin classifier, the human-frame predicate, and
+// this render gate); re-exported so existing import paths keep working.
+export { isLocalCommandLogUserMessage }
 
 export interface VisibilityShape {
   type?: string
@@ -18,47 +23,6 @@ export interface VisibilityShape {
   parent_tool_use_id?: string | null
   isCompactSummary?: boolean
   message?: unknown
-}
-
-/** Matches the CLI's local-command log markup: the leading text block of a
- *  user-role message that is NOT human input but a recorded slash-command
- *  invocation / output. Claude Code writes these for commands like `/model`
- *  (which `setModel` triggers under the hood) as:
- *    <command-name>/model</command-name> <command-message>model</command-message> <command-args>…</command-args>
- *    <local-command-stdout>Set model to …</local-command-stdout>
- *    <local-command-caveat>Caveat: …</local-command-caveat>   (isMeta — already dropped server-side)
- *  The CLI marks `<command-name>`/`<local-command-stdout>` non-isMeta (the
- *  model may reference them), so they survive disk replay and would otherwise
- *  render as "you" bubbles. */
-const LOCAL_COMMAND_LOG_RE = /^\s*<(command-name|local-command-stdout|local-command-caveat)\b/i
-
-/** The first text a `user` message carries (string content, or the first
- *  `text` block). Used to sniff synthetic injections by their leading
- *  markup without scanning the whole body. Returns null when there's no
- *  text. */
-function leadingUserText(msg: VisibilityShape): string | null {
-  const content = (msg.message as { content?: unknown } | undefined)?.content
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    for (const block of content as Array<{ type?: unknown; text?: unknown }>) {
-      if (block && block.type === 'text' && typeof block.text === 'string') return block.text
-    }
-  }
-  return null
-}
-
-/** True when a top-level `user` message is a CLI local-command log entry
- *  (e.g. the `/model` slash command that `setModel` triggers), not real human
- *  input. The pump already drops these from the live stream (they read as
- *  top-level user text); this is the single render-side gate that also hides
- *  the copies that arrive via disk replay, where history-reader keeps them
- *  because the CLI marks them non-isMeta. One classification, both sources. */
-export function isLocalCommandLogUserMessage(msg: VisibilityShape): boolean {
-  if (msg.type !== 'user') return false
-  if (msg.parent_tool_use_id != null) return false
-  if (userMessageHasToolResult(msg)) return false
-  const text = leadingUserText(msg)
-  return !!text && LOCAL_COMMAND_LOG_RE.test(text)
 }
 
 export function shouldHideByDefault(msg: VisibilityShape): boolean {

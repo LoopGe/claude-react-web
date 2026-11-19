@@ -18,11 +18,13 @@ import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 import { isEmptyResultFrame } from '../../shared/results.js'
 import { isFileBlock } from '../../shared/attachments.js'
 import {
+  isHumanUserMessage,
   isTaskNotificationUserMessage,
   normalizeTaskStatus,
   parseTaskNotificationInjection,
   type TaskNotificationStatus,
   userMessageHasToolResult,
+  userMessageOriginKind,
 } from '../../shared/user-frames.js'
 import {
   isLocalCommandLogUserMessage,
@@ -364,49 +366,10 @@ export function parseTaskNotification(msg: SdkMessage): ParsedTaskNotification |
   return { toolUseId: inj.toolUseId, status: inj.status, summary: inj.summary, result: inj.result }
 }
 
-/** The SDK `origin.kind` stamped on `SDKUserMessage` (sdk.d.ts:
- *  SDKMessageOrigin = 'human' | 'task-notification' | 'peer' | 'channel'
- *  | 'coordinator' | 'auto-continuation'). Returns undefined when the SDK
- *  didn't stamp origin (notably SDK 0.3.x at runtime), so callers can fall
- *  back to structural / content sniffing. */
-export function userMessageOriginKind(msg: SdkMessage): string | undefined {
-  if (msg.type !== 'user') return undefined
-  const origin = (msg as { origin?: { kind?: unknown } }).origin
-  if (origin && typeof origin === 'object' && typeof origin.kind === 'string') return origin.kind
-  return undefined
-}
-
-/** True ONLY for a genuine human-typed user message — never for the
- *  synthetic user-role frames the SDK/harness injects (tool_results,
- *  subagent-internal hops, `<task-notification>` result deliveries,
- *  auto-continuations, peer messages). The "you" bubble, delivery badges,
- *  prompt dedup, and navigate-to-user-message must all gate on this so a
- *  synthetic injection can't be misrendered as something the human sent.
- *
- *  Discriminator ladder (most-explicit first):
- *    1. parent_tool_use_id != null  → subagent-internal frame, not human.
- *    2. carries a tool_result block → tool output fed back to the model.
- *    3. SDK `origin.kind` present    → human iff kind === 'human'.
- *    4. SDK `isSynthetic: true`      → not human.
- *    5. content sniff `<task-notification>` → harness result injection.
- *    6. content sniff `<command-name>`/`<local-command-stdout>` → CLI
- *      slash-command log (e.g. `/model`), not human input.
- *    7. fallback → human. Preserves behaviour for SDK versions that don't
- *      stamp origin/isSynthetic on real human input (0.3.x), so the only
- *      messages redirected away from "you" are ones the SDK explicitly
- *      marks synthetic or that match a known injection signature. */
-export function isHumanUserMessage(msg: SdkMessage): boolean {
-  if (msg.type !== 'user') return false
-  if (msg.isCompactSummary === true) return false
-  if (msg.parent_tool_use_id != null) return false
-  if (userMessageHasToolResult(msg)) return false
-  const kind = userMessageOriginKind(msg)
-  if (kind !== undefined) return kind === 'human'
-  if ((msg as { isSynthetic?: unknown }).isSynthetic === true) return false
-  if (isTaskNotificationUserMessage(msg)) return false
-  if (isLocalCommandLogUserMessage(msg)) return false
-  return true
-}
+// The human-frame classification lives in shared/user-frames.ts (one
+// implementation for the client's render gates and the server's task-staleness
+// fold); re-exported so existing client import paths keep working.
+export { isHumanUserMessage, userMessageOriginKind }
 
 export function getBlocks(msg: SdkMessage): Block[] {
   const content = msg.message?.content
