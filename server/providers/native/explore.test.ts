@@ -8,6 +8,7 @@ import {
 import type { ToolDef } from './tools/types.js'
 import { createAttachmentReadTool } from './tools/attachment-read.js'
 import { NativeAttachmentReferenceIndex } from './attachment-reference-index.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import { UploadStore } from '../../upload-store.js'
 import { PdfBudgetLedger, PreparedPdfStore } from './pdf-documents.js'
 
@@ -45,8 +46,7 @@ describe('Explore agent role', () => {
     const stateDir = process.cwd()
     const pdfBudgets = new PdfBudgetLedger()
     const attachmentRead = createAttachmentReadTool({
-      uploadStore: new UploadStore({ stateDir }),
-      stateDir,
+      attachmentPort: makeNativePorts({ stateDir, uploadStore: new UploadStore({ stateDir }) }).attachment,
       referenceIndex: new NativeAttachmentReferenceIndex({ stateDir }),
       sessionId: 'explore-session',
       pdfBudgets,

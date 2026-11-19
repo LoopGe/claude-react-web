@@ -223,8 +223,7 @@ export class NativeProvider implements AgentProvider {
     const configPort = this.ports.config
     const tools = configPort.nativeAttachmentFidelity && this.uploadStore
       ? [...sessionTools, createAttachmentReadTool({
-          uploadStore: this.uploadStore,
-          stateDir: this.stateDir,
+          attachmentPort: this.ports.attachment,
           referenceIndex: this.attachmentReferences,
           sessionId: opts.id,
           pdfBudgets,

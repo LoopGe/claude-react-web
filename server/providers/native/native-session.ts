@@ -480,8 +480,7 @@ export class NativeSession implements ProviderSessionHandle {
       },
       persistToolResult: (result, parentToolUseId) => this.persistToolResult(result, parentToolUseId),
       attachmentProjection: {
-        uploadStore: opts.uploadStore,
-        stateDir: opts.stateDir,
+        attachmentPort: opts.uploadStore ? opts.ports.attachment : undefined,
         preparedPdfs: this.preparedPdfs,
       },
       appendDescriptor: async (input) => await this.log.appendDurable({
@@ -1330,8 +1329,7 @@ export class NativeSession implements ProviderSessionHandle {
             },
             persistToolResult: (result) => this.persistToolResult(result, null),
             attachmentProjection: {
-              uploadStore: this.opts.uploadStore,
-              stateDir: this.opts.stateDir,
+              attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
               preparedPdfs: this.preparedPdfs,
             },
             system: turnSystem,

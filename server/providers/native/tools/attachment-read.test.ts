@@ -9,6 +9,7 @@ import { createAttachmentReadTool } from './attachment-read.js'
 import { projectNativeMessages } from '../attachment-projection.js'
 import { PDF_MAX_BYTES, PdfBudgetLedger, PreparedPdfStore } from '../pdf-documents.js'
 import { NativeAttachmentReferenceIndex } from '../attachment-reference-index.js'
+import { makeNativePorts } from '../../native-host-adapters.js'
 import { aliasPathOf, attachmentRoot } from '../../../attachment-paths.js'
 import { UploadStore } from '../../../upload-store.js'
 import { createReadTool } from './read.js'
@@ -86,8 +87,7 @@ async function fixture(options: {
   const pdfBudgets = options.shared?.pdfBudgets ?? new PdfBudgetLedger()
   const preparedPdfs = options.shared?.preparedPdfs ?? new PreparedPdfStore(pdfBudgets)
   const tool = createAttachmentReadTool({
-    uploadStore: store,
-    stateDir,
+    attachmentPort: makeNativePorts({ stateDir, uploadStore: store }).attachment,
     referenceIndex: index,
     sessionId: 'session-1',
     pdfBudgets,
@@ -293,8 +293,7 @@ describe('AttachmentRead', () => {
     fx.preparedPdfs.confirmPersisted('tool-1')
     const history = [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: outcome.content }] }]
     const projected = await projectNativeMessages(history, {
-      stateDir: fx.stateDir,
-      uploadStore: fx.store,
+      attachmentPort: makeNativePorts({ stateDir: fx.stateDir, uploadStore: fx.store }).attachment,
       preparedPdfs: fx.preparedPdfs,
     }, new AbortController().signal) as Array<{ content: Array<{ content: Array<{ type: string; source?: { data: string } }> }> }>
     expect(projected[0].content[0].content[1]).toMatchObject({
@@ -304,16 +303,14 @@ describe('AttachmentRead', () => {
     expect(vi.mocked(createReadStream).mock.calls).toHaveLength(1)
 
     await projectNativeMessages(history, {
-      stateDir: fx.stateDir,
-      uploadStore: fx.store,
+      attachmentPort: makeNativePorts({ stateDir: fx.stateDir, uploadStore: fx.store }).attachment,
       preparedPdfs: fx.preparedPdfs,
     }, new AbortController().signal)
     expect(vi.mocked(createReadStream).mock.calls).toHaveLength(2)
 
     await writeFile(fx.path, '%PDF-1.4\ntampered body')
     const failure = await projectNativeMessages(history, {
-      stateDir: fx.stateDir,
-      uploadStore: fx.store,
+      attachmentPort: makeNativePorts({ stateDir: fx.stateDir, uploadStore: fx.store }).attachment,
       preparedPdfs: fx.preparedPdfs,
     }, new AbortController().signal).catch((err: unknown) => err)
     expect((failure as Error).message).toMatch(/integrity/i)

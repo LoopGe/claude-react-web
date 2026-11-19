@@ -1,7 +1,7 @@
 import type { RawLine } from '../../../shared/transcript-format.js'
-import type { UploadStore } from '../../upload-store.js'
 import { createLogger } from '../../log.js'
 import type { NativeFileAttachment } from './session-log/format.js'
+import type { NativeAttachmentPort } from './ports.js'
 import {
   loadPdfDocument,
   safePdfReadReason,
@@ -13,8 +13,7 @@ const log = createLogger('attachment-projection')
 export interface NativeProjectionOptions {
   /** Required only by byte-bearing projections. Plain handles never read the
    * registry or attachment bytes. */
-  uploadStore?: UploadStore
-  stateDir: string
+  attachmentPort?: NativeAttachmentPort
   /** One verified AttachmentRead result may be consumed by the immediately
    * following projection. Later rounds always re-read and re-verify. */
   preparedPdfs?: PreparedPdfStore
@@ -67,14 +66,12 @@ async function modelBlock(
       const prepared = opts.preparedPdfs.consume(toolUseId, attachment)
       if (prepared) return prepared
     }
-    if (!opts.uploadStore) {
+    if (!opts.attachmentPort) {
       throw new Error(`upload registry is unavailable for attachment: ${attachment.id}`)
     }
+    const attachmentPort = opts.attachmentPort
     try {
-      return await loadPdfDocument(attachment, {
-        uploadStore: opts.uploadStore,
-        stateDir: opts.stateDir,
-      }, signal)
+      return await loadPdfDocument(attachment, attachmentPort, signal)
     } catch (err) {
       if (signal.aborted) throw signal.reason
       log.warn(`PDF projection failed for upload ${attachment.id}: ${err instanceof Error ? err.message : String(err)}`)

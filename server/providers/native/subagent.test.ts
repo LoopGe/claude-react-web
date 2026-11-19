@@ -99,7 +99,7 @@ function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
     requestPermission: async (_t, input, _id, _signal) => ({ allowed: true, input }),
     emit: () => {},
     persistToolResult: () => {},
-    attachmentProjection: { stateDir: process.cwd() },
+    attachmentProjection: {},
     appendDescriptor: async (input) => ({ ...input, seq: 0, timestamp: 't' }),
     ...over,
   }

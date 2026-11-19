@@ -1,9 +1,7 @@
-import { AttachmentObjectStore } from '../../attachment-object-store.js'
-import { resolveAuthorizedAttachment } from '../../attachment-access.js'
 import { HttpError } from '../../errors.js'
 import { AttachmentStoreError } from '../../../shared/attachment-store-error.js'
 import type { ResolvedFileAttachment } from '../../../shared/attachment-types.js'
-import type { UploadStore } from '../../upload-store.js'
+import type { NativeAttachmentPort } from './ports.js'
 import type { NativeFileAttachment, NativeLogEvent } from './session-log/format.js'
 
 export const PDF_MAX_BYTES = 20 * 1024 * 1024
@@ -300,16 +298,15 @@ function documentBlock(attachment: ResolvedFileAttachment, bytes: Buffer): PdfDo
  * verification has succeeded. */
 export async function readAuthorizedPdfDocument(
   attachment: ResolvedFileAttachment,
-  stateDir: string,
+  attachmentPort: NativeAttachmentPort,
   signal: AbortSignal,
 ): Promise<PdfDocumentBlock> {
   if (attachment.size > PDF_MAX_BYTES) {
     throw new PdfReadError('size', 'PDF exceeds the 20 MiB document limit')
   }
-  const objects = new AttachmentObjectStore(stateDir)
   const chunks: Buffer[] = []
   let retained = 0
-  for await (const chunk of objects.readVerified({
+  for await (const chunk of attachmentPort.readVerified({
     path: attachment.path,
     digest: attachment.digest,
     size: attachment.size,
@@ -330,11 +327,11 @@ export async function readAuthorizedPdfDocument(
 
 export async function loadPdfDocument(
   attachment: ResolvedFileAttachment,
-  opts: { uploadStore: UploadStore; stateDir: string },
+  attachmentPort: NativeAttachmentPort,
   signal: AbortSignal,
 ): Promise<PdfDocumentBlock> {
-  const resolved = await resolveAuthorizedAttachment(attachment, opts)
-  return readAuthorizedPdfDocument(resolved, opts.stateDir, signal)
+  const resolved = await attachmentPort.resolveAuthorized(attachment)
+  return readAuthorizedPdfDocument(resolved, attachmentPort, signal)
 }
 
 /** Model-safe failure text. Raw filesystem errors stay with the caller's
