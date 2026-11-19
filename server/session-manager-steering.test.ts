@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto'
 class FakeHandle implements ProviderSessionHandle {
   readonly provider = 'fake'
   readonly messages: AsyncIterable<AgentMessage>
-  readonly input = createPushable<AgentUserMessage>('fake-input')
+  readonly input: ReturnType<typeof createPushable<AgentUserMessage>>
   readonly abortController = new AbortController()
   isClosed = false
   /** Runtime steering state (old-CLI gate): undefined = undeclared → the
@@ -32,7 +32,10 @@ class FakeHandle implements ProviderSessionHandle {
   enqueueSupplement = vi.fn((_entry: { uuid: string; text: string }): boolean => true)
   drainSupplements = vi.fn((): Array<{ uuid: string }> => [])
   noteTurnSettled = vi.fn()
-  constructor() {
+  constructor(onConsumed?: (message: AgentUserMessage) => void) {
+    // Model the real Pushable contract: the consume hook fires when the SDK
+    // reads a prompt (direct hand-off or queue shift), notifying the manager.
+    this.input = createPushable<AgentUserMessage>('fake-input', undefined, onConsumed)
     this.messages = this.input.iterable as AsyncIterable<AgentMessage>
   }
   sendControlMessage(m: AgentUserMessage): void {
@@ -95,7 +98,7 @@ class FakeProvider implements AgentProvider {
   lastOpts: CreateSessionOptions | undefined
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
     this.lastOpts = opts
-    return new FakeHandle()
+    return new FakeHandle(opts.onUserMessageConsumed)
   }
 }
 
@@ -130,7 +133,7 @@ async function makeSteeringSession() {
   registry.register(provider)
   const sm = new SessionManager({ store, providers: registry })
   const info = await sm.create({ cwd: undefined, model: 'test-model', provider: 'fake' })
-  const s = (sm as unknown as { sessions: Map<string, { pendingTurns: number; turnActive?: boolean; steeredInFlight: Map<string, AgentUserMessage>; promptUuids?: Array<{ u: string; v?: string }>; history: AgentUserMessage[]; id: string; handle: FakeHandle }> }).sessions.get(info.id)!
+  const s = (sm as unknown as { sessions: Map<string, { pendingTurns: number; turnActive?: boolean; steeredInFlight: Map<string, AgentUserMessage>; promptUuids?: Array<{ u: string; v?: string; c?: number }>; history: AgentUserMessage[]; id: string; handle: FakeHandle }> }).sessions.get(info.id)!
   return { sm, s, handle: s.handle, info, dir, provider }
 }
 
@@ -156,6 +159,40 @@ afterEach(async () => {
 })
 beforeEach(() => {
   dirs = []
+})
+
+// ── consumption arms turn state (agent note 2026-11-19-user-frame-origin-identity) ──
+
+describe('consumption-driven turn state', () => {
+  it('consuming a prompt arms turnActive and stamps the ledger consumption fact', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, s, info } = ctx
+    const first = await sm.send(info.id, 'first message')
+    // The fake handle's input queue is drained by the pump (direct hand-off),
+    // firing onInputConsumed — the turn-start signal for BOTH providers.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(s.turnActive).toBe(true)
+    expect(s.promptUuids?.find((e) => e.u === first.uuid)?.c).toEqual(expect.any(Number))
+    await sm.shutdown()
+  })
+
+  it('a shouldQuery:false compact seed consumption does NOT arm a turn', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, s, handle } = ctx
+    handle.sendControlMessage({
+      type: 'user',
+      uuid: randomUUID(),
+      parent_tool_use_id: null,
+      isSynthetic: true,
+      shouldQuery: false,
+      message: { role: 'user', content: 'compact hand-off summary' },
+    } as AgentUserMessage)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(s.turnActive).toBeFalsy()
+    await sm.shutdown()
+  })
 })
 
 // ── 纯函数 ───────────────────────────────────────────────────────────────
@@ -356,7 +393,7 @@ describe('turn-end steer fallback', () => {
     handle.drainSupplements.mockReturnValue([{ uuid: second.uuid! }])
     handle.enqueueUserMessage.mockClear()
 
-    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, empty: boolean) => void }).drainAndRequeueSteered(s, false)
+    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, settlesTurn: boolean) => void }).drainAndRequeueSteered(s, true)
     expect(handle.noteTurnSettled).toHaveBeenCalledTimes(1) // a real turn end closes admission
 
     expect(handle.enqueueUserMessage).toHaveBeenCalledWith(expect.objectContaining({ uuid: second.uuid! }))
@@ -382,12 +419,12 @@ describe('turn-end steer fallback', () => {
     const second = await sm.send(info.id, 'pivot now')
     expect(s.promptUuids?.map((e) => e.u)).toEqual([first.uuid])
     handle.drainSupplements.mockReturnValue([{ uuid: second.uuid! }])
-    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, empty: boolean) => void }).drainAndRequeueSteered(s, false)
+    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, settlesTurn: boolean) => void }).drainAndRequeueSteered(s, true)
     // Requeued: recorded before the synchronous consume, which paired it.
     expect(s.promptUuids?.find((e) => e.u === second.uuid)?.v).toBe(second.uuid)
     await sm.shutdown()
   })
-  it('empty bookend (emptyResult=true) is a turn-end no-op — no close, no requeue', async () => {
+  it('a non-settling bookend (settlesTurn=false) is a turn-end no-op — no close, no requeue', async () => {
     // A background-task-completion bookend lands MID-turn; treating it as a
     // turn end would close admission and prematurely requeue a pending steer.
     const ctx = await makeSteeringSession()
@@ -397,9 +434,9 @@ describe('turn-end steer fallback', () => {
     const second = await sm.send(info.id, 'pivot now')
     handle.drainSupplements.mockReturnValue([{ uuid: second.uuid! }])
     handle.enqueueUserMessage.mockClear()
-    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, empty: boolean) => void }).drainAndRequeueSteered(
+    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, settlesTurn: boolean) => void }).drainAndRequeueSteered(
       s,
-      true,
+      false,
     )
     expect(handle.noteTurnSettled).not.toHaveBeenCalled()
     expect(handle.drainSupplements).not.toHaveBeenCalled()
@@ -415,7 +452,7 @@ describe('turn-end steer fallback', () => {
     await sm.send(info.id, 'second')
     handle.drainSupplements.mockReturnValue([])
     handle.enqueueUserMessage.mockClear()
-    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, empty: boolean) => void }).drainAndRequeueSteered(s, false)
+    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, settlesTurn: boolean) => void }).drainAndRequeueSteered(s, true)
     expect(handle.enqueueUserMessage).not.toHaveBeenCalled()
     await sm.shutdown()
   })

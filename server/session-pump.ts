@@ -814,7 +814,13 @@ export interface PumpDeps {
    *  handler before the moreQueued check. The host drains undelivered
    *  supplements from the provider handle and re-routes them onto the SDK
    *  input queue as normal next-turn prompts (zero-loss guarantee). */
-  onTurnSettling?: (session: Session, emptyResult: boolean) => void
+  /** Turn-end notification. `settlesTurn` is the pump's classification: an
+   *  empty result is a background bookend (no turn end) ONLY when it carries
+   *  no `local_command`; a local-command result (manual /compact) settles
+   *  its turn. The manager closes steering admission / drains supplements
+   *  on a settling result — it does not re-derive turn semantics from the
+   *  result's emptiness. */
+  onTurnSettling?: (session: Session, settlesTurn: boolean) => void
   /** Separate FIFO budget for subagent frames (parent_tool_use_id != null).
    *  Independent of historyCap so subagent volume never evicts main-thread
    *  frames from the replay surface. */
@@ -1809,7 +1815,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // supplements and requeue them as normal next-turn prompts BEFORE
           // the moreQueued check so they count toward the working-state
           // decision (a requeued supplement is exactly a queued turn).
-          deps.onTurnSettling?.(session, emptyResult)
+          deps.onTurnSettling?.(session, !(emptyResult && localCommandOf(msg) === null))
           const moreQueued = session.handle.queueDepth > 0
           log.debug(
             `[session ${session.id}] result received — total msgs: ${msgCount}, ` +

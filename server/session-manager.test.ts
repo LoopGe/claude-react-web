@@ -9393,7 +9393,7 @@ describe('SessionManager', () => {
         const forkMappingFile = join(dir, 'prompt-uuids', `${forked.id}.json`)
         expect(existsSync(forkMappingFile)).toBe(true)
         const forkMappings = JSON.parse(readFileSync(forkMappingFile, 'utf8')) as Array<{ u: string; v?: string }>
-        expect(forkMappings).toEqual([{ u: serverU1, v: serverU1 }])
+        expect(forkMappings).toEqual([{ u: serverU1, v: serverU1, c: expect.any(Number) }])
 
         // The truncated fork JSONL copy (kept turn only, SDK `v` uuids);
         // restart reconcile must rewrite and dedup, not re-append.
@@ -12976,24 +12976,21 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       return smAny.sessions.get(sid)!
     }
 
-    it('clears the stuck working state when the withdrawn turns were the only pending work (no result will ever arrive)', async () => {
-      // Regression for the stuck-WorkingBubble bug: send a message, hit Stop
-      // before the CLI starts the turn. The mock SDK has already dequeued the
-      // message into its internal queue (spawn-time direct hand-off, so
-      // queueDepth is 0) but never echoes or starts it — mirroring the
-      // production log where the interrupt receipt cancels it
-      // (withdrawn=1, receipt=1). No turn ran, so no `result` frame will ever
-      // clear pendingTurns; before this fix the session stayed working=true
-      // forever (WorkingBubble pinned, phase-gated routes 409ing, health
-      // check only after workingStuckMs).
-      const info = await sm.create({ cwd: dir })
-      const h = mockHandles.at(-1)!
-      const sent = await sm.send(info.id, 'stop me before the CLI starts') as { uuid: string }
-      h.interrupt.mockResolvedValueOnce({ cancelled: [sent.uuid] })
+    it('withdraws the unconsumed queued turn but leaves the consumed in-flight turn owed its result', async () => {
+      // Consumption contract: the spawn-drained seed WAS taken by the SDK, so
+      // it is an in-flight turn owed a result — Stop must withdraw only the
+      // still-unconsumed queued turn and leave the working state alone. The
+      // owed result then clears through the normal path and broadcasts idle.
+      // (The pre-consumption-contract version of this test modeled a
+      // "dequeued but never started" dead state; under consumption semantics
+      // that shape is an in-flight turn, and the true dead-state heal is
+      // covered by the repeat-Stop probe test and the steer-withdrawal test.)
+      const { info, h, queuedUuids } = await setupQueued(1)
+      h.interrupt.mockResolvedValueOnce({ cancelled: [queuedUuids[0]] })
       const s = turnStateOf(info.id)
       expect(s.pendingTurns).toBe(1)
       expect(typeof s.workingSince).toBe('number')
-      expect(s.turnActive).toBeFalsy()
+      expect(s.turnActive).toBe(true) // the consumed seed is in flight
 
       const updates: Array<{ kind?: string; session?: { id?: string; working?: boolean } }> = []
       const sub = sm.subscribeGlobal()
@@ -13001,9 +12998,14 @@ describe('setMcpServers (dynamic, on a live session)', () => {
         for await (const v of sub.iterable) updates.push(v as (typeof updates)[number])
       })()
 
-      await sm.interrupt(info.id, { cancelQueued: true })
+      const removed = await sm.interrupt(info.id, { cancelQueued: true })
 
-      expect(s.pendingTurns).toBe(0)
+      expect(removed).toBe(1) // the unconsumed queued turn withdraws
+      expect(s.pendingTurns).toBe(1) // the consumed seed still owes its result
+      expect(s.turnActive).toBe(true)
+
+      h.emit({ type: 'result', subtype: 'success' })
+      await waitFor(() => turnStateOf(info.id).pendingTurns === 0)
       expect(s.workingSince).toBeUndefined()
       // The session list must report the idle phase again — the client's
       // WorkingBubble and phase-gated routes (rewindFiles/compact) both

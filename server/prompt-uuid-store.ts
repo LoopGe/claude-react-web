@@ -36,12 +36,17 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 export interface PromptUuidEntry {
   u: string
   v?: string
+  /** Consumption fact (ms): stamped by onInputConsumed when the SDK reads
+   *  the prompt off the input queue — the proven "the provider took it"
+   *  signal. Withdrawal eligibility and the interrupt dead-state heal read
+   *  this, NOT `v` (on the pinned SDK echoes never stream, so `v` stays
+   *  unset for every live send). */
+  c?: number
 }
 
 /** Retain the newest completed mappings without dropping in-flight sends.
- *  Echoes may be delayed while a burst of queued prompts exceeds the normal
- *  history window; pruning unpaired entries would shift FIFO pairing and map
- *  later SDK uuids to the wrong server uuids. */
+ *  Unpaired entries are transient (sent, not yet echoed); pruning them would
+ *  lose the ledger identity a later exact-uuid echo pairs against. */
 export function retainPromptUuidEntries(entries: PromptUuidEntry[], cap: number): PromptUuidEntry[] {
   const paired = entries.filter((entry) => entry.v != null)
   const retainedPaired = new Set(paired.slice(-cap))

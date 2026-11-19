@@ -7814,22 +7814,19 @@ export class SessionManager {
     log.info(`[session ${id}] steered ${uuid.slice(0, 8)} injected at ${outcome.boundary}`)
   }
 
-  /** Turn-end fallback（spec §6.3，pump 的 onTurnSettling 落点）：在**真实**
-   *  turn 结束时（`emptyResult` 为 false）关闭 steering admission，并 drain
-   *  全部未投递的 supplement 逐条转回 SDK 输入队列——零丢失保证。必须在
-   *  result 处理器的 moreQueued 检查之前调用（pump 已保证），requeue 后
-   *  的条目要被 queueDepth 检查看见。
+  /** Turn-end fallback（spec §6.3，pump 的 onTurnSettling 落点）：在 turn 终结
+   *  时（`settlesTurn` 为 true）关闭 steering admission，并 drain 全部未投递
+   *  的 supplement 逐条转回 SDK 输入队列——零丢失保证。必须在 result 处理器
+   *  的 moreQueued 检查之前调用（pump 已保证），requeue 后的条目要被
+   *  queueDepth 检查看见。
    *
-   *  empty bookend（后台任务完成，num_turns 0）**不是** turn 结束——它出现在
-   *  外层 turn 进行中，故对本函数是 no-op：既不关闸，也不把待注入的 steer
-   *  提前 requeue 成下一轮 prompt（那会让本轮 guidance 延后生效）。 */
-  private drainAndRequeueSteered(s: Session, emptyResult: boolean): void {
-    // An empty bookend (a background-task completion, num_turns 0) does NOT end
-    // the outer turn, so it must neither inject-requeue a pending steer nor
-    // close admission — both are turn-end actions. (Measured live: after an
-    // api_error turn the next message's `providerAdmit=true` meant admission
-    // was still open; the sibling result path closes it.)
-    if (emptyResult) return
+   *  `settlesTurn` 由 pump 分类：empty bookend（后台任务完成，无 local_command）
+   *  出现在外层 turn 进行中，不是 turn 结束——no-op：既不关闸，也不把待注入
+   *  的 steer 提前 requeue。local-command 的 empty result（手动 /compact）
+   *  **是** turn 终结，必须关闸——否则 compact 后空闲期的下一条纯文本消息会
+   *  被 steer 进一个不存在的 turn（2026-11-19 卡死会话的根因之一）。 */
+  private drainAndRequeueSteered(s: Session, settlesTurn: boolean): void {
+    if (!settlesTurn) return
     s.handle.noteTurnSettled?.()
     this.requeueSteeredLeftovers(s, s.handle.drainSupplements?.() ?? [])
   }
@@ -7865,19 +7862,32 @@ export class SessionManager {
     if (typeof uuid !== 'string') return
     const s = this.sessions.get(id)
     if (s) {
+      // Consumption is the turn-start signal for BOTH providers: the SDK
+      // read the prompt off the input queue, so a turn is under way and an
+      // aborted result stays owed until `result` clears it. A shouldQuery:false
+      // control message (the compact hand-off seed) joins the conversation
+      // without starting a turn — it must not arm turn state.
+      if ((msg as { shouldQuery?: boolean }).shouldQuery !== false) {
+        s.turnActive = true
+        // The consumption fact on the ledger entry: withdrawal eligibility
+        // and the interrupt dead-state heal read `c`, not echo pairing.
+        const list = s.promptUuids
+        if (list) {
+          const idx = list.findIndex((e) => e.u === uuid && e.c == null)
+          if (idx >= 0) list[idx] = { ...list[idx], c: consumedAt }
+        }
+      }
       // Providers that never replay a top-level user prompt (the native
       // provider) persist the app-minted uuid themselves, so consumption is
-      // the pairing point; without this every sent prompt stays unpaired and
-      // `promptUuids` grows without bound. Claude keeps the SDK-echo pairing
-      // in onPromptEcho. `turnActive` mirrors what the echo sets there — the
-      // provider has taken the turn.
+      // also the pairing point; without this every sent prompt stays unpaired
+      // and `promptUuids` grows without bound. Claude keeps the SDK-echo
+      // pairing in onPromptEcho (exact uuid).
       if (s.handle.echoesUserPrompts === false) {
         const list = s.promptUuids
         if (list) {
           const idx = list.findIndex((e) => e.v == null && e.u === uuid)
           if (idx >= 0) list[idx] = { ...list[idx], v: uuid }
         }
-        s.turnActive = true
       }
       for (let i = s.history.length - 1; i >= 0; i--) {
         const entry = s.history[i] as { type?: string; uuid?: string } | undefined
@@ -10235,8 +10245,8 @@ export class SessionManager {
       this.cachedPumpDeps = {
         historyCap: this.historyCap,
         subagentHistoryCap: this.subagentHistoryCap,
-        onTurnSettling: (s, empty) => {
-          this.drainAndRequeueSteered(s, empty)
+        onTurnSettling: (s, settlesTurn) => {
+          this.drainAndRequeueSteered(s, settlesTurn)
           // Native in-place auto-compact trigger. Deferred to the next macrotask
           // so the pump has finished clearing `turnActive` / `pendingTurns` /
           // `workingSince` — phaseOf must read 'idle'. Fire-and-forget: a

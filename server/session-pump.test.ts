@@ -3043,6 +3043,42 @@ describe('pump: recordTasksSnapshot persist hook', () => {
 // result-frames sidecar (which would replay duplicate footers on resume).
 // ---------------------------------------------------------------------------
 
+describe('pump: onTurnSettling settlesTurn classification', () => {
+  // The pump owns result classification: an empty result is a background
+  // bookend ONLY when it carries no local_command. A local-command result
+  // (manual /compact) settles its turn — steering admission must close.
+  const settleCalls = async (frames: SDKMessage[]) => {
+    const { session } = makePumpSession(frames)
+    const calls: Array<[unknown, boolean]> = []
+    await pump(session, makePumpDeps({ onTurnSettling: (s, settles) => calls.push([s, settles]) }))
+    return calls
+  }
+
+  it('a non-empty result settles the turn', async () => {
+    const calls = await settleCalls([
+      { type: 'result', subtype: 'success', uuid: 'r1', num_turns: 1, result: 'ok' } as unknown as SDKMessage,
+    ])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]![1]).toBe(true)
+  })
+
+  it('an empty local-command result settles the turn (manual /compact)', async () => {
+    const calls = await settleCalls([
+      { type: 'result', subtype: 'success', uuid: 'r2', num_turns: 0, result: '', local_command: 'compact' } as unknown as SDKMessage,
+    ])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]![1]).toBe(true)
+  })
+
+  it('an empty background bookend does NOT settle the turn', async () => {
+    const calls = await settleCalls([
+      { type: 'result', subtype: 'success', uuid: 'r3', num_turns: 0, result: '' } as unknown as SDKMessage,
+    ])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]![1]).toBe(false)
+  })
+})
+
 describe('pump: empty result frames', () => {
   const assistant = {
     type: 'assistant',
