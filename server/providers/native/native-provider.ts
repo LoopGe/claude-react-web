@@ -13,6 +13,7 @@ import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../../../shar
 import type { SessionMeta } from '../../persistence.js'
 import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef } from '../types.js'
 import type { LoopDeps } from './loop.js'
+import type { NativeHostPorts } from './ports.js'
 import { NativeMcpConnections } from './mcp/connections.js'
 import { SharedRegistry } from './mcp/shared-registry.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
@@ -164,6 +165,10 @@ export class NativeProvider implements AgentProvider {
    *  provider deliberately never constructs an independent store. */
   readonly uploadStore?: UploadStore
   readonly attachmentReferences: NativeAttachmentReferenceIndex
+  /** Host-service ports injected by the wiring layer (default-providers /
+   *  tests); threaded into every session this provider creates. The real
+   *  adapters live host-side in ../native-host-adapters.ts. */
+  readonly ports?: NativeHostPorts
   private readonly modelContext: NativeModelContextResolver
   private readonly fallbackProfiles = new WeakMap<ServerConfig, ProviderProfile>()
   /** One host-global shared MCP registry per provider (the provider is
@@ -178,12 +183,14 @@ export class NativeProvider implements AgentProvider {
     agentStore?: AgentDefinitionStore
     uploadStore?: UploadStore
     modelContext?: NativeModelContextResolver
+    ports?: NativeHostPorts
   } = {}) {
     this.stateDir = resolveNativeStateDir(opts.stateDir)
     this.authFor = opts.authFor
     this.mcpRegistry = new SharedRegistry()
     this.agentStore = opts.agentStore
     this.uploadStore = opts.uploadStore
+    this.ports = opts.ports
     const discovery = new AnthropicModelDiscovery()
     this.modelContext = opts.modelContext ?? new NativeModelContextResolver({
       discovery: {
@@ -291,6 +298,7 @@ export class NativeProvider implements AgentProvider {
         fastMode: opts.fastMode,
         profile,
         modelContext: this.modelContext,
+        ports: this.ports,
         credentials,
         readState,
         tools,

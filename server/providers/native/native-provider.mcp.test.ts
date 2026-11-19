@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import type { NativeMcpServerConfig } from './mcp/connections.js'
 import { sharingKey } from './mcp/shared-record.js'
 import type { SharedRegistry } from './mcp/shared-registry.js'
@@ -46,7 +47,7 @@ describe('NativeProvider shared MCP registry ownership', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'native-provider-mcp-cwd-'))
     dirs.push(stateDir, cwd)
     const byePath = join(cwd, 'bye.txt')
-    const provider = new NativeProvider({ stateDir })
+    const provider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir }) })
     const reg = registryOf(provider)
     expect(reg).toBeDefined()
     expect(reg.size).toBe(0)
@@ -72,7 +73,7 @@ describe('NativeProvider shared MCP registry ownership', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'native-provider-mcp-cwd-'))
     dirs.push(stateDir, cwd)
     const byePath = join(cwd, 'bye.txt')
-    const provider = new NativeProvider({ stateDir })
+    const provider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir }) })
     const reg = registryOf(provider)
     const cfg: NativeMcpServerConfig = { type: 'stdio', command: 'node', args: [fixturePath, byePath] }
     const key = sharingKey(cfg)

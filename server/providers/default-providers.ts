@@ -5,6 +5,7 @@ import type { ProcessExitInfo } from '../process-monitor.js'
 import type { UploadStore } from '../upload-store.js'
 import { ClaudeProvider } from './claude/claude-provider.js'
 import { NativeProvider } from './native/native-provider.js'
+import { createNativeHostPorts } from './native-host-adapters.js'
 import { ProviderRegistry } from './registry.js'
 
 export interface DefaultProvidersOptions {
@@ -47,6 +48,12 @@ export function createDefaultProviders(opts: DefaultProvidersOptions = {}): Prov
           : undefined
       }
     : undefined
-  registry.register(new NativeProvider({ stateDir: opts.stateDir, authFor, agentStore: opts.agentStore, uploadStore: opts.uploadStore }))
+  registry.register(new NativeProvider({
+    stateDir: opts.stateDir,
+    authFor,
+    agentStore: opts.agentStore,
+    uploadStore: opts.uploadStore,
+    ports: createNativeHostPorts({ stateDir: opts.stateDir, uploadStore: opts.uploadStore, authFor }),
+  }))
   return registry
 }

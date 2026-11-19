@@ -21,6 +21,7 @@ import { SessionManager } from '../../session-manager.js'
 import { summarizeForCompact } from '../../compact-summary.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import { hasNativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import type { CanonicalEvent } from './canonical.js'
 
@@ -80,7 +81,7 @@ function armStream(provider: NativeProvider, text: string): void {
 async function makeFixture(dir: string): Promise<Fixture> {
   const store = new SessionStore({ stateDir: dir })
   await store.load()
-  const provider = new NativeProvider({ stateDir: dir })
+  const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
   armStream(provider, REPLY)
   const registry = new ProviderRegistry()
   registry.register(provider)

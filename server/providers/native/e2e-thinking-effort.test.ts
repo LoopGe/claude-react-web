@@ -25,6 +25,7 @@ import { SessionStore } from '../../persistence.js'
 import { SessionManager } from '../../session-manager.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import { FAST_MODE_BETA } from './anthropic-stream.js'
 import { formatSupplementInstruction } from '../steering-format.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -66,7 +67,7 @@ afterEach(async () => {
 async function makeFixture(dir: string): Promise<Fixture> {
   const store = new SessionStore({ stateDir: dir })
   await store.load()
-  const provider = new NativeProvider({ stateDir: dir })
+  const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
   const registry = new ProviderRegistry()
   registry.register(provider)
   const sm = new SessionManager({ store, providers: registry })

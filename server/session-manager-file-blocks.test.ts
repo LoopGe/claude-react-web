@@ -17,6 +17,7 @@ import type { FileBlock } from '../shared/attachments.js'
 import { createPushable } from './pushable.js'
 import { fileHandleText } from '../shared/upload-handle.js'
 import { NativeProvider } from './providers/native/native-provider.js'
+import { makeNativePorts } from './providers/native-host-adapters.js'
 import { nativeFileHandleText } from './providers/native/attachment-projection.js'
 import { __setConfigForTest } from './config.js'
 import { rmRf } from './__test-utils__/index.js'
@@ -376,7 +377,7 @@ describe('SessionManager attachment dispatch serialization', () => {
     const fx = await makeFixture()
     __setConfigForTest({ nativeAttachmentFidelity: true })
     const registry = new ProviderRegistry()
-    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store })
+    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store, ports: makeNativePorts({ stateDir: fx.stateDir, uploadStore: fx.store }) })
     registry.register(native)
     const requests: unknown[] = []
     native._testStream = async function* (request) {
@@ -487,7 +488,7 @@ describe('SessionManager attachment dispatch serialization', () => {
     const fx = await makeFixture()
     __setConfigForTest({ nativeAttachmentFidelity: true })
     const registry = new ProviderRegistry()
-    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store })
+    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store, ports: makeNativePorts({ stateDir: fx.stateDir, uploadStore: fx.store }) })
     registry.register(native)
     let notifyStarted!: () => void
     const started = new Promise<void>((resolve) => { notifyStarted = resolve })
@@ -521,7 +522,7 @@ describe('SessionManager attachment dispatch serialization', () => {
     const fx = await makeFixture()
     __setConfigForTest({ nativeAttachmentFidelity: true })
     const registry = new ProviderRegistry()
-    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store })
+    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store, ports: makeNativePorts({ stateDir: fx.stateDir, uploadStore: fx.store }) })
     registry.register(native)
     const sessionStore = new SessionStore({ stateDir: fx.stateDir })
     await sessionStore.load()
@@ -584,7 +585,7 @@ describe('SessionManager attachment dispatch serialization', () => {
     const fx = await makeFixture()
     __setConfigForTest({ nativeAttachmentFidelity: true })
     const registry = new ProviderRegistry()
-    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store })
+    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store, ports: makeNativePorts({ stateDir: fx.stateDir, uploadStore: fx.store }) })
     registry.register(native)
     native._testStream = async function* () {
       yield { kind: 'message_start', usage: { input_tokens: 1, output_tokens: 1 } }
@@ -656,7 +657,7 @@ describe('SessionManager attachment dispatch serialization', () => {
       const fx = await makeFixture()
       __setConfigForTest({ nativeAttachmentFidelity: true })
       const registry = new ProviderRegistry()
-      const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store })
+      const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store, ports: makeNativePorts({ stateDir: fx.stateDir, uploadStore: fx.store }) })
       registry.register(native)
       const sessionStore = new SessionStore({ stateDir: fx.stateDir })
       await sessionStore.load()
@@ -747,7 +748,7 @@ describe('native provider attachment boundary', () => {
   it.each([false, true])('nativeAttachmentFidelity=%s controls structured delivery', async (fidelity) => {
     const fx = await makeFixture()
     __setConfigForTest({ nativeAttachmentFidelity: fidelity })
-    const provider = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store })
+    const provider = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store, ports: makeNativePorts({ stateDir: fx.stateDir, uploadStore: fx.store }) })
     const requests: unknown[][] = []
     provider._testStream = (request) => {
       requests.push(request.messages)

@@ -14,6 +14,7 @@ import { SessionStore } from '../../persistence.js'
 import { SessionManager } from '../../session-manager.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import type { CanonicalEvent } from './canonical.js'
 
 function textTurn(text: string): CanonicalEvent[] {
@@ -53,7 +54,7 @@ describe('native provider through SessionManager', () => {
     dirs.push(dir)
     const store = new SessionStore({ stateDir: dir })
     await store.load()
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of textTurn('hello native')) yield ev
     }

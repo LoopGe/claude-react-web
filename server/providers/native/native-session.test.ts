@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import type { NativeMcpConnections, NativeMcpServerInstance } from './mcp/connections.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
@@ -228,7 +229,7 @@ afterEach(async () => {
 /** Inject a scripted streamer through the provider's test seam. The seam is
  *  evaluated PER TURN, so reassigning it between turns swaps the script. */
 function providerWithStreamer(scripts: CanonicalEvent[][], stateDir: string) {
-  const provider = new NativeProvider({ stateDir })
+  const provider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir }) })
   ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
     for (const ev of scripts.shift() ?? []) yield ev
   }
@@ -445,7 +446,7 @@ async function nestedPermissionTrace(
   definition: StoredAgentDefinition,
 ) {
   await writeFile(join(dir, 'package.json'), '{}', 'utf8')
-  const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+  const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
   const requests: CapturedRequest[] = []
   ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
     [toolTurn('nested-read'), textTurn('done')],
@@ -531,7 +532,7 @@ describe('NativeSession', () => {
 
   it('interrupt during a turn emits exactly one result frame and the session still works', async () => {
     const dir = await tempDir('native-session-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     // Streamer that hangs until its signal aborts — the seam the real
     // defaultStream honors too (fetch rejects on abort). `streamStarted`
     // replaces a fixed sleep: the turn is in flight exactly when the pump
@@ -606,7 +607,7 @@ describe('NativeSession', () => {
   ])('uses the resolved $contextWindow-token window for $model', async ({ model, contextWindow, autoCompactThreshold }) => {
     const dir = await tempDir('native-context-window-')
     const { modelContext } = resolverOf(async () => ({ contextWindow, source: 'endpoint' }))
-    const provider = new NativeProvider({ stateDir: dir, modelContext })
+    const provider = new NativeProvider({ stateDir: dir, modelContext, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: `context-${model}`, cwd: dir, model })
     try {
       const usage = (await session.getContextUsage?.()) as NativeContextUsage
@@ -620,7 +621,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-context-usage-refresh-')
     const resolution = deferred<NativeModelContext>()
     const { modelContext, resolve } = resolverOf(async () => resolution.promise)
-    const provider = new NativeProvider({ stateDir: dir, modelContext })
+    const provider = new NativeProvider({ stateDir: dir, modelContext, ports: makeNativePorts({ stateDir: dir }) })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const event of textTurn('done')) yield event
     }
@@ -649,7 +650,7 @@ describe('NativeSession', () => {
       if (route.model === 'model-a') return modelA.promise
       return { contextWindow: 128_000, source: 'endpoint' }
     })
-    const provider = new NativeProvider({ stateDir: dir, modelContext })
+    const provider = new NativeProvider({ stateDir: dir, modelContext, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'context-generation', cwd: dir, model: 'model-a' })
     const first = session.getContextUsage?.() as Promise<NativeContextUsage>
     try {
@@ -673,7 +674,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-context-generation-aba-')
     const firstA = deferred<NativeModelContext>()
     const { modelContext, resolve } = resolverOf(async () => firstA.promise)
-    const provider = new NativeProvider({ stateDir: dir, modelContext })
+    const provider = new NativeProvider({ stateDir: dir, modelContext, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'context-generation-aba', cwd: dir, model: 'model-a' })
     const pending = session.getContextUsage?.() as Promise<NativeContextUsage>
     try {
@@ -699,7 +700,7 @@ describe('NativeSession', () => {
   ])('re-resolves the restored route on $label without adding native events', async ({ fork }) => {
     const dir = await tempDir(`native-context-restore-${fork ? 'fork' : 'resume'}-`)
     const { modelContext, resolve } = resolverOf(async () => ({ contextWindow: 1_000_000, source: 'endpoint' }))
-    const provider = new NativeProvider({ stateDir: dir, modelContext })
+    const provider = new NativeProvider({ stateDir: dir, modelContext, ports: makeNativePorts({ stateDir: dir }) })
     const source = provider.createSession({ id: 'context-source', cwd: dir, model: 'model-a' })
     await source.destroy()
     const restored = provider.createSession({
@@ -727,7 +728,7 @@ describe('NativeSession', () => {
     const requests: CapturedRequest[] = []
     const started = deferred<void>()
     const release = deferred<void>()
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: CapturedRequest) {
       requests.push(structuredClone(req))
       started.resolve()
@@ -753,7 +754,7 @@ describe('NativeSession', () => {
   it('uses the default discovery when no scripted stream is installed', async () => {
     const dir = await tempDir('native-context-discovery-')
     const discovery = vi.spyOn(AnthropicModelDiscovery.prototype, 'retrieve').mockResolvedValue(1_000_000)
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'context-discovery', cwd: dir, model: 'model-a' })
     try {
       const usage = (await session.getContextUsage?.()) as NativeContextUsage
@@ -791,7 +792,7 @@ describe('NativeSession', () => {
         profiles: [profileA, profileB], activeProfileId: profileA.id,
         authToken: profileA.authToken, baseUrl: profileA.baseUrl,
       })
-      const provider = new NativeProvider({ stateDir: dir })
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
       session = provider.createSession({ id: 'context-profile-switch', cwd: dir, model: 'model-a' })
       __setConfigForTest({
         profiles: [profileA, profileB], activeProfileId: profileB.id,
@@ -829,7 +830,7 @@ describe('NativeSession', () => {
         profiles: [profileA, profileB], activeProfileId: profileA.id,
         authToken: profileA.authToken, baseUrl: profileA.baseUrl,
       })
-      const provider = new NativeProvider({ stateDir: dir })
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
       session = provider.createSession({ id: 'context-profile-missing-token', cwd: dir, model: 'model-a' })
       __setConfigForTest({
         profiles: [profileA, profileB], activeProfileId: profileB.id,
@@ -851,7 +852,7 @@ describe('NativeSession', () => {
   ])('suppresses default discovery when the scripted stream is installed $label', async ({ late }) => {
     const dir = await tempDir(`native-context-discovery-guard-${late ? 'late' : 'early'}-`)
     const discovery = vi.spyOn(AnthropicModelDiscovery.prototype, 'retrieve').mockResolvedValue(1_000_000)
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const scripted = async function* () { yield* [] }
     if (!late) (provider as unknown as { _testStream: unknown })._testStream = scripted
     const session = provider.createSession({ id: 'context-discovery-guard', cwd: dir, model: 'model-a' })
@@ -868,7 +869,7 @@ describe('NativeSession', () => {
 
   it('interrupt during tool processing does not park the turn: next tool skipped, exactly one interrupted result', async () => {
     const dir = await tempDir('native-session-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     // One response carrying TWO tool_use blocks — the abort lands while the
     // first tool is being processed, so the second must never execute.
     const twoToolScript: CanonicalEvent[] = [
@@ -923,7 +924,7 @@ describe('NativeSession', () => {
 
   it('capabilities declare interrupt and MCP', async () => {
     const dir = await tempDir('native-session-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     expect(provider.name).toBe('native')
     expect(provider.capabilities.supportsInterrupt).toBe(true)
     expect(provider.capabilities.supportsMcp).toBe(true)
@@ -934,7 +935,7 @@ describe('NativeSession', () => {
 
   it('admits a mid-turn supplement, injects the wrapped guidance before the next request and reports delivery', async () => {
     const dir = await tempDir('native-steer-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] }> = []
     const scripts: CanonicalEvent[][] = [toolTurn('t1'), textTurn('done')]
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(scripts, requests)
@@ -992,7 +993,7 @@ describe('NativeSession', () => {
 
   it('rejects supplements while idle and after the turn settles (nothing stranded)', async () => {
     const dir = await tempDir('native-steer-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] }> = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
       [textTurn('one'), textTurn('two')],
@@ -1024,7 +1025,7 @@ describe('NativeSession', () => {
 
   it('drains multiple supplements as separate user messages and separate log events', async () => {
     const dir = await tempDir('native-steer-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] }> = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
       [toolTurn('t1'), textTurn('done')],
@@ -1110,7 +1111,7 @@ describe('NativeSession', () => {
 
   it('drainSupplements returns leftovers and clears the queue (nothing injected, no delivery)', async () => {
     const dir = await tempDir('native-steer-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] }> = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
       [toolTurn('t1'), textTurn('done')],
@@ -1147,7 +1148,7 @@ describe('NativeSession', () => {
 
   it('offers discovered MCP tools to the model and routes their calls', async () => {
     const dir = await tempDir('native-mcp-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ tools: Array<{ name: string }>; messages: unknown[] }> = []
     const scripts: CanonicalEvent[][] = [
       [
@@ -1226,7 +1227,7 @@ describe('NativeSession', () => {
 
   it.each(['Agent', 'Task'] as const)('runs %s as a sidechain with one outer result and no nested delegation', async (toolName) => {
     const dir = await tempDir('native-agent-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{
       tools: Array<{ name: string }>
       messages: unknown[]
@@ -1343,6 +1344,7 @@ describe('NativeSession', () => {
     const provider = new NativeProvider({
       stateDir: dir,
       agentStore: agentStoreOf({ Explore: maliciousExplore }),
+      ports: makeNativePorts({ stateDir: dir }),
     })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
@@ -1397,7 +1399,7 @@ describe('NativeSession', () => {
 
   it('does not append a descriptor when Agent permission is denied', async () => {
     const dir = await tempDir('native-agent-denied-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const scripts: CanonicalEvent[][] = [
       agentTurn('agent-denied', { description: 'd', prompt: 'p' }),
       textTurn('PARENT-DONE'),
@@ -1431,7 +1433,7 @@ describe('NativeSession', () => {
     await writeProjectSkill(dir, 'demo')
     await writeProjectSkill(dir, 'other')
     const definition = agentDefinition({ tools: ['Skill'], skills: ['demo'] })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
       [skillTurn('nested-skill', 'other'), textTurn('done')],
@@ -1474,7 +1476,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-parent-child-tools-')
     const parent = agentDefinition({ name: 'parent', tools: ['Agent', 'Read'] })
     const child = agentDefinition({ name: 'child', tools: ['Write'] })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ parent, child }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ parent, child }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
       agentTurn('agent-1', { description: 'd', prompt: 'p', subagent_type: 'child' }),
@@ -1508,7 +1510,7 @@ describe('NativeSession', () => {
     const child = agentDefinition({
       name: 'child', tools: ['mcp__b__echo'], mcpServers: ['b'],
     })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ parent, child }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ parent, child }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
       agentTurn('agent-1', { description: 'd', prompt: 'p', subagent_type: 'child' }),
@@ -1544,7 +1546,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-parent-child-base-tools-')
     const parent = agentDefinition({ name: 'parent', tools: ['Agent', 'Read'] })
     const child = agentDefinition({ name: 'child', tools: ['Write'] })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ parent, child }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ parent, child }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
       agentTurn('agent-1', { description: 'd', prompt: 'p', subagent_type: 'child' }),
@@ -1603,7 +1605,7 @@ describe('NativeSession', () => {
   it('returns a max-turn nested error with its partial report and paired sidechain history', async () => {
     const dir = await tempDir('native-nested-max-turns-')
     const definition = agentDefinition({ tools: ['Read'], maxTurns: 1 })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
       agentTurn('agent-1', { description: 'd', prompt: 'p', subagent_type: 'reviewer' }),
@@ -1667,6 +1669,7 @@ describe('NativeSession', () => {
     const provider = new NativeProvider({
       stateDir: dir,
       agentStore: agentStoreOf({ scoped, inherit }),
+      ports: makeNativePorts({ stateDir: dir }),
     })
     const session = provider.createSession({
       id: 'nested-effort', cwd: dir, effortLevel: 'high', permissionMode: 'bypassPermissions',
@@ -1698,7 +1701,7 @@ describe('NativeSession', () => {
       permissionMode: 'plan',
       effort: 'xhigh',
     })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     let selectionDurableAtRequest = false
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: CapturedRequest) {
@@ -1771,7 +1774,7 @@ describe('NativeSession', () => {
   it('switches the main agent only for the next turn and durably before its first request', async () => {
     const dir = await tempDir('native-preset-switch-')
     const definition = agentDefinition({ prompt: 'NEXT-PERSONA', model: 'persona-model', tools: ['Read'] })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     const firstStarted = deferred<void>()
     const releaseFirst = deferred<void>()
@@ -1831,7 +1834,7 @@ describe('NativeSession', () => {
       permissionMode: 'bypassPermissions',
       effort: 'xhigh',
     })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('done')], requests)
     const session = provider.createSession({
@@ -1887,7 +1890,7 @@ describe('NativeSession', () => {
       permissionMode: 'bypassPermissions',
       effort: 'xhigh',
     })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const original = provider.createSession({
       id: 'preset-latest-base',
       cwd: dir,
@@ -1936,7 +1939,7 @@ describe('NativeSession', () => {
   it('updates base and effective controls together when the persona does not override them', async () => {
     const dir = await tempDir('native-preset-unpinned-controls-')
     const definition = agentDefinition({ prompt: 'PROMPT-ONLY' })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({
       id: 'preset-unpinned-controls',
       cwd: dir,
@@ -1964,7 +1967,7 @@ describe('NativeSession', () => {
   it('rejects an unsupported agent switch without changing flags, base state, or the log', async () => {
     const dir = await tempDir('native-preset-switch-invalid-')
     const invalid = agentDefinition({ name: 'invalid', background: true })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ invalid }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ invalid }), ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({
       id: 'preset-switch-invalid',
       cwd: dir,
@@ -1987,7 +1990,7 @@ describe('NativeSession', () => {
   it('keeps model and effort unchanged when their base snapshot cannot become durable', async () => {
     const dir = await tempDir('native-base-durable-failure-')
     const definition = agentDefinition({ prompt: 'PROMPT-ONLY' })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({
       id: 'base-durable-failure',
       cwd: dir,
@@ -2017,7 +2020,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-base-policy-')
     await writeProjectSkill(dir, 'demo')
     await writeProjectSkill(dir, 'other')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
       [textTurn('done')],
@@ -2061,7 +2064,7 @@ describe('NativeSession', () => {
       permissionMode: 'plan',
       effort: 'xhigh',
     })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const original = provider.createSession({
       id: 'preset-resume',
       cwd: dir,
@@ -2149,7 +2152,7 @@ describe('NativeSession', () => {
     await seed.flush()
     await seed.close()
 
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: laterDefinition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: laterDefinition }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
       [textTurn('forked')],
@@ -2202,7 +2205,7 @@ describe('NativeSession', () => {
     await source.flush()
     await source.close()
 
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('forked')], requests)
     const forked = provider.createSession({
@@ -2256,7 +2259,7 @@ describe('NativeSession', () => {
     await legacy.flush()
     await legacy.close()
 
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('done')], requests)
     const session = provider.createSession({
@@ -2326,7 +2329,7 @@ describe('NativeSession', () => {
     await legacy.flush()
     await legacy.close()
 
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('done')], requests)
     const session = provider.createSession({
@@ -2376,7 +2379,7 @@ describe('NativeSession', () => {
   it('does not run legacy migration when a selection event already exists', async () => {
     const dir = await tempDir('native-preset-existing-selection-')
     const definition = agentDefinition({ prompt: 'SNAPSHOT-PERSONA', model: 'snapshot-model' })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const original = provider.createSession({
       id: 'existing-selection', cwd: dir, agent: 'reviewer', model: 'base-model',
     })
@@ -2406,7 +2409,7 @@ describe('NativeSession', () => {
   it('maps a main maxTurns cutoff to an error turn/end and keeps a natural completion completed', async () => {
     const dir = await tempDir('native-main-max-turns-')
     const definition = agentDefinition({ maxTurns: 1 })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       // The first round is capped; the second ends naturally at the same cap.
       const script = logOf(currentSession).events.some((event) => event.type === 'turn/end')
@@ -2438,7 +2441,7 @@ describe('NativeSession', () => {
 
   it('keeps the turn-start permission mode until the next turn', async () => {
     const dir = await tempDir('native-turn-permission-snapshot-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     let requestCount = 0
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       requestCount++
@@ -2479,7 +2482,7 @@ describe('NativeSession', () => {
   it('rejects unsupported main preset fields before creating a session log', async () => {
     const dir = await tempDir('native-main-preset-invalid-')
     const definition = agentDefinition({ background: true })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
 
     expect(() => provider.createSession({ id: 'invalid-preset', cwd: dir, agent: 'reviewer' }))
       .toThrow(/background/)
@@ -2494,7 +2497,7 @@ describe('NativeSession', () => {
     const agentStore = {
       get: (name: string) => defs[name] as StoredAgentDefinition | undefined,
     } as unknown as AgentDefinitionStore
-    const provider = new NativeProvider({ stateDir: dir, agentStore })
+    const provider = new NativeProvider({ stateDir: dir, agentStore, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{
       tools: Array<{ name: string }>
       system: string
@@ -2564,7 +2567,7 @@ describe('NativeSession', () => {
 
   it('reads the session model at Agent call time, not at construction', async () => {
     const dir = await tempDir('native-agent-model-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ tools: Array<{ name: string }>; model: string }> = []
     const scripts: CanonicalEvent[][] = [
       agentTurn('agent-3', { description: 'd', prompt: 'p' }),
@@ -2602,7 +2605,7 @@ describe('NativeSession', () => {
 
   it('reads the session model at WebFetch call time, not at construction', async () => {
     const dir = await tempDir('native-web-fetch-model-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const scripts: CanonicalEvent[][] = [webFetchTurn('web-1'), textTurn('DONE')]
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of scripts.shift() ?? []) yield ev
@@ -2657,7 +2660,7 @@ describe('NativeSession', () => {
 
   it('routes AskUserQuestion to the tool in bypassPermissions, where it fails loudly', async () => {
     const dir = await tempDir('native-ask-bypass-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const scripts: CanonicalEvent[][] = [askUserQuestionTurn('ask-1'), textTurn('DONE')]
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of scripts.shift() ?? []) yield ev
@@ -2686,7 +2689,7 @@ describe('NativeSession', () => {
 
   it('threads the broker question-result marker into a non-error tool_result', async () => {
     const dir = await tempDir('native-ask-answered-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const scripts: CanonicalEvent[][] = [askUserQuestionTurn('ask-1'), textTurn('DONE')]
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of scripts.shift() ?? []) yield ev
@@ -2717,7 +2720,7 @@ describe('NativeSession', () => {
 
   it('keeps an unmarked AskUserQuestion denial an error through NativeSession', async () => {
     const dir = await tempDir('native-ask-denied-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const scripts: CanonicalEvent[][] = [askUserQuestionTurn('ask-1'), textTurn('DONE')]
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of scripts.shift() ?? []) yield ev
@@ -2747,7 +2750,7 @@ describe('NativeSession', () => {
 
   it('declares Agent support and lists the built-in general-purpose and Explore agents', async () => {
     const dir = await tempDir('native-agents-cap-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     expect(provider.capabilities.supportsAgents).toBe(true)
     expect(provider.capabilities.supportsTaskControl).toBe(true)
     // Standalone subagent transcripts are projected from the same session log.
@@ -2771,7 +2774,7 @@ describe('NativeSession', () => {
   it('exposes the skill catalog as commands and declares command support', async () => {
     const dir = await tempDir('native-skill-commands-')
     await writeProjectSkill(dir, 'demo', { frontmatter: { 'argument-hint': "'[topic]'" } })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     expect(provider.capabilities.supportsCommands).toBe(true)
     // Plugins stay unsupported — only the skill command catalog is exposed.
     expect(provider.capabilities.supportsPlugins).toBe(false)
@@ -2785,7 +2788,7 @@ describe('NativeSession', () => {
   it('reloadSkills re-reads the skill roots and can empty the catalog', async () => {
     const dir = await tempDir('native-skill-reload-')
     await writeProjectSkill(dir, 'demo', { body: '# demo v1' })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'skill-reload', cwd: dir })
     const catalog = session as unknown as { skills: { bodyOf(name: string): { text: string } } }
     expect(await session.reloadSkills?.()).toEqual({
@@ -2808,7 +2811,7 @@ describe('NativeSession', () => {
   it('applyFlagSettings drives the skill catalog and rejects unknown keys', async () => {
     const dir = await tempDir('native-skill-overrides-')
     await writeProjectSkill(dir, 'demo')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'skill-overrides', cwd: dir })
     const catalog = session as unknown as {
       skills: { section(): string; bodyOf(name: string): { text: string; isError?: boolean } }
@@ -2840,7 +2843,7 @@ describe('NativeSession', () => {
     await writeProjectSkill(dir, 'demo')
     await writeProjectSkill(dir, 'other')
     const definition = agentDefinition({ skills: [action === 'switch' ? 'other' : 'demo'] })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     let requests = 0
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       requests++
@@ -2886,7 +2889,7 @@ describe('NativeSession', () => {
     await writeProjectSkill(dir, 'demo')
     await writeProjectSkill(dir, 'other')
     const definition = agentDefinition({ skills: ['demo'] })
-    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
       [textTurn('blocked'), textTurn('allowed')],
@@ -2938,6 +2941,7 @@ describe('NativeSession', () => {
     const provider = new NativeProvider({
       stateDir: dir,
       agentStore: agentStoreOf({ reviewer: first, second }),
+      ports: makeNativePorts({ stateDir: dir }),
     })
     const requests: CapturedRequest[] = []
     const permissionModes: Array<string | undefined> = []
@@ -3002,7 +3006,7 @@ describe('NativeSession', () => {
   it('keeps invocation, prompt section, and Skill tool on one reload-isolated snapshot', async () => {
     const dir = await tempDir('native-turn-skill-snapshot-')
     await writeProjectSkill(dir, 'demo', { body: '# demo v1', description: 'demo v1' })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: CapturedRequest[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
       [skillTurn('skill-snapshot', 'demo'), textTurn('done')], requests,
@@ -3049,7 +3053,7 @@ describe('NativeSession', () => {
   it('preserves a raw `/name args` turn and appends one canonical skill instruction', async () => {
     const dir = await tempDir('native-skill-expand-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('ok')], requests)
@@ -3089,7 +3093,7 @@ describe('NativeSession', () => {
     __setConfigForTest({ nativeAttachmentFidelity: true })
     const dir = await tempDir('native-file-skill-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('ok')], requests)
     const session = provider.createSession({ id: 'file-skill', cwd: dir })
@@ -3121,7 +3125,7 @@ describe('NativeSession', () => {
   it('exposes durable skill bodies across catalog reload and resume for compaction', async () => {
     const dir = await tempDir('native-skill-compaction-entries-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('ok')], [])
     const session = provider.createSession({ id: 'skill-compaction-entries', cwd: dir })
@@ -3188,7 +3192,7 @@ describe('NativeSession', () => {
     },
   ])('returns no compaction entries for $name', async ({ events }) => {
     const dir = await tempDir('native-skill-compaction-negative-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'negative-compaction-entries', cwd: dir })
     const sessionLog = (session as unknown as { log: NativeSessionLog }).log
     for (const event of events) sessionLog.append(event)
@@ -3202,7 +3206,7 @@ describe('NativeSession', () => {
     // Fail the constructor's discovery pass; the session is otherwise healthy.
     const reload = vi.spyOn(NativeSkillCatalog.prototype, 'reload')
     reload.mockRejectedValueOnce(new Error('skill discovery exploded'))
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: unknown[][] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { messages: unknown[] }) {
       requests.push(structuredClone(req.messages))
@@ -3246,7 +3250,7 @@ describe('NativeSession', () => {
 
   it('passes `/unknown` and non-skill `/clear` turns through unchanged', async () => {
     const dir = await tempDir('native-skill-passthrough-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('one'), textTurn('two')], requests)
@@ -3274,7 +3278,7 @@ describe('NativeSession', () => {
     })
     const demoBody = canonicalSkillBody(dir, 'demo', '# demo body')
     const hiddenBody = canonicalSkillBody(dir, 'hidden', '# hidden body')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[]; system: string } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('one'), textTurn('two'), textTurn('three')], requests)
@@ -3314,7 +3318,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-skill-image-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
     const body = canonicalSkillBody(dir, 'demo', '# demo body')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('ok')], requests)
@@ -3348,7 +3352,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-skill-multiline-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
     const body = canonicalSkillBody(dir, 'demo', '# demo body')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('ok')], requests)
@@ -3370,7 +3374,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-skill-string-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
     const body = canonicalSkillBody(dir, 'demo', '# demo body')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('ok')], requests)
@@ -3398,7 +3402,7 @@ describe('NativeSession', () => {
   it('rebuilds the per-turn skills section from the live overrides', async () => {
     const dir = await tempDir('native-skill-section-')
     await writeProjectSkill(dir, 'demo')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ system: string }> = []
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { system: string }) {
       requests.push(structuredClone(req))
@@ -3447,7 +3451,7 @@ describe('NativeSession', () => {
   it('the nested Agent system reads the current skills section through its live getter', async () => {
     const dir = await tempDir('native-skill-nested-')
     await writeProjectSkill(dir, 'demo')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ tools: Array<{ name: string }>; system: string }> = []
     const scripts = [
       agentTurn('agent-skill-1', { description: 'd', prompt: 'p' }),
@@ -3498,7 +3502,7 @@ describe('NativeSession', () => {
     // then restore so later explicit reloads behave normally.
     const reload = vi.spyOn(NativeSkillCatalog.prototype, 'reload')
     reload.mockRejectedValueOnce(new Error('skill discovery exploded'))
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const streamed: string[] = []
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       streamed.push('called')
@@ -3529,7 +3533,7 @@ describe('NativeSession', () => {
     await writeProjectSkill(dir, 'demo')
     const reload = vi.spyOn(NativeSkillCatalog.prototype, 'reload')
     reload.mockRejectedValueOnce(new Error('skill discovery exploded'))
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ system: string }> = []
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { system: string }) {
       requests.push(structuredClone(req))
@@ -3565,7 +3569,7 @@ describe('NativeSession', () => {
 
   it('destroy closes every MCP connection exactly once', async () => {
     const dir = await tempDir('native-mcp-close-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({
       id: 'mcp-close',
       cwd: dir,
@@ -3586,7 +3590,7 @@ describe('NativeSession', () => {
 
   it('delegates exact-id, no-id, and stop controls to the same task manager', async () => {
     const dir = await tempDir('native-task-controls-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'task-controls', cwd: dir })
     const tasks = (session as unknown as { tasks: NativeTaskManager }).tasks
     const background = vi.spyOn(tasks, 'background')
@@ -3609,7 +3613,7 @@ describe('NativeSession', () => {
 
   it('destroy aborts detached work and waits for its real execution to settle', async () => {
     const dir = await tempDir('native-task-destroy-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'task-destroy', cwd: dir })
     const tasks = (session as unknown as { tasks: NativeTaskManager }).tasks
     const execution = deferred<ToolOutcome>()
@@ -3644,7 +3648,7 @@ describe('NativeSession', () => {
 
   it('persists a turn and resumes it with model history', async () => {
     const dir = await tempDir('native-persist-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () { for (const ev of textTurn('hello')) yield ev }
     const first = provider.createSession({ id: 's1', cwd: dir })
     void (async () => { for await (const _ of first.messages) { /* drain */ } })()
@@ -3699,7 +3703,7 @@ describe('NativeSession', () => {
     seed.append({ type: 'turn/end', reason: 'forked' })
     await seed.flush(); await seed.close()
 
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const resumed = provider.createSession({ id: 'usage', cwd: dir, resume: 'usage' })
     expect(await resumed.getUsage?.()).toEqual({
       session: {
@@ -3724,7 +3728,7 @@ describe('NativeSession', () => {
     seed.append({ type: 'assistant', uuid: 'a-side', session_id: 'side-usage', parent_tool_use_id: 'agent1', timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'inner' }], usage: { input_tokens: 40, output_tokens: 9 } } })
     await seed.flush(); await seed.close()
 
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const resumed = provider.createSession({ id: 'side-usage', cwd: dir, resume: 'side-usage' })
     const contextUsage = (await resumed.getContextUsage?.()) as { totalTokens: number }
     expect(contextUsage.totalTokens).toBe(7)
@@ -3746,7 +3750,7 @@ describe('NativeSession', () => {
 
   it('persists a live sidechain tool result with its real parent', async () => {
     const dir = await tempDir('native-side-persist-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'side-persist', cwd: dir })
     const internals = session as unknown as {
       persistToolResult(record: { uuid: string; result: { type: 'tool_result'; tool_use_id: string; content: Array<{ type: 'text'; text: string }>; is_error: boolean } }, parent: string | null): void
@@ -3767,7 +3771,7 @@ describe('NativeSession', () => {
 
   it('writes the fresh session context synchronously at open', async () => {
     const dir = await tempDir('native-context-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'ctx', cwd: dir })
     // No turn ran and no flush was awaited: the header + context are already
     // on disk, so a crash before the first turn still leaves usable context.
@@ -3780,7 +3784,7 @@ describe('NativeSession', () => {
   it('restores raw and skill messages exactly once after a pre-request flush failure', async () => {
     const dir = await tempDir('native-flush-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('after failure')], requests)
@@ -3836,7 +3840,7 @@ describe('NativeSession', () => {
   it('restores raw and skill messages exactly once after an MCP readiness failure', async () => {
     const dir = await tempDir('native-mcp-history-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('recovered')], requests)
@@ -3872,7 +3876,7 @@ describe('NativeSession', () => {
 
   it('restores the initial prompt when runTurn rejects validation before taking ownership', async () => {
     const dir = await tempDir('native-validation-history-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('recovered')], requests)
@@ -3902,7 +3906,7 @@ describe('NativeSession', () => {
 
   it('does not duplicate the initial prompt after a post-ownership stream failure', async () => {
     const dir = await tempDir('native-stream-history-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] }> = []
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { messages: unknown[] }) {
       requests.push({ messages: structuredClone(req.messages) })
@@ -3928,7 +3932,7 @@ describe('NativeSession', () => {
 
   it('waits for the assistant event to be durable before a tool can run', async () => {
     const dir = await tempDir('native-durable-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const scripts = [toolTurn('t1'), textTurn('done')]
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of scripts.shift() ?? []) yield ev
@@ -3974,7 +3978,7 @@ describe('NativeSession', () => {
 
   it('repairs the live history when a failed assistant flush aborts a tool turn', async () => {
     const dir = await tempDir('native-history-repair-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const scripts = [toolTurn('t1'), textTurn('recovered')]
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of scripts.shift() ?? []) yield ev
@@ -4015,7 +4019,7 @@ describe('NativeSession', () => {
 
   it('does not persist a queued turn that is never consumed', async () => {
     const dir = await tempDir('native-queued-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { signal: AbortSignal }) {
       // Mirrors a real fetch: an already-aborted signal rejects immediately
       // (the interrupt can land while the consumed turn's write is in flight).
@@ -4047,7 +4051,7 @@ describe('NativeSession', () => {
     const previous = { ...config }
     __setConfigForTest({ nativeAttachmentFidelity: true })
     const dir = await tempDir('native-migration-retry-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('first ok'), textTurn('second ok')], requests)
@@ -4097,7 +4101,7 @@ describe('NativeSession', () => {
     const previous = { ...config }
     __setConfigForTest({ nativeAttachmentFidelity: true })
     const dir = await tempDir('native-migration-queued-retry-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([textTurn('first ok'), textTurn('second ok'), textTurn('third ok')], requests)
@@ -4146,7 +4150,7 @@ describe('NativeSession', () => {
     const previous = { ...config }
     __setConfigForTest({ nativeAttachmentFidelity: true })
     const dir = await tempDir('native-migration-persistent-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([], requests)
     const session = provider.createSession({ id: 'migration-persistent', cwd: dir })
@@ -4188,7 +4192,7 @@ describe('NativeSession', () => {
     const previous = { ...config }
     __setConfigForTest({ nativeAttachmentFidelity: true })
     const dir = await tempDir('native-migration-finalization-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([], requests)
     const session = provider.createSession({ id: 'migration-finalization', cwd: dir })
@@ -4289,7 +4293,7 @@ describe('NativeSession', () => {
     })
     await seeded.flush()
     await seeded.close()
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([], requests)
     const session = provider.createSession({ id: 'projection-failure', cwd: dir, resume: 'projection-failure' })
@@ -4316,7 +4320,7 @@ describe('NativeSession', () => {
     const { store, attachment, bytes } = await pdfUpload(dir)
     let active: ReturnType<NativeProvider['createSession']> | undefined
     try {
-      const provider = new NativeProvider({ stateDir: dir, uploadStore: store })
+      const provider = new NativeProvider({ stateDir: dir, uploadStore: store, ports: makeNativePorts({ stateDir: dir, uploadStore: store }) })
       const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
       ;(provider as unknown as { _testStream: unknown })._testStream =
         capturingStreamer([toolTurn('read-package'), textTurn('done')], requests)
@@ -4340,7 +4344,7 @@ describe('NativeSession', () => {
 
       // The new-occurrence switch is not a migration: old documents still project.
       __setConfigForTest({ nativeAttachmentFidelity: true, nativePdfDocuments: false })
-      const resumedProvider = new NativeProvider({ stateDir: dir, uploadStore: store })
+      const resumedProvider = new NativeProvider({ stateDir: dir, uploadStore: store, ports: makeNativePorts({ stateDir: dir, uploadStore: store }) })
       const resumedRequests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
       ;(resumedProvider as unknown as { _testStream: unknown })._testStream =
         capturingStreamer([textTurn('resumed done')], resumedRequests)
@@ -4354,7 +4358,7 @@ describe('NativeSession', () => {
       await resumed.destroy()
       active = undefined
 
-      const forkProvider = new NativeProvider({ stateDir: dir, uploadStore: store })
+      const forkProvider = new NativeProvider({ stateDir: dir, uploadStore: store, ports: makeNativePorts({ stateDir: dir, uploadStore: store }) })
       const forkRequests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
       ;(forkProvider as unknown as { _testStream: unknown })._testStream =
         capturingStreamer([textTurn('fork done')], forkRequests)
@@ -4389,7 +4393,7 @@ describe('NativeSession', () => {
     await seeded.flush()
     await seeded.close()
 
-    const provider = new NativeProvider({ stateDir: dir, uploadStore: store })
+    const provider = new NativeProvider({ stateDir: dir, uploadStore: store, ports: makeNativePorts({ stateDir: dir, uploadStore: store }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([attachmentReadTurn('read-pdf', attachment.id), textTurn('done')], requests)
@@ -4443,7 +4447,7 @@ describe('NativeSession', () => {
     await seeded.flush()
     await seeded.close()
 
-    const provider = new NativeProvider({ stateDir: dir, uploadStore: store })
+    const provider = new NativeProvider({ stateDir: dir, uploadStore: store, ports: makeNativePorts({ stateDir: dir, uploadStore: store }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
       capturingStreamer([attachmentReadTurn('read-pdf', attachment.id), textTurn('done')], requests)
@@ -4472,7 +4476,7 @@ describe('NativeSession', () => {
 
   it('a plain interrupt keeps the queued turn for the next turn', async () => {
     const dir = await tempDir('native-keep-queued-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     let streamStarted!: () => void
     const started = new Promise<void>((resolve) => { streamStarted = resolve })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { signal: AbortSignal }) {
@@ -4539,7 +4543,7 @@ describe('NativeSession', () => {
 
   it('repairs an interrupted tool turn on resume', async () => {
     const dir = await tempDir('native-repair-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of toolTurn('t1')) yield ev
     }
@@ -4585,7 +4589,7 @@ describe('NativeSession', () => {
     seed.append({ type: 'assistant', uuid: 'a', session_id: 'open', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] } })
     await seed.flush(); await seed.close()
 
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const resumed = provider.createSession({ id: 'open', cwd: dir, resume: 'open' })
     expect(logOf(resumed).events.some((e) => JSON.stringify(e).includes('tool result missing'))).toBe(true)
     expect(logOf(resumed).events.some((e) => e.type === 'turn/end' && e.reason === 'interrupted')).toBe(true)
@@ -4598,7 +4602,7 @@ describe('NativeSession', () => {
 
   it('forks from the source log and writes a seeded child log', async () => {
     const dir = await tempDir('native-fork-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of textTurn('source reply')) yield ev
     }
@@ -4646,7 +4650,7 @@ describe('NativeSession', () => {
 
   it('persists the compact control seed, normalizing string content', async () => {
     const dir = await tempDir('native-compact-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'compact', cwd: dir })
     // seedCompactSummary sends a string-content message.
     session.sendControlMessage(stringUserMsg('compact summary') as never)
@@ -4691,7 +4695,7 @@ describe('NativeSession', () => {
     })
     await seeded.flush()
     await seeded.close()
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'occurrences', cwd: dir, resume: 'occurrences' })
 
     const handle = session as unknown as {
@@ -4742,7 +4746,7 @@ describe('NativeSession', () => {
     })
     await seeded.flush()
     await seeded.close()
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'catalog-dedup', cwd: dir, resume: 'catalog-dedup' })
 
     const catalog = (session as unknown as { getAttachmentCatalog(): readonly NativeFileAttachment[] })
@@ -4780,14 +4784,14 @@ describe('NativeSession', () => {
       })
       await oldLog.flush()
       await oldLog.close()
-      const oldProvider = new NativeProvider({ stateDir: dir, uploadStore: store })
+      const oldProvider = new NativeProvider({ stateDir: dir, uploadStore: store, ports: makeNativePorts({ stateDir: dir, uploadStore: store }) })
       const oldSession = oldProvider.createSession({ id: 'old-session', cwd: dir, resume: 'old-session' })
       const catalog = (oldSession as unknown as { getAttachmentCatalog(): readonly NativeFileAttachment[] })
         .getAttachmentCatalog()
       await oldSession.destroy()
 
       const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
-      const provider = new NativeProvider({ stateDir: dir, uploadStore: store })
+      const provider = new NativeProvider({ stateDir: dir, uploadStore: store, ports: makeNativePorts({ stateDir: dir, uploadStore: store }) })
       ;(provider as unknown as { _testStream: unknown })._testStream =
         capturingStreamer([attachmentReadTurn('read-handoff', attachment.id), textTurn('done')], requests)
       const session = provider.createSession({
@@ -4823,7 +4827,7 @@ describe('NativeSession', () => {
 
   it('does not append another attachment catalog during in-place auto-compact', async () => {
     const dir = await tempDir('native-auto-compact-catalog-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'auto-catalog', cwd: dir })
     const attachment: NativeFileAttachment = {
       id: 'kept', name: 'kept.txt', size: 4, digest: 'c'.repeat(64),
@@ -4845,7 +4849,7 @@ describe('NativeSession', () => {
 
   it('rejects a compact seed when the shared catalog+summary flush fails', async () => {
     const dir = await tempDir('native-compact-seed-flush-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'seed-flush', cwd: dir })
     const attachment: NativeFileAttachment = {
       id: 'flush', name: 'flush.txt', size: 4, digest: 'd'.repeat(64),
@@ -4867,7 +4871,7 @@ describe('NativeSession', () => {
 
   it('exposes history, existence and deletion over the state dir', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'native-prov-'))
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () { for (const ev of textTurn('hello')) yield ev }
     const session = provider.createSession({ id: 'p1', cwd: dir })
     ;(async () => { for await (const _ of session.messages) { /* drain */ } })()
@@ -4889,7 +4893,7 @@ describe('NativeSession', () => {
 
   it('reports a corrupt log as existing, then fails loudly on read', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'native-corrupt-'))
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const log = NativeSessionLog.open({ stateDir: dir, id: 'p2', cwd: dir, resume: false })
     log.append({ type: 'session/context', text: 'ctx' })
     await log.flush(); await log.close()
@@ -4989,7 +4993,7 @@ describe('NativeSession', () => {
 
   it('refuses to compact while a turn is in flight or input is queued', async () => {
     const dir = await tempDir('native-inplace-refuse-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     let streamStarted!: () => void
     const started = new Promise<void>((resolve) => { streamStarted = resolve })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { signal: AbortSignal }) {
@@ -5028,7 +5032,7 @@ describe('NativeSession', () => {
 
   it('refuses to compact with an empty or whitespace summary', async () => {
     const dir = await tempDir('native-inplace-empty-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'empty', cwd: dir })
     const compactable = session as unknown as {
       compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
@@ -5134,7 +5138,7 @@ describe('NativeSession', () => {
       await onRetry({ attempt: 1, maxRetries: 10, delayMs: 250 })
       yield { kind: 'message_start' } satisfies CanonicalEvent
     })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'retry', cwd: dir })
     try {
       const internals = session as unknown as {
@@ -5170,7 +5174,7 @@ describe('NativeSession', () => {
       requests.push(req)
       for (const ev of textTurn('ok')) yield ev
     })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     expect(provider.capabilities.supportsThinkingControl).toBe(true)
     const session = provider.createSession({
       id: 'thinking',
@@ -5216,7 +5220,7 @@ describe('NativeSession', () => {
       requests.push(req)
       for (const ev of textTurn('ok')) yield ev
     })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({
       id: 'thinking-display',
       cwd: dir,
@@ -5270,7 +5274,7 @@ describe('NativeSession', () => {
       requests.push(req)
       for (const ev of textTurn('ok')) yield ev
     })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     expect(provider.capabilities.supportsEffortLevel).toBe(true)
     expect(provider.capabilities.supportsFastMode).toBe(true)
     const session = provider.createSession({
@@ -5345,7 +5349,7 @@ describe('NativeSession', () => {
         for (const ev of textTurn(`done-${requests.length}`)) yield ev
       }
     })
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({
       id: 'turn-effort-snapshot',
       cwd: process.cwd(),
@@ -5400,7 +5404,7 @@ describe('NativeSession', () => {
 
   it('reports supported models in the SDK camelCase shape', async () => {
     const dir = await tempDir('native-models-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({
       id: 'models',
       cwd: dir,
@@ -5443,7 +5447,7 @@ describe('NativeSession', () => {
 
   it('refuses to resume a corrupt log', async () => {
     const dir = await tempDir('native-corrupt-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'corrupt', cwd: dir })
     await session.destroy()
     const path = nativeSessionLogPath(dir, 'corrupt')
@@ -5460,7 +5464,7 @@ describe('NativeSession', () => {
 
   it('closes queued MCP connections when the session constructor throws', async () => {
     const dir = await tempDir('native-create-fail-')
-    const provider = new NativeProvider({ stateDir: dir })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const seed = provider.createSession({ id: 'leak', cwd: dir })
     await seed.destroy()
     const path = nativeSessionLogPath(dir, 'leak')
@@ -5510,7 +5514,7 @@ describe('NativeSession', () => {
 
     it('generateTitle asks the aux caller with profile.recapModel', async () => {
       const dir = await tempDir('native-title-')
-      const provider = new NativeProvider({ stateDir: dir })
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
       expect(provider.capabilities.supportsSessionTitle).toBe(true)
       const session = provider.createSession({
         id: 'title-1',
@@ -5539,7 +5543,7 @@ describe('NativeSession', () => {
 
     it('generateTitle falls back to the CURRENT session model when recapModel is empty', async () => {
       const dir = await tempDir('native-title-model-')
-      const provider = new NativeProvider({ stateDir: dir })
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
       const session = provider.createSession({
         id: 'title-2',
         cwd: dir,
@@ -5561,7 +5565,7 @@ describe('NativeSession', () => {
 
     it('accountInfo resolves undefined', async () => {
       const dir = await tempDir('native-account-')
-      const provider = new NativeProvider({ stateDir: dir })
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
       expect(provider.capabilities.supportsAccountInfo).toBe(true)
       const session = provider.createSession({ id: 'account-1', cwd: dir })
       try {
@@ -5573,7 +5577,7 @@ describe('NativeSession', () => {
 
     it('applyFlagSettings rejects the sandbox flag', async () => {
       const dir = await tempDir('native-sandbox-flag-')
-      const provider = new NativeProvider({ stateDir: dir })
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
       const session = provider.createSession({ id: 'sandbox-flag', cwd: dir })
       try {
         await expect(session.applyFlagSettings?.({ sandbox: { enabled: true } }))
@@ -5597,7 +5601,7 @@ describe('NativeSession', () => {
         id: 'upload-1', path, cwd: dir, name: 'notes.txt', size: bytes.length,
         digest, uploadedAt: 1, sessionTitle: '', sessionId: 'attachment-read',
       }])
-      const provider = new NativeProvider({ stateDir: dir, uploadStore })
+      const provider = new NativeProvider({ stateDir: dir, uploadStore, ports: makeNativePorts({ stateDir: dir, uploadStore }) })
       const requests: Array<{ tools: Array<{ name: string }>; messages: unknown[] } & Record<string, unknown>> = []
       ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
         [
@@ -5685,7 +5689,7 @@ describe('NativeSession', () => {
 
     it('createSession rejects a sandbox intent with a 501 before opening a log', async () => {
       const dir = await tempDir('native-sandbox-create-')
-      const provider = new NativeProvider({ stateDir: dir })
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
       let caught: unknown
       try {
         provider.createSession({ id: 'sandboxed', cwd: dir, sandbox: { enabled: true } })

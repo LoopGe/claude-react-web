@@ -27,6 +27,7 @@ import { effortLevelsForModel, supportsFastModeForModel } from '../../../shared/
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { ProviderAttachmentOccurrence, ProviderInterruptReceipt, ProviderResetBaseSettings, ProviderSessionHandle } from '../types.js'
 import { runTurn, type LoopDeps, type PersistedToolResult } from './loop.js'
+import type { NativeHostPorts } from './ports.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { apiRetryFrame, defaultFrameContext, informationalFrame, resultFrame, type Frame, type FrameContext, type Usage } from './frames.js'
@@ -241,6 +242,10 @@ export interface NativeSessionOptions {
   /** Shared route-capacity resolver owned by the provider. Direct unit
    * sessions without one retain the 200K fallback. */
   modelContext?: NativeModelContextResolver
+  /** Host-service ports threaded from the provider (stored on opts; the
+   *  per-service call sites consume them). Absent in direct unit sessions
+   *  that construct the handle without a provider. */
+  ports?: NativeHostPorts
   /** Resolved lazily, on the first real network turn — a session must be
    *  creatable on an unconfigured machine (the failure surfaces as a loud
    *  turn error, not a create-time throw). */

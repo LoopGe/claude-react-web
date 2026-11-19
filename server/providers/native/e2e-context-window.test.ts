@@ -11,6 +11,7 @@ import { SessionManager } from '../../session-manager.js'
 import { summarizeForCompact } from '../../compact-summary.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import { NativeModelContextResolver } from './model-context.js'
 import { loadNativeSessionLogSync } from './session-log/log.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -60,6 +61,7 @@ describe('native model-window compaction', () => {
     const provider = new NativeProvider({
       stateDir: dir,
       modelContext: new NativeModelContextResolver({ discovery: { retrieve } }),
+      ports: makeNativePorts({ stateDir: dir }),
     })
     let streamCount = 0
     provider._testStream = async function* () {
