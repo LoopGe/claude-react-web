@@ -10,6 +10,7 @@ import {
   foldSidecarRows,
   foldSidecarRowsV2,
   truncateToLastCommit,
+  unsupersededCorrupt,
   makeCommitV2,
   recordTranscriptMessage,
   transcriptRow,
@@ -591,6 +592,30 @@ describe('sidecar v2 batch commits / fold / crash recovery (spec §8.2/§9)', ()
     expect(folded.generation).toBe(1)
     expect(folded.entries.map((e) => e.uuid)).toEqual(['a'])
     expect(folded.corrupt).toHaveLength(1)
+  })
+
+  it('unsupersededCorrupt drops corrupt batches superseded by the adopted generation', () => {
+    const g1 = [msgRow('g1', 0, 'a')]
+    const g2 = [msgRow('g2', 0, 'b')]
+    const badG2 = { ...genCommit('g2', 2, g2), count: 3 }
+    const folded = foldSidecarRowsV2([...g1, genCommit('g1', 1, g1), ...g2, badG2])
+    expect(folded.generation).toBe(1)
+    expect(unsupersededCorrupt(folded).map((c) => c.batchId)).toEqual(['g2']) // gen 2 > adopted 1
+    // A valid rebuild at gen 2 supersedes the corrupt gen-2 batch.
+    const goodG2 = [msgRow('g2b', 0, 'b')]
+    const folded2 = foldSidecarRowsV2([...g1, genCommit('g1', 1, g1), ...g2, badG2, ...goodG2, genCommit('g2b', 2, goodG2)])
+    expect(folded2.generation).toBe(2)
+    expect(unsupersededCorrupt(folded2)).toEqual([]) // corrupt gen 2 not > adopted 2
+  })
+
+  it('truncateToLastCommit keeps a valid re-commit that reuses a demoted batch id', () => {
+    const rows1 = [msgRow('rb', 0, 'a')]
+    const bad = { ...genCommit('rb', 1, rows1), count: 5 }
+    const rows2 = [msgRow('rb', 0, 'a'), msgRow('rb', 1, 'b')]
+    const good = genCommit('rb', 1, rows2) // SAME id, valid, later in file
+    const raw = lines(...rows1, bad, ...rows2, good)
+    const { prefix } = truncateToLastCommit(raw)
+    expect(prefix).toBe(raw) // the valid re-commit is the anchor; nothing truncated
   })
 
   it('appendBatch after a no-newline torn tail writes a clean intact batch', async () => {

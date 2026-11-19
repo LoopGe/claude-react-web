@@ -370,12 +370,22 @@ function validateCommit(b: ParsedBatch): string | null {
  *  VALID committed generation (or falls back to v1), and reconcile rebuilds.
  *  Trailing batches with no commit record are returned uncommitted
  *  (commit:null). v1 rows are skipped. */
+/** A demoted corrupt commit: its batch id, the validation reason, its
+ *  generation (when declared), and the commit ROW itself (identity, so a
+ *  later valid re-commit reusing the same batch id is not mistaken for it). */
+export interface CorruptBatch {
+  batchId: string
+  reason: string
+  generation?: number
+  commit: SidecarRow
+}
+
 function parseBatches(rows: readonly SidecarRow[]): {
   batches: ParsedBatch[]
-  corrupt: Array<{ batchId: string; reason: string }>
+  corrupt: CorruptBatch[]
 } {
   const committed: ParsedBatch[] = []
-  const corrupt: Array<{ batchId: string; reason: string }> = []
+  const corrupt: CorruptBatch[] = []
   const open = new Map<string, ParsedBatch>()
   for (const row of rows) {
     if (row.v !== 2) continue
@@ -388,7 +398,12 @@ function parseBatches(rows: readonly SidecarRow[]): {
       if (reason !== null) {
         // Demote: drop the batch and its rows entirely (the fold's
         // committedBatchIds gate would exclude them anyway).
-        corrupt.push({ batchId, reason })
+        corrupt.push({
+          batchId,
+          reason,
+          generation: typeof row.generation === 'number' ? row.generation : undefined,
+          commit: row,
+        })
       } else {
         committed.push(b)
       }
@@ -400,6 +415,21 @@ function parseBatches(rows: readonly SidecarRow[]): {
     }
   }
   return { batches: [...committed, ...open.values()], corrupt }
+}
+
+/** The corrupt batches that still affect the adopted projection — i.e. not
+ *  superseded by a valid committed generation at or above their own. After a
+ *  successful rebuild the corrupt batch is superseded, so this returns empty
+ *  and the caller does not re-warn on every reconcile (a permanent false
+ *  alarm would mask genuine new corruption). With no committed generation,
+ *  every corrupt batch is active (the v1 fallback discarded them all). */
+export function unsupersededCorrupt(folded: {
+  corrupt: CorruptBatch[]
+  generation: number
+  hasCommittedGeneration: boolean
+}): CorruptBatch[] {
+  if (!folded.hasCommittedGeneration) return folded.corrupt
+  return folded.corrupt.filter((c) => (c.generation ?? Number.MAX_SAFE_INTEGER) > folded.generation)
 }
 
 /** Fold v2 rows: adopt the latest committed generation, then replay every row
@@ -421,7 +451,7 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
   history: GenerationRecord[]
   hasCommittedGeneration: boolean
   aliases: Array<{ uuid: string; seq: number }>
-  corrupt: Array<{ batchId: string; reason: string }>
+  corrupt: CorruptBatch[]
 } {
   const { batches, corrupt } = parseBatches(rows)
   const committed = batches.filter((b) => b.commit !== null)
@@ -543,12 +573,14 @@ export function truncateToLastCommit(raw: string): { prefix: string; salvaged: S
     }
   }
   // Corrupt commits are demoted (parseBatches reports them); they must not
-  // serve as a truncation anchor.
+  // serve as a truncation anchor. Exclude by commit-row IDENTITY, not batch
+  // id: a valid re-commit may reuse a demoted batch's deterministic id
+  // (rebuild-<id>-N) and must still anchor.
   const { corrupt } = parseBatches(parsed.map((p) => p.row))
-  const corruptIds = new Set(corrupt.map((c) => c.batchId))
+  const corruptCommits = new Set(corrupt.map((c) => c.commit))
   let lastCommitIdx = -1
   for (const { row, idx } of parsed) {
-    if (row.v === 2 && row.commit === true && !corruptIds.has(row.batchId as string)) lastCommitIdx = idx
+    if (row.v === 2 && row.commit === true && !corruptCommits.has(row)) lastCommitIdx = idx
   }
   if (lastCommitIdx === -1) return { prefix: '', salvaged: parsed.map((p) => p.row) }
   const prefix = lines.slice(0, lastCommitIdx + 1).join('\n') + '\n'
