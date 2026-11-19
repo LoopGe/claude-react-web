@@ -40,6 +40,12 @@ export interface WriterDeps {
   dispatchControl: (op: DispatchOp) => Promise<void>
   isTurnActive: () => boolean
   generation: () => number
+  /** Signal a queued-not-published prompt to other tabs (WsMessageQueued, no
+   *  seq) — the sending tab uses its optimistic placeholder (spec §8.1). */
+  publishQueued: (op: DispatchOp) => void
+  /** Ring push + lifecycle bookkeeping for a materialized prompt, AFTER its
+   *  appendDurable fsync (durable-before-publish, D1). */
+  afterMaterialize: (msg: unknown) => void
 }
 
 /** Per-session monotonic uint53 generation (spec §8.3). No state-dir lock —
@@ -112,6 +118,8 @@ export class TranscriptWriter {
         dispatchControl: async () => { notWired() },
         isTurnActive: () => false,
         generation: () => initialGeneration,
+        publishQueued: notWired,
+        afterMaterialize: notWired,
       },
       initialGeneration,
     )
@@ -231,8 +239,9 @@ export class TranscriptWriter {
       // queued-not-published) so crash recovery can re-materialize (D7) without
       // duplicating multi-MB image payloads on every state row (I4: the sidecar
       // is append-only and fully parsed on every reconcile). The classifier
-      // joins back to this row for the payload; enqueue-attempted omits it.
-      ...(state !== 'enqueue-attempted' ? { payload: op.payload } : {}),
+      // joins back to the first row for the payload; the terminal/progress
+      // states (enqueue-attempted, withdrawn) omit it.
+      ...(state !== 'enqueue-attempted' && state !== 'withdrawn' ? { payload: op.payload } : {}),
       ...(route ? { route } : {}),
     }
     return this.commit(
@@ -276,10 +285,17 @@ export class TranscriptWriter {
    *  queued root prompt during an active turn is committed queued-not-published
    *  (no seq, no ring) and materialized later (spec §8.1). */
   enqueueDispatch(op: DispatchOp): Promise<void> {
+    // Decide the queued route at CALL time and reserve the slot synchronously,
+    // so a turn terminal that races the fire-and-forget commit still sees the
+    // pending op (materializeQueued drains only after the commit, below). The
+    // durable queued-not-published row + publishQueued still happen in order on
+    // dispatchQueue.
+    const willQueue = op.kind === 'user' && this.deps.isTurnActive()
+    if (willQueue) this.queued.push(op)
     const run = this.dispatchQueue.then(async () => {
-      if (op.kind === 'user' && this.deps.isTurnActive()) {
+      if (willQueue) {
         await this.inputCommit(op, 'queued-not-published')
-        this.queued.push(op)
+        this.deps.publishQueued(op)
         return
       }
       await this.inputCommit(op, 'enqueue-not-attempted')
@@ -306,13 +322,84 @@ export class TranscriptWriter {
   }
 
   /** Materialize queued-not-published root prompts at the prior turn terminal:
-   *  allocate seq + publish + dispatch, in dispatchOrdinal order (spec §8.1). */
-  async materializeQueued(): Promise<void> {
-    const ops = this.queued.splice(0)
-    for (const op of ops) {
-      await this.appendDurable(op.payload)
-      await this.deps.dispatchUser(op)
-    }
+   *  allocate seq + publish + dispatch, in dispatchOrdinal order (spec §8.1).
+   *  Chained on dispatchQueue so it waits for any in-flight enqueueDispatch
+   *  (a mid-turn send fired fire-and-forget) to commit its queued-not-published
+   *  row BEFORE draining — otherwise a turn ending before the commit lands
+   *  would strand the prompt. appendDurable allocates the seq BEFORE
+   *  dispatchUser enqueues, so the prompt seq precedes its assistant turn. */
+  materializeQueued(): Promise<number> {
+    // Common case (no mid-turn send this turn): nothing to materialize. Return
+    // an already-resolved promise WITHOUT touching dispatchQueue, so the pump's
+    // result processing is not delayed by unrelated in-flight dispatch-state
+    // fsyncs (the working-state clear must stay synchronous-ish for idle turns).
+    if (this.queued.length === 0) return Promise.resolve(0)
+    const run = this.dispatchQueue.then(async () => {
+      // Snapshot the ops present when this terminal's run starts. Later
+      // arrivals — prompts queued DURING a materialized turn — belong to that
+      // turn's terminal, not this one; materializing them here would interleave
+      // their seq amid the materialized turn's still-streaming assistant blocks
+      // (F8: the A,U,R inversion this feature exists to prevent).
+      const targets = [...this.queued]
+      let count = 0
+      // Incremental: each op stays in `queued` until it is dispatched, so a
+      // concurrent interrupt(cancelQueued) can still drain it mid-fsync (F1 —
+      // a spliced-up-front op lives in neither queue and Stop would miss it),
+      // and a failed appendDurable leaves it AND the rest queued for the next
+      // terminal to retry rather than stranding already-spliced ops (F2).
+      for (const op of targets) {
+        if (!this.queued.includes(op)) break // withdrawn by an interrupt
+        await this.appendDurable(op.payload) // seq allocation + broadcast
+        // The interrupt may have drained this op during the fsync: it is now
+        // withdrawn (the interrupt tombstones its seq), so skip the ring push
+        // and the provider enqueue — Stop must cancel the about-to-start turn.
+        if (!this.queued.includes(op)) break
+        this.deps.afterMaterialize(op.payload)
+        await this.deps.dispatchUser(op)
+        this.queued = this.queued.filter((o) => o !== op)
+        count++
+      }
+      return count
+    })
+    this.pendingDispatch++
+    this.dispatchQueue = run.then(() => {}, () => {}).finally(() => { this.pendingDispatch-- })
+    return run
+  }
+
+  /** Number of queued-not-published ops awaiting materialization. Read
+   *  synchronously by the turn-terminal hook so the pump's working-state
+   *  decision accounts for next-turn work WITHOUT blocking on the materialize
+   *  fsync (the dispatch itself runs fire-and-forget on dispatchQueue). */
+  get queuedCount(): number {
+    return this.queued.length
+  }
+
+  /** Remove + return queued-not-published ops (withdrawal on interrupt, Task 5). */
+  drainQueued(): DispatchOp[] {
+    return this.queued.splice(0)
+  }
+
+  /** Commit a durable `withdrawn` input state per drained op (interrupt
+   *  cancelQueued success path), chained on dispatchQueue so it lands AFTER any
+   *  in-flight queued-not-published commit — crash recovery then sees
+   *  `withdrawn` as the last state and never re-materializes the prompt (§7.3).
+   *  The ops were already removed from `queued` by drainQueued (so the turn
+   *  terminal cannot materialize them). */
+  commitWithdrawnStates(ops: readonly DispatchOp[]): Promise<void> {
+    if (ops.length === 0) return Promise.resolve()
+    const run = this.dispatchQueue.then(async () => {
+      for (const op of ops) await this.inputCommit(op, 'withdrawn')
+    })
+    this.pendingDispatch++
+    this.dispatchQueue = run.catch(() => {}).finally(() => { this.pendingDispatch-- })
+    return run
+  }
+
+  /** Restore drained queued-not-published ops after a FAILED interrupt so they
+   *  are not silently lost — they materialize at the next turn terminal in
+   *  their original dispatch order. */
+  restoreQueued(ops: readonly DispatchOp[]): void {
+    this.queued.unshift(...ops)
   }
 
   deferOldCommit(msg: unknown, seq: number): void {

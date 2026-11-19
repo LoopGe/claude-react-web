@@ -522,6 +522,45 @@ describe('sidecar v2 batch commits / fold / crash recovery (spec §8.2/§9)', ()
     expect(folded.entries.map((e) => e.seq)).toEqual([0, 1, 2])
   })
 
+  it('T7b-2 I1: gen-0 fold keeps v1 tombstone-before-base stickiness', () => {
+    // A v1 eviction tombstone for seq 1 lands BEFORE its base row (reconcile
+    // back-fill order), mixed with a committed v2 live batch. The v1 fold's
+    // placeholder stickiness must survive the gen-0 path, not be dropped by
+    // v2 last-wins semantics.
+    const v1a = { seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a', message: { role: 'user', content: 'a' } } }
+    const tomb1 = { seq: 1, evicted: true }
+    const live = [msgRow('l1', 2, 'c')]
+    const v1b = { seq: 1, uuid: 'b', type: 'assistant', msg: { type: 'assistant', uuid: 'b', message: { role: 'assistant', content: [] } } }
+    const rows = [v1a, tomb1, ...live, liveCommit('l1', 0, live), v1b]
+    const folded = foldSidecarRowsV2(rows)
+    expect(folded.hasCommittedGeneration).toBe(true)
+    const e1 = folded.entries.find((e) => e.seq === 1)
+    expect(e1?.evicted).toBe(true)
+    expect(e1?.uuid).toBe('b')
+  })
+
+  it('T7b-2 I1: gen-0 fold throws duplicate-seq on two v1 base rows sharing a seq', () => {
+    const v1a = { seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a' } }
+    const v1dup = { seq: 0, uuid: 'b', type: 'user', msg: { type: 'user', uuid: 'b' } }
+    const live = [msgRow('l1', 1, 'c')]
+    const rows = [v1a, v1dup, ...live, liveCommit('l1', 0, live)]
+    expect(() => foldSidecarRowsV2(rows)).toThrow(/duplicate-seq/)
+  })
+
+  it('T7b-2 I1: gen-0 fold heals a duplicate whole-message assistant row', () => {
+    const single = [0, 1, 2].map((i) => ({
+      seq: i, uuid: derivedUuid(i), type: 'assistant',
+      msg: assistantWithContent(derivedUuid(i), MULTI_BLOCK_MSG_ID, [multiBlockContent[i]]),
+    }))
+    const whole = { seq: 3, uuid: ORIGINAL_UUID, type: 'assistant', msg: assistantWithContent(ORIGINAL_UUID, MULTI_BLOCK_MSG_ID, multiBlockContent, true) }
+    const live = [msgRow('l1', 4, 'u')]
+    const rows = [...single, whole, ...live, liveCommit('l1', 0, live)]
+    const folded = foldSidecarRowsV2(rows)
+    expect(folded.hasCommittedGeneration).toBe(true)
+    const wholeEntry = folded.entries.find((e) => e.seq === 3)
+    expect(wholeEntry?.evicted).toBe(true)
+  })
+
   it('T7b: input-only v2 batches (no message rows) still fall back to v1', () => {
     const v1a = { seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a', message: { role: 'user', content: 'hi' } } }
     const inputRow = { v: 2, batchId: 'i1', operationId: 'a', dispatchOrdinal: 1, state: 'enqueue-attempted' }

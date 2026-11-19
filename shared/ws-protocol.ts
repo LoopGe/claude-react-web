@@ -462,6 +462,29 @@ export interface WsMessageSteered {
   generation?: number
 }
 
+/** A mid-turn root prompt was accepted but NOT yet published to the seq space
+ *  (spec §8.1 queued-not-published). It is durably committed and will be
+ *  materialized — seq allocation + ring append + the normal `message`
+ *  broadcast — at the prior turn's terminal, in dispatch order. The sending
+ *  tab already shows its optimistic placeholder; this frame tells OTHER
+ *  attached tabs a prompt is pending WITHOUT allocating a seq or touching the
+ *  ring. NO seq: the prompt enters the seq space only at materialization, so
+ *  its assistant reply can never precede it. Rides the same per-session
+ *  input-queue-status channel as `message-consumed` / `message-steered`. */
+export interface WsMessageQueued {
+  kind: 'message-queued'
+  sessionId: string
+  /** Server-minted uuid of the queued prompt (matches the later `message`). */
+  uuid: string
+  /** The public wire payload that will be published at materialization. */
+  message: unknown
+  /** Client-supplied idempotency key, echoed for the sending tab's dedup. */
+  clientOperationId?: string
+  /** Seq-space generation at queue time (spec §8.3): stale-generation frames
+   *  are dropped whole. Optional for pre-rebase servers. */
+  generation?: number
+}
+
 /** Per-session recap state mutation (pending / ready / error / cleared).
  *  Carries the full SessionRecap shape (or undefined to mean "cleared by
  *  invalidate"). The same shape rides on SessionInfo for full session
@@ -683,6 +706,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsAttached
   | WsTranscriptRebased
   | WsMessageSteered
+  | WsMessageQueued
   | WsMessagesEvicted
   | WsSessionRecapUpdate<Recap>
   | WsSessionCleared

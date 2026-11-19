@@ -408,14 +408,29 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
   const bySeq = new Map<number, HydrateRow>()
   const occToSeq = new Map<string, number>()
   const aliases: Array<{ uuid: string; seq: number }> = []
+  // Gen-0 mixed files interleave v1 pump-ingest/eviction rows with the writer's
+  // v2 live batches (no generation/reset batch yet). The v1 segment must keep
+  // the v1 fold's guarantees (I1): tombstone-before-base stickiness, a
+  // duplicate-base-seq throw, and the duplicate-assistant heal. Enabled only
+  // in the gen-0 branch below; the post-rebuild path keeps pure v2 semantics.
+  let v1Stickiness = false
+  const baseSeen = new Set<number>()
   const isTombstoneOnly = (row: SidecarRow): boolean => row.evicted === true && row.msg === undefined
   const applyMsg = (row: SidecarRow): void => {
     if (typeof row.seq !== 'number') return
+    if (v1Stickiness) {
+      if (!Number.isInteger(row.seq) || row.seq < 0) return
+      // Two distinct BASE rows sharing one seq is corruption (spec §9): a
+      // Map last-wins would silently hide the overwritten occurrence.
+      if (baseSeen.has(row.seq)) throw new Error(`duplicate-seq: ${row.seq}`)
+      baseSeen.add(row.seq)
+    }
     bySeq.set(row.seq, {
       seq: row.seq,
       uuid: typeof row.uuid === 'string' ? row.uuid : null,
       msg: row.msg,
-      evicted: row.evicted === true ? true : undefined,
+      // Preserve a tombstone that preceded this base row (v1 stickiness).
+      evicted: row.evicted === true ? true : (v1Stickiness ? bySeq.get(row.seq)?.evicted : undefined),
     })
     if (typeof row.occurrenceId === 'string') occToSeq.set(row.occurrenceId, row.seq)
     if (Array.isArray(row.aliases)) {
@@ -427,6 +442,7 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
     if (typeof row.seq === 'number') {
       const e = bySeq.get(row.seq)
       if (e) e.evicted = true
+      else if (v1Stickiness) bySeq.set(row.seq, { seq: row.seq, uuid: null, evicted: true })
       return
     }
     const occ = typeof row.occurrenceId === 'string' ? row.occurrenceId : null
@@ -468,6 +484,7 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
     generation = 0
     history = []
     latestBatchId = null // no anchor: replay committed v2 batches from the start
+    v1Stickiness = true // mixed v1/v2 file: keep v1-fold guarantees for v1 rows
   }
 
   // Replay everything after the latest generation's commit record (or from the
@@ -498,6 +515,9 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
     }
   }
   const entries = [...bySeq.values()].sort((a, b) => a.seq - b.seq)
+  // The gen-0 mixed file can carry a reconcile-back-filled whole-message
+  // assistant duplicate; heal it exactly as the v1 fold does (I1).
+  if (v1Stickiness) healDuplicateAssistantRows(entries)
   return { entries, generation, history, hasCommittedGeneration: true, aliases }
 }
 

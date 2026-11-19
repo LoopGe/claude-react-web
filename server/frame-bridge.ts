@@ -32,6 +32,7 @@ import type {
   WsGitSnapshot,
   WsMessageConsumed,
   WsMessageSteered,
+  WsMessageQueued,
   WsMessagesEvicted,
   WsMessagesWithdrawn,
   WsServerFrame,
@@ -970,7 +971,7 @@ export class SessionConnection {
         // The channel is typed at the source (see
         // SessionManager.subscribeMessageStatus), so this is a
         // plain discriminated-union switch, not a defensive parse.
-        const v = value as WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges
+        const v = value as WsMessageConsumed | WsMessageSteered | WsMessageQueued | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges
         // generation is stamped at EMISSION by the manager (spec §8.3) and
         // forwarded verbatim — re-reading transcriptHead here would re-stamp
         // a pre-rebuild frame with the new generation.
@@ -980,6 +981,8 @@ export class SessionConnection {
           this.sink.send({ kind: 'messages-evicted', sessionId, seqs: v.seqs, generation: v.generation })
         } else if (v.kind === 'message-steered') {
           this.sink.send({ kind: 'message-steered', sessionId, uuid: v.uuid, state: v.state, generation: v.generation })
+        } else if (v.kind === 'message-queued') {
+          this.sink.send({ kind: 'message-queued', sessionId, uuid: v.uuid, message: v.message, clientOperationId: v.clientOperationId, generation: v.generation })
         } else if (v.kind === 'turn-changes') {
           this.sink.send({ kind: 'turn-changes', sessionId, summary: v.summary })
         } else {

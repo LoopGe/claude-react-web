@@ -21,6 +21,12 @@ function makeDeps(over: Partial<WriterDeps> = {}) {
     dispatchControl: vi.fn(async () => {}),
     isTurnActive: () => false,
     generation: () => store.generation,
+    publishQueued: vi.fn(() => {
+      calls.push('publishQueued')
+    }),
+    afterMaterialize: vi.fn(() => {
+      calls.push('afterMaterialize')
+    }),
     ...over,
   }
   return { deps, store, calls }
@@ -205,6 +211,88 @@ describe('TranscriptWriter.enqueueDispatch (spec §8.1)', () => {
     expect(store.headSeq).toBe(3)
     expect(deps.publish).toHaveBeenCalledTimes(3)
     expect(deps.dispatchUser).toHaveBeenCalledTimes(1)
+  })
+
+  it('T7b-2 review F1: interrupt drains a prompt mid-materialization; it is not dispatched', async () => {
+    // The materialize fsync is held open; during that window the op must remain
+    // withdrawable (still in `queued`), and once drained it must NOT dispatch —
+    // otherwise Stop silently fails to cancel the about-to-start queued turn.
+    let turnActive = true
+    let releaseLive!: () => void
+    const liveGate = new Promise<void>((r) => { releaseLive = r })
+    const appendBatch = vi.fn(async (_rows: object[], commit: object) => {
+      if ((commit as { batchType?: string }).batchType === 'live') await liveGate
+    })
+    const { deps } = makeDeps({ isTurnActive: () => turnActive, appendBatch })
+    const w = new TranscriptWriter(deps)
+    await w.enqueueDispatch({ operationId: 'u2', dispatchOrdinal: 1, kind: 'user', payload: userMsg('U2') })
+    turnActive = false
+    const mat = w.materializeQueued()
+    // Let the materialize body reach the held live-batch fsync.
+    await new Promise<void>((r) => setTimeout(r, 0))
+    await new Promise<void>((r) => setTimeout(r, 0))
+    const drained = w.drainQueued()
+    expect(drained.map((o) => o.operationId)).toEqual(['u2'])
+    releaseLive()
+    await mat
+    expect(deps.dispatchUser).not.toHaveBeenCalled()
+    // appendDurable still allocated the seq + broadcast before the drain was
+    // observed (the interrupt tombstones that seq downstream); the writer skips
+    // only the ring push + provider enqueue. Broadcast-then-withdrawn is the
+    // consistent ordering the client's seq-window tombstone guard absorbs.
+    expect(deps.publish).toHaveBeenCalledTimes(1)
+  })
+
+  it('T7b-2 review F2: a failed materialize leaves the prompt queued for retry (not stranded)', async () => {
+    let turnActive = true
+    let failLive = true
+    const appendBatch = vi.fn(async (_rows: object[], commit: object) => {
+      if ((commit as { batchType?: string }).batchType === 'live' && failLive) throw new Error('disk full')
+    })
+    const { deps } = makeDeps({ isTurnActive: () => turnActive, appendBatch })
+    const w = new TranscriptWriter(deps)
+    await w.enqueueDispatch({ operationId: 'u2', dispatchOrdinal: 1, kind: 'user', payload: userMsg('U2') })
+    turnActive = false
+    await expect(w.materializeQueued()).rejects.toThrow('disk full')
+    // Incremental materialization: the failed op stays queued (not spliced),
+    // so the next turn terminal retries it instead of dropping it live.
+    expect(w.queuedCount).toBe(1)
+    failLive = false
+    expect(await w.materializeQueued()).toBe(1)
+    expect(deps.dispatchUser).toHaveBeenCalledTimes(1)
+  })
+
+  it('T7b-2 review F8: materialize bounds to the firing terminal — later arrivals wait for the next terminal', async () => {
+    // T1 has [A,B]. A materializes + dispatches (turn A starts); B's fsync is
+    // held. During the stall D is sent mid-turn-A. D belongs to A's terminal,
+    // NOT T1 — materializing it here would interleave D's seq amid turn A's
+    // streaming assistant blocks (the A,U,R inversion the plan prevents).
+    let turnActive = true
+    let liveCount = 0
+    let releaseSecond!: () => void
+    const secondGate = new Promise<void>((r) => { releaseSecond = r })
+    const appendBatch = vi.fn(async (_rows: object[], commit: object) => {
+      if ((commit as { batchType?: string }).batchType === 'live') {
+        liveCount++
+        if (liveCount === 2) await secondGate
+      }
+    })
+    const { deps } = makeDeps({ isTurnActive: () => turnActive, appendBatch })
+    const w = new TranscriptWriter(deps)
+    await w.enqueueDispatch({ operationId: 'A', dispatchOrdinal: 1, kind: 'user', payload: userMsg('A') })
+    await w.enqueueDispatch({ operationId: 'B', dispatchOrdinal: 2, kind: 'user', payload: userMsg('B') })
+    turnActive = false
+    const mat = w.materializeQueued()
+    await new Promise<void>((r) => setTimeout(r, 0))
+    await new Promise<void>((r) => setTimeout(r, 0))
+    // D arrives during the materialized turn A (fire-and-forget: its durable
+    // commit chains behind the in-flight materialize run).
+    turnActive = true
+    void w.enqueueDispatch({ operationId: 'D', dispatchOrdinal: 3, kind: 'user', payload: userMsg('D') })
+    releaseSecond()
+    await mat
+    expect(deps.dispatchUser).toHaveBeenCalledTimes(2) // A, B only — not D
+    expect(w.queuedCount).toBe(1) // D waits for the next terminal
   })
 })
 

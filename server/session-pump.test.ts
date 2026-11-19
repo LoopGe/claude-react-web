@@ -3089,6 +3089,39 @@ describe('pump: onTurnSettling settlesTurn classification', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]![1]).toBe(false)
   })
+
+  // Pins the pump's AWAIT contract (an async hook that raises queueDepth must be
+  // awaited before moreQueued). The production manager hook is synchronous — it
+  // returns queuedCount and materializes fire-and-forget — so its continuity
+  // mechanism (materialized > 0) is pinned by the manager 'result keeps
+  // working=true' test, not here.
+  it('awaits async onTurnSettling before moreQueued so a materialized queued prompt keeps pendingTurns=1 (D3)', async () => {
+    const { session } = makePumpSession([
+      { type: 'result', subtype: 'success', uuid: 'r1', num_turns: 1, result: 'ok' } as unknown as SDKMessage,
+    ])
+    // cleanupPump always clears pendingTurns when the stream ends, so observe
+    // the result handler's own persist (fired AFTER the moreQueued decision,
+    // BEFORE cleanup) rather than the post-pump state.
+    const persistSnapshots: number[] = []
+    let raised = false
+    await pump(session, makePumpDeps({
+      persist: (s) => { persistSnapshots.push(s.pendingTurns) },
+      onTurnSettling: async (s, settles) => {
+        if (!settles) return
+        // Simulate materializeQueued: an async durable commit + provider
+        // enqueue that raises queueDepth only AFTER a microtask boundary. If
+        // the pump does not await this, moreQueued reads queueDepth=0 and the
+        // working state flashes idle between back-to-back turns.
+        await Promise.resolve()
+        ;(s.handle as { queueDepth: number }).queueDepth = 1
+        raised = true
+      },
+    }))
+    expect(raised).toBe(true)
+    // The result handler kept pendingTurns=1 because moreQueued saw the raised
+    // queueDepth. Without the await, no persist would ever observe 1.
+    expect(persistSnapshots).toContain(1)
+  })
 })
 
 describe('pump: empty result frames', () => {

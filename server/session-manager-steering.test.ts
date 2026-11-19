@@ -272,8 +272,12 @@ describe('steering routing (dispatchUserMessage)', () => {
     expect(metrics.snapshot().counters['user_message_images']).toBe(1)
     expect(metrics.snapshot().counters['user_message_image_base64_bytes']).toBe(1)
     expect(handle.enqueueSupplement).not.toHaveBeenCalled()
-    expect(handle.enqueueUserMessage).toHaveBeenCalledTimes(2)
+    // T7b: multimodal cannot steer, so it takes the normal mid-turn path —
+    // queued-not-published (only 'first' enqueued immediately; the image prompt
+    // materializes at the turn terminal). It is recorded in the ledger, not lost.
+    expect(handle.enqueueUserMessage).toHaveBeenCalledTimes(1)
     expect((img as { steeredAt?: number }).steeredAt).toBeUndefined()
+    expect(s_of(sm, info.id).promptUuids?.map((e) => e.u)).toContain((img as { uuid: string }).uuid)
     await sm.shutdown()
   })
 
@@ -284,7 +288,10 @@ describe('steering routing (dispatchUserMessage)', () => {
     await sm.send(info.id, 'first')
     handle.enqueueSupplement.mockReturnValue(false)
     const second = await sm.send(info.id, 'second')
-    expect(handle.enqueueUserMessage).toHaveBeenCalledTimes(2)
+    // T7b: admission rejected → not steered → normal mid-turn path =
+    // queued-not-published ('first' enqueued immediately; 'second' materializes
+    // at the turn terminal). Both ledger entries present, neither lost.
+    expect(handle.enqueueUserMessage).toHaveBeenCalledTimes(1)
     expect((second as { steeredAt?: number }).steeredAt).toBeUndefined()
     expect(s_of(sm, info.id).promptUuids?.map((e) => e.u)).toEqual([first_uuid(sm, info.id), second.uuid])
     await sm.shutdown()
@@ -298,7 +305,11 @@ describe('steering routing (dispatchUserMessage)', () => {
     await sm.send(info.id, 'first')
     const second = await sm.send(info.id, 'second')
     expect((second as { steeredAt?: number }).steeredAt).toBeUndefined()
-    expect(s.history).toHaveLength(2)
+    // T7b: a non-steering provider's mid-turn send is queued-not-published —
+    // only 'first' is in the ring now; 'second' materializes at the turn
+    // terminal (recorded in the ledger, not lost).
+    expect(s.history).toHaveLength(1)
+    expect(s_of(sm, info.id).promptUuids?.map((e) => e.u)).toContain((second as { uuid: string }).uuid)
     await sm.shutdown()
   })
 })

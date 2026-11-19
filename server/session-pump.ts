@@ -820,7 +820,7 @@ export interface PumpDeps {
    *  its turn. The manager closes steering admission / drains supplements
    *  on a settling result — it does not re-derive turn semantics from the
    *  result's emptiness. */
-  onTurnSettling?: (session: Session, settlesTurn: boolean) => void
+  onTurnSettling?: (session: Session, settlesTurn: boolean) => void | number | Promise<void | number>
   /** Separate FIFO budget for subagent frames (parent_tool_use_id != null).
    *  Independent of historyCap so subagent volume never evicts main-thread
    *  frames from the replay surface. */
@@ -1820,8 +1820,14 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // supplements and requeue them as normal next-turn prompts BEFORE
           // the moreQueued check so they count toward the working-state
           // decision (a requeued supplement is exactly a queued turn).
-          deps.onTurnSettling?.(session, !(emptyResult && localCommandOf(msg) === null))
-          const moreQueued = session.handle.queueDepth > 0
+          // Awaited (D3): the host materializes queued-not-published prompts
+          // here BEFORE the moreQueued check below — so a prompt queued mid-turn
+          // keeps the working state continuous into its own turn instead of
+          // flashing idle between back-to-back turns. The returned count covers
+          // the direct-hand-off case: a materialized prompt handed straight to a
+          // parked SDK waiter never raises queueDepth, but it IS next-turn work.
+          const materialized = (await deps.onTurnSettling?.(session, !(emptyResult && localCommandOf(msg) === null))) ?? 0
+          const moreQueued = session.handle.queueDepth > 0 || materialized > 0
           log.debug(
             `[session ${session.id}] result received — total msgs: ${msgCount}, ` +
             `input.queueDepth=${session.handle.queueDepth}, moreQueued=${moreQueued}`,

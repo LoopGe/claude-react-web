@@ -56,7 +56,7 @@ import {
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
 import { imagePayloadOfContent, taskNotificationToolUseId } from '../shared/user-frames.js'
-import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased } from './ws-protocol.js'
 import type { TurnChangesPayload, TurnDiffOptions, TurnDiffPayload, WsTurnChanges } from '../shared/turn-changes.js'
 import { toolTargetPaths } from './snapshot/tool-targets.js'
 import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
@@ -4231,6 +4231,32 @@ export class SessionManager {
           ...userMsg,
           message: { ...userMsg.message, content: [...providerContent] },
         }) as AgentUserMessage
+    // T7b Task 2 (spec §8.1): a mid-turn root prompt that did NOT take the
+    // steering route is queued-not-published — durably committed, but NO seq,
+    // NO ring append, NO real broadcast yet. It materializes (seq + ring +
+    // broadcast + provider enqueue) at the prior turn's terminal, in dispatch
+    // order, so its assistant reply can never precede it in the seq space.
+    // Idle sends keep the synchronous path below (behavior-preserving: the
+    // autoResume-window carry and native direct hand-off rely on it). The
+    // ledger entry is recorded NOW so withdrawal/heal probes see the pending
+    // prompt; consumption is stamped at materialization (dispatchUser).
+    if (s.pendingTurns > 0 || s.turnActive === true) {
+      this.recordPromptUuid(s, userMsg)
+      // receivedAt is the server's receive moment — queue time, not the later
+      // materialization — so the published frame carries the true stamp.
+      stampReceivedAt(userMsg as SDKUserMessage)
+      const writer = this.writerFor(s.id)
+      void writer.enqueueDispatch({
+        operationId: userMsg.uuid!,
+        dispatchOrdinal: writer.nextDispatchOrdinal(),
+        kind: 'user',
+        payload: userMsg,
+        providerPayload: forSdk,
+      }).catch((err) => {
+        log.warn(`[session ${s.id}] queued-not-published commit failed: ${(err as Error).message ?? err}`)
+      })
+      return
+    }
     // Record the sent prompt BEFORE enqueue: a provider that consumes the
     // message synchronously (the native direct hand-off) pairs the uuid inside
     // enqueueUserMessage's consume callback, which runs before this method
@@ -4442,6 +4468,32 @@ export class SessionManager {
             return s ? (s.pendingTurns > 0 || s.turnActive === true) : false
           },
           generation: () => holder().store.generation,
+          // queued-not-published signal (spec §8.1): tell other attached tabs a
+          // mid-turn prompt is pending WITHOUT a seq/ring entry. The sending tab
+          // already holds its optimistic placeholder. Rides the msgstat channel.
+          publishQueued: (op) => {
+            const s = session()
+            if (!s) return
+            const uuid = (op.payload as { uuid?: string }).uuid
+            if (typeof uuid !== 'string') return
+            this.pushMessageStatus(s.id, {
+              kind: 'message-queued',
+              sessionId: s.id,
+              uuid,
+              message: op.payload,
+              ...(op.clientOperationId !== undefined ? { clientOperationId: op.clientOperationId } : {}),
+            })
+          },
+          // Ring append + lifecycle bookkeeping for a materialized prompt, AFTER
+          // appendDurable's seq allocation + fsync + broadcast (durable-before-
+          // publish, D1). receivedAt was stamped at queue time (the server's
+          // receive moment), so the published frame already carries it.
+          afterMaterialize: (msg) => {
+            const s = session()
+            if (!s) return
+            pushBounded(s.history, msg as SDKUserMessage, this.historyCap)
+            this.afterUserMessagePublished(s)
+          },
         },
         this.getOrCreateTranscript(id).store.generation,
       )
@@ -4513,6 +4565,14 @@ export class SessionManager {
     const { msgs: withdrawnMsgs, uuids: drainedUuids } = opts?.cancelQueued
       ? this.withdrawHostQueue(s, queuedUserUuids)
       : { msgs: [] as AgentUserMessage[], uuids: [] as string[] }
+    // Withdraw leg 1b (queued-not-published, T7b): mid-turn root prompts that
+    // never reached the SDK input queue live in the writer's queue, not the
+    // host Pushable — withdrawHostQueue cannot see them. Drain them NOW so the
+    // aborted turn's terminal cannot materialize them; the durable `withdrawn`
+    // state commits on success below (restored on failure). They carry no public
+    // seq yet, so withdrawal is a durable input state + the messages-withdrawn
+    // bubble eviction, not a seq tombstone.
+    const withdrawnQueuedOps = opts?.cancelQueued ? this.writerFor(id).drainQueued() : []
     try {
       const fn = this.requireHandleMethod<
         (opts?: { cancelQueued?: boolean }) => Promise<ProviderInterruptReceipt | void>
@@ -4555,14 +4615,35 @@ export class SessionManager {
           void this.steeredStore.markWithdrawn(s.id, steerUuid, Date.now())
         }
       }
+      // Queued-not-published withdrawals join the same union: their uuids are
+      // unconsumed ledger entries, so the ledger-drop / withdrawnUuids / heal
+      // paths below all apply. They have no ring entry or seq, so removeFromHistory
+      // and evictTranscriptAndBroadcast no-op for them — the messages-withdrawn
+      // frame is what evicts the queued bubble on every tab.
+      for (const op of withdrawnQueuedOps) {
+        const u = (op.payload as { uuid?: unknown }).uuid
+        if (typeof u === 'string') uuids.add(u)
+      }
       let removed = 0
       if (uuids.size > 0) {
         removed = removeFromHistory(s.history, uuids)
+        // Count queued-not-published withdrawals too — they never entered the
+        // ring, so removeFromHistory does not see them, but they ARE withdrawn.
+        removed += withdrawnQueuedOps.length
+        void this.writerFor(id).commitWithdrawnStates(withdrawnQueuedOps).catch((err) => {
+          log.warn(`[session ${id}] withdrawn-state commit failed: ${(err as Error).message ?? err}`)
+        })
         // Drop the matching ledger entries — a withdrawn prompt (unconsumed
         // or consumed-but-cancelled) is dead work; keeping it would make the
         // heal probe read "work still queued" or retain a dead entry. The
         // sidecar persists paired mappings at echo time, so no save here.
         s.promptUuids = (s.promptUuids ?? []).filter((e) => !uuids.has(e.u))
+        // A withdrawn prompt's deferred snapshot anchor is dead too — drop it
+        // so it cannot linger until /clear (mirrors the steer-path cleanup).
+        if (s.pendingSnapshotAnchors?.length) {
+          s.pendingSnapshotAnchors = s.pendingSnapshotAnchors.filter((u) => !uuids.has(u))
+          if (s.pendingSnapshotAnchors.length === 0) s.pendingSnapshotAnchors = undefined
+        }
         // Remember the withdrawal (capped) so a tab that reconnects after the
         // stop still evicts its bubbles — no later frame or page ever re-sends
         // the withdrawn messages, so the synthetic replay of withdrawnUuids is
@@ -4638,6 +4719,10 @@ export class SessionManager {
         log.warn(`[session ${id}] interrupt failed; re-enqueueing ${withdrawnMsgs.length} withdrawn message(s)`)
         for (const m of withdrawnMsgs) s.handle.enqueueUserMessage(m)
       }
+      // Restore queued-not-published ops too — they materialize at the next turn
+      // terminal instead of being lost (no durable withdrawn state was committed
+      // on this failure path).
+      if (withdrawnQueuedOps.length > 0) this.writerFor(id).restoreQueued(withdrawnQueuedOps)
       log.error(`[session ${id}] interrupt() threw after ${Date.now() - startedAt}ms:`, err)
       throw err
     } finally {
@@ -4688,7 +4773,7 @@ export class SessionManager {
    *  reconnect) for consumed flips, the ring removal + `withdrawnUuids`
    *  subscribe replay for withdrawals, the sidecar tombstone rows for
    *  evictions — so a dropped live frame self-heals. */
-  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges): void {
+  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessageSteered | WsMessageQueued | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges): void {
     const s = this.sessions.get(id)
     if (!s || s.messageStatusSubscribers.size === 0) return
     // Stamp the generation AT EMISSION (spec §8.3): a frame queued before a
@@ -7680,7 +7765,7 @@ export class SessionManager {
   }
 
   subscribeMessageStatus(id: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessageQueued | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges>
     unsubscribe: () => void
   } | null {
     return this.broadcaster.subscribeMessageStatus(id)
@@ -10278,6 +10363,25 @@ export class SessionManager {
         subagentHistoryCap: this.subagentHistoryCap,
         onTurnSettling: (s, settlesTurn) => {
           this.drainAndRequeueSteered(s, settlesTurn)
+          // T7b Task 2 (D3): materialize queued-not-published root prompts at a
+          // REAL turn terminal. Each op gets seq + ring + broadcast
+          // (appendDurable) then provider enqueue (dispatchUser), in
+          // dispatchOrdinal order, chained on dispatchQueue. The dispatch runs
+          // FIRE-AND-FORGET: the pump must not block its message processing on
+          // the materialize fsync (a slow sidecar write would otherwise stall
+          // the whole pump). The working-state guarantee is carried by the
+          // synchronous queuedCount returned below — the pump's moreQueued
+          // decision sees that next-turn work is coming even though the
+          // enqueue (and queueDepth rise) lands a moment later. A background
+          // bookend (settlesTurn=false) is not a turn end — leave the queue
+          // intact. Failures are logged, never thrown (Task 6 re-materializes).
+          const writer = this.writerFor(s.id)
+          const materialized = settlesTurn ? writer.queuedCount : 0
+          if (materialized > 0) {
+            void writer.materializeQueued().catch((err) => {
+              log.warn(`[session ${s.id}] queued materialization failed: ${(err as Error).message ?? err}`)
+            })
+          }
           // Native in-place auto-compact trigger. Deferred to the next macrotask
           // so the pump has finished clearing `turnActive` / `pendingTurns` /
           // `workingSince` — phaseOf must read 'idle'. Fire-and-forget: a
@@ -10287,6 +10391,7 @@ export class SessionManager {
               log.warn(`[session ${s.id}] auto-compact failed:`, err)
             })
           })
+          return materialized
         },
         persist: (s) => this.persist(s),
         denyPendingPermissions: (s) => {

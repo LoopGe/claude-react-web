@@ -26,7 +26,7 @@
 
 import type { Session } from './session-types.js'
 import type { SessionRecap } from './session-types.js'
-import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted, WsTurnChanges, WsGitSnapshot, WsTasklistSnapshot } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTurnChanges, WsGitSnapshot, WsTasklistSnapshot } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
 import { projectTasksSnapshot, type TaskRecordUi } from '../shared/tasks.js'
 import type { Pushable } from './pushable.js'
@@ -166,7 +166,7 @@ export class SessionEventBroadcaster {
    *  frame self-heals on any future cold rehydrate; live tabs rely on the
    *  frame (or the uuid-based refusal/dialog eviction) for the session. */
   subscribeMessageStatus(id: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessageQueued | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges>
     unsubscribe: () => void
   } | null {
     const s = this.sessions.get(id)

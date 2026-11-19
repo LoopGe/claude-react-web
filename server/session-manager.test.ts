@@ -1626,21 +1626,23 @@ describe('SessionManager', () => {
     // Multiple back-to-back sends never inflate pendingTurns past 1
     // (which would otherwise stick the UI in "working" forever once
     // the SDK merged queued messages into fewer turns than were sent).
-    const info = await sm.create({})
+    const info = await sm.create({ cwd: dir })
     await sm.send(info.id, 'first')
     await sm.send(info.id, 'second')
     await sm.send(info.id, 'third')
     expect(sm.get(info.id).working).toBe(true)
-    // Drain everything: each result lands, the SDK pulls the next
-    // queued message, and the next result will see an empty queue.
-    mockHandles[0].emit({ type: 'result' })
+    const pendingOf = () =>
+      (sm as unknown as { sessions: Map<string, { pendingTurns: number }> }).sessions.get(info.id)!.pendingTurns
+    // The invariant under test: back-to-back sends never inflate pendingTurns
+    // past 1 (which would stick the UI in "working" forever once the SDK merged
+    // queued messages into fewer turns). T7b: 'second'/'third' are queued-not-
+    // published and materialize at turn terminals, where afterUserMessagePublished
+    // still caps at 1. (Working-state continuity through the drain is pinned by
+    // the 'result keeps working=true' test.)
+    expect(pendingOf()).toBe(1)
+    mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r-cap', session_id: info.id, num_turns: 1, result: 'ok' })
     await tick()
-    mockHandles[0].emit({ type: 'result' })
-    await tick()
-    mockHandles[0].emit({ type: 'result' })
-    await tick()
-    await tick()
-    expect(sm.get(info.id).working).toBe(false)
+    expect(pendingOf()).toBeLessThanOrEqual(1)
   })
 
   it('result keeps working=true while another user message is still queued', async () => {
@@ -1654,20 +1656,19 @@ describe('SessionManager', () => {
     const info = await sm.create({})
     const first = sm.send(info.id, 'first')
     const second = sm.send(info.id, 'second')
+    const [, secondMsg] = await Promise.all([first, second])
     // Mock SDK drains 'first' immediately on spawn (initial drainOne).
-    // 'second' sits in the input queue until the next 'result' triggers
-    // the next drain. So when we emit the FIRST result, queueDepth>0.
+    // T7b: 'second' is queued-not-published; the FIRST result is its turn
+    // terminal, so the pump materializes it (seq + ring + provider enqueue)
+    // BEFORE the moreQueued check — queueDepth>0 keeps working continuous.
     mockHandles[0].emit({ type: 'result' })
-    await Promise.all([first, second])
-    await tick()
-    // BUG WAS: working would flip to false here. FIXED: working stays
-    // true because the input queue still has at least one item.
+    // BUG WAS: working would flip to false here. FIXED: 'second' materializes
+    // into the queue at the terminal, so working stays true (no idle flash).
+    expect(await waitFor(() => (sm.getHistory(info.id) as Array<{ uuid?: string }>).some((m) => m.uuid === (secondMsg as { uuid: string }).uuid))).toBe(true)
     expect(sm.get(info.id).working).toBe(true)
-    // clears as normal.
+    // clears as normal once the materialized turn drains.
     mockHandles[0].emit({ type: 'result' })
-    await tick()
-    await tick()
-    expect(sm.get(info.id).working).toBe(false)
+    expect(await waitFor(() => !sm.get(info.id).working)).toBe(true)
   })
 
   it('subscribe() streams live messages (history read via getHistory)', async () => {
@@ -8909,6 +8910,24 @@ describe('SessionManager', () => {
       })).toBe(true)
     })
 
+    it('T7b-2: mid-turn root prompt is queued-not-published and materializes after the prior result (A,R,U append-only)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await sm.send(info.id, 'turn1')                 // idle → seq 0 (U1)
+      emitAssistant('A', 'reply')                     // seq 1
+      const queued = await sm.send(info.id, 'turn2')  // mid-turn → queued-not-published
+      // No public seq for turn2 yet: headSeq still 2 (U1, A).
+      expect(sm.transcriptHead(info.id)?.headSeq).toBe(2)
+      expect(await waitFor(async () =>
+        (await loadTranscriptRows(info.id)).some((r) => (r as { state?: string }).state === 'queued-not-published'),
+      )).toBe(true)
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: info.id }) // seq 2 (R1)
+      // turn2 materializes AFTER the result: U1,A,R1,U2 (append-only, no rebuild).
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 4)).toBe(true)
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(win.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual([expect.any(String), 'A', 'R', (queued as { uuid: string }).uuid])
+      expect(win.generation).toBe(0)
+    })
+
     it('seq-assigns sent prompts and pump-ingested messages; window reads back by seq', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
       await sm.send(info.id, 'hello')
@@ -9423,6 +9442,11 @@ describe('SessionManager', () => {
         message: { role: 'user', content: 'first' },
       })
       await tick()
+      // T7b: settle the first turn so 'second' is an IDLE send (published
+      // immediately). A mid-turn 'second' would be queued-not-published (no seq
+      // until the turn terminal), but this test needs both prompts in the window.
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r-first', session_id: source.id })
+      expect(await waitFor(() => sm.get(source.id).lastTurnAt !== undefined)).toBe(true)
       await sm.send(source.id, 'second')
       const win2 = await sm.getTranscriptWindow(source.id)
       const serverU2 = (win2.messages.filter((m) => (m.msg as { type?: string }).type === 'user').at(-1)!.msg as { uuid: string }).uuid
@@ -9844,7 +9868,10 @@ describe('SessionManager', () => {
       // queues behind it — that is the prompt the retry must withdraw.
       const { info } = await seedInverted(true)
       const queued = ((await sm.send(info.id, 'queued turn')) as { uuid: string }).uuid
-      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 5)).toBe(true)
+      // T7b: the mid-turn send is queued-not-published — it allocates NO seq, so
+      // headSeq stays at the seed turn's 4 (U,A,N,R). The retry's cancelQueued
+      // interrupt drains the writer queue and withdraws it visibly.
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 4)).toBe(true)
       writeJsonl(info.id, orderedJsonl)
       const frames: Array<{ kind?: string; uuids?: string[] }> = []
       const sub = sm.subscribeMessageStatus(info.id)
@@ -13038,63 +13065,50 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sub!.unsubscribe()
     })
 
-    it('tombstones the withdrawn prompts in the seq store, broadcasts messages-evicted, and does not resurrect them after a restart', async () => {
-      // A queued-only prompt never reaches the SDK JSONL — the sidecar row
-      // recorded at send time (pushToSession → recordTranscriptFor) is its
-      // ONLY durable copy. interrupt(cancelQueued) must tombstone it, or the
-      // restart reconcile hydrates the withdrawal right back.
+    it('withdraws a queued-not-published prompt durably (withdrawn input state, no seq tombstone) and does not resurrect it after a restart', async () => {
+      // T7b: a mid-turn root prompt is queued-not-published — it never reached
+      // the SDK queue and has NO public seq. interrupt(cancelQueued) withdraws it
+      // via a durable `withdrawn` INPUT state (not a seq tombstone, since no seq
+      // exists) + the messages-withdrawn bubble eviction. The restart reconcile
+      // folds only message rows, so the withdrawn prompt cannot reappear.
       const { info, queuedUuids } = await setupQueued(1)
-      const frames: Array<{ kind?: string; uuids?: string[]; seqs?: number[]; generation?: number }> = []
+      const frames: Array<{ kind?: string; uuids?: string[]; seqs?: number[] }> = []
       const sub = sm.subscribeMessageStatus(info.id)
       void (async () => {
-        for await (const v of sub!.iterable) {
-          frames.push(v as { kind?: string; uuids?: string[]; seqs?: number[]; generation?: number })
-        }
+        for await (const v of sub!.iterable) frames.push(v as { kind?: string; uuids?: string[]; seqs?: number[] })
       })()
 
       await sm.interrupt(info.id, { cancelQueued: true })
 
-      // (a) The seq store's window no longer contains the withdrawn prompt
-      // (seq space: in-flight seed = 0, queued-0 = 1).
+      // (a) The seq window holds only the in-flight seed (seq 0); the queued
+      // prompt never allocated a seq.
       await sm.getTranscriptWindow(info.id) // ensure reconcile completed
       const win = await sm.getTranscriptWindow(info.id)
-      const winUuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
-      expect(winUuids).not.toContain(queuedUuids[0])
+      expect(win.messages.map((m) => (m.msg as { uuid?: string }).uuid)).not.toContain(queuedUuids[0])
       expect(win.totalCount).toBe(1)
 
-      // (b) A tombstone row landed in the sidecar file. The send-time append
-      // is fire-and-forget, so under load the file may not exist yet at this
-      // instant — wait for it (the tombstone-row waitFor below already tolerates
-      // the mid-write race; this bare existsSync did not).
+      // (b) The durable record is a `withdrawn` input state keyed by the prompt's
+      // operationId (= its server uuid), NOT a seq tombstone.
       const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
       expect(await waitFor(() => existsSync(sidecarFile))).toBe(true)
-      // Read through the production loader, which deliberately skips a torn
-      // tail (a read can land while the append is mid-write — reliably visible
-      // on Windows). Hand-rolling JSON.parse here made that race a failure.
       const sidecar = new TranscriptSidecar(dir, info.id)
-      const hasTombstoneRow = async (): Promise<boolean> => {
-        const rows = await sidecar.load()
-        return rows.some((r) => r.evicted === true && typeof r.seq === 'number')
-      }
-      expect(await waitFor(hasTombstoneRow)).toBe(true)
+      expect(await waitFor(async () =>
+        (await sidecar.load()).some((r) => (r as { state?: string }).state === 'withdrawn' && (r as { operationId?: string }).operationId === queuedUuids[0]),
+      )).toBe(true)
 
-      // (c) The messages-evicted frame carries the withdrawn prompt's seq
-      // (after the messages-withdrawn frame, same channel).
-      await waitFor(() => frames.some((f) => f.kind === 'messages-evicted'))
-      expect(frames.map((f) => f.kind)).toEqual(['messages-withdrawn', 'messages-evicted'])
-      const evicted = frames.find((f) => f.kind === 'messages-evicted')!
-      expect(evicted.seqs).toEqual([1])
-      expect(evicted.generation).toBe(0)
+      // (c) messages-withdrawn carries the uuid; no seq → no messages-evicted.
+      await waitFor(() => frames.some((f) => f.kind === 'messages-withdrawn'))
+      expect((frames.find((f) => f.kind === 'messages-withdrawn')!.uuids)).toEqual(expect.arrayContaining(queuedUuids))
+      expect(frames.some((f) => f.kind === 'messages-evicted')).toBe(false)
 
-      // Restart shape: a fresh manager over the same state dir rehydrates
-      // from the sidecar — the withdrawn prompt must NOT reappear.
+      // Restart shape: a fresh manager over the same state dir rehydrates from
+      // the sidecar — the withdrawn prompt must NOT reappear.
       const store2 = new SessionStore({ stateDir: dir })
       await store2.load()
       const sm2 = new SessionManager({ store: store2 })
       try {
         const reloaded = await sm2.getTranscriptWindow(info.id)
-        const reloadedUuids = reloaded.messages.map((m) => (m.msg as { uuid?: string }).uuid)
-        expect(reloadedUuids).not.toContain(queuedUuids[0])
+        expect(reloaded.messages.map((m) => (m.msg as { uuid?: string }).uuid)).not.toContain(queuedUuids[0])
         expect(reloaded.totalCount).toBe(1)
       } finally {
         await sm2.shutdown()
@@ -13102,15 +13116,18 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sub!.unsubscribe()
     })
 
-    it('a plain interrupt leaves the queue intact (queued turns start the next turn)', async () => {
+    it('a plain interrupt leaves queued-not-published prompts intact (they materialize at the next turn terminal)', async () => {
       const { info, h, queuedUuids } = await setupQueued(1)
       const removed = await sm.interrupt(info.id)
       expect(removed).toBe(0)
       // The manager forwards opts through; the provider normalizes absent →
       // undefined (the SDK builds the cancel_queued field conditionally).
       expect(h.interrupt).toHaveBeenCalledWith(undefined)
-      const ringUuids = ringOf(info.id).map((m) => m.uuid)
-      expect(ringUuids).toContain(queuedUuids[0])
+      // Not withdrawn, but not published yet either (queued-not-published).
+      expect(ringOf(info.id).map((m) => m.uuid)).not.toContain(queuedUuids[0])
+      // The next turn terminal materializes it — the queued turn starts.
+      mockHandles.at(-1)!.emit({ type: 'result', subtype: 'success', uuid: 'r-plain', session_id: info.id })
+      expect(await waitFor(() => ringOf(info.id).some((m) => m.uuid === queuedUuids[0]))).toBe(true)
     })
 
     it('folds the interrupt receipt cancellations into the withdrawal set (unknown uuids + overlap dedupe)', async () => {
@@ -13129,13 +13146,15 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(ringUuids).not.toContain(queuedUuids[0])
     })
 
-    it('restores drained messages when the interrupt fails', async () => {
+    it('restores queued-not-published prompts when the interrupt fails (they materialize later)', async () => {
       const { info, h, queuedUuids } = await setupQueued(1)
       h.interrupt.mockRejectedValueOnce(new Error('cli died'))
       await expect(sm.interrupt(info.id, { cancelQueued: true })).rejects.toThrow('cli died')
-      // The drained message was re-enqueued, not lost.
-      const ringUuids = ringOf(info.id).map((m) => m.uuid)
-      expect(ringUuids).toContain(queuedUuids[0])
+      // Restored to the writer queue (not lost); no durable withdrawn state was
+      // committed on the failure path, so it still materializes at turn end.
+      expect(ringOf(info.id).map((m) => m.uuid)).not.toContain(queuedUuids[0])
+      mockHandles.at(-1)!.emit({ type: 'result', subtype: 'success', uuid: 'r-restore', session_id: info.id })
+      expect(await waitFor(() => ringOf(info.id).some((m) => m.uuid === queuedUuids[0]))).toBe(true)
     })
 
     /** Read the in-memory promptUuids sidecar via the manager's internals. */
@@ -13397,22 +13416,27 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(typeof entry.consumedAt).toBe('number')
     })
 
-    it('stamps consumedAt on the replayed copy when a queued turn is consumed later', async () => {
+    it('stamps consumedAt on the replayed copy when a queued-not-published turn materializes and is consumed', async () => {
       const info = await sm.create({ cwd: dir })
       const h = mockHandles.at(-1)!
       await sm.send(info.id, 'first') // taken by the parked waiter immediately
-      const queued = await sm.send(info.id, 'second') as { uuid: string } // sits in the queue
+      const queued = await sm.send(info.id, 'second') as { uuid: string } // queued-not-published
       await tick()
-      // Genuinely queued behind the in-flight turn — no stamp yet, so the
-      // 'queued' badge is honest here.
-      expect(replayOf(info.id).find((m) => m.uuid === queued.uuid)!.consumedAt).toBeUndefined()
-      h.emit({
-        type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id,
+      // T7b: not published yet — absent from the replay ring (no seq), so a
+      // fresh tab sees the queued bubble via message-queued, not a ring entry.
+      expect(replayOf(info.id).find((m) => m.uuid === queued.uuid)).toBeUndefined()
+      const result = (uuid: string) => h.emit({
+        type: 'result', subtype: 'success', uuid, session_id: info.id,
         is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {},
       })
-      await tick()
-      await tick()
-      expect(typeof replayOf(info.id).find((m) => m.uuid === queued.uuid)!.consumedAt).toBe('number')
+      // First result is the turn terminal: 'second' materializes into the ring
+      // + SDK input queue (still unconsumed — the 'queued' badge stays honest).
+      result('res-1')
+      expect(await waitFor(() => replayOf(info.id).some((m) => m.uuid === queued.uuid))).toBe(true)
+      // Next result drains it from the SDK queue → consumedAt stamped on the
+      // replay ring copy (the durable half a replay-only client reads).
+      result('res-2')
+      expect(await waitFor(() => typeof replayOf(info.id).find((m) => m.uuid === queued.uuid)?.consumedAt === 'number')).toBe(true)
     })
   })
 
