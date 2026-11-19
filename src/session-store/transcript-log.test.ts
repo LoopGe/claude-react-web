@@ -726,11 +726,10 @@ describe('updateTranscriptMirror', () => {
     expect(next.items.length).toBe(0)
   })
 
-  it('threads the previous item so both items land in order within a batch', () => {
-    // A compact_boundary system frame followed by a user message. The fold
-    // threads `prev` so compact-summary detection (which reads the previous
-    // item) can fire within the batch. We verify both items land in order;
-    // the isCompactSummary derivation itself is covered by normalize tests.
+  it('both items land in order within a batch', () => {
+    // A compact_boundary system frame followed by a user message. The user
+    // message is NOT a summary (the marker is the sole authority — covered
+    // by normalize tests); here we verify both items land in order.
     const boundary = { type: 'system', subtype: 'compact_boundary', uuid: 'cb-1' } as unknown as SdkMessage
     const user = userMsg('hi', 'after-compact', null, 2_000)
     let mirror = freshState().mirror

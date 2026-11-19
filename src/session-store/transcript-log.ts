@@ -115,14 +115,9 @@ const MEMORY_TRIM_SLACK = 256
  *     those two runs element-wise from the boundary inward and drop the
  *     overlap, so a genuinely-older but textually-identical prompt further
  *     back is still preserved.
- *   - We build TranscriptItems for the older batch in order, threading the
- *     `prev` item so compact-summary detection (which looks at the previous
- *     item) works within the batch. The last older item becomes `prev` for
- *     the FIRST existing item — but we deliberately do NOT recompute the
- *     existing items: their isCompactSummary was already settled when they
- *     first arrived, and the only cross-boundary case (an existing first
- *     item that is a user message immediately after a compact_boundary we
- *     just prepended) is vanishingly rare and self-heals on next replay.
+ *   - We build TranscriptItems for the older batch in order. Compact-summary
+ *     identity comes from the frame marker alone (no predecessor context),
+ *     so prepending cannot change any existing item's classification.
  *   - Indexes (toolStatus/planStatus/…) are updated by running ONLY the
  *     older batch through rebuildIndexesFromMessages — NOT a full rebuild. A
  *     full rebuild would clobber statuses that were set out-of-band (e.g. an
@@ -154,16 +149,14 @@ export function prependMessages(
 
   const newItems: TranscriptItem[] = []
   const newMessages: SdkMessage[] = []
-  let prev: TranscriptItem | undefined = undefined
   for (const msg of batch) {
     const uuid = typeof msg.uuid === 'string' ? msg.uuid : null
     if (uuid && existingIds.has(uuid)) continue
-    const item = toTranscriptItem(msg, prev)
+    const item = toTranscriptItem(msg)
     if (!item) continue
     newItems.push(item)
     newMessages.push(item.msg)
     existingIds.add(item.id)
-    prev = item
   }
 
   if (newItems.length === 0) return state
@@ -401,14 +394,12 @@ export function evictMessages(state: SessionState, uuids: string[]): SessionStat
 //
 // Moved from reducer.ts. The single append site for the ordered log.
 
-/** Append one message to the ordered log: derive its TranscriptItem (threading
- *  the previous item so compact-summary detection works), append to both
- *  items and messages, and fold just the new message into activeWorktree
- *  (O(its blocks)). The one append site — every other path that rewrites
- *  `messages` rescans with recomputeActiveWorktree. */
+/** Append one message to the ordered log: derive its TranscriptItem, append
+ *  to both items and messages, and fold just the new message into
+ *  activeWorktree (O(its blocks)). The one append site — every other path
+ *  that rewrites `messages` rescans with recomputeActiveWorktree. */
 export function updateTranscriptMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
-  const prev = mirror.items[mirror.items.length - 1]
-  const item = toTranscriptItem(message, prev)
+  const item = toTranscriptItem(message)
   if (!item) return mirror
 
   return {

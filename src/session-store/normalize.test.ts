@@ -334,7 +334,7 @@ describe('shouldHideByDefault', () => {
       uuid: 'u1',
       parent_tool_use_id: null,
       message: { content: [{ type: 'text', text: '<task-notification><tool-use-id>tu1</tool-use-id><status>completed</status></task-notification>' }] },
-    } as unknown as SdkMessage, undefined)
+    } as unknown as SdkMessage)
     expect(item).not.toBeNull()
     expect(item!.hiddenByDefault).toBe(true)
     expect(item!.id).toBe('u1')
@@ -349,7 +349,7 @@ describe('shouldHideByDefault', () => {
       uuid: 'u2',
       parent_tool_use_id: null,
       message: { content: [{ type: 'text', text: '<task-notification><task-id>t2</task-id><status>stopped</status><summary>x</summary></task-notification>' }] },
-    } as unknown as SdkMessage, undefined)
+    } as unknown as SdkMessage)
     expect(item).not.toBeNull()
     expect(item!.hiddenByDefault).toBe(true)
     expect(item!.id).toBe('u2')
@@ -610,7 +610,19 @@ describe('getSubagentChildStarts', () => {
 })
 
 describe('toTranscriptItem — compact summary identity', () => {
-  it('uses the explicit marker even when compact_boundary is not adjacent', () => {
+  it('a plain user message after a compact_boundary item is NOT a summary (marker is the sole authority)', () => {
+    // The regression: the live summary frame was dropped by the old echo
+    // filter, so the adjacency heuristic mislabeled the next REAL user
+    // message ("继续") as the recap context. The server now stamps the
+    // marker at ingestion; position proves nothing.
+    const user = toTranscriptItem({
+      type: 'user', uuid: 'u-1', parent_tool_use_id: null,
+      message: { role: 'user', content: '继续' }, receivedAt: 2000,
+    } as unknown as SdkMessage)
+    expect(user?.isCompactSummary).toBe(false)
+  })
+
+  it('derives isCompactSummary from the explicit marker (disk replay)', () => {
     const summary = toTranscriptItem({
       type: 'user',
       uuid: 'summary-1',
@@ -618,7 +630,7 @@ describe('toTranscriptItem — compact summary identity', () => {
       message: { role: 'user', content: 'This session is being continued from a previous conversation.' },
       restoredFromDisk: true,
       receivedAt: 100,
-    } as unknown as SdkMessage, undefined)
+    } as unknown as SdkMessage)
     expect(summary?.isCompactSummary).toBe(true)
     expect(summary?.deliveryStatus).toBeUndefined()
   })
@@ -629,13 +641,13 @@ describe('toTranscriptItem — empty result suppression', () => {
     ({ type: 'result', uuid: 'r1', subtype: 'success', is_error: false, num_turns: 0, result: '', total_cost_usd: 0, ...extra } as unknown as SdkMessage)
 
   it('drops a no-op result frame so it never renders a footer', () => {
-    expect(toTranscriptItem(resultMsg({}), undefined)).toBeNull()
+    expect(toTranscriptItem(resultMsg({}))).toBeNull()
   })
 
   it('keeps a real result frame (turns / text / error)', () => {
-    expect(toTranscriptItem(resultMsg({ num_turns: 1, result: 'done' }), undefined)).not.toBeNull()
-    expect(toTranscriptItem(resultMsg({ result: '/usage output' }), undefined)).not.toBeNull()
-    expect(toTranscriptItem(resultMsg({ is_error: true, subtype: 'error_during_execution' }), undefined)).not.toBeNull()
+    expect(toTranscriptItem(resultMsg({ num_turns: 1, result: 'done' }))).not.toBeNull()
+    expect(toTranscriptItem(resultMsg({ result: '/usage output' }))).not.toBeNull()
+    expect(toTranscriptItem(resultMsg({ is_error: true, subtype: 'error_during_execution' }))).not.toBeNull()
   })
 })
 

@@ -100,10 +100,7 @@ export function countCachedMessageSearchMatches(msg: SdkMessage, query: string):
   return countMessageSearchMatches(cachedMessageSearchSegments(msg), query)
 }
 
-export function toTranscriptItem(
-  msg: SdkMessage,
-  prev: TranscriptItem | undefined,
-): TranscriptItem | null {
+export function toTranscriptItem(msg: SdkMessage): TranscriptItem | null {
   if (msg.type === 'stream_event') return null
   // `api_retry` is a TRANSIENT rate-limit-retry indicator routed to
   // `mirror.apiRetry` (see reducer applyMessage) — it never becomes a
@@ -173,12 +170,12 @@ export function toTranscriptItem(
       }
       return plainTextMemo
     },
-    isCompactSummary: Boolean(
-      msg.isCompactSummary ||
-      (msg.type === 'user' &&
-      prev?.msg.type === 'system' &&
-      prev.msg.subtype === 'compact_boundary'),
-    ),
+    // The marker is the SOLE authority: the server stamps isCompactSummary
+    // on the live summary frame at ingestion (pump), and disk frames carry
+    // it natively. Position proves nothing — the old boundary-adjacency
+    // heuristic mislabeled the next real user message whenever the summary
+    // frame was absent (agent note 2026-11-19-user-frame-origin-identity).
+    isCompactSummary: msg.isCompactSummary === true,
     hiddenByDefault,
     // Server-stamped wall-clock time (see SdkMessage.receivedAt). Undefined
     // for disk-restored history — the header hides the timestamp then.

@@ -71,12 +71,10 @@ export function SessionSearchPreview({
   const items = useMemo<TranscriptItem[]>(() => {
     if (!preview.page) return []
     const out: TranscriptItem[] = []
-    let prev: TranscriptItem | undefined
     for (const message of preview.page.messages) {
-      const item = toTranscriptItem(message.msg, prev)
+      const item = toTranscriptItem(message.msg)
       if (item) {
         out.push(item)
-        prev = item
       }
     }
     return out

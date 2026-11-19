@@ -44,13 +44,9 @@ import { stampMessageConsumed, stampMessageSteered } from './transcript-log'
  *  the timestamp shows immediately, before the server broadcast). */
 export function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): SessionState {
   const mirror = state.mirror
-  // Build the placeholder TranscriptItem. `prev` is the last RENDERED item —
-  // which, post-refactor, is whichever placeholder is queued last (insertion
-  // order) or, if none, the tail of mirror.items. We pass mirror tail as the
-  // prev because compact-summary detection only fires on assistant/system
-  // frames, and an optimistic user prompt's predecessor is always a server
-  // frame in practice.
-  const item = toTranscriptItem(message, mirror.items[mirror.items.length - 1])
+  // Build the placeholder TranscriptItem. Compact-summary identity comes
+  // from the frame marker alone, so no predecessor context is needed.
+  const item = toTranscriptItem(message)
   if (!item) return state
 
   // If the server's WS echo already arrived and was appended to mirror.items
@@ -144,9 +140,8 @@ export function ackUserMessage(
     ...(typeof consumedAt === 'number' ? { consumedAt } : {}),
   }
   // Re-derive the TranscriptItem with the new uuid so its id matches the
-  // server's. `prev` is unknown at this point — we pass undefined; compact-
-  // summary detection on a user prompt is always false, so it's harmless.
-  const rebuilt = toTranscriptItem(msg, undefined)
+  // server's.
+  const rebuilt = toTranscriptItem(msg)
   if (!rebuilt) {
     // Couldn't rebuild — drop the placeholder anyway so the spinner clears.
     const next = new Map(state.intent.pendingPlaceholders)
@@ -231,7 +226,7 @@ export function applyMessageConsumed(
       && placeholder.msg.consumedAt === consumedAt
     ) return state
     const nextMsg: SdkMessage = { ...placeholder.msg, consumedAt }
-    const rebuilt = toTranscriptItem(nextMsg, undefined)
+    const rebuilt = toTranscriptItem(nextMsg)
     const updated: TranscriptItem = rebuilt
       ? { ...rebuilt, sending: placeholder.sending, optimisticSourceId: placeholder.optimisticSourceId }
       : { ...placeholder, msg: nextMsg, deliveryStatus: 'consumed' }

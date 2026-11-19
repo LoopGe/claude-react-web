@@ -22,6 +22,9 @@ export interface VisibilityShape {
   subtype?: string
   parent_tool_use_id?: string | null
   isCompactSummary?: boolean
+  /** Disk meta marker; the pump stamps it on live synthetic injections
+   *  (skill content, caveats) whose disk copies carry it. */
+  isMeta?: unknown
   message?: unknown
 }
 
@@ -52,6 +55,8 @@ export function shouldHideByDefault(msg: VisibilityShape): boolean {
     msg.subtype !== 'plugin_install'
   ) return true
   if (msg.type === 'user' && isLocalCommandLogUserMessage(msg)) return true
+  // Meta injections (skill content, caveats): never human input, never a row.
+  if (msg.type === 'user' && msg.isMeta === true) return true
   // Background-task completion injection — its output is routed to the
   // TasksPanel (TaskResultStore-backed), not the transcript.
   //

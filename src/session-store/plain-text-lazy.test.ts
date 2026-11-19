@@ -88,7 +88,7 @@ describe('toTranscriptItem keeps plainText lazy', () => {
   })
 
   it('does not touch the markdown pipeline when the item is built', () => {
-    const item = toTranscriptItem(assistant('Hello **world**\n\n```js\n1\n```'), undefined)
+    const item = toTranscriptItem(assistant('Hello **world**\n\n```js\n1\n```'))
     expect(item).not.toBeNull()
     expect(
       mockedExtract,
@@ -98,7 +98,7 @@ describe('toTranscriptItem keeps plainText lazy', () => {
 
   it('derives plainText on first read, and only once (undefined memo recomputes)', () => {
     const msg = assistant('Hello **world**')
-    const item = toTranscriptItem(msg, undefined)!
+    const item = toTranscriptItem(msg)!
     expect(mockedExtract).not.toHaveBeenCalled()
 
     const first = item.plainText
@@ -117,7 +117,7 @@ describe('toTranscriptItem keeps plainText lazy', () => {
     // same way a memoized string does — this is the contract the deleted
     // `cachedPlainText: null` parameter used to express at the call site.
     const msg = imageOnlyUser()
-    const item = toTranscriptItem(msg, undefined)!
+    const item = toTranscriptItem(msg)!
     expect(mockedExtract).not.toHaveBeenCalled()
 
     const first = item.plainText
@@ -132,21 +132,21 @@ describe('toTranscriptItem keeps plainText lazy', () => {
 
   it('a page of messages costs no parse work at build time', () => {
     const built = Array.from({ length: 200 }, (_, i) =>
-      toTranscriptItem(assistant('## Heading\n\n```py\nprint(' + i + ')\n```'), undefined),
+      toTranscriptItem(assistant('## Heading\n\n```py\nprint(' + i + ')\n```')),
     )
     expect(built).toHaveLength(200)
     expect(mockedExtract).not.toHaveBeenCalled()
   })
 
-  it('accepts exactly two arguments (the third cachedPlainText parameter was deleted)', () => {
-    // Compile-time assertion. The legacy `cachedPlainText` parameter was
-    // removed from `toTranscriptItem`, so passing a third argument is now a
-    // type error. `@ts-expect-error` suppresses it; if the parameter still
-    // existed the directive itself would error ("Unused '@ts-expect-error'
-    // directive"), failing typecheck — which is exactly how this locks the
-    // two-argument signature in.
-    // @ts-expect-error toTranscriptItem accepts exactly two arguments now
-    const item = toTranscriptItem(assistant('x'), undefined, 'legacy-cache')
+  it('accepts exactly one argument (cachedPlainText and prev parameters were deleted)', () => {
+    // Compile-time assertion. The legacy `cachedPlainText` parameter and the
+    // compact-summary `prev` parameter were removed from `toTranscriptItem`,
+    // so passing a second argument is now a type error. `@ts-expect-error`
+    // suppresses it; if the parameter still existed the directive itself
+    // would error ("Unused '@ts-expect-error' directive"), failing typecheck
+    // — which is exactly how this locks the one-argument signature in.
+    // @ts-expect-error toTranscriptItem accepts exactly one argument now
+    const item = toTranscriptItem(assistant('x'), 'legacy-cache')
     expect(item).not.toBeNull()
   })
 })
@@ -159,7 +159,7 @@ describe('cached independent search projection', () => {
 
   it('extracts once per immutable message across repeated gates without forcing plainText', () => {
     const msg = assistant('report **value**')
-    const item = toTranscriptItem(msg, undefined)!
+    const item = toTranscriptItem(msg)!
     expect(mockedSearchSegments).not.toHaveBeenCalled()
     expect(mockedExtract).not.toHaveBeenCalled()
 

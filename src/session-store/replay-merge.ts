@@ -389,7 +389,7 @@ function replaceStaleCachedMessages(state: SessionState, incoming: SdkMessage[])
     // holds for a degraded copy and rarely for an intact one. Only runs for
     // uuid matches (the overlap bracket).
     if (contentShape(cached) === contentShape(msg)) continue
-    const rebuilt = toTranscriptItem(msg, items[idx - 1])
+    const rebuilt = toTranscriptItem(msg)
     const item = rebuilt && items[idx].optimisticSourceId
       ? { ...rebuilt, optimisticSourceId: items[idx].optimisticSourceId }
       : rebuilt

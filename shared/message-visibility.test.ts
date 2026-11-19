@@ -24,4 +24,12 @@ describe('shouldHideByDefault', () => {
   it('keeps ordinary user/assistant messages', () => {
     expect(shouldHideByDefault({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } })).toBe(false)
   })
+
+  it('hides isMeta user frames (live skill injections stamped by the pump)', () => {
+    expect(shouldHideByDefault({
+      type: 'user',
+      isMeta: true,
+      message: { content: [{ type: 'text', text: 'Base directory for this skill: /tmp/s' }] },
+    } as Parameters<typeof shouldHideByDefault>[0])).toBe(true)
+  })
 })
