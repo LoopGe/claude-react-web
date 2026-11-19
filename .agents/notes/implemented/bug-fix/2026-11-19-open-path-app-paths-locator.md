@@ -59,6 +59,42 @@ does not carry — the raw contract is what the route tests' mock faithfully
 simulates. It sets `windowsHide: true`, the repo's uniform execFile discipline
 (a console child must not flash a window on console-less hosts).
 
+Directory launches spawn DETACHED (`stdio: 'ignore'`) and settle at
+spawn-failure, an exit inside a 1.5 s early-failure watch window, or the
+window closing with the child still running — never at the app's eventual
+exit, and the child is never killed. The first shipped version waited for
+exit under a 10 s execFile timeout, which TERMINATED first-instance editors:
+on Windows a first-instance `Code.exe` IS the Electron main process and lives
+as long as its window, so VS Code opened and was killed ~10 s later (server
+metrics showed the POSTs at 10–30 s; the toast carried the child's startup
+stderr). The watch-window model preserves the chain semantics the short-lived
+launchers need (ENOENT fall-through, `open -a` nonzero-exit fall-through, the
+explorer exit-1 quirk) while a long-lived launcher counts as launched at the
+window — the same model as DSH's `launchDetachedApp`. The settle contract is
+declared PER CANDIDATE (`exitsByContract` on the catalog row / OS-generic
+launch row), by what the launcher IS — not by target name, because the same
+argv appears under two targets with one contract (`wt -d` is both the win32
+generic terminal and the windowsterminal brand row), and a target's rows can
+mix contracts (the linux terminal chain). Exit-by-contract openers (`open`,
+`open -a`, `explorer`, `xdg-open`, `gnome-terminal`, `konsole`) wait for exit
+via `launchAndWait` under a 10 s timeout that kills a wedged opener (a
+timeout kill is a failure outcome — on Windows TerminateProcess surfaces as
+exit code 1, which must not be mistaken for the explorer exit-1 success
+quirk). Everything that may live as long as its window — first-instance
+editors, `wt` (a first-instance wt.exe IS the terminal window process),
+`x-terminal-emulator` (the Debian alternative can be xterm, which never
+exits), direct exe/CLI launchers — uses `launchDetached` with the 1.5 s
+window ANCHORED AT THE SPAWN EVENT (a slow spawn must not run the window out
+before the process exists); the browser case uses watch 0 (settle at the
+`spawn` event itself). Both feed ONE outcome chain (ENOENT fall-through,
+nonzero-exit fall-through, the explorer quirk). The detached child's error
+listener is PERSISTENT: a long-lived child can emit more than one 'error',
+and an unlistened 'error' event throws as an uncaught exception. Any error
+before settle is a failure outcome (a post-spawn error inside the window
+must not answer 200); an error after settle is logged, not swallowed
+silently; a synchronous `spawn` / `execFile` throw (invalid argv) folds into
+the same outcome shape so the candidate chain still sees it.
+
 ## Alternatives considered
 
 **reg.exe with utf8 decoding (the DSH runner's choice).** Lost: measured on
@@ -103,7 +139,12 @@ including non-ASCII install directories; the probe/launch single-source
 invariant holds. Cost: one PowerShell spawn per registry-backed target per
 `/apps` or POST request on win32 (hundreds of milliseconds cold, bounded at
 10 s; the registry row is tried first so it short-circuits the fixed paths
-when it hits). `/apps` probes targets concurrently, so the registry-backed
+when it hits). A genuine early launch failure surfaces as an exit code, not
+the child's stderr: stdio is ignored on purpose, because holding a stderr
+pipe past the watch window would either block a chatty long-lived child when
+the buffer fills or EPIPE it when the pipe is destroyed — the diagnostic
+cost is knowingly accepted (DSH makes the same choice). `/apps` probes
+targets concurrently, so the registry-backed
 brands overlap their cold starts and the endpoint costs roughly one query,
 not one per brand; a POST launch still pays one fresh query (the launch-time
 fact is deliberately not memoized). Cursor and Zed keep their
@@ -130,7 +171,9 @@ reference syntaxes. `server/routes/open-path.test.ts` pins registry-only
 detection, the launch-chain order, route-level query fixtures verified
 against the real fs (the stub answers only the query naming the given exe, so
 one app's registry fact can never prove another), and Kiro on all three
-platforms. Client pins: `BrandIcons.test.tsx` key set,
+platforms, and the launch model: a still-running launcher counts as launched
+and is never killed, early nonzero exits still fall through per row semantics.
+Client pins: `BrandIcons.test.tsx` key set,
 `tokens.brand-vars.test.ts` theme pairing and official light hex,
 `SessionContextMenu.test.tsx` flyout label list. Real-machine verification on
 the reporting host: `availableAppsFor` → `['vscode', 'kiro']`, launch chains →

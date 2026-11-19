@@ -65,10 +65,30 @@ function stubSpawnEvent(event: 'spawn' | 'error', error?: Error) {
     child.unref = vi.fn()
     process.nextTick(() => {
       if (event !== 'error' || child.listenerCount('error') > 0) child.emit(event, error)
+      // A short-lived launcher (shell openers, CLI shims) exits right after
+      // spawning; the default stub models that so requests settle at once.
+      if (event === 'spawn') child.emit('exit', 0, null)
     })
     return child
   })
 }
+
+/** A launcher that SPAWNS and then stays alive — the first-instance editor
+ *  case (the Electron main process lives as long as its window). `kill` is a
+ *  spy so a test can pin that the server never terminates it. */
+function stubSpawnLongLived(): { kills: Array<() => void> } {
+  const kills: Array<() => void> = []
+  spawnMock.mockImplementation(() => {
+    const child = new EventEmitter() as SpawnChild & { kill: () => void }
+    child.unref = vi.fn()
+    child.kill = vi.fn()
+    kills.push(child.kill)
+    process.nextTick(() => child.emit('spawn'))
+    return child
+  })
+  return { kills }
+}
+
 
 beforeEach(async () => {
   execFileMock.mockReset()
@@ -121,6 +141,7 @@ describe('POST /open-path', () => {
     )
     expect(res.status).toBe(403)
     expect(await res.json()).toMatchObject({ reason: 'non_local' })
+    expect(spawnMock).not.toHaveBeenCalled()
     expect(execFileMock).not.toHaveBeenCalled()
   })
 
@@ -159,6 +180,7 @@ describe('POST /open-path', () => {
     )
     expect(res.status).toBe(400)
     expect(execFileMock).not.toHaveBeenCalled()
+    expect(spawnMock).not.toHaveBeenCalled()
   })
 
   it('rejects a non-existent path', async () => {
@@ -171,6 +193,7 @@ describe('POST /open-path', () => {
     )
     expect(res.status).toBe(400)
     expect(execFileMock).not.toHaveBeenCalled()
+    expect(spawnMock).not.toHaveBeenCalled()
   })
 
   it('rejects a path that is a file, not a directory', async () => {
@@ -179,8 +202,13 @@ describe('POST /open-path', () => {
     const res = await req(makeApp(), 'POST', '/open-path', { path: file, target: 'finder' }, '127.0.0.1')
     expect(res.status).toBe(400)
     expect(execFileMock).not.toHaveBeenCalled()
+    expect(spawnMock).not.toHaveBeenCalled()
   })
 
+  // finder/terminal launchers are OS shell openers: they EXIT by contract
+  // (open / explorer / wt / xdg-open / DE terminals), so the request waits
+  // for their exit under a timeout — a wedged opener must surface as a
+  // failure, not be counted launched and orphaned.
   it('spawns `open -R` for finder on darwin', async () => {
     const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'finder' }, '127.0.0.1')
     expect(res.status).toBe(200)
@@ -205,11 +233,11 @@ describe('POST /open-path', () => {
     await req(app, 'POST', '/open-path', { path: tmpDir, target: 'finder' }, '127.0.0.1')
     expect(execFileMock).toHaveBeenCalledWith('xdg-open', [tmpDir], expect.anything(), expect.anything())
     await req(app, 'POST', '/open-path', { path: tmpDir, target: 'terminal' }, '127.0.0.1')
-    expect(execFileMock).toHaveBeenCalledWith(
+    // The Debian alternative's contract is unknown (xterm never exits) → watch.
+    expect(spawnMock).toHaveBeenCalledWith(
       'x-terminal-emulator',
       [`--working-directory=${tmpDir}`],
-      expect.anything(),
-      expect.anything(),
+      expect.objectContaining({ detached: true, stdio: 'ignore' }),
     )
   })
 
@@ -218,8 +246,27 @@ describe('POST /open-path', () => {
     const app = makeApp()
     await req(app, 'POST', '/open-path', { path: tmpDir, target: 'finder' }, '127.0.0.1')
     expect(execFileMock).toHaveBeenCalledWith('explorer', [tmpDir], expect.anything(), expect.anything())
+    // wt is NOT exit-by-contract: a first-instance wt.exe IS the terminal
+    // window process, so it gets the detached watch, never the timeout kill.
     await req(app, 'POST', '/open-path', { path: tmpDir, target: 'terminal' }, '127.0.0.1')
-    expect(execFileMock).toHaveBeenCalledWith('wt', ['-d', tmpDir], expect.anything(), expect.anything())
+    expect(spawnMock).toHaveBeenCalledWith('wt', ['-d', tmpDir], expect.objectContaining({ detached: true, stdio: 'ignore' }))
+  })
+
+  it('a first-instance terminal (long-lived wt) is never killed', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { kills } = stubSpawnLongLived()
+    try {
+      platformMock.mockReturnValue('win32')
+      const pending = req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'terminal' }, '127.0.0.1')
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+      await vi.advanceTimersByTimeAsync(1500)
+      const res = await pending
+      expect(res.status).toBe(200)
+      expect(kills).toHaveLength(1)
+      expect(kills[0]).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('treats explorer exit code 1 as success (documented explorer.exe quirk)', async () => {
@@ -234,36 +281,88 @@ describe('POST /open-path', () => {
     expect(await res.json()).toEqual({ ok: true })
   })
 
+  it('a maxBuffer-killed opener is an output-size failure, not a timeout', async () => {
+    execFileMock.mockImplementation((_f, _a, _o, cb) => {
+      const err = new Error('stdout maxBuffer length exceeded') as Error & { code: string; killed: boolean }
+      err.code = 'ENOBUFS'
+      err.killed = true
+      cb(err)
+    })
+    const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'finder' }, '127.0.0.1')
+    expect(res.status).toBe(500)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toContain('maxBuffer')
+    expect(body.error).not.toContain('timed out')
+  })
+
+  it('a signal-killed launcher reports the signal, not a null exit code', async () => {
+    spawnMock.mockImplementation(() => {
+      const child = new EventEmitter() as SpawnChild
+      child.unref = vi.fn()
+      process.nextTick(() => {
+        child.emit('spawn')
+        child.emit('exit', null, 'SIGKILL')
+      })
+      return child
+    })
+    platformMock.mockReturnValue('linux')
+    const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
+    expect(res.status).toBe(500)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toContain('SIGKILL')
+  })
+
+  it('a timeout-killed opener is a failure, not the explorer exit-1 quirk', async () => {
+    platformMock.mockReturnValue('win32')
+    execFileMock.mockImplementation((_f, _a, _o, cb) => {
+      const err = new Error('timed out') as Error & { code: number; killed: boolean }
+      err.code = 1 // Windows TerminateProcess surfaces as exit code 1
+      err.killed = true
+      cb(err)
+    })
+    const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'finder' }, '127.0.0.1')
+    expect(res.status).toBe(500)
+  })
+
   it('falls through the linux terminal candidates on ENOENT', async () => {
     platformMock.mockReturnValue('linux')
-    const spawned: string[] = []
-    execFileMock.mockImplementation((file, _args, _opts, cb) => {
-      spawned.push(file as string)
-      if (file === 'x-terminal-emulator') {
+    const tried: string[] = []
+    // x-terminal-emulator is an unknown alternative (may be a long-lived
+    // xterm) → detached watch; gnome-terminal forks and exits → wait.
+    spawnMock.mockImplementation((file) => {
+      tried.push(file as string)
+      const child = new EventEmitter() as SpawnChild
+      child.unref = vi.fn()
+      process.nextTick(() => {
         const err = new Error('spawn ENOENT') as Error & { code: string }
         err.code = 'ENOENT'
-        cb(err)
-      } else {
-        cb(null)
-      }
+        child.emit('error', err)
+      })
+      return child
+    })
+    execFileMock.mockImplementation((file, _args, _opts, cb) => {
+      tried.push(file as string)
+      cb(null, '', '')
     })
     const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'terminal' }, '127.0.0.1')
     expect(res.status).toBe(200)
-    expect(spawned).toEqual(['x-terminal-emulator', 'gnome-terminal'])
+    expect(tried).toEqual(['x-terminal-emulator', 'gnome-terminal'])
   })
 
   it('does not fall through on a non-ENOENT failure', async () => {
     platformMock.mockReturnValue('linux')
-    const spawned: string[] = []
-    execFileMock.mockImplementation((file, _args, _opts, cb) => {
-      spawned.push(file as string)
-      const err = new Error('launch failed') as Error & { code: number }
-      err.code = 126
-      cb(err)
+    spawnMock.mockImplementation(() => {
+      const child = new EventEmitter() as SpawnChild
+      child.unref = vi.fn()
+      process.nextTick(() => {
+        child.emit('spawn')
+        child.emit('exit', 126, null)
+      })
+      return child
     })
     const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'terminal' }, '127.0.0.1')
     expect(res.status).toBe(500)
-    expect(spawned).toEqual(['x-terminal-emulator'])
+    expect(spawnMock).toHaveBeenCalledTimes(1)
   })
 
   it('rejects a loopback-socket request whose Host header is not loopback (DNS rebinding)', async () => {
@@ -275,6 +374,7 @@ describe('POST /open-path', () => {
     })
     expect(res.status).toBe(403)
     expect(execFileMock).not.toHaveBeenCalled()
+    expect(spawnMock).not.toHaveBeenCalled()
     const cap = await app.request('/open-path/capability', { headers: { host: 'evil.example.com' } })
     expect(await cap.json()).toEqual({ local: false })
   })
@@ -429,10 +529,10 @@ describe('brand targets', () => {
     platformMock.mockReturnValue('linux')
     const app = makeApp()
     for (const target of ['vscode', 'cursor', 'zed']) {
-      execFileMock.mockClear()
+      spawnMock.mockClear()
       await req(app, 'POST', '/open-path', { path: tmpDir, target }, '127.0.0.1')
-      expect(execFileMock).toHaveBeenCalledTimes(1)
-      const [file, args] = execFileMock.mock.calls[0]!
+      expect(spawnMock).toHaveBeenCalledTimes(1)
+      const [file, args] = spawnMock.mock.calls[0]!
       expect(file).toBe(target === 'vscode' ? 'code' : target)
       expect(args).toEqual([tmpDir])
     }
@@ -445,11 +545,10 @@ describe('brand targets', () => {
       platformMock.mockReturnValue('win32')
       const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
       expect(res.status).toBe(200)
-      expect(execFileMock).toHaveBeenCalledWith(
+      expect(spawnMock).toHaveBeenCalledWith(
         '/w/LocalAppData/Programs/Microsoft VS Code/Code.exe',
         [tmpDir],
-        expect.anything(),
-        expect.anything(),
+        expect.objectContaining({ detached: true, stdio: 'ignore' }),
       )
     } finally {
       delete process.env.LOCALAPPDATA
@@ -457,28 +556,209 @@ describe('brand targets', () => {
     }
   })
 
+  // The recorded acceptance defect: a first-instance editor IS the Electron
+  // main process and lives as long as its window. Waiting for its exit (the
+  // old execFile timeout) killed VS Code ~10s after it opened. A still-running
+  // launcher must count as launched at the watch window and never be killed.
+  it('counts a still-running launcher as launched and never kills it', async () => {
+    // Only the watch timer is faked: the handler's real fs/microtask turns
+    // must keep running (faking setImmediate would freeze the advance loop).
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    process.env.LOCALAPPDATA = '/w/LocalAppData'
+    process.env.ProgramFiles = '/w/ProgramFiles'
+    const { kills } = stubSpawnLongLived()
+    try {
+      platformMock.mockReturnValue('win32')
+      const pending = req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+      await vi.advanceTimersByTimeAsync(1500)
+      const res = await pending
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(spawnMock).toHaveBeenCalledWith(
+        '/w/LocalAppData/Programs/Microsoft VS Code/Code.exe',
+        [tmpDir],
+        expect.objectContaining({ detached: true, stdio: 'ignore' }),
+      )
+      expect(kills).toHaveLength(1)
+      expect(kills[0]).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+      delete process.env.LOCALAPPDATA
+      delete process.env.ProgramFiles
+    }
+  })
+
+  it('a nonzero exit after the watch window never flips a launched outcome', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    process.env.LOCALAPPDATA = '/w/LocalAppData'
+    process.env.ProgramFiles = '/w/ProgramFiles'
+    let launched: EventEmitter | null = null
+    spawnMock.mockImplementation(() => {
+      const child = new EventEmitter() as SpawnChild
+      child.unref = vi.fn()
+      launched = child
+      process.nextTick(() => child.emit('spawn'))
+      return child
+    })
+    try {
+      platformMock.mockReturnValue('win32')
+      const pending = req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
+      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+      await vi.advanceTimersByTimeAsync(1500)
+      const res = await pending
+      expect(res.status).toBe(200)
+      // The window already counted the launcher launched; its late exit is
+      // swallowed, never turned into a failure or an unhandled rejection.
+      launched!.emit('exit', 1, null)
+      expect(res.status).toBe(200)
+    } finally {
+      vi.useRealTimers()
+      delete process.env.LOCALAPPDATA
+      delete process.env.ProgramFiles
+    }
+  })
+
+  it('surfaces a post-spawn error inside the watch window as a failure', async () => {
+    spawnMock.mockImplementation(() => {
+      const child = new EventEmitter() as SpawnChild
+      child.unref = vi.fn()
+      process.nextTick(() => {
+        child.emit('spawn')
+        child.emit('error', new Error('post-spawn handle failure'))
+      })
+      return child
+    })
+    platformMock.mockReturnValue('linux')
+    const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
+    expect(res.status).toBe(500)
+  })
+
+  it('folds a synchronous spawn throw into the candidate chain', async () => {
+    platformMock.mockReturnValue('linux')
+    const tried: string[] = []
+    spawnMock.mockImplementation((file) => {
+      tried.push(file as string)
+      const err = new Error('spawn ENOENT') as Error & { code: string }
+      err.code = 'ENOENT'
+      throw err
+    })
+    execFileMock.mockImplementation((file, _args, _opts, cb) => {
+      tried.push(file as string)
+      cb(null, '', '')
+    })
+    const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'terminal' }, '127.0.0.1')
+    expect(res.status).toBe(200)
+    expect(tried).toEqual(['x-terminal-emulator', 'gnome-terminal'])
+  })
+
+  it('the watch window starts at the spawn event, not the spawn call', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let launched: EventEmitter | null = null
+    spawnMock.mockImplementation(() => {
+      const child = new EventEmitter() as SpawnChild
+      child.unref = vi.fn()
+      launched = child
+      return child
+    })
+    try {
+      platformMock.mockReturnValue('linux')
+      const pending = req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
+      for (let i = 0; i < 100 && spawnMock.mock.calls.length === 0; i++) {
+        await new Promise((r) => setImmediate(r))
+      }
+      // A slow spawn (AV scan, network path): the window must not run out
+      // before the process exists.
+      await vi.advanceTimersByTimeAsync(1500)
+      let settled = false
+      void Promise.resolve(pending).then(() => {
+        settled = true
+      })
+      await new Promise((r) => setImmediate(r))
+      expect(settled).toBe(false)
+      launched!.emit('spawn')
+      await vi.advanceTimersByTimeAsync(1500)
+      const res = await pending
+      expect(res.status).toBe(200)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a spawn failure after the would-be window is still a failure', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let launched: EventEmitter | null = null
+    spawnMock.mockImplementation(() => {
+      const child = new EventEmitter() as SpawnChild
+      child.unref = vi.fn()
+      launched = child
+      return child
+    })
+    try {
+      platformMock.mockReturnValue('linux')
+      const pending = req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
+      for (let i = 0; i < 100 && spawnMock.mock.calls.length === 0; i++) {
+        await new Promise((r) => setImmediate(r))
+      }
+      await vi.advanceTimersByTimeAsync(1500)
+      launched!.emit('error', new Error('spawn failed late'))
+      const res = await pending
+      expect(res.status).toBe(500)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a browser launch settles at spawn, not at a timer tick', async () => {
+    const file = `${tmpDir}/page.html`
+    await writeFile(file, '<h1>Hello</h1>')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    stubSpawnLongLived()
+    try {
+      const pending = req(makeApp(), 'POST', '/open-path', { path: file, target: 'browser' }, '127.0.0.1')
+      // Real setImmediate turns (not faked) let the handler reach spawn;
+      // vi.waitFor would advance the faked timers and hide the distinction.
+      for (let i = 0; i < 100 && spawnMock.mock.calls.length === 0; i++) {
+        await new Promise((r) => setImmediate(r))
+      }
+      expect(spawnMock).toHaveBeenCalled()
+      // No timer advance: the spawn event alone must settle the request.
+      const res = await pending
+      expect(res.status).toBe(200)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('404s a brand target that has no candidates on this platform', async () => {
     platformMock.mockReturnValue('linux')
     const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'iterm2' }, '127.0.0.1')
     expect(res.status).toBe(404)
-    expect(execFileMock).not.toHaveBeenCalled()
+    expect(spawnMock).not.toHaveBeenCalled()
   })
 
-  it('falls through darwin candidates on ENOENT (bundle missing, CLI fallback)', async () => {
-    const spawned: string[] = []
+  it('falls through darwin candidates on a nonzero exit (bundle missing, CLI fallback)', async () => {
+    const tried: string[] = []
     execFileMock.mockImplementation((file, _args, _opts, cb) => {
-      spawned.push(file as string)
-      if (file === 'open') {
-        const err = new Error('not found') as Error & { code: number }
-        err.code = 1 // `open -a` reports a missing app as a nonzero exit, not ENOENT
-        cb(err)
-      } else {
-        cb(null)
-      }
+      tried.push(file as string)
+      // `open -a` reports a missing app as a nonzero exit, not ENOENT
+      const err = new Error('not found') as Error & { code: number }
+      err.code = 1
+      cb(err)
+    })
+    spawnMock.mockImplementation((file) => {
+      tried.push(file as string)
+      const child = new EventEmitter() as SpawnChild
+      child.unref = vi.fn()
+      process.nextTick(() => {
+        child.emit('spawn')
+        child.emit('exit', 0, null)
+      })
+      return child
     })
     const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
     expect(res.status).toBe(200)
-    expect(spawned).toEqual(['open', 'code'])
+    expect(tried).toEqual(['open', 'code'])
   })
 
   it('spawns `open -a Kiro` for kiro on darwin', async () => {
@@ -509,7 +789,7 @@ describe('brand targets', () => {
     stubAppPaths('Code.exe', exe)
     const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
     expect(res.status).toBe(200)
-    expect(execFileMock).toHaveBeenCalledWith(exe, [tmpDir], expect.anything(), expect.anything())
+    expect(spawnMock).toHaveBeenCalledWith(exe, [tmpDir], expect.objectContaining({ detached: true, stdio: 'ignore' }))
   })
 
   it('GET /apps offers vscode proven only by the registry', async () => {
@@ -529,7 +809,7 @@ describe('brand targets', () => {
     stubAppPaths('Kiro.exe', exe)
     const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'kiro' }, '127.0.0.1')
     expect(res.status).toBe(200)
-    expect(execFileMock).toHaveBeenCalledWith(exe, [tmpDir], expect.anything(), expect.anything())
+    expect(spawnMock).toHaveBeenCalledWith(exe, [tmpDir], expect.objectContaining({ detached: true, stdio: 'ignore' }))
   })
 })
 
