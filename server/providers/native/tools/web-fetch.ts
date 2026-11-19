@@ -5,7 +5,7 @@
 // per-session factory rather than a static ToolDef because the aux call needs
 // the session's model and profile credentials.
 import { callAnthropicMessages } from '../../../anthropic-api.js'
-import type { ProviderProfile } from '../../../config.js'
+import type { ProviderProfile } from '../../../../shared/profile.js'
 import { capToolText } from './bash.js'
 import { ToolInputError, type ToolDef } from './types.js'
 import { fetchWeb } from './web.js'

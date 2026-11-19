@@ -5,7 +5,8 @@
 // Registration lives in ../default-providers.ts alongside ClaudeProvider.
 
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
-import { config, DEFAULT_PROFILE, type ProviderProfile, type ServerConfig } from '../../config.js'
+import { config, DEFAULT_PROFILE, type ServerConfig } from '../../config.js'
+import type { ProviderProfile } from '../../../shared/profile.js'
 import { resolveActiveProfile } from '../../profiles.js'
 import { HttpError } from '../../errors.js'
 import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../../history-reader.js'
