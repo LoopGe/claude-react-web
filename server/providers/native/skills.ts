@@ -13,7 +13,8 @@
 
 import { promises as fs } from 'node:fs'
 import { dirname } from 'node:path'
-import { MAX_SKILL_BYTES, listSkills } from '../../skills.js'
+import { listSkills } from '../../skills.js'
+import { MAX_SKILL_BYTES } from '../../../shared/skills.js'
 import type { SkillRecord } from '../../../shared/skills.js'
 import { createLogger } from '../../log.js'
 import { renderNativeSkillBody } from './skill-render.js'

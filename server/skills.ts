@@ -7,26 +7,16 @@ import { MAX_SKILL_IMPORT_TOTAL_BYTES } from './constants.js'
 
 const log = createLogger('skills-core')
 import type { SkillImportFile, SkillRecord, SkillRootInfo, SkillScope, SkillValidationResponse } from '../shared/skills.js'
-import { SKILL_SOURCE_FILE } from '../shared/skills.js'
+import { MAX_SKILL_BYTES, SKILL_SOURCE_FILE, VALID_SKILL_NAME, parseSkillFrontmatter } from '../shared/skills.js'
+
+// The SKILL.md frontmatter parser + size cap live in shared/skills.ts
+// (neutral, host-free); this module re-exports them so host consumers can
+// keep importing from here.
+export { MAX_SKILL_BYTES, parseSkillFrontmatter } from '../shared/skills.js'
+export type { ParsedSkillFrontmatter } from '../shared/skills.js'
 
 const SKILL_FILE = 'SKILL.md'
-export const MAX_SKILL_BYTES = 1024 * 1024
 const MAX_SKILL_IMPORT_FILES = 200
-const VALID_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
-
-interface ParsedSkillFrontmatter {
-  name?: string
-  description?: string
-  /** `disable-model-invocation: true` — the Skill tool must refuse it. */
-  disableModelInvocation?: boolean
-  /** `user-invocable: false` — hidden from the `/` command catalog. */
-  userInvocable?: boolean
-  /** `argument-hint: '[topic]'` — shown beside the command. */
-  argumentHint?: string
-  /** Raw text after the closing delimiter; absent only for structural failures. */
-  body?: string
-  errors: string[]
-}
 
 export interface SkillWriteInput {
   scope: SkillScope
@@ -94,69 +84,6 @@ function assertValidSkillName(name: string): string {
   }
   if (trimmed === '.' || trimmed === '..') throw new HttpError(400, 'Invalid skill name')
   return trimmed
-}
-
-function parseScalar(value: string): string {
-  const trimmed = value.trim()
-  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-    return trimmed.slice(1, -1).trim()
-  }
-  return trimmed
-}
-
-export function parseSkillFrontmatter(content: string): ParsedSkillFrontmatter {
-  const errors: string[] = []
-  const normalized = content.replace(/^\uFEFF/, '')
-  const lines = normalized.split(/\r?\n/)
-  if (lines[0]?.trim() !== '---') {
-    return { errors: ['SKILL.md must start with YAML frontmatter delimited by ---'] }
-  }
-  const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---')
-  if (end < 0) return { errors: ['SKILL.md frontmatter is missing closing ---'] }
-
-  // Keep the body byte-for-byte (apart from the BOM already removed above):
-  // line-ending preservation matters because this text becomes the durable
-  // native skill invocation, while `lines` remains the metadata parser's view.
-  let bodyStart = 0
-  for (let index = 0; index <= end; index++) {
-    bodyStart += lines[index].length
-    if (normalized.startsWith('\r\n', bodyStart)) bodyStart += 2
-    else if (normalized[bodyStart] === '\n') bodyStart += 1
-  }
-  const body = normalized.slice(bodyStart)
-
-  let name: string | undefined
-  let description: string | undefined
-  let disableModelInvocation: boolean | undefined
-  let userInvocable: boolean | undefined
-  let argumentHint: string | undefined
-  for (const line of lines.slice(1, end)) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    const match = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(trimmed)
-    if (!match) continue
-    const key = match[1]
-    const value = parseScalar(match[2])
-    if (key === 'name') name = value
-    if (key === 'description') description = value
-    // Only the non-default spelling is meaningful: `disable-model-invocation:
-    // true` and `user-invocable: false` turn behavior off, so their opposites
-    // stay undefined (the same as an omitted key for every consumer).
-    if (key === 'disable-model-invocation' && value === 'true') disableModelInvocation = true
-    if (key === 'user-invocable' && value === 'false') userInvocable = false
-    if (key === 'argument-hint' && value) argumentHint = value
-  }
-  if (!description) errors.push('frontmatter.description is required')
-  if (name && !VALID_SKILL_NAME.test(name)) errors.push('frontmatter.name is not a valid skill name')
-  return {
-    name,
-    description,
-    ...(disableModelInvocation !== undefined ? { disableModelInvocation } : {}),
-    ...(userInvocable !== undefined ? { userInvocable } : {}),
-    ...(argumentHint !== undefined ? { argumentHint } : {}),
-    body,
-    errors,
-  }
 }
 
 function defaultSkillContent(name: string, description?: string): string {

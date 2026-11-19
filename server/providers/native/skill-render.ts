@@ -1,5 +1,5 @@
 import { resolve } from 'node:path'
-import { parseSkillFrontmatter } from '../../skills.js'
+import { parseSkillFrontmatter } from '../../../shared/skills.js'
 
 /** Render the stable instruction body shared by `/name` and the Skill tool. */
 export function renderNativeSkillBody(input: { directory: string; document: string }): string {
