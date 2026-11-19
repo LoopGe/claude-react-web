@@ -8350,6 +8350,14 @@ export class SessionManager {
           id, t, folded.hasCommittedGeneration ? folded.generation : -1,
         )
         if (fenceWrote) folded = foldSidecarRowsV2(await t.sidecar.load())
+        if (folded.corrupt.length > 0) {
+          // Crash damage demoted by the fold (T1): the corrupt projection is
+          // discarded and rebuilt from the authoritative provider log below.
+          log.warn(
+            `[session ${id}] sidecar corrupt batches demoted, rebuilding from provider log: ` +
+            folded.corrupt.map((c) => `${c.batchId} (${c.reason})`).join('; '),
+          )
+        }
         if (folded.hasCommittedGeneration) {
           t.store.hydrate(folded.entries)
           t.store.generation = folded.generation
