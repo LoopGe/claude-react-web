@@ -8708,6 +8708,21 @@ describe('SessionManager', () => {
     const loadTranscriptRows = (sessionId: string) => new TranscriptSidecar(dir, sessionId).load()
     const transcriptRowCount = async (sessionId: string) => (await loadTranscriptRows(sessionId)).length
 
+    it('T7b-1: idle send records durable dispatch states and still broadcasts + seqs synchronously', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await sm.send(info.id, 'hello')
+      // Observable behavior preserved synchronously: prompt in the seq space.
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 1)).toBe(true)
+      const win = await sm.getTranscriptWindow(info.id)
+      expect((win.messages[0].msg as { message: { content: string } }).message.content).toBe('hello')
+      // Durable dispatch states commit fire-and-forget (Task 1); wait for them.
+      expect(await waitFor(async () => {
+        const rows = await loadTranscriptRows(info.id)
+        const states = rows.filter((r) => (r as { operationId?: string }).operationId).map((r) => (r as { state?: string }).state)
+        return states.length === 2 && states[0] === 'enqueue-not-attempted' && states[1] === 'enqueue-attempted'
+      })).toBe(true)
+    })
+
     it('seq-assigns sent prompts and pump-ingested messages; window reads back by seq', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
       await sm.send(info.id, 'hello')
@@ -9558,8 +9573,10 @@ describe('SessionManager', () => {
       emitAssistant('R', 'mR', 'belongs in the middle')
       const rows = withTurn ? 4 : 3
       expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === rows)).toBe(true)
+      // Count projection (seq-bearing) rows — the writer's input-batch dispatch
+      // states (T7b) carry no seq and are not projection content.
       expect(await waitFor(async () =>
-        (await new TranscriptSidecar(dir, info.id).load()).length === rows,
+        (await new TranscriptSidecar(dir, info.id).load()).filter((r) => typeof (r as { seq?: number }).seq === 'number').length === rows,
       )).toBe(true)
       return { info, promptUuid }
     }
@@ -12979,13 +12996,15 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       try {
         const info = await smSmall.create({ cwd: dir })
         const h0 = mockHandles.at(-1)!
-        // Each turn is awaited before the next prompt: send() records the user
-        // row synchronously while the mock's emits land via the pump, so
-        // back-to-back sends would interleave the two prompts ahead of turn 1.
-        smSmall.send(info.id, 'first prompt')
+        // Each turn is awaited before the next prompt. T7b: dispatch is async
+        // (durable-before-publish), so the send must be awaited before the
+        // mock's synchronous completeTurn emits — otherwise the assistant
+        // frames race the prompt's seq allocation. (Production provider streams
+        // are I/O macrotasks, so the prompt seq always precedes the assistant.)
+        await smSmall.send(info.id, 'first prompt')
         completeTurn(h0, info.id, 'asst-1')
         await waitFor(async () => (await anchorsOf(info.id)).length >= 1)
-        smSmall.send(info.id, 'second prompt')
+        await smSmall.send(info.id, 'second prompt')
         completeTurn(h0, info.id, 'asst-2')
         await waitFor(async () => (await anchorsOf(info.id)).length >= 2)
 

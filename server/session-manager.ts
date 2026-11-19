@@ -1029,6 +1029,11 @@ export class SessionManager {
    *  + the latest clear/compact reset's prepared/committed state. Lazily
    *  created; survives restarts via <stateDir>/reset-journals/<id>.json. */
   private readonly resetJournals = new Map<string, ResetJournal>()
+  /** Per-session durable dispatch writers (T7b): own the send path's input-batch
+   *  states + durable-before-publish user-prompt append. Separate from the
+   *  reset-only writer (D5); deps look up the live session dynamically so a
+   *  resume's Session replacement is transparent. Dropped on unload/delete. */
+  private readonly transcriptWriters = new Map<string, TranscriptWriter>()
   /** In-flight transcript reconciles, keyed by session id — getTranscriptWindow
    *  and resume() can both trigger one; they must share the same promise. */
   private readonly transcriptReconciles = new Map<string, Promise<TranscriptHolder>>()
@@ -4234,6 +4239,22 @@ export class SessionManager {
     const consumedAt = (forSdk as { consumedAt?: number }).consumedAt
     if (typeof consumedAt === 'number') stampConsumedAt(userMsg, consumedAt)
     this.pushToSession(s, userMsg)
+    // T7b Task 1: record the durable dispatch states (enqueue-not-attempted →
+    // enqueue-attempted) for crash recovery (Task 6). Fire-and-forget so the
+    // synchronous dispatch timing (autoResume-window carry, native hand-off)
+    // is preserved; the full durable-before-publish async dispatch + queued-
+    // not-published materialization is Task 2. The input-batch payload lets
+    // recovery re-materialize the prompt (D7).
+    const writer = this.writerFor(s.id)
+    void writer.recordDispatchAttempt({
+      operationId: userMsg.uuid!,
+      dispatchOrdinal: writer.nextDispatchOrdinal(),
+      kind: 'user',
+      payload: userMsg,
+      providerPayload: forSdk,
+    }).catch((err) => {
+      log.warn(`[session ${s.id}] dispatch-state commit failed: ${(err as Error).message ?? err}`)
+    })
   }
 
   /** Try to route a mid-turn plain-text message into steering (spec §6.1).
@@ -4330,9 +4351,17 @@ export class SessionManager {
     // Seq-assign the prompt at ingestion, BEFORE the subscriber broadcast
     // (Task 3). The pump drops the SDK's echo of top-level user input, so
     // this ring append is the only copy — without recording here, user
-    // prompts would never enter the seq space.
+    // prompts would never enter the seq space. Legacy path (steering / local
+    // exec / mid-turn until T7b Task 2); the idle send path uses the writer's
+    // durable-before-publish appendDurable instead (publishUserMessage, D1).
     this.recordTranscriptFor(s.id, ringMessage)
     for (const sub of s.subscribers.values()) sub.push(ringMessage)
+    this.afterUserMessagePublished(s)
+  }
+
+  /** Lifecycle bookkeeping shared by every user-prompt publish path (D1):
+   *  working-state, auto-resume reset, recap/summary invalidation, persist. */
+  private afterUserMessagePublished(s: Session): void {
     s.lastActivityAt = Date.now()
     // Mark the session as mid-turn. We cap at 1 (not a true counter)
     // because the SDK may merge multiple queued user messages into fewer
@@ -4362,6 +4391,57 @@ export class SessionManager {
     // the map between the initial running check and here, persisting would
     // overwrite the terminal state written by unload().
     if (this.sessions.has(s.id) && s.running) this.persist(s)
+  }
+
+  /** The session's durable dispatch writer (T7b, D5), lazily created. Deps look
+   *  up the live session/holder dynamically so a resume's Session replacement
+   *  is transparent. recordSeq also stamps seqByMessage so the WS frame path
+   *  reads the seq exactly as recordTranscriptFor did. */
+  private writerFor(id: string): TranscriptWriter {
+    let w = this.transcriptWriters.get(id)
+    if (!w) {
+      const holder = () => this.getOrCreateTranscript(id)
+      const session = () => this.sessions.get(id)
+      w = new TranscriptWriter(
+        {
+          appendBatch: (rows, commit) => holder().sidecar.appendBatch(rows, commit),
+          recordSeq: (uuid, msg) => {
+            const t = holder()
+            const seq = t.store.record(uuid, msg)
+            if (msg !== null && typeof msg === 'object') {
+              this.seqByMessage.set(msg, { seq, generation: t.store.generation })
+            }
+            return seq
+          },
+          headSeq: () => holder().store.headSeq,
+          publish: (msg) => {
+            const s = session()
+            if (!s) return
+            for (const sub of s.subscribers.values()) {
+              try { sub.push(msg as SessionLiveFrame) } catch { /* subscriber dead — skip */ }
+            }
+          },
+          dispatchUser: async (op) => {
+            const s = session()
+            if (!s) throw new Error('session gone during dispatch')
+            const forSdk = (op.providerPayload ?? op.payload) as AgentUserMessage
+            s.handle.enqueueUserMessage(forSdk)
+            const consumedAt = (forSdk as { consumedAt?: number }).consumedAt
+            if (typeof consumedAt === 'number') stampConsumedAt(op.payload as AnyAgentUserMessage, consumedAt)
+          },
+          dispatchSupplement: async () => { throw new Error('writer supplement dispatch not wired (T7b Task 1: user only)') },
+          dispatchControl: async () => { throw new Error('writer control dispatch not wired (T7b Task 1: user only)') },
+          isTurnActive: () => {
+            const s = session()
+            return s ? (s.pendingTurns > 0 || s.turnActive === true) : false
+          },
+          generation: () => holder().store.generation,
+        },
+        this.getOrCreateTranscript(id).store.generation,
+      )
+      this.transcriptWriters.set(id, w)
+    }
+    return w
   }
 
   /** Interrupt the current assistant turn.
@@ -8432,6 +8512,7 @@ export class SessionManager {
     }
     this.transcriptStores.delete(id)
     this.transcriptReconciles.delete(id)
+    this.transcriptWriters.delete(id)
     // Drop the cached journal so a transient load failure (a poisoned `ready`
     // promise) is re-read from disk on the retry rather than staying rejected
     // for the process lifetime. The journal FILE persists for the fence.
@@ -8888,6 +8969,7 @@ export class SessionManager {
     if (sidecars.size === 0) sidecars.add(new TranscriptSidecar(this.store?.getDir(), id))
     this.transcriptStores.delete(id)
     this.transcriptReconciles.delete(id)
+    this.transcriptWriters.delete(id)
     const removals = await Promise.allSettled([...sidecars].map((sidecar) => sidecar.remove(opts)))
     const failed = removals.find((r) => r.status === 'rejected')
     if (failed) throw failed.reason
@@ -9301,6 +9383,7 @@ export class SessionManager {
     // from the sidecar + JSONL instead of rebuilding it.
     this.transcriptStores.delete(id)
     this.transcriptReconciles.delete(id)
+    this.transcriptWriters.delete(id)
     metrics.gauge('sessions_active', this.sessions.size)
     // Clear the recap state. The session is no longer in the manager's
     // map so getPhase will return 'unknown' from inside the manager —

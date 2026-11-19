@@ -405,16 +405,6 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
   const genBatches = committed.filter(
     (b) => b.commit!.batchType === 'generation' || b.commit!.batchType === 'reset',
   )
-  if (genBatches.length === 0) {
-    return { entries: [], generation: 0, history: [], hasCommittedGeneration: false, aliases: [] }
-  }
-  const latest = genBatches.reduce((a, b) => (Number(b.commit!.generation) > Number(a.commit!.generation) ? b : a))
-  const generation = Number(latest.commit!.generation)
-  const history: GenerationRecord[] = genBatches.map((b) => ({
-    generation: Number(b.commit!.generation),
-    reason: b.commit!.reason as GenerationRecord['reason'],
-    contentPolicy: b.commit!.contentPolicy as GenerationRecord['contentPolicy'],
-  }))
   const bySeq = new Map<number, HydrateRow>()
   const occToSeq = new Map<string, number>()
   const aliases: Array<{ uuid: string; seq: number }> = []
@@ -448,15 +438,46 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
   }
   const applyRow = (row: SidecarRow): void => (isTombstoneOnly(row) ? applyTomb(row) : applyMsg(row))
 
-  for (const row of latest.rows) applyRow(row)
+  let generation: number
+  let history: GenerationRecord[]
+  let latestBatchId: string | null
+  if (genBatches.length > 0) {
+    const latest = genBatches.reduce((a, b) => (Number(b.commit!.generation) > Number(a.commit!.generation) ? b : a))
+    generation = Number(latest.commit!.generation)
+    history = genBatches.map((b) => ({
+      generation: Number(b.commit!.generation),
+      reason: b.commit!.reason as GenerationRecord['reason'],
+      contentPolicy: b.commit!.contentPolicy as GenerationRecord['contentPolicy'],
+    }))
+    latestBatchId = latest.batchId
+    for (const row of latest.rows) applyRow(row)
+  } else {
+    // No generation/reset batch: a fresh session's durable user-prompt appends
+    // (T7b writer) commit v2 LIVE batches at gen 0. Fold them as a gen-0
+    // projection rather than falling back to v1 (which would drop the v2 rows
+    // mixed with the pump's v1 ingest). Only input/lifecycle batches (no message
+    // rows) or a pure v1 prefix still fall back to v1 (hasCommittedGeneration
+    // false) — the crash-before-first-commit case.
+    const hasV2Messages = committed.some(
+      (b) => b.commit!.batchType !== 'input' && b.commit!.batchType !== 'lifecycle'
+        && b.rows.some((r) => typeof r.seq === 'number' && r.msg !== undefined),
+    )
+    if (!hasV2Messages) {
+      return { entries: [], generation: 0, history: [], hasCommittedGeneration: false, aliases: [] }
+    }
+    generation = 0
+    history = []
+    latestBatchId = null // no anchor: replay committed v2 batches from the start
+  }
 
-  // Replay everything after the latest generation's commit record, in file order.
+  // Replay everything after the latest generation's commit record (or from the
+  // start for a gen-0 live projection), in file order.
   const committedBatchIds = new Set(committed.map((b) => b.batchId))
   const openBatches = new Map<string, SidecarRow[]>()
-  let passedLatest = false
+  let passedLatest = latestBatchId === null
   for (const row of rows) {
     if (!passedLatest) {
-      if (row.v === 2 && row.commit === true && row.batchId === latest.batchId) passedLatest = true
+      if (row.v === 2 && row.commit === true && row.batchId === latestBatchId) passedLatest = true
       continue
     }
     if (row.v === 2) {
@@ -472,7 +493,7 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
         openBatches.set(batchId, acc)
       }
     } else {
-      // v1 suffix row appended by live ingest / eviction after the rebuild.
+      // v1 suffix row appended by live ingest / eviction.
       applyRow(row)
     }
   }

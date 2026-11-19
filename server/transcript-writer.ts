@@ -21,7 +21,12 @@ export interface DispatchOp {
   operationId: string
   dispatchOrdinal: number
   kind: 'user' | 'supplement' | 'control'
+  /** Public wire payload — what the ring/broadcast publishes (D1). */
   payload: unknown
+  /** Resolved provider payload (forSdk) the provider enqueue uses; falls back
+   *  to `payload` when absent (plain-text sends). Distinct from `payload` for
+   *  multimodal sends whose provider blocks are resolved neutral blocks (D2). */
+  providerPayload?: unknown
   clientOperationId?: string
 }
 
@@ -74,6 +79,7 @@ export class TranscriptWriter {
   readonly ledger: GenerationLedger
   clearEpoch = 0
   rebaseEpoch = 0
+  private dispatchOrdinalCounter = 0
 
   constructor(
     private deps: WriterDeps,
@@ -126,6 +132,26 @@ export class TranscriptWriter {
     return run
   }
 
+  /** Per-session monotonic dispatch ordinal (D6): orders queued prompts at
+   *  materialization and recovery. */
+  nextDispatchOrdinal(): number {
+    return ++this.dispatchOrdinalCounter
+  }
+
+  /** Record the durable dispatch states (enqueue-not-attempted → enqueue-
+   *  attempted) for a prompt the manager dispatches synchronously (T7b Task 1).
+   *  Fire-and-forget from the send path so synchronous dispatch timing is
+   *  preserved; the states feed crash recovery (Task 6). The full durable-
+   *  before-publish async dispatch (enqueueDispatch) is Task 2. */
+  recordDispatchAttempt(op: DispatchOp): Promise<void> {
+    const run = this.dispatchQueue.then(async () => {
+      await this.inputCommit(op, 'enqueue-not-attempted')
+      await this.inputCommit(op, 'enqueue-attempted')
+    })
+    this.dispatchQueue = run.catch(() => {})
+    return run
+  }
+
   private inputCommit(op: DispatchOp, state: string, route?: string): Promise<void> {
     const batchId = nextBatchId()
     const row = {
@@ -134,6 +160,8 @@ export class TranscriptWriter {
       operationId: op.operationId,
       dispatchOrdinal: op.dispatchOrdinal,
       state,
+      // Carry the payload so crash recovery can re-materialize the prompt (D7).
+      payload: op.payload,
       ...(route ? { route } : {}),
     }
     return this.commit(
