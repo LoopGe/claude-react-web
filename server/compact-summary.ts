@@ -30,6 +30,10 @@ export interface CompactSummaryOptions {
   effectiveModel?: string
   hasAttachments?: boolean
   hasNativeMedia?: boolean
+  /** Caller-owned deadline for the round-trip. Without it the auxiliary
+   *  caller's 30s default applies — the send-blocking native auto-compact
+   *  keeps that short fail-open cap; user-invoked compact passes a longer one. */
+  signal?: AbortSignal
 }
 
 /** Summarise a session's message history into a compact continuation seed.
@@ -75,6 +79,7 @@ export async function summarizeForCompact(
     maxTokens: 2048,
     temperature: 0,
     caller: 'compact-summary',
+    signal: options?.signal,
   })
   // Compact summaries are plain prose; collapse the same whitespace-trim
   // recap uses (no code fences / JSX fragments to strip here).

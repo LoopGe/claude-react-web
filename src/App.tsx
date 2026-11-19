@@ -136,6 +136,7 @@ import { DEFAULT_GLOBAL_PREFS, globalPrefsFromConfig, sameGlobalPrefs } from './
 import { onProfilesChanged } from './utils/profiles-events'
 import { fetchConfig, markConfigStale, patchConfigCache, peekConfig, subscribeModelOptions } from './state/modelOptionsStore'
 import { ROW_GAP_PX } from '../shared/row-gap'
+import { HANDOFF_POST_TIMEOUT_MS } from '../shared/compact-deadline'
 import { TEXT_SPACING_CSS } from '../shared/text-spacing'
 import { FONT_SIZE_SCALE } from '../shared/font-size'
 import { applyAnimationSpeedToDocument } from './utils/motion-preference-dom'
@@ -4660,7 +4661,7 @@ export function App() {
 
   /** `/clear` or `/handoff` a panel: POST to the server (which atomically
    *  spawns a fresh session Y and detaches X — for handoff Y is seeded with
-   *  the aux-LLM hand-off summary, so the POST takes seconds while the aux
+   *  the aux-LLM hand-off summary, so the POST can take minutes while the aux
    *  call summarizes), then swap X→Y locally in ONE batched `swapSession`
    *  transaction (sessions/openIds/groups/sidebarOrder/lastSeenTurn).
    *  swapSession first fades X out (WAAPI, ~160ms) so the replacement reads
@@ -4670,8 +4671,8 @@ export function App() {
    *  swap). Ordinary clear keeps X's transcript recoverable via the resume
    *  picker; clear-permanent deletes it through the same server lifecycle.
    *  The panel blurs (view-only, via `clearingIds`) during the POST —
-   *  for BOTH kinds: handoff's summarize leg can run tens of seconds, and an
-   *  unmarked wait reads as a frozen panel. `handoffingIds` mirrors the same
+   *  for BOTH kinds: handoff's summarize leg can run up to ten minutes, and
+   *  an unmarked wait reads as a frozen panel. `handoffingIds` mirrors the same
    *  lifecycle for the "Handing off…" pill + composer lockout in Chat.
    *  Y mounts fresh and plays `.entering`. */
 
@@ -4698,12 +4699,18 @@ export function App() {
           opts?.deleteTranscript === true ? { deleteTranscript: true } : {},
           // Process-exit waits and filesystem deletion can exceed the default
           // HTTP timeout; a premature client error would orphan the late swap.
-          opts?.deleteTranscript === true ? { timeoutMs: 0 } : undefined,
+          // Handoff: HANDOFF_POST_TIMEOUT_MS is the server's summarize
+          // deadline plus headroom for the clear/spawn tail, so the server's
+          // result/error wins the race while a wedged tail still surfaces
+          // instead of locking the panel forever.
+          opts?.deleteTranscript === true
+            ? { timeoutMs: 0 }
+            : kind === 'handoff' ? { timeoutMs: HANDOFF_POST_TIMEOUT_MS } : undefined,
         )
         const newId = res.session.id
         // The panel may have been closed while the POST was in flight — a
         // window the /handoff summarize leg widens from ~100ms (/clear) to
-        // tens of seconds. See resetCompletion for the three-way split (swap /
+        // minutes. See resetCompletion for the three-way split (swap /
         // teardown / noop); the two non-swap outcomes used to be conflated.
         const completion = resetCompletion({
           oldId: id,

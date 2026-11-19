@@ -30,7 +30,10 @@ interface CallOptions {
   userContent?: AuxContent
   maxTokens: number
   temperature: number
-  /** Optional caller signal. Text-only calls keep their 30s default. */
+  /** Optional caller-owned deadline. Without one, text-only calls get a 30s
+   *  total default and streaming calls the 60s no-data idle cap; a caller
+   *  signal overrides the text-only default (streaming keeps the idle cap
+   *  alongside it). */
   signal?: AbortSignal
   /** Multi-turn messages. When provided, takes precedence over userContent. */
   messages?: Array<{ role: string; content: AuxContent }>

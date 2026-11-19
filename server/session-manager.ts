@@ -25,6 +25,7 @@ import { reapRetiredJobs, type ProcessExitInfo } from './process-monitor.js'
 import type { AuxLlmTarget } from './anthropic-api.js'
 import { sameCwd, canonicalCwd } from './cwd-equality.js'
 import { isEmptyResultFrame } from '../shared/results.js'
+import { COMPACT_SUMMARY_TIMEOUT_MS } from '../shared/compact-deadline.js'
 import type { FileAttachmentRef } from '../shared/attachments.js'
 import { fileHandleText } from '../shared/upload-handle.js'
 import { publicAttachmentContent, resolveAttachmentContent } from './attachment-resolver.js'
@@ -5238,7 +5239,12 @@ export class SessionManager {
     // summarizer always saw subagent tool frames; it still sees subagent
     // frames, including the now-forwarded text/thinking ones).
     const merged = this.mergedHistoryForCompaction(s)
-    const summary = await this.summarizeMergedForCompact(s, merged)
+    // The long deadline is for the interactive /handoff only. The idle-compact
+    // plugin's automatic compact (no handoff flag) rides a 60s host-RPC cap,
+    // and the send-blocking native auto-compact is fail-open — both keep the
+    // auxiliary caller's short 30s default.
+    const signal = opts?.handoff === true ? AbortSignal.timeout(COMPACT_SUMMARY_TIMEOUT_MS) : undefined
+    const summary = await this.summarizeMergedForCompact(s, merged, signal)
     // No post-await phase re-check here: doClear owns that invariant (a
     // seeded clear 409s when input raced the summarize window) and runs it
     // under the op lock immediately before its drain — a check here would
@@ -7895,7 +7901,7 @@ export class SessionManager {
   /** Shared manual/auto compact input. Claude has no occurrence provider and
    * retains byte-for-byte legacy summarizer input; native gets a private,
    * bounded attachment projection and an effective-model media request. */
-  private async summarizeMergedForCompact(s: Session, merged: SDKMessage[]): Promise<string> {
+  private async summarizeMergedForCompact(s: Session, merged: SDKMessage[], signal?: AbortSignal): Promise<string> {
     let hasAttachments = false
     let options: {
       attachmentContent: readonly unknown[]
@@ -7919,7 +7925,7 @@ export class SessionManager {
         }
       }
     }
-    const summary = await summarizeForCompact(merged, this.auxTargetFor(s.id, 'recap'), options)
+    const summary = await summarizeForCompact(merged, this.auxTargetFor(s.id, 'recap'), { ...options, signal })
     // A summarizer mock/provider that resolves blank must never turn an
     // attachment-bearing compact into a destructive plain clear.
     if (!summary && hasAttachments) {

@@ -76,6 +76,25 @@ describe('summarizeForCompact', () => {
     })
   })
 
+  it('forwards the caller-owned deadline signal to the API call', async () => {
+    // User-invoked compact passes a long deadline; the summariser must hand
+    // it to callAnthropicMessages verbatim so it overrides the 30s default.
+    const controller = new AbortController()
+    await summarizeForCompact([userMsg('hi'), assistantMsg('hello')], TARGET, {
+      signal: controller.signal,
+    })
+    expect(mockCall.mock.calls[0][0].signal).toBe(controller.signal)
+  })
+
+  it('leaves the deadline to the aux default when the caller passes no signal', async () => {
+    // The send-blocking native auto-compact relies on the short fail-open
+    // cap: no caller signal must reach the API call as undefined, not a
+    // fabricated long deadline. (The 30s default itself is pinned in
+    // anthropic-api.test.ts, where it lives.)
+    await summarizeForCompact([userMsg('hi'), assistantMsg('hello')], TARGET)
+    expect(mockCall.mock.calls[0][0].signal).toBeUndefined()
+  })
+
   it('returns an empty string (without calling the API) for empty history', async () => {
     const summary = await summarizeForCompact([])
     expect(summary).toBe('')

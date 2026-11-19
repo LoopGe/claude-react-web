@@ -152,6 +152,52 @@ describe('callAnthropicMessages', () => {
     expect(request.stream).toBeUndefined()
   })
 
+  it('hands the caller signal to fetch instead of the 30s default', async () => {
+    // User-invoked compact passes a 10-minute deadline through opts.signal;
+    // the precedence chain (streaming idle ?? caller ?? 30s default) must
+    // deliver that exact signal to fetch, not shadow it with the default.
+    const fetchMock = vi.fn(async (_input: unknown, _init?: RequestInit) =>
+      jsonResponse({ content: [{ type: 'text', text: 'ok' }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    await callAnthropicMessages({
+      model: 'test-model', system: 'sys', userContent: 'hi',
+      maxTokens: 100, temperature: 0, signal: controller.signal,
+    })
+    expect(fetchMock.mock.calls[0][1]?.signal).toBe(controller.signal)
+  })
+
+  it('falls back to a 30s default deadline when no caller signal is given', async () => {
+    // The send-blocking native auto-compact relies on this short fail-open
+    // cap; a caller-less auxiliary call must not wait indefinitely.
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    const fetchMock = vi.fn(async (_input: unknown, _init?: RequestInit) =>
+      jsonResponse({ content: [{ type: 'text', text: 'ok' }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    await call()
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000)
+    expect(fetchMock.mock.calls[0][1]?.signal).toBe(timeoutSpy.mock.results[0].value)
+  })
+
+  it('propagates a caller abort into the streaming idle deadline', async () => {
+    // Native-media compact streams; the caller's long deadline reaches fetch
+    // only through StreamIdleDeadline's external-abort wiring. A body that
+    // never emits keeps the read parked so the abort is the only way out.
+    const body = new ReadableStream<Uint8Array>({ start() { /* never emits */ } })
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, body }) as unknown as Response))
+    const controller = new AbortController()
+    const pending = callAnthropicMessages({
+      model: 'test-model', system: 'sys',
+      userContent: [
+        { type: 'text', text: 'compact this' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+      ],
+      maxTokens: 100, temperature: 0, signal: controller.signal,
+    })
+    controller.abort(new Error('caller deadline reached'))
+    await expect(pending).rejects.toThrow('caller deadline reached')
+  })
+
   it('times out a streaming response after exactly 60 seconds without data', async () => {
     vi.useFakeTimers()
     try {

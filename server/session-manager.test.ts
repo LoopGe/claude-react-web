@@ -379,6 +379,7 @@ import { HttpError } from './errors.js'
 import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
 import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
+import { COMPACT_SUMMARY_TIMEOUT_MS } from '../shared/compact-deadline.js'
 import { cleanupGitFixtures, makeRepo } from './test-git-fixtures.js'
 import { branchExists } from './git.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
@@ -2673,6 +2674,39 @@ describe('SessionManager', () => {
     expect(sm.get(next.id).phase).toBe('idle')
   })
 
+  it('compact({handoff}) gives the summariser the long interactive deadline', async () => {
+    // The /handoff client POST waits past the default HTTP timeout for this
+    // leg, so a long conversation on a slow aux model gets minutes — not the
+    // auxiliary caller's 30s default.
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    try {
+      vi.mocked(summarizeForCompact).mockResolvedValueOnce('HAND-OFF')
+      const info = await sm.create({})
+      mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+      mockHandles[0].emit({ type: 'result', session_id: info.id })
+      await tick()
+      await sm.compact(info.id, { handoff: true })
+      const deadlineCall = timeoutSpy.mock.calls.findIndex(([ms]) => ms === COMPACT_SUMMARY_TIMEOUT_MS)
+      expect(deadlineCall).toBeGreaterThanOrEqual(0)
+      const opts = vi.mocked(summarizeForCompact).mock.calls[0][2]
+      expect(opts?.signal).toBe(timeoutSpy.mock.results[deadlineCall].value)
+    } finally {
+      timeoutSpy.mockRestore()
+    }
+  })
+
+  it('compact() without handoff (idle-compact plugin) keeps the aux default deadline', async () => {
+    // The plugin's host RPC caps at 60s (CALL_HOST_TIMEOUT_MS); the long
+    // interactive deadline must not leak into the automatic path.
+    vi.mocked(summarizeForCompact).mockResolvedValueOnce('HAND-OFF')
+    const info = await sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    await sm.compact(info.id)
+    expect(vi.mocked(summarizeForCompact).mock.calls[0][2]?.signal).toBeUndefined()
+  })
+
   it('compact() projects durable skill bodies after their raw user anchors without changing UI history', async () => {
     const info = await sm.create({})
     await sm.send(info.id, '/demo do this')
@@ -3235,6 +3269,23 @@ describe('SessionManager', () => {
       } finally {
         warn.mockRestore()
       }
+    })
+
+    it('keeps the send-blocking auto-compact on the aux 30s default (no caller deadline)', async () => {
+      // A user's send awaits this fail-open path; the long user-invoked
+      // compact deadline must not leak into it and stall sends for minutes.
+      const { info, live } = await nativeSendFixture()
+      live.handle.getContextUsage = vi.fn(async () => ({
+        totalTokens: 300_000,
+        maxTokens: 200_000,
+        model: 'small',
+        autoCompactThreshold: 160_000,
+      }))
+      live.handle.compactInPlace = vi.fn(async () => {})
+
+      await sm.send(info.id, 'trigger')
+
+      expect(vi.mocked(summarizeForCompact).mock.calls[0][2]?.signal).toBeUndefined()
     })
 
     it('surfaces usage-control errors instead of treating them as compact failures', async () => {
