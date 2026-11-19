@@ -4293,26 +4293,27 @@ export class SessionManager {
   }
 
   /** Record a just-sent top-level prompt's server-minted uuid (`u`) as an
-   *  UNPAIRED entry in the in-memory `promptUuids` list (v undefined). The SDK
-   *  uuid `v` is filled in later by `onPromptEcho` when the SDK echoes the
-   *  prompt back (FIFO order pairs the echo's `v` with the oldest unpaired
-   *  `u`), at which point the sidecar is persisted. Recording `u` here (without
-   *  `v`) and persisting only at echo time means the sidecar never holds a `u`
-   *  whose `v` isn't also on disk — eliminating the sidecar-ahead desync that
-   *  broke the earlier positional scheme on same-text prompts. */
+   *  unconsumed entry in the in-memory `promptUuids` ledger. `c` (consumption)
+   *  is stamped by onInputConsumed when the SDK reads the prompt; `v` (disk
+   *  uuid) is filled by onPromptEcho on an EXACT-uuid echo and persisted then.
+   *  On the pinned SDK echoes never stream, so `v` stays unset and the
+   *  resume/fork bridge is an identity no-op (disk preserves `u`); historical
+   *  re-minted mappings still rewrite exactly. Persisting only at echo time
+   *  means the sidecar never holds a `u` whose `v` isn't also on disk —
+   *  eliminating the sidecar-ahead desync that broke the earlier positional
+   *  scheme on same-text prompts. */
   private recordPromptUuid(s: Session, userMsg: AnyAgentUserMessage): void {
     if (userMsg.parent_tool_use_id != null) return // not a top-level prompt (defensive)
     const u = typeof userMsg.uuid === 'string' ? userMsg.uuid : null
     if (!u) return
     const next = [...(s.promptUuids ?? []), { u }]
-    // Keep every in-flight entry: SDK echoes can be delayed while a burst of
-    // queued prompts exceeds historyCap. Capping the whole list here would
-    // discard old unpaired entries and make the later FIFO echo pair with the
-    // wrong server uuid. Only completed mappings are bounded; unpaired entries
-    // are transient and are removed from the persisted sidecar at echo time.
+    // Retention by consumption lifecycle (see retainPromptUuidEntries): every
+    // unconsumed entry stays (withdrawal/heal probes and a possible late echo
+    // need them); consumed-unpaired entries drop (no echo will pair them on
+    // the pinned SDK); paired mappings are bounded to historyCap.
     s.promptUuids = retainPromptUuidEntries(next, this.historyCap)
-    // No sidecar save here — see onPromptEcho (the entry is only useful once
-    // its SDK uuid `v` is known, which happens at echo time).
+    // No sidecar save here — see onPromptEcho (the persisted mapping is only
+    // useful once its SDK uuid `v` is known, which happens at echo time).
   }
 
   /** Pair the SDK echo uuid `v` with the sent prompt `u` it echoes, by EXACT
@@ -4513,18 +4514,32 @@ export class SessionManager {
         (opts?: { cancelQueued?: boolean }) => Promise<ProviderInterruptReceipt | void>
       >(s, 'interrupt', 'interrupt', 'supportsInterrupt')
       const receipt = await fn(opts)
-      // Withdraw leg 2 (CLI queue) — the receipt's uuids, filtered through
-      // the still-unconsumed check (the await above let the pump consume
-      // entries concurrently; everything from here on is synchronous).
-      const stillUnconsumed = (u: string): boolean =>
-        (s.promptUuids ?? []).some((e) => e.u === u && e.c == null)
+      // Withdraw leg 2 (CLI queue) — the receipt is the CLI's OWN statement
+      // of what it cancelled. A listed uuid that is a host ledger user turn
+      // withdraws even if consumed: the SDK can read a prompt into its
+      // internal queue (direct hand-off stamps c) and the CLI cancel it
+      // before dispatch — the send-then-quick-Stop shape. Filtering the
+      // receipt by c would ghost that bubble forever. Control seeds and
+      // CLI-internal uuids have no ledger entry and stay excluded.
+      const ledgerEntry = (u: string) => (s.promptUuids ?? []).find((e) => e.u === u)
       const uuids = new Set<string>()
       for (const u of drainedUuids) {
-        if (stillUnconsumed(u)) uuids.add(u)
+        const e = ledgerEntry(u)
+        if (e && e.c == null) uuids.add(u) // host queue items are unconsumed
       }
+      let cancelledConsumed = false
       for (const u of receipt?.cancelledQueued ?? []) {
-        if (stillUnconsumed(u)) uuids.add(u)
+        const e = ledgerEntry(u)
+        if (!e) continue
+        uuids.add(u)
+        if (e.c != null) cancelledConsumed = true
       }
+      // A consumed prompt the CLI cancelled never started a turn: no result
+      // is owed, so disarm the turn its consumption armed. The heal probe
+      // below then reads the dead state and clears working. A running turn's
+      // prompt is never in the receipt (it lists queued/pending-dispatch
+      // only), so an actually-in-flight turn keeps its owed-result authority.
+      if (cancelledConsumed) s.turnActive = false
       // Steer 撤回（cancelQueued 路径）：steered 消息从不在 promptUuids 里
       // （dispatch 即跳过记录，requeue 时才补录——而被撤回的不会再 requeue），
       // 所以绕过 stillUnpaired 过滤直接并入。ring 移除 / withdrawnUuids /
@@ -4539,12 +4554,11 @@ export class SessionManager {
       let removed = 0
       if (uuids.size > 0) {
         removed = removeFromHistory(s.history, uuids)
-        // Drop the matching unconsumed promptUuids entries — a withdrawn
-        // prompt is never consumed, so its entry would stay c-less forever
-        // and keep the heal probe reading "work still queued". Unconsumed
-        // entries are memory-only (the sidecar persists at echo time), so no
-        // save is needed here.
-        s.promptUuids = (s.promptUuids ?? []).filter((e) => !(e.c == null && uuids.has(e.u)))
+        // Drop the matching ledger entries — a withdrawn prompt (unconsumed
+        // or consumed-but-cancelled) is dead work; keeping it would make the
+        // heal probe read "work still queued" or retain a dead entry. The
+        // sidecar persists paired mappings at echo time, so no save here.
+        s.promptUuids = (s.promptUuids ?? []).filter((e) => !uuids.has(e.u))
         // Remember the withdrawal (capped) so a tab that reconnects after the
         // stop still evicts its bubbles — no later frame or page ever re-sends
         // the withdrawn messages, so the synthetic replay of withdrawnUuids is
@@ -7839,11 +7853,11 @@ export class SessionManager {
       s.steeredInFlight.delete(uuid)
       if (!userMsg) continue
       const at = stampRequeuedAt(userMsg)
-      // 【补录】requeue 后它就是一条会 echo 的普通 prompt——此刻才进
-      // FIFO 配对（spec §6.3；漏掉会让 onPromptEcho 永久错配）。
+      // 【补录】requeue 后它就是一条普通 prompt——此刻才进 ledger（spec §6.3；
+      // 漏掉会让消费事实 c 无落点，撤回/自愈探针读不到它）。
       // Record BEFORE enqueue: a provider that consumes synchronously (the
-      // native direct hand-off pairs inside enqueueUserMessage) would else
-      // consume an entry that does not exist yet and leave it unpaired.
+      // native direct hand-off stamps c inside enqueueUserMessage) would else
+      // consume an entry that does not exist yet.
       this.recordPromptUuid(s, userMsg)
       s.handle.enqueueUserMessage({ ...userMsg })
       void this.steeredStore.markRequeued(s.id, uuid, at)

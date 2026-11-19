@@ -9391,21 +9391,21 @@ describe('SessionManager', () => {
       const source = await sm.create({ cwd: sourceCwd })
       // Two mapped prompts; the seed (discard's kept prefix) contains only
       // the FIRST — the bridge must not copy the second's mapping.
+      // Current CLI contract: echo uuid == server-minted uuid. Echo each
+      // prompt before the next send: retention prunes consumed-unpaired
+      // entries (no echo will pair them on the pinned SDK), so a late echo
+      // after a subsequent send would find no ledger entry.
       await sm.send(source.id, 'first')
-      await tick()
-      await sm.send(source.id, 'second')
-      // Current CLI contract: echo uuid == server-minted uuid. Read both
-      // minted uuids from the transcript window, then emit the echoes.
-      const srcWin = await sm.getTranscriptWindow(source.id)
-      const promptUuidsInWindow = srcWin.messages
-        .filter((m) => (m.msg as { type?: string }).type === 'user')
-        .map((m) => (m.msg as { uuid: string }).uuid)
-      const serverU1 = promptUuidsInWindow[0]!
-      const serverU2 = promptUuidsInWindow[1]!
+      const win1 = await sm.getTranscriptWindow(source.id)
+      const serverU1 = (win1.messages.find((m) => (m.msg as { type?: string }).type === 'user')!.msg as { uuid: string }).uuid
       mockHandles[0].emit({
         type: 'user', uuid: serverU1, parent_tool_use_id: null,
         message: { role: 'user', content: 'first' },
       })
+      await tick()
+      await sm.send(source.id, 'second')
+      const win2 = await sm.getTranscriptWindow(source.id)
+      const serverU2 = (win2.messages.filter((m) => (m.msg as { type?: string }).type === 'user').at(-1)!.msg as { uuid: string }).uuid
       mockHandles[0].emit({
         type: 'user', uuid: serverU2, parent_tool_use_id: null,
         message: { role: 'user', content: 'second' },
@@ -12942,27 +12942,26 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     /** Read the in-memory promptUuids sidecar via the manager's internals. */
-    const promptUuidsOf = (sid: string): Array<{ u: string; v?: string }> => {
-      const smAny = sm as unknown as { sessions: Map<string, { promptUuids?: Array<{ u: string; v?: string }> }> }
+    const promptUuidsOf = (sid: string): Array<{ u: string; v?: string; c?: number }> => {
+      const smAny = sm as unknown as { sessions: Map<string, { promptUuids?: Array<{ u: string; v?: string; c?: number }> }> }
       return smAny.sessions.get(sid)!.promptUuids ?? []
     }
 
-    it('drops the withdrawn turns from the promptUuids sidecar (unpaired entries would mispair the next FIFO echo)', async () => {
+    it('drops the withdrawn turns from the promptUuids ledger (dead work must not read as queued)', async () => {
       const { info, queuedUuids } = await setupQueued(2)
-      // Both queued turns recorded an unpaired {u} entry at dispatch (the
-      // same entries onPromptEcho pairs FIFO-style with the SDK echo).
+      // Both queued turns recorded an unconsumed {u} entry at dispatch.
       for (const u of queuedUuids) {
-        expect(promptUuidsOf(info.id).some((e) => e.u === u && e.v == null)).toBe(true)
+        expect(promptUuidsOf(info.id).some((e) => e.u === u && e.c == null)).toBe(true)
       }
       await sm.interrupt(info.id, { cancelQueued: true })
-      // A withdrawn prompt never dispatches, so it never echoes — its entry
-      // must be gone or the next live send would pair with it (and every
-      // later rewindFiles mapping would shift). The in-flight turn's own
-      // unpaired entry stays.
+      // A withdrawn prompt is dead work — its entry must be gone or the heal
+      // probe keeps reading "work still queued". The consumed seed entry is
+      // pruned by retention (consumed-unpaired: no echo will pair it on the
+      // pinned SDK), so no unconsumed entry survives either.
       for (const u of queuedUuids) {
         expect(promptUuidsOf(info.id).some((e) => e.u === u)).toBe(false)
       }
-      expect(promptUuidsOf(info.id).some((e) => e.v == null)).toBe(true)
+      expect(promptUuidsOf(info.id).some((e) => e.c == null)).toBe(false)
     })
 
     it('puts non-user-turn queue entries (the compact hand-off seed) back instead of withdrawing them', async () => {
@@ -13096,16 +13095,40 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(turnStateOf(info.id).turnActive).toBe(false)
     })
 
-    it('never withdraws a consumed prompt even if the interrupt receipt lists it', async () => {
-      // Consumption is the dispatch fact: a prompt the SDK read is durably on
-      // its way into a turn (or on disk) — withdrawal eligibility reads c,
-      // not echo pairing (on the pinned SDK every live send stays v-less).
+    it('a consumed prompt the CLI receipt cancels is withdrawn and the working state heals', async () => {
+      // The production shape the old dead-state test cited: idle send → the
+      // SDK's direct hand-off consumes it (c stamped, turnActive armed) but
+      // the CLI never starts the turn; Stop's interrupt_cancel_queued receipt
+      // lists it. The receipt is the CLI's own statement of what it cancelled
+      // — a consumed-but-cancelled prompt must withdraw (no ghost bubble) and
+      // disarm turnActive (no result is owed), so the heal probe clears.
+      const info = await sm.create({ cwd: dir })
+      const h = mockHandles.at(-1)!
+      const sent = await sm.send(info.id, 'stop me right after send') as { uuid: string }
+      const s = turnStateOf(info.id)
+      expect(s.turnActive).toBe(true) // consumption armed it
+      h.interrupt.mockResolvedValueOnce({ cancelled: [sent.uuid] })
+
+      const removed = await sm.interrupt(info.id, { cancelQueued: true })
+      expect(removed).toBe(1)
+      expect(ringOf(info.id).map((m) => m.uuid)).not.toContain(sent.uuid)
+      expect(s.pendingTurns).toBe(0)
+      expect(s.workingSince).toBeUndefined()
+      expect(s.turnActive).toBe(false)
+      expect(sm.list().find((x) => x.id === info.id)!.phase).toBe('idle')
+    })
+
+    it('a consumed prompt the receipt does NOT list stays (its turn still owes a result)', async () => {
+      // The conservative half: withdrawal leg 2 trusts the receipt, but a
+      // consumed prompt the CLI did not cancel is an in-flight turn — never
+      // evicted, turnActive stays armed until the result lands.
       const { info, h } = await setupQueued(0)
       const seedUuid = ringOf(info.id).find((m) => (m as { type?: string }).type === 'user')!.uuid as string
-      h.interrupt.mockResolvedValueOnce({ cancelled: [seedUuid] })
+      h.interrupt.mockResolvedValueOnce({ cancelled: [] })
       const removed = await sm.interrupt(info.id, { cancelQueued: true })
       expect(removed).toBe(0)
       expect(ringOf(info.id).map((m) => m.uuid)).toContain(seedUuid)
+      expect(turnStateOf(info.id).turnActive).toBe(true)
     })
 
     it('heals working state when Stop withdraws the last unconsumed work (consumption probe)', async () => {

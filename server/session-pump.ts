@@ -1152,7 +1152,12 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             return prior.isSynthetic === true && prior.isCompactSummary === true &&
               userMessageText(prior) === userMessageText(msg)
           })
-        if (duplicateCompactSummary) continue
+        if (duplicateCompactSummary) {
+          // The deduped frame IS the summary the flag waits for — consume it
+          // so a later synthetic frame is not mis-stamped as a recap.
+          pendingCompactSummary = false
+          continue
+        }
         // Frame-origin classification (agent note 2026-11-19-user-frame-origin-
         // identity). An echo is identified POSITIVELY — its uuid is in the
         // host's send ledger — never inferred from content shape. CLI

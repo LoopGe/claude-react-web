@@ -275,6 +275,18 @@ describe('pump: user-frame origin classification', () => {
     expect(seen).toEqual([])
   })
 
+  it('a deduped summary after a boundary consumes the stamp flag (next synthetic is not a summary)', async () => {
+    const seed = { type: 'user', uuid: 'seed-app', isSynthetic: true, isCompactSummary: true, message: { role: 'user', content: 'SEED' } } as unknown as SDKMessage
+    const seedEcho = { type: 'user', uuid: 'seed-disk', isSynthetic: true, isCompactSummary: true, message: { role: 'user', content: 'SEED' } } as unknown as SDKMessage
+    const { session } = makePumpSession([boundary, seedEcho, skillFrame('skill-9')])
+    session.history.push(seed)
+    await pump(session, makePumpDeps({}))
+
+    const skill = session.history.find((m) => (m as { uuid?: string }).uuid === 'skill-9') as { isCompactSummary?: boolean; isMeta?: boolean } | undefined
+    expect(skill?.isCompactSummary).toBeUndefined()
+    expect(skill?.isMeta).toBe(true)
+  })
+
   it('still dedups the SDK echo of an app-broadcast compact seed', async () => {
     const seed = { type: 'user', uuid: 'seed-app', isSynthetic: true, isCompactSummary: true, message: { role: 'user', content: 'SEED' } } as unknown as SDKMessage
     const seedEcho = { type: 'user', uuid: 'seed-disk', isSynthetic: true, isCompactSummary: true, message: { role: 'user', content: 'SEED' } } as unknown as SDKMessage

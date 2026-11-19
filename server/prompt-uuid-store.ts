@@ -44,13 +44,17 @@ export interface PromptUuidEntry {
   c?: number
 }
 
-/** Retain the newest completed mappings without dropping in-flight sends.
- *  Unpaired entries are transient (sent, not yet echoed); pruning them would
- *  lose the ledger identity a later exact-uuid echo pairs against. */
+/** Retain the ledger by consumption lifecycle: every in-flight entry
+ *  (unconsumed AND unpaired — the withdrawal/heal probes read them, and a
+ *  later exact-uuid echo may still pair them) plus the newest `cap` paired
+ *  mappings (the resume/fork bridge reads v). Consumed-unpaired entries are
+ *  dropped: on the pinned SDK host echoes never stream, so nothing will ever
+ *  pair them, and no consumer reads a consumed entry's v — keeping them
+ *  would grow the ledger without bound on long sessions. */
 export function retainPromptUuidEntries(entries: PromptUuidEntry[], cap: number): PromptUuidEntry[] {
   const paired = entries.filter((entry) => entry.v != null)
   const retainedPaired = new Set(paired.slice(-cap))
-  return entries.filter((entry) => entry.v == null || retainedPaired.has(entry))
+  return entries.filter((entry) => (entry.v == null && entry.c == null) || retainedPaired.has(entry))
 }
 
 export class PromptUuidStore {

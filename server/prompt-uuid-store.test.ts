@@ -28,6 +28,13 @@ function entry(u: string, v: string): PromptUuidEntry {
   return { u, v }
 }
 
+describe('retainPromptUuidEntries (consumption-lifecycle retention)', () => {
+  it('drops consumed-unpaired entries — on the pinned SDK no echo will ever pair them', () => {
+    const entries: PromptUuidEntry[] = [{ u: 'a', c: 1 }, { u: 'b' }, { u: 'c', v: 'vc', c: 2 }]
+    expect(retainPromptUuidEntries(entries, 10)).toEqual([{ u: 'b' }, { u: 'c', v: 'vc', c: 2 }])
+  })
+})
+
 describe('rewriteSeedPromptUuids (exact v→u lookup)', () => {
   it('rewrites a seed prompt uuid V -> U when the map has V', () => {
     const seed = [userPrompt('V1', 'hi'), asstMsg('a1', 'reply')]
