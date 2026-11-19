@@ -9944,6 +9944,183 @@ describe('SessionManager', () => {
     })
   })
 
+  describe('transcript writer drain on teardown (R1)', () => {
+    /** A live session with one completed turn whose SECOND dispatch-state
+     *  commit (enqueue-attempted) is latched INSIDE the sidecar's appendBatch,
+     *  before the original runs. The latch holds that writer commit pending
+     *  across teardown so the drain-vs-close race is deterministic — no sleeps
+     *  or timing luck. The holder has already resolved to THIS sidecar when the
+     *  latch engages, so the batch is bound to the sidecar teardown closes. */
+    async function latchedFinalCommit() {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const internals = sm as unknown as {
+        getOrCreateTranscript(id: string): { sidecar: TranscriptSidecar }
+        transcriptStores: Map<string, { sidecar: TranscriptSidecar }>
+      }
+      // Install the latch BEFORE send so it intercepts the dispatch-state
+      // commits (send yields, letting them run to completion otherwise).
+      const sidecar = internals.getOrCreateTranscript(info.id).sidecar
+      const orig = sidecar.appendBatch.bind(sidecar)
+      let calls = 0
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      vi.spyOn(sidecar, 'appendBatch').mockImplementation(async (rows, commit) => {
+        calls += 1
+        if (calls === 2) await gate
+        return orig(rows, commit)
+      })
+      await sm.send(info.id, 'final turn')
+      // Wait until the second commit has reached appendBatch (parked before the
+      // closed guard); the first input batch already landed.
+      expect(await waitFor(() => calls >= 2)).toBe(true)
+      mockHandles[0].emit({
+        type: 'assistant', uuid: 'a1', parent_tool_use_id: null,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] },
+      })
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)).toBe(true)
+      return { info, sidecar, internals, release: () => release() }
+    }
+
+    it('a pending dispatch-state commit survives teardown instead of hitting the closed guard', async () => {
+      const { info, sidecar, release } = await latchedFinalCommit()
+      // The first input batch (enqueue-not-attempted) is durable; remember its
+      // operationId so the second batch can be matched to the same prompt.
+      const before = await sidecar.load()
+      const firstInput = before.find((r) => (r as { state?: string }).state === 'enqueue-not-attempted') as { operationId?: string } | undefined
+      expect(firstInput?.operationId).toBeTruthy()
+
+      const shutting = sm.shutdown()
+      // The writer drain parks BEFORE the holder drop, so let teardown reach it
+      // (a few microtask turns) then release the latched commit. With the drain
+      // it submits to the still-live sidecar and close() flushes it; without the
+      // drain, close() set `closed` first and appendBatch's guard drops the batch.
+      for (let i = 0; i < 10; i++) await tick()
+      release()
+      await shutting
+
+      // Cold load: the enqueue-attempted batch AND its commit record must be on
+      // disk.
+      const rows = await new TranscriptSidecar(dir, info.id).load()
+      const attempted = rows.find((r) => (r as { state?: string }).state === 'enqueue-attempted') as { batchId?: string; operationId?: string } | undefined
+      expect(attempted?.operationId).toBe(firstInput!.operationId)
+      const commit = rows.find((r) =>
+        (r as { commit?: boolean }).commit === true
+        && (r as { batchId?: string }).batchId === attempted!.batchId)
+      expect(commit).toBeTruthy()
+    })
+
+    it('a pending writer commit does not re-create the sidecar and truncate the landed v1 suffix', async () => {
+      const internals = sm as unknown as {
+        getOrCreateTranscript(id: string): { sidecar: TranscriptSidecar }
+        transcriptWriters: Map<string, { deps: { appendBatch: (rows: object[], commit: object) => Promise<void> } }>
+      }
+      const info = await sm.create({ cwd: TEST_CWD })
+      internals.getOrCreateTranscript(info.id)
+      const seqRows = async () => {
+        const rows = await new TranscriptSidecar(dir, info.id).load()
+        return rows.filter((r) => typeof (r as { seq?: unknown }).seq === 'number').map((r) => (r as { seq: number }).seq)
+      }
+      // Turn 1 fully durable: a committed input batch + the v1 suffix (user /
+      // assistant / result rows, seq 0,1,2) on disk.
+      await sm.send(info.id, 'first')
+      mockHandles[0].emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r1' }] } })
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)).toBe(true)
+      expect(await waitFor(async () => (await seqRows()).includes(2))).toBe(true)
+      // Latch turn 2's FIRST writer commit in the appendBatch DEP, before holder()
+      // resolution — the race window where the commit callback runs after the
+      // holder would otherwise be dropped.
+      const writer = internals.transcriptWriters.get(info.id)!
+      const origDep = writer.deps.appendBatch
+      let calls = 0
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      writer.deps.appendBatch = async (rows, commit) => {
+        calls += 1
+        if (calls === 1) await gate
+        return origDep(rows, commit)
+      }
+      await sm.send(info.id, 'second')
+      expect(await waitFor(() => calls >= 1)).toBe(true)
+      mockHandles[0].emit({ type: 'assistant', uuid: 'a2', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r2' }] } })
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r2', session_id: info.id })
+      // Turn 2's v1 suffix (seq 3,4,5) lands while its input commit is parked.
+      expect(await waitFor(async () => (await seqRows()).includes(5))).toBe(true)
+      const beforeSeqs = await seqRows()
+      expect(beforeSeqs).toEqual([0, 1, 2, 3, 4, 5])
+
+      const shutting = sm.shutdown()
+      for (let i = 0; i < 10; i++) await tick()
+      release()
+      await shutting
+
+      // The full seq set must survive. Draining AFTER the holder drop lets the
+      // pending commit re-create a fresh sidecar whose recoverTail truncates the
+      // landed v1 suffix back to the last commit (seq 0 only). Draining BEFORE the
+      // drop keeps the original holder, so the batch lands and nothing truncates.
+      expect(await seqRows()).toEqual(beforeSeqs)
+    })
+
+    it('a dispatch task issuing a commit mid-drain does not re-create the sidecar after the holder drop', async () => {
+      const internals = sm as unknown as {
+        getOrCreateTranscript(id: string): { sidecar: TranscriptSidecar }
+        transcriptStores: Map<string, { sidecar: TranscriptSidecar }>
+        transcriptWriters: Map<string, { deps: { appendBatch: (rows: object[], commit: object) => Promise<void> } }>
+      }
+      const info = await sm.create({ cwd: TEST_CWD })
+      internals.getOrCreateTranscript(info.id)
+      const seqRows = async () => {
+        const rows = await new TranscriptSidecar(dir, info.id).load()
+        return rows.filter((r) => typeof (r as { seq?: unknown }).seq === 'number').map((r) => (r as { seq: number }).seq)
+      }
+      // Turn 1 fully durable (committed input batches + v1 suffix seq 0,1,2).
+      await sm.send(info.id, 'first')
+      mockHandles[0].emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r1' }] } })
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)).toBe(true)
+      expect(await waitFor(async () => (await seqRows()).includes(2))).toBe(true)
+      // Latch turn 2's FIRST input commit in the appendBatch DEP. The
+      // recordDispatchAttempt continuation parks awaiting it, so the SECOND input
+      // commit is NOT yet chained onto writerQueue — it is issued DURING the
+      // teardown drain, after a writer-only drain has snapshotted the tail.
+      const writer = internals.transcriptWriters.get(info.id)!
+      const origDep = writer.deps.appendBatch
+      let calls = 0
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      writer.deps.appendBatch = async (rows, commit) => {
+        calls += 1
+        if (calls === 1) await gate
+        return origDep(rows, commit)
+      }
+      await sm.send(info.id, 'second')
+      expect(await waitFor(() => calls >= 1)).toBe(true)
+      mockHandles[0].emit({ type: 'assistant', uuid: 'a2', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r2' }] } })
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r2', session_id: info.id })
+      expect(await waitFor(async () => (await seqRows()).includes(5))).toBe(true)
+      const beforeSeqs = await seqRows()
+      expect(beforeSeqs).toEqual([0, 1, 2, 3, 4, 5])
+
+      const shutting = sm.shutdown()
+      for (let i = 0; i < 10; i++) await tick()
+      release()
+      await shutting
+      // Let any post-drain microtasks/I/O settle so a re-creation (if the drain
+      // missed the dispatch-chained commit) has landed before we assert.
+      for (let i = 0; i < 10; i++) await tick()
+
+      // The holder must STAY dropped. A writer-only drain snapshots writerQueue
+      // before the dispatch continuation issues the second commit; that commit
+      // then runs after the holder drop and re-creates a fresh holder via
+      // getOrCreateTranscript (whose sidecar's recoverTail truncates the landed v1
+      // suffix). Quiescing BOTH chains runs the dispatch-chained commit against the
+      // live holder, so no re-creation occurs and the full seq set survives.
+      expect(internals.transcriptStores.has(info.id)).toBe(false)
+      expect(await seqRows()).toEqual(beforeSeqs)
+    })
+  })
+
   describe('per-session op lock', () => {
     function deferred(): { promise: Promise<void>; resolve: () => void } {
       let resolve!: () => void
