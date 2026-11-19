@@ -1,5 +1,5 @@
 import { createLogger } from '../../log.js'
-import { effortLevelsForModel, supportsFastModeForModel, supportsThinkingForModel } from '../../effort-capability.js'
+import { effortLevelsForModel, supportsFastModeForModel, supportsThinkingForModel } from '../../../shared/model-capability.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import { parseSseStream, type SseEvent } from './sse.js'
 import type { CanonicalEvent } from './canonical.js'

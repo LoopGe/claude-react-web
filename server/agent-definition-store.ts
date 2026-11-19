@@ -3,6 +3,7 @@ import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk'
 import {
   LEGACY_INVALID_PERMISSION_MODE,
   isSdkAgentPermissionMode,
+  AGENT_FIELDS,
 } from '../shared/agent-definitions.js'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
@@ -10,15 +11,11 @@ import { createLogger } from './log.js'
 
 const log = createLogger('agent-definitions')
 
-/** Fields that make up an SDK AgentDefinition, in Options.agents payload shape. */
-export const AGENT_FIELDS = [
-  'description', 'prompt', 'tools', 'disallowedTools', 'model', 'mcpServers',
-  'skills', 'memory', 'effort', 'permissionMode', 'maxTurns', 'background',
-  'initialPrompt', 'observer', 'observerMessage', 'criticalSystemReminder_EXPERIMENTAL',
-  'omitClaudeMd',
-] as const
-
-export type AgentField = (typeof AGENT_FIELDS)[number]
+// The agent field vocabulary + usability check live in shared/agent-definitions.ts
+// (neutral, host-free); this module re-exports them so host consumers can keep
+// importing them from here.
+export { AGENT_FIELDS, agentUnusableReason } from '../shared/agent-definitions.js'
+export type { AgentField } from '../shared/agent-definitions.js'
 
 /** A stored definition: the SDK AgentDefinition plus app bookkeeping. */
 export interface StoredAgentDefinition extends AgentDefinition {
@@ -72,28 +69,6 @@ export class AgentDefinitionStore extends JsonFileStore<StoredAgentDefinition> {
     }
     return out
   }
-}
-
-/** Why `name` can't be used as a main-thread agent, or null when it can.
- *
- *  Both write edges that accept an agent NAME share this: `POST /sessions`
- *  (start-as, → `Options.agent`) and `POST /sessions/:id/agent` (mid-session
- *  switch, → `applyFlagSettings({ agent })`). Only ENABLED definitions pass —
- *  a disabled or unknown name would leave the CLI resolving an agent that
- *  isn't in the spawn's `Options.agents`, so we reject rather than spin the
- *  session under a persona we can't honour. A missing store rejects every
- *  name for the same reason.
- *
- *  Returns a reason STRING rather than throwing so each caller maps it to its
- *  own transport (a Hono 400 at the route, an HttpError in the manager)
- *  without this module knowing about HTTP. */
-export function agentUnusableReason(
-  store: AgentDefinitionStore | undefined,
-  name: string,
-): string | null {
-  if (store?.get(name)?.enabled === true) return null
-  const why = store?.has(name) ? 'is disabled' : 'is not defined'
-  return `agent "${name}" ${why}`
 }
 
 /** Coerce a raw `agent` value from a request body into a switch intent.
