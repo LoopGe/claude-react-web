@@ -27,6 +27,7 @@ import { SessionStore } from '../../persistence.js'
 import { SessionManager } from '../../session-manager.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import type { CanonicalEvent } from './canonical.js'
 
 const AGENT_ID = 'agent-1'
@@ -173,7 +174,7 @@ interface Fixture {
 async function makeFixture(stateDir: string, scripts?: CanonicalEvent[][]): Promise<Fixture> {
   const store = new SessionStore({ stateDir })
   await store.load()
-  const provider = new NativeProvider({ stateDir })
+  const provider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir }) })
   if (scripts) {
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of scripts.shift() ?? []) yield ev

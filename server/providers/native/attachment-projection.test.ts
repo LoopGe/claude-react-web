@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { nativeFileHandleText, projectNativeMessages, publicNativeHistoryLine } from './attachment-projection.js'
 import type { NativeFileAttachment } from './session-log/format.js'
 import type { RawLine } from '../../history-reader.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import { aliasPathOf, attachmentRoot } from '../../attachment-paths.js'
 import { UploadStore } from '../../upload-store.js'
 
@@ -25,7 +26,7 @@ const attachment: NativeFileAttachment = {
   id: 'upload-1', name: 'notes.txt', size: 123, digest: 'abcdef0123456789'.repeat(4),
   path: '/private/registry/notes.txt', mediaType: 'text/plain', modelForm: 'handle',
 }
-const options = { stateDir: '/state' }
+const options = {}
 
 describe('native attachment projection', () => {
   it('uses stable metadata and conditional AttachmentRead guidance', () => {
@@ -112,7 +113,7 @@ describe('native attachment projection', () => {
       ],
     }]
     const before = structuredClone(history)
-    const opts = { stateDir, uploadStore }
+    const opts = { attachmentPort: makeNativePorts({ stateDir, uploadStore }).attachment }
 
     const first = await projectNativeMessages(history, opts, new AbortController().signal) as Array<{
       content: Array<{ type: string; source?: { data: string }; title?: string; context?: string; content?: Array<{ type: string }> }>

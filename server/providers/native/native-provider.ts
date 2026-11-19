@@ -5,13 +5,12 @@
 // Registration lives in ../default-providers.ts alongside ClaudeProvider.
 
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
-import { config, DEFAULT_PROFILE, type ProviderProfile, type ServerConfig } from '../../config.js'
-import { resolveActiveProfile } from '../../profiles.js'
 import { HttpError } from '../../errors.js'
-import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../../history-reader.js'
+import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../../../shared/transcript-format.js'
 import type { SessionMeta } from '../../persistence.js'
 import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef } from '../types.js'
 import type { LoopDeps } from './loop.js'
+import type { NativeHostPorts } from './ports.js'
 import { NativeMcpConnections } from './mcp/connections.js'
 import { SharedRegistry } from './mcp/shared-registry.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
@@ -142,7 +141,7 @@ export class NativeProvider implements AgentProvider {
       return loaded?.subagents.entries.map((entry) => entry.agentId) ?? []
     },
     readTranscript: (ref: ProviderSessionRef, agentId: string): Promise<unknown[]> =>
-      readNativeSubagentTranscript(this.stateDir, ref.id, agentId),
+      readNativeSubagentTranscript(this.stateDir, ref.id, agentId, this.ports.transcript),
   }
 
   /** Test seam: when set, replaces the real network streamer for every turn.
@@ -163,8 +162,12 @@ export class NativeProvider implements AgentProvider {
    *  provider deliberately never constructs an independent store. */
   readonly uploadStore?: UploadStore
   readonly attachmentReferences: NativeAttachmentReferenceIndex
+  /** Host-service ports injected by the wiring layer (default-providers /
+   *  tests); threaded into every session this provider creates. Config reads
+   *  (fidelity flags, profile resolution, model list) go through ports.config.
+   *  The real adapters live host-side in ../native-host-adapters.ts. */
+  readonly ports: NativeHostPorts
   private readonly modelContext: NativeModelContextResolver
-  private readonly fallbackProfiles = new WeakMap<ServerConfig, ProviderProfile>()
   /** One host-global shared MCP registry per provider (the provider is
    *  one-per-host). Every session's connection view delegates its external
    *  stdio entries here, so identical configs across sessions share one child.
@@ -177,12 +180,14 @@ export class NativeProvider implements AgentProvider {
     agentStore?: AgentDefinitionStore
     uploadStore?: UploadStore
     modelContext?: NativeModelContextResolver
-  } = {}) {
+    ports: NativeHostPorts
+  }) {
     this.stateDir = resolveNativeStateDir(opts.stateDir)
     this.authFor = opts.authFor
-    this.mcpRegistry = new SharedRegistry()
+    this.mcpRegistry = new SharedRegistry({ transportPort: opts.ports.mcpTransport })
     this.agentStore = opts.agentStore
     this.uploadStore = opts.uploadStore
+    this.ports = opts.ports
     const discovery = new AnthropicModelDiscovery()
     this.modelContext = opts.modelContext ?? new NativeModelContextResolver({
       discovery: {
@@ -191,24 +196,6 @@ export class NativeProvider implements AgentProvider {
     })
     this.attachmentReferences = opts.uploadStore?.attachmentReferences
       ?? new NativeAttachmentReferenceIndex({ stateDir: this.stateDir })
-  }
-
-  private fallbackProfile(): ProviderProfile {
-    const cached = this.fallbackProfiles.get(config)
-    if (cached) return cached
-    // Legacy/unloaded config has no profile objects. Snapshot its scalar values
-    // once per config generation so requests and discovery share one route.
-    const profile = {
-      ...DEFAULT_PROFILE,
-      authToken: config.authToken ?? '',
-      baseUrl: config.baseUrl,
-      modelList: config.modelList,
-      modelGroups: config.modelGroups,
-      recapModel: config.recapModel,
-      commitMessageModel: config.commitMessageModel,
-    }
-    this.fallbackProfiles.set(config, profile)
-    return profile
   }
 
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
@@ -233,15 +220,15 @@ export class NativeProvider implements AgentProvider {
       createEditTool(readState),
       ...STATIC_TOOLS,
     ]
-    const tools = config.nativeAttachmentFidelity && this.uploadStore
+    const configPort = this.ports.config
+    const tools = configPort.nativeAttachmentFidelity && this.uploadStore
       ? [...sessionTools, createAttachmentReadTool({
-          uploadStore: this.uploadStore,
-          stateDir: this.stateDir,
+          attachmentPort: this.ports.attachment,
           referenceIndex: this.attachmentReferences,
           sessionId: opts.id,
           pdfBudgets,
           preparedPdfs,
-          pdfDocumentsEnabled: () => config.nativeAttachmentFidelity && config.nativePdfDocuments,
+          pdfDocumentsEnabled: () => configPort.nativeAttachmentFidelity && configPort.nativePdfDocuments,
         })]
       : sessionTools
     const system = renderSystem({ withAgentSection: true, systemPromptAppend }, tools)
@@ -249,7 +236,7 @@ export class NativeProvider implements AgentProvider {
     // The manager has already resolved globals + inline configs + first-party
     // `injectAll` results into `mcpServers`. Connections start here and are
     // awaited per turn, so spawn never blocks on a slow server.
-    const mcp = new NativeMcpConnections({ authFor: this.authFor, registry: this.mcpRegistry })
+    const mcp = new NativeMcpConnections({ transportPort: this.ports.mcpTransport, authFor: this.authFor, registry: this.mcpRegistry })
     mcp.load(opts.mcpServers as Record<string, unknown> | undefined)
     // Spawn skill policy rides the SDK-shaped create body the manager already
     // forwards through providerExtras (`Options.skills`).
@@ -258,9 +245,7 @@ export class NativeProvider implements AgentProvider {
     // fork log). The queued connect has no owner then, so it must be torn down
     // here or it would run forever and leak its children. `closeAll` closes the
     // local connects AND releases any shared-registry refs the load acquired.
-    const profile = opts.profile ?? (config.profiles.length > 0
-      ? resolveActiveProfile(config.profiles, config.activeProfileId, DEFAULT_PROFILE)
-      : this.fallbackProfile())
+    const profile = opts.profile ?? (configPort.hasProfiles ? configPort.activeProfile() : configPort.fallbackProfile())
     const credentials = () => {
       if (opts.profile === undefined && !profile.authToken) {
         // Preserve the lazy missing-token failure without consulting a newer
@@ -270,7 +255,7 @@ export class NativeProvider implements AgentProvider {
       return { baseUrl: profile.baseUrl, authToken: profile.authToken }
     }
     try {
-      const SessionClass = config.nativeAttachmentFidelity ? NativeSession : LegacyNativeSession
+      const SessionClass = configPort.nativeAttachmentFidelity ? NativeSession : LegacyNativeSession
       return new SessionClass({
         id: opts.id,
         cwd: opts.cwd ?? process.cwd(),
@@ -290,6 +275,7 @@ export class NativeProvider implements AgentProvider {
         fastMode: opts.fastMode,
         profile,
         modelContext: this.modelContext,
+        ports: this.ports,
         credentials,
         readState,
         tools,
@@ -315,15 +301,15 @@ export class NativeProvider implements AgentProvider {
     id: string,
     opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string },
   ): Promise<HistoryPage> {
-    return readNativeHistoryPage(this.stateDir, id, opts)
+    return readNativeHistoryPage(this.stateDir, id, this.ports.transcript, opts)
   }
 
   readHistoryEntries(id: string, opts: { afterUuid?: string }): Promise<HistoryEntry[]> {
-    return readNativeHistoryEntries(this.stateDir, id, opts)
+    return readNativeHistoryEntries(this.stateDir, id, this.ports.transcript, opts)
   }
 
   readHistoryForReconcile(id: string, opts: { afterUuid?: string }): Promise<HistoryReadResult> {
-    return readNativeHistorySnapshot(this.stateDir, id, opts)
+    return readNativeHistorySnapshot(this.stateDir, id, this.ports.transcript, opts)
   }
 
   hasTranscript(meta: SessionMeta): Promise<boolean> {

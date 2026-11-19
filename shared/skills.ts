@@ -7,6 +7,89 @@ export interface SkillRootInfo {
   writable: boolean
 }
 
+// ── SKILL.md frontmatter ──────────────────────────────────────────────────
+
+export const MAX_SKILL_BYTES = 1024 * 1024
+
+export const VALID_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
+
+export interface ParsedSkillFrontmatter {
+  name?: string
+  description?: string
+  /** `disable-model-invocation: true` — the Skill tool must refuse it. */
+  disableModelInvocation?: boolean
+  /** `user-invocable: false` — hidden from the `/` command catalog. */
+  userInvocable?: boolean
+  /** `argument-hint: '[topic]'` — shown beside the command. */
+  argumentHint?: string
+  /** Raw text after the closing delimiter; absent only for structural failures. */
+  body?: string
+  errors: string[]
+}
+
+function parseScalar(value: string): string {
+  const trimmed = value.trim()
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1).trim()
+  }
+  return trimmed
+}
+
+export function parseSkillFrontmatter(content: string): ParsedSkillFrontmatter {
+  const errors: string[] = []
+  const normalized = content.replace(/^\uFEFF/, '')
+  const lines = normalized.split(/\r?\n/)
+  if (lines[0]?.trim() !== '---') {
+    return { errors: ['SKILL.md must start with YAML frontmatter delimited by ---'] }
+  }
+  const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---')
+  if (end < 0) return { errors: ['SKILL.md frontmatter is missing closing ---'] }
+
+  // Keep the body byte-for-byte (apart from the BOM already removed above):
+  // line-ending preservation matters because this text becomes the durable
+  // native skill invocation, while `lines` remains the metadata parser's view.
+  let bodyStart = 0
+  for (let index = 0; index <= end; index++) {
+    bodyStart += lines[index].length
+    if (normalized.startsWith('\r\n', bodyStart)) bodyStart += 2
+    else if (normalized[bodyStart] === '\n') bodyStart += 1
+  }
+  const body = normalized.slice(bodyStart)
+
+  let name: string | undefined
+  let description: string | undefined
+  let disableModelInvocation: boolean | undefined
+  let userInvocable: boolean | undefined
+  let argumentHint: string | undefined
+  for (const line of lines.slice(1, end)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const match = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(trimmed)
+    if (!match) continue
+    const key = match[1]
+    const value = parseScalar(match[2])
+    if (key === 'name') name = value
+    if (key === 'description') description = value
+    // Only the non-default spelling is meaningful: `disable-model-invocation:
+    // true` and `user-invocable: false` turn behavior off, so their opposites
+    // stay undefined (the same as an omitted key for every consumer).
+    if (key === 'disable-model-invocation' && value === 'true') disableModelInvocation = true
+    if (key === 'user-invocable' && value === 'false') userInvocable = false
+    if (key === 'argument-hint' && value) argumentHint = value
+  }
+  if (!description) errors.push('frontmatter.description is required')
+  if (name && !VALID_SKILL_NAME.test(name)) errors.push('frontmatter.name is not a valid skill name')
+  return {
+    name,
+    description,
+    ...(disableModelInvocation !== undefined ? { disableModelInvocation } : {}),
+    ...(userInvocable !== undefined ? { userInvocable } : {}),
+    ...(argumentHint !== undefined ? { argumentHint } : {}),
+    body,
+    errors,
+  }
+}
+
 /** Provenance of a GitHub-installed skill, persisted as `.crw-source.json`
  *  inside the installed skill directory (written into the staged tree before
  *  the atomic install, so it always lands with the skill). */

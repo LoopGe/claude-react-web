@@ -1,10 +1,15 @@
 import { promises as fs } from 'node:fs'
 import { isAbsolute, relative, resolve as resolvePath, sep } from 'node:path'
-import type { ResolvedFileAttachment } from './agent-message.js'
+import type { ResolvedFileAttachment } from '../shared/attachment-types.js'
 import { attachmentRoot } from './attachment-paths.js'
 import { HttpError } from './errors.js'
 import { uploadEntryPathContained } from './upload-path.js'
 import { UPLOAD_SUBDIR, type UploadEntry, type UploadStore } from './upload-store.js'
+
+// ResolvedFileAttachment lives in shared/attachment-types.ts (neutral,
+// host-free); this module re-exports it so consumers can keep importing
+// from here.
+export type { ResolvedFileAttachment } from '../shared/attachment-types.js'
 
 export interface AttachmentAccessOptions {
   uploadStore: UploadStore

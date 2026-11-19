@@ -3,8 +3,8 @@
 // the reader selects one agent's direct conversation from the shared cache and
 // reuses the Claude transcript normalizer for its wire shape.
 
-import type { RawLine } from '../../history-reader.js'
-import { normalizeSubagentLine } from '../../subagent-transcripts.js'
+import type { RawLine } from '../../../shared/transcript-format.js'
+import type { NativeTranscriptPort } from './ports.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import type { NativeSubagentCatalogEntry } from './session-log/subagents.js'
 import { publicNativeHistoryLine } from './attachment-projection.js'
@@ -19,20 +19,25 @@ function hasPrompt(entry: NativeSubagentCatalogEntry): boolean {
  *  its own tool_use_id. Cloning the JSON-native frame also isolates nested
  *  content from the normalizer's oversized-result trimming, so cached and
  *  full-recall lines keep their original bytes. */
-export function projectNativeSubagentLine(line: RawLine, sessionId: string): unknown | undefined {
+export function projectNativeSubagentLine(
+  line: RawLine,
+  sessionId: string,
+  transcriptPort: NativeTranscriptPort,
+): unknown | undefined {
   if (line.type !== 'user' && line.type !== 'assistant') return undefined
   const standalone = structuredClone(publicNativeHistoryLine(line))
   delete standalone.parent_tool_use_id
-  return normalizeSubagentLine(standalone, sessionId)
+  return transcriptPort.normalizeSubagentLine(standalone, sessionId)
 }
 
 /** Stable opening prompt for a native descriptor with no durable prompt row. */
 export function nativeSubagentPromptFrame(
   entry: NativeSubagentCatalogEntry,
   sessionId: string,
+  transcriptPort: NativeTranscriptPort,
 ): unknown | null {
   if (!hasPrompt(entry)) return null
-  return normalizeSubagentLine({
+  return transcriptPort.normalizeSubagentLine({
     type: 'user',
     uuid: `native-subagent-prompt:${entry.agentId}`,
     session_id: sessionId,
@@ -49,6 +54,7 @@ export async function readNativeSubagentTranscript(
   stateDir: string,
   sessionId: string,
   agentId: string,
+  transcriptPort: NativeTranscriptPort,
 ): Promise<unknown[]> {
   const loaded = await nativeHistoryCache.load(stateDir, sessionId)
   const entry = loaded?.subagents.byId.get(agentId)
@@ -58,7 +64,7 @@ export async function readNativeSubagentTranscript(
   let hasDurablePrompt = false
   for (const line of loaded.lines) {
     if (line.parent_tool_use_id !== agentId) continue
-    const frame = projectNativeSubagentLine(line, sessionId)
+    const frame = projectNativeSubagentLine(line, sessionId, transcriptPort)
     if (frame === undefined) continue
     output.push(frame)
     if (line.type === 'user' && (frame as { parent_tool_use_id?: unknown }).parent_tool_use_id === null) {
@@ -67,6 +73,6 @@ export async function readNativeSubagentTranscript(
   }
 
   if (hasDurablePrompt) return output
-  const prompt = nativeSubagentPromptFrame(entry, sessionId)
+  const prompt = nativeSubagentPromptFrame(entry, sessionId, transcriptPort)
   return prompt === null ? output : [prompt, ...output]
 }

@@ -13,9 +13,10 @@
 
 import { promises as fs } from 'node:fs'
 import { dirname } from 'node:path'
-import { MAX_SKILL_BYTES, listSkills } from '../../skills.js'
+import { MAX_SKILL_BYTES } from '../../../shared/skills.js'
 import type { SkillRecord } from '../../../shared/skills.js'
 import { createLogger } from '../../log.js'
+import type { NativeSkillPort } from './ports.js'
 import { renderNativeSkillBody } from './skill-render.js'
 
 const log = createLogger('native-skills')
@@ -55,6 +56,7 @@ export type NativeSkillInvocationView = NativeSkillView & {
 
 export class NativeSkillCatalog {
   private readonly cwd: string | undefined
+  private readonly skillPort: NativeSkillPort
   /** Spawn `Options.skills`. `undefined` keeps the CLI default: every skill
    *  listed by name only. */
   private policy: string[] | 'all' | undefined
@@ -64,8 +66,9 @@ export class NativeSkillCatalog {
   private nextGeneration = 0
   private committedGeneration = 0
 
-  constructor(cwd: string | undefined) {
+  constructor(cwd: string | undefined, skillPort: NativeSkillPort) {
     this.cwd = cwd
+    this.skillPort = skillPort
   }
 
   /** Store the spawn policy. Does not touch discovered skills — state is
@@ -83,9 +86,10 @@ export class NativeSkillCatalog {
   /** Re-read both skill roots and cache every valid skill's body. */
   async reload(): Promise<void> {
     const generation = ++this.nextGeneration
-    const { skills } = await listSkills(this.cwd)
-    // listSkills returns user scope first, project scope second; a project
-    // skill with the same name wins — the project is the more specific owner.
+    const { skills } = await this.skillPort.listSkills(this.cwd)
+    // The skill port's listSkills returns user scope first, project scope
+    // second; a project skill with the same name wins — the project is the
+    // more specific owner.
     // Invalid records are dropped BEFORE the dedupe, so a broken project skill
     // leaves a valid user skill of the same name in place.
     const byName = new Map<string, SkillRecord>()
@@ -96,8 +100,8 @@ export class NativeSkillCatalog {
     for (const record of byName.values()) {
       let document: string
       try {
-        // listSkills already rejects oversized files; a file that grew since
-        // then is skipped rather than failing the whole catalog.
+        // The port's listSkills already rejects oversized files; a file that
+        // grew since then is skipped rather than failing the whole catalog.
         const stat = await fs.stat(record.path)
         if (stat.size > MAX_SKILL_BYTES) continue
         document = await fs.readFile(record.path, 'utf8')
@@ -121,7 +125,7 @@ export class NativeSkillCatalog {
    *  takes this after its discovery await so a later reload cannot mix a new
    *  prompt section or Skill-tool body with the invocation it already stored. */
   snapshot(policy?: readonly string[] | 'all'): NativeSkillInvocationView {
-    const snapshot = new NativeSkillCatalog(this.cwd)
+    const snapshot = new NativeSkillCatalog(this.cwd, this.skillPort)
     snapshot.overrides = { ...this.overrides }
     snapshot.entries = [...this.entries]
     snapshot.byName = new Map(this.byName)

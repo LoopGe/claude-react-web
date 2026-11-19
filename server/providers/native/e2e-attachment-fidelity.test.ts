@@ -22,6 +22,7 @@ import type { FileBlock } from '../../../shared/attachments.js'
 import { ProviderRegistry } from '../registry.js'
 import type { CanonicalEvent } from './canonical.js'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 
 vi.mock('../../anthropic-api.js', () => ({
@@ -154,7 +155,7 @@ async function makeFixture(stateDir: string): Promise<Fixture> {
   uploadStores.push(uploadStore)
   await uploadStore.load()
   await uploadStore.attachmentReferences.rebuild()
-  const provider = new NativeProvider({ stateDir, uploadStore })
+  const provider = new NativeProvider({ stateDir, uploadStore, ports: makeNativePorts({ stateDir, uploadStore }) })
   const requests: StreamRequest[] = []
   const scripts: CanonicalEvent[][] = []
   provider._testStream = async function* (req: StreamRequest) {

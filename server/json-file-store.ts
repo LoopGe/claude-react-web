@@ -10,10 +10,14 @@ import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { createLogger, type Logger } from './log.js'
 import { DEBOUNCE_MS } from './constants.js'
+import { DEFAULT_DIR_NAME } from '../shared/transcript-format.js'
 
 // Re-exported for the store subclasses that reference it via this module.
 export { DEBOUNCE_MS }
-export const DEFAULT_DIR_NAME = '.claude-react-web'
+// The default state-directory name lives in shared/transcript-format.ts
+// (neutral, host-free); re-exported so host consumers can keep importing it
+// from here.
+export { DEFAULT_DIR_NAME }
 
 export interface JsonFileStoreOptions {
   /** Override the state directory (CLI --state-dir). */

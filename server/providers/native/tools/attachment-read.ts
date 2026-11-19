@@ -3,12 +3,12 @@
 // retains only the requested line window; no text escapes before EOF validation.
 
 import { TextDecoder } from 'node:util'
-import { AttachmentObjectStore, AttachmentStoreError } from '../../../attachment-object-store.js'
-import { resolveAuthorizedAttachment } from '../../../attachment-access.js'
 import { HttpError } from '../../../errors.js'
 import { createLogger } from '../../../log.js'
+import { AttachmentStoreError } from '../../../../shared/attachment-store-error.js'
+import type { ResolvedFileAttachment } from '../../../../shared/attachment-types.js'
 import type { NativeAttachmentReferenceIndex } from '../attachment-reference-index.js'
-import type { UploadStore } from '../../../upload-store.js'
+import type { NativeAttachmentPort } from '../ports.js'
 import {
   PDF_MAX_BASE64_CHARS,
   PDF_MAX_BYTES,
@@ -31,8 +31,7 @@ export const ATTACHMENT_READ_GUIDANCE =
   'Use AttachmentRead with an upload id from an attachment handle to read its text; never substitute a registry path or a digest reference.'
 
 interface AttachmentReadBaseDeps {
-  uploadStore: UploadStore
-  stateDir: string
+  attachmentPort: NativeAttachmentPort
   referenceIndex: NativeAttachmentReferenceIndex
   sessionId: string
 }
@@ -181,20 +180,16 @@ class LineWindow {
 
 async function readText(
   deps: AttachmentReadDeps,
-  occurrence: Parameters<typeof resolveAuthorizedAttachment>[0],
+  occurrence: ResolvedFileAttachment,
   offset: number,
   limit: number,
   signal: AbortSignal,
 ): Promise<string> {
-  const resolved = await resolveAuthorizedAttachment(occurrence, {
-    uploadStore: deps.uploadStore,
-    stateDir: deps.stateDir,
-  })
-  const objects = new AttachmentObjectStore(deps.stateDir)
+  const resolved = await deps.attachmentPort.resolveAuthorized(occurrence)
   const decoder = new TextDecoder('utf-8', { fatal: true })
   const window = new LineWindow(offset, limit)
   try {
-    for await (const chunk of objects.readVerified({
+    for await (const chunk of deps.attachmentPort.readVerified({
       path: resolved.path,
       digest: resolved.digest,
       size: resolved.size,
@@ -246,7 +241,7 @@ async function readPdf(
     throw new PdfBudgetError(err instanceof Error ? err.message : String(err))
   }
   try {
-    const document = await readAuthorizedPdfDocument(resolved, deps.stateDir, signal)
+    const document = await readAuthorizedPdfDocument(resolved, deps.attachmentPort, signal)
     deps.preparedPdfs.complete(prepared, document)
     const attachment: NativeFileAttachment = { ...resolved, modelForm: 'pdf-document' }
     const text = `Read PDF ${resolved.name}`
@@ -293,10 +288,7 @@ export function createAttachmentReadTool(deps: AttachmentReadDeps): ToolDef<Read
         if (occurrence.mediaType === 'application/pdf') {
           // Authorization precedes every PDF-specific result, including input
           // rejection. Pagination still rejects before opening file bytes.
-          const authorized = await resolveAuthorizedAttachment(occurrence, {
-            uploadStore: deps.uploadStore,
-            stateDir: deps.stateDir,
-          })
+          const authorized = await deps.attachmentPort.resolveAuthorized(occurrence)
           const resolved: NativeFileAttachment = { ...authorized, modelForm: occurrence.modelForm }
           if (input.offset !== undefined || input.limit !== undefined) {
             return errorOutcome(input.id, occurrence.name, 'PDF attachments do not accept offset or limit pagination')

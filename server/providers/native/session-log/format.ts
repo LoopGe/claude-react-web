@@ -6,9 +6,8 @@
 // reader. It performs no I/O.
 
 import { NativeSessionStorageError } from './errors.js'
-import { AGENT_FIELDS } from '../../../agent-definition-store.js'
 import type { StoredAgentDefinition } from '../../../agent-definition-store.js'
-import { isSdkAgentPermissionMode } from '../../../../shared/agent-definitions.js'
+import { AGENT_FIELDS, isSdkAgentPermissionMode } from '../../../../shared/agent-definitions.js'
 import type { SessionToolProfile } from '../../../../shared/tool-profile.js'
 import { NATIVE_AGENT_EFFORT_LEVELS } from '../agent-profile.js'
 import type { NativeAgentBase, NativeAgentProfile, NativeAgentSelectionEvent } from '../agent-profile.js'

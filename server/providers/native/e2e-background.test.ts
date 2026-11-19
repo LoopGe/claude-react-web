@@ -19,6 +19,7 @@ import { ProviderRegistry } from '../registry.js'
 import type { ProviderSessionHandle } from '../types.js'
 import type { CanonicalEvent } from './canonical.js'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 
 type Frame = Record<string, any>
 
@@ -78,7 +79,7 @@ function allowingCanUseTool(): NonNullable<Parameters<SessionManager['create']>[
 async function makeFixture(stateDir: string): Promise<Fixture> {
   const store = new SessionStore({ stateDir })
   await store.load()
-  const provider = new NativeProvider({ stateDir })
+  const provider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir }) })
   const requests: StreamRequest[] = []
   let handler: StreamHandler = () => textTurn('unscripted response')
   provider._testStream = (async function* (req: StreamRequest) {

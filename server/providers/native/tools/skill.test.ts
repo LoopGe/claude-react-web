@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { makeNativePorts } from '../../native-host-adapters.js'
 import { NativeSkillCatalog } from '../skills.js'
 import { SKILL_GUIDANCE, createSkillTool } from './skill.js'
 
@@ -53,7 +54,7 @@ async function writeSkill(
 const toolCtx = () => ({ cwd: project, signal: new AbortController().signal })
 
 async function toolFor(policy: string[] | 'all' | undefined = 'all') {
-  const catalog = new NativeSkillCatalog(project)
+  const catalog = new NativeSkillCatalog(project, makeNativePorts().skill)
   catalog.configure(policy)
   await catalog.reload()
   return createSkillTool(catalog)
@@ -111,7 +112,7 @@ describe('createSkillTool', () => {
 
   it("errors on a skill the selection policy disabled ('off')", async () => {
     await writeSkill('demo')
-    const catalog = new NativeSkillCatalog(project)
+    const catalog = new NativeSkillCatalog(project, makeNativePorts().skill)
     catalog.configure('all')
     await catalog.reload()
     catalog.applyOverrides({ demo: 'off' })

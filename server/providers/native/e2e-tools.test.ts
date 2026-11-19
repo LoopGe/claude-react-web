@@ -22,6 +22,7 @@ import { SessionStore } from '../../persistence.js'
 import { SessionManager } from '../../session-manager.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import { fakeWebCalls, resetFakeWebTransport, setFakeWebHandler } from './tools/web-test-transport.js'
 import type { CanonicalEvent } from './canonical.js'
 
@@ -300,7 +301,7 @@ async function makeEnv(): Promise<{ project: string; stateDir: string }> {
 async function makeFixture(stateDir: string): Promise<Fixture> {
   const store = new SessionStore({ stateDir })
   await store.load()
-  const provider = new NativeProvider({ stateDir })
+  const provider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir }) })
   const requests: StreamRequest[] = []
   const scripts: CanonicalEvent[][] = []
   ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: StreamRequest) {

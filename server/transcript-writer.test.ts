@@ -68,6 +68,92 @@ describe('TranscriptWriter.appendDurable (spec §8.1)', () => {
   })
 })
 
+describe('TranscriptWriter.drain (teardown race, R1)', () => {
+  const flush = () => new Promise<void>((r) => setImmediate(r))
+
+  it('resolves only after every queued commit has run its appendBatch', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const ran: string[] = []
+    const appendBatch = vi.fn(async (rows: object[]) => {
+      ran.push((rows[0] as { state?: string }).state ?? '')
+      await gate
+    })
+    const { deps } = makeDeps({ appendBatch })
+    const w = new TranscriptWriter(deps)
+    // Two serial commits; the first parks inside appendBatch, the second is
+    // chained behind it on writerQueue.
+    const c1 = w.commitLifecycle('op1', 'consumed')
+    const c2 = w.commitLifecycle('op2', 'steered')
+    let drained = false
+    const d = w.drain().then(() => { drained = true })
+    await flush()
+    expect(ran).toEqual(['consumed']) // first commit started, second still queued
+    expect(drained).toBe(false) // drain must wait for the parked commit
+    release()
+    await d
+    expect(drained).toBe(true)
+    await Promise.all([c1, c2])
+    expect(ran).toEqual(['consumed', 'steered'])
+    expect(appendBatch).toHaveBeenCalledTimes(2)
+  })
+
+  it('never rejects even when a queued batch fails (error-swallowed tail)', async () => {
+    const appendBatch = vi.fn(async () => { throw new Error('disk full') })
+    const { deps } = makeDeps({ appendBatch })
+    const w = new TranscriptWriter(deps)
+    const c = w.commitLifecycle('op1', 'consumed')
+    await expect(c).rejects.toThrow('disk full')
+    await expect(w.drain()).resolves.toBeUndefined()
+  })
+
+  it('resolves immediately when no commits are queued', async () => {
+    const { deps } = makeDeps()
+    const w = new TranscriptWriter(deps)
+    await expect(w.drain()).resolves.toBeUndefined()
+  })
+})
+
+describe('TranscriptWriter.quiesce (both chains, R6)', () => {
+  const flush = () => new Promise<void>((r) => setImmediate(r))
+
+  it('waits for a commit a dispatch task issues mid-drain (dispatchQueue feeds writerQueue)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const states: string[] = []
+    const appendBatch = vi.fn(async (rows: object[]) => {
+      const state = (rows[0] as { state?: string }).state ?? ''
+      states.push(state)
+      if (state === 'enqueue-not-attempted') await gate
+    })
+    const { deps } = makeDeps({ appendBatch })
+    const w = new TranscriptWriter(deps)
+    void w.recordDispatchAttempt({ operationId: 'op1', dispatchOrdinal: 1, kind: 'user', payload: userMsg('a') })
+    await flush()
+    // The first input commit is parked; the dispatch continuation has NOT yet
+    // chained the second commit onto writerQueue.
+    expect(states).toEqual(['enqueue-not-attempted'])
+    expect(w.hasPendingCommits).toBe(true)
+    expect(w.hasPendingDispatch).toBe(true)
+    let quiesced = false
+    const q = w.quiesce().then(() => { quiesced = true })
+    await flush()
+    expect(quiesced).toBe(false) // a writer-only snapshot would resolve here
+    release()
+    await q
+    expect(quiesced).toBe(true)
+    expect(states).toEqual(['enqueue-not-attempted', 'enqueue-attempted'])
+    expect(w.hasPendingWork).toBe(false)
+  })
+
+  it('resolves immediately when both chains are idle', async () => {
+    const { deps } = makeDeps()
+    const w = new TranscriptWriter(deps)
+    expect(w.hasPendingWork).toBe(false)
+    await expect(w.quiesce()).resolves.toBeUndefined()
+  })
+})
+
 describe('TranscriptWriter.enqueueDispatch (spec §8.1)', () => {
   it('commits enqueue-attempted before the provider call; a sync consumed callback re-enters without deadlock', async () => {
     const order: string[] = []

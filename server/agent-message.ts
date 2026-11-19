@@ -1,21 +1,14 @@
 import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { fileHandleText } from '../shared/upload-handle.js'
 import type { FileBlock } from '../shared/attachments.js'
+import type { ResolvedFileAttachment } from '../shared/attachment-types.js'
 
 export type AgentMessage = SDKMessage
 
-/** Server/provider-only attachment metadata. The browser-facing FileBlock
- *  deliberately never gains the registry path or observed media type. */
-export interface ResolvedFileAttachment {
-  id: string
-  name: string
-  size: number
-  digest: string
-  /** Registry-owned, read-only alias path; never a caller-supplied path. */
-  path: string
-  /** Server-observed type. PDF eligibility additionally requires a magic check. */
-  mediaType?: string
-}
+// ResolvedFileAttachment lives in shared/attachment-types.ts (neutral,
+// host-free); this module re-exports it so consumers can keep importing
+// from here.
+export type { ResolvedFileAttachment } from '../shared/attachment-types.js'
 
 export interface ResolvedFileBlock {
   type: 'file'

@@ -66,7 +66,7 @@ const baseDeps = (over: Partial<LoopDeps>): LoopDeps => ({
   requestPermission: async (_t, input, _id, _signal) => ({ allowed: true, input }),
   emit: () => {},
   persistToolResult: () => {},
-  attachmentProjection: { stateDir: process.cwd() },
+  attachmentProjection: {},
   system: 'SYS',
   ...over,
 })

@@ -22,6 +22,7 @@ import { ProviderRegistry } from '../registry.js'
 import type { ProviderSessionHandle } from '../types.js'
 import type { CanonicalEvent } from './canonical.js'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import type { NativeEventInput } from './session-log/format.js'
 import { loadNativeSessionLogSync, NativeSessionLog } from './session-log/log.js'
@@ -126,7 +127,7 @@ async function makeFixture(stateDir: string, opts: { claude?: boolean } = {}): P
   await store.load()
   const agentStore = new AgentDefinitionStore({ stateDir })
   await agentStore.load()
-  const provider = new NativeProvider({ stateDir, agentStore })
+  const provider = new NativeProvider({ stateDir, agentStore, ports: makeNativePorts({ stateDir }) })
   const claude = opts.claude ? new ClaudeProvider() : undefined
   const requests: StreamRequest[] = []
   const scripts: Array<CanonicalEvent[] | Error> = []
@@ -235,6 +236,7 @@ function makeHub(fx: Fixture): ProviderSubagentTranscriptHub {
       stateDir: fx.stateDir,
       subscribeLive: (id, emit, onTermination) =>
         fx.sm.subscribeLiveSubagentFrames(id, emit, onTermination),
+      transcriptPort: makeNativePorts().transcript,
     }),
   })
   hubs.push(hub)

@@ -46,7 +46,7 @@ export class SharedRegistry {
   /** One release-queue tail per sharing key; settled tails are removed. */
   private readonly queues = new Map<string, Promise<void>>()
 
-  constructor(opts: SharedRecordOptions = {}) {
+  constructor(opts: SharedRecordOptions) {
     this.opts = opts
   }
 

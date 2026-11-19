@@ -7,6 +7,7 @@ import { createLogger } from './log.js'
 import type { UploadStore } from './upload-store.js'
 import type { ProviderAttachmentOccurrence } from './providers/types.js'
 import type { NativeFileAttachment } from './providers/native/session-log/format.js'
+import { createNativeHostPorts } from './providers/native-host-adapters.js'
 import {
   loadPdfDocument,
   PDF_MAX_BASE64_CHARS,
@@ -326,7 +327,8 @@ async function pdfBlock(
     }
   }
   const signal = opts.signal ?? new AbortController().signal
-  const document = await loadPdfDocument(attachment, opts, signal)
+  const attachmentPort = createNativeHostPorts({ stateDir: opts.stateDir, uploadStore: opts.uploadStore }).attachment
+  const document = await loadPdfDocument(attachment, attachmentPort, signal)
   budget.digests.add(attachment.digest)
   budget.used += encodedChars
   budget.messageUsed += encodedChars

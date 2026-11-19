@@ -8,8 +8,7 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { isSafeSessionId } from '../../../history-reader.js'
-import { DEFAULT_DIR_NAME } from '../../../json-file-store.js'
+import { DEFAULT_DIR_NAME, isSafeSessionId } from '../../../../shared/transcript-format.js'
 
 const NATIVE_SESSIONS_DIR = 'native-sessions'
 const SESSION_LOG_FILE = 'session.v1.jsonl'

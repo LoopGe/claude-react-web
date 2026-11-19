@@ -70,7 +70,9 @@ const nextBatchId = (): string => `b${++batchCounter}`
 
 export class TranscriptWriter {
   private writerQueue: Promise<void> = Promise.resolve()
+  private pendingCommits = 0
   private dispatchQueue: Promise<void> = Promise.resolve()
+  private pendingDispatch = 0
   private queued: DispatchOp[] = []
   private deferred: Array<{ msg: unknown; seq: number }> = []
   private pending: PendingOperation[] = []
@@ -134,7 +136,8 @@ export class TranscriptWriter {
       if (this.closedFlag) return
       return this.deps.appendBatch(rows, commit)
     })
-    this.writerQueue = run.catch(() => {})
+    this.pendingCommits++
+    this.writerQueue = run.catch(() => {}).finally(() => { this.pendingCommits-- })
     return run
   }
 
@@ -142,6 +145,57 @@ export class TranscriptWriter {
    *  no-op instead of re-resolving a fresh holder and appending after close. */
   close(): void {
     this.closedFlag = true
+  }
+
+  /** Whether any durable commit is still queued or in flight on writerQueue.
+   *  Teardown drains CONDITIONALLY on this: an unconditional `await drain()`
+   *  yields a microtask even when the queue is idle, which would break unload's
+   *  synchronous writeStore contract for fire-and-forget callers (e.g. setCwd
+   *  reads the persisted meta right after `void unload()`). Mirrors the
+   *  conditional eviction drain. */
+  get hasPendingCommits(): boolean {
+    return this.pendingCommits > 0
+  }
+
+  /** Resolve once every queued commit has run its appendBatch (submitted the
+   *  batch to the sidecar). Returns the error-swallowed queue tail, so awaiting
+   *  it never rejects. Teardown awaits this BEFORE dropping the transcript holder
+   *  so a pending commit's appendBatch resolves the ORIGINAL sidecar via the
+   *  dynamic holder() dep — not a re-created one whose recoverTail would truncate
+   *  the landed v1 suffix. */
+  drain(): Promise<void> {
+    return this.writerQueue
+  }
+
+  /** Whether a dispatchQueue task is still queued or in flight. dispatchQueue
+   *  FEEDS writerQueue (recordDispatchAttempt / enqueueDispatch chain inputCommit
+   *  → commit), so a task running during a writer-only drain can issue a NEW
+   *  commit after the drain snapshots the tail — that commit would then run after
+   *  teardown drops the holder and re-create the sidecar. Teardown quiesces BOTH
+   *  chains; this indicator (with hasPendingCommits) gates the conditional
+   *  fast-path so an idle writer never yields. */
+  get hasPendingDispatch(): boolean {
+    return this.pendingDispatch > 0
+  }
+
+  /** True when either chain has pending work — the teardown fast-path gate. */
+  get hasPendingWork(): boolean {
+    return this.pendingCommits > 0 || this.pendingDispatch > 0
+  }
+
+  /** Quiesce BOTH serial chains before teardown drops the holder: let
+   *  dispatchQueue issue its commits, then writerQueue run them, repeating until
+   *  neither has pending work. Convergence is guaranteed and hang-free — the feed
+   *  is one-directional (dispatchQueue → writerQueue; a commit never re-enters
+   *  dispatch), each dispatch task issues a finite number of commits, dispatchUser
+   *  is a synchronous provider enqueue (no turn await), and external input stops
+   *  once the session leaves the live map. Returns the error-swallowed tails, so
+   *  this never rejects. */
+  async quiesce(): Promise<void> {
+    while (this.hasPendingWork) {
+      await this.dispatchQueue
+      await this.writerQueue
+    }
   }
 
   /** Per-session monotonic dispatch ordinal (D6): orders queued prompts at
@@ -160,7 +214,8 @@ export class TranscriptWriter {
       await this.inputCommit(op, 'enqueue-not-attempted')
       await this.inputCommit(op, 'enqueue-attempted')
     })
-    this.dispatchQueue = run.catch(() => {})
+    this.pendingDispatch++
+    this.dispatchQueue = run.catch(() => {}).finally(() => { this.pendingDispatch-- })
     return run
   }
 
@@ -245,7 +300,8 @@ export class TranscriptWriter {
         await this.deps.dispatchUser(op)
       }
     })
-    this.dispatchQueue = run.catch(() => {})
+    this.pendingDispatch++
+    this.dispatchQueue = run.catch(() => {}).finally(() => { this.pendingDispatch-- })
     return run
   }
 

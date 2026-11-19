@@ -1,4 +1,4 @@
-import type { ProviderProfile } from '../../config.js'
+import type { ProviderProfile } from '../../../shared/profile.js'
 import { AnthropicModelDiscovery } from './model-discovery.js'
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000

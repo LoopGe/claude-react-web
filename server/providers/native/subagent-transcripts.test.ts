@@ -12,6 +12,9 @@ import {
   projectNativeSubagentLine,
   readNativeSubagentTranscript,
 } from './subagent-transcripts.js'
+import { makeNativePorts } from '../native-host-adapters.js'
+
+const transcriptPort = makeNativePorts().transcript
 
 const SESSION = 'native-session'
 const AGENT = 'agent-direct'
@@ -128,7 +131,7 @@ function firstToolResultContent(frame: unknown): unknown {
 
 describe('native subagent prompt projection', () => {
   it('uses the stable synthetic uuid, catalog text and descriptor timestamp', () => {
-    const frame = nativeSubagentPromptFrame(catalogEntry(), SESSION) as Record<string, unknown>
+    const frame = nativeSubagentPromptFrame(catalogEntry(), SESSION, transcriptPort) as Record<string, unknown>
 
     expect(frame).toMatchObject({
       type: 'user',
@@ -140,13 +143,13 @@ describe('native subagent prompt projection', () => {
       consumedAt: Date.parse(DESCRIPTOR_TS),
       message: { role: 'user', content: [{ type: 'text', text: 'catalog prompt' }] },
     })
-    expect(nativeSubagentPromptFrame(catalogEntry(), SESSION)).toEqual(frame)
+    expect(nativeSubagentPromptFrame(catalogEntry(), SESSION, transcriptPort)).toEqual(frame)
   })
 
   it('does not synthesize an empty or whitespace-only prompt', () => {
-    expect(nativeSubagentPromptFrame(catalogEntry({ prompt: undefined }), SESSION)).toBeNull()
-    expect(nativeSubagentPromptFrame(catalogEntry({ prompt: '' }), SESSION)).toBeNull()
-    expect(nativeSubagentPromptFrame(catalogEntry({ prompt: '   ' }), SESSION)).toBeNull()
+    expect(nativeSubagentPromptFrame(catalogEntry({ prompt: undefined }), SESSION, transcriptPort)).toBeNull()
+    expect(nativeSubagentPromptFrame(catalogEntry({ prompt: '' }), SESSION, transcriptPort)).toBeNull()
+    expect(nativeSubagentPromptFrame(catalogEntry({ prompt: '   ' }), SESSION, transcriptPort)).toBeNull()
   })
 })
 
@@ -157,8 +160,8 @@ describe('projectNativeSubagentLine', () => {
       type: 'tool_result', tool_use_id: 'inner-tool', content: 'tool output',
     }])
 
-    const projectedAssistant = projectNativeSubagentLine(assistant, SESSION) as Record<string, unknown>
-    const projectedResult = projectNativeSubagentLine(toolResult, SESSION) as Record<string, unknown>
+    const projectedAssistant = projectNativeSubagentLine(assistant, SESSION, transcriptPort) as Record<string, unknown>
+    const projectedResult = projectNativeSubagentLine(toolResult, SESSION, transcriptPort) as Record<string, unknown>
 
     expect(projectedAssistant.parent_tool_use_id).toBeNull()
     expect(projectedResult.parent_tool_use_id).toBe('inner-tool')
@@ -177,8 +180,8 @@ describe('projectNativeSubagentLine', () => {
       content: [{ type: 'text', text: 'read notes.txt' }, { type: 'file', attachment }],
     }]) as RawLine
 
-    const projectedPrompt = projectNativeSubagentLine(prompt, SESSION)
-    const projectedResult = projectNativeSubagentLine(result, SESSION)
+    const projectedPrompt = projectNativeSubagentLine(prompt, SESSION, transcriptPort)
+    const projectedResult = projectNativeSubagentLine(result, SESSION, transcriptPort)
     expect(JSON.stringify([projectedPrompt, projectedResult])).not.toContain('/private/registry')
     expect(JSON.stringify([projectedPrompt, projectedResult])).not.toContain('modelForm')
     expect((projectedPrompt as { message: { content: unknown[] } }).message.content).toEqual([{
@@ -196,14 +199,14 @@ describe('readNativeSubagentTranscript', () => {
       sidechainAssistant('orphan-output', 'unknown-agent', [{ type: 'text', text: 'orphan' }]),
     ])
 
-    expect(await readNativeSubagentTranscript(stateDir!, SESSION, 'unknown-agent')).toEqual([])
+    expect(await readNativeSubagentTranscript(stateDir!, SESSION, 'unknown-agent', transcriptPort)).toEqual([])
   })
 
   it('returns a prompt-only transcript for a descriptor whose run produced no nested output', async () => {
     const log = await openLog()
     await appendAndFlush(log, [origin(AGENT, 'review the native diff'), descriptor(AGENT)])
 
-    const frames = await readNativeSubagentTranscript(stateDir!, SESSION, AGENT) as Array<Record<string, unknown>>
+    const frames = await readNativeSubagentTranscript(stateDir!, SESSION, AGENT, transcriptPort) as Array<Record<string, unknown>>
 
     expect(frames).toHaveLength(1)
     expect(frames[0]).toMatchObject({
@@ -219,7 +222,7 @@ describe('readNativeSubagentTranscript', () => {
     const log = await openLog()
     await appendAndFlush(log, [origin(AGENT, '   '), descriptor(AGENT)])
 
-    expect(await readNativeSubagentTranscript(stateDir!, SESSION, AGENT)).toEqual([])
+    expect(await readNativeSubagentTranscript(stateDir!, SESSION, AGENT, transcriptPort)).toEqual([])
   })
 
   it('projects only the direct conversation and derives tool-result parentage from its own block', async () => {
@@ -240,7 +243,7 @@ describe('readNativeSubagentTranscript', () => {
       sidechainAssistant('descendant-output', 'child-agent', [{ type: 'text', text: 'must stay nested' }]),
     ])
 
-    const frames = await readNativeSubagentTranscript(stateDir!, SESSION, AGENT) as Array<Record<string, unknown>>
+    const frames = await readNativeSubagentTranscript(stateDir!, SESSION, AGENT, transcriptPort) as Array<Record<string, unknown>>
 
     expect(frames.map((frame) => frame.uuid)).toEqual([
       'genuine-prompt',
@@ -271,7 +274,7 @@ describe('readNativeSubagentTranscript', () => {
     const cachedLine = (await nativeHistoryCache.load(stateDir!, SESSION))
       ?.lines.find((line) => line.uuid === 'oversized-result')
 
-    const frames = await readNativeSubagentTranscript(stateDir!, SESSION, AGENT)
+    const frames = await readNativeSubagentTranscript(stateDir!, SESSION, AGENT, transcriptPort)
     const projected = frames.find((frame) =>
       (frame as { uuid?: unknown }).uuid === 'oversized-result')
     const cachedAfter = (await nativeHistoryCache.load(stateDir!, SESSION))
@@ -302,7 +305,7 @@ describe('readNativeSubagentTranscript', () => {
       sidechainAssistant('after-compact', AGENT, [{ type: 'text', text: 'newer answer' }], '2026-11-12T01:04:00.000Z'),
     ])
 
-    const frames = await readNativeSubagentTranscript(stateDir!, SESSION, AGENT) as Array<Record<string, unknown>>
+    const frames = await readNativeSubagentTranscript(stateDir!, SESSION, AGENT, transcriptPort) as Array<Record<string, unknown>>
 
     expect(frames.map((frame) => frame.uuid)).toEqual([
       `native-subagent-prompt:${AGENT}`,
@@ -319,7 +322,7 @@ describe('readNativeSubagentTranscript', () => {
       sidechainAssistant('actual-final', AGENT, [{ type: 'text', text: 'the one final report' }]),
     ])
 
-    const frames = await readNativeSubagentTranscript(stateDir!, SESSION, AGENT) as Array<Record<string, unknown>>
+    const frames = await readNativeSubagentTranscript(stateDir!, SESSION, AGENT, transcriptPort) as Array<Record<string, unknown>>
 
     expect(frames.map((frame) => frame.uuid)).toEqual([`native-subagent-prompt:${AGENT}`, 'actual-final'])
     expect(frames.filter((frame) => JSON.stringify(frame.message).includes('the one final report'))).toHaveLength(1)

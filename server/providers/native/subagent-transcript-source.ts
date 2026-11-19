@@ -1,11 +1,12 @@
 import type { AgentMessage } from '../../agent-message.js'
-import type { RawLine } from '../../history-reader.js'
+import type { RawLine } from '../../../shared/transcript-format.js'
 import { createPushable } from '../../pushable.js'
 import type {
   SubagentTranscriptFrame,
   SubagentTranscriptSub,
 } from '../../subagent-transcript-hub.js'
 import type { SubagentTranscriptSource } from '../../subagent-transcript-source.js'
+import type { NativeTranscriptPort } from './ports.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import {
   nativeSubagentPromptFrame,
@@ -23,6 +24,7 @@ interface NativeSubagentTranscriptSourceOptions {
   stateDir: string
   /** Null means the session is dormant: serve disk only and never resume it. */
   subscribeLive: SubscribeNativeSubagentLive
+  transcriptPort: NativeTranscriptPort
 }
 
 type OutputItem = { frame: SubagentTranscriptFrame } | { error: Error }
@@ -37,10 +39,15 @@ function isPromptFrame(frame: unknown): boolean {
   return value.type === 'user' && value.parent_tool_use_id === null
 }
 
-function findGenuinePrompt(lines: RawLine[], agentId: string, sessionId: string): unknown | undefined {
+function findGenuinePrompt(
+  lines: RawLine[],
+  agentId: string,
+  sessionId: string,
+  transcriptPort: NativeTranscriptPort,
+): unknown | undefined {
   for (const line of lines) {
     if (line.type !== 'user' || line.parent_tool_use_id !== agentId) continue
-    const projected = projectNativeSubagentLine(line, sessionId)
+    const projected = projectNativeSubagentLine(line, sessionId, transcriptPort)
     if (projected !== undefined && isPromptFrame(projected)) return projected
   }
   return undefined
@@ -119,7 +126,7 @@ export class NativeSubagentTranscriptSource implements SubagentTranscriptSource 
 
     const processLive = async (frame: AgentMessage): Promise<void> => {
       const projected = (frame as { parent_tool_use_id?: unknown }).parent_tool_use_id === agentId
-        ? projectNativeSubagentLine(frame as RawLine, sessionId)
+        ? projectNativeSubagentLine(frame as RawLine, sessionId, this.opts.transcriptPort)
         : undefined
       if (!promptResolved) {
         if (projected !== undefined && isPromptFrame(projected)) {
@@ -128,7 +135,7 @@ export class NativeSubagentTranscriptSource implements SubagentTranscriptSource 
           const loaded = await nativeHistoryCache.load(this.opts.stateDir, sessionId)
           if (!active) return
           const genuine = loaded
-            ? findGenuinePrompt(loaded.lines, agentId, sessionId)
+            ? findGenuinePrompt(loaded.lines, agentId, sessionId, this.opts.transcriptPort)
             : undefined
           if (genuine !== undefined) {
             promptResolved = true
@@ -136,7 +143,7 @@ export class NativeSubagentTranscriptSource implements SubagentTranscriptSource 
           } else {
             const entry = loaded?.subagents.byId.get(agentId)
             if (entry) {
-              const prompt = nativeSubagentPromptFrame(entry, sessionId)
+              const prompt = nativeSubagentPromptFrame(entry, sessionId, this.opts.transcriptPort)
               if (prompt !== null) {
                 push(false, [prompt])
                 promptResolved = true
@@ -207,7 +214,7 @@ export class NativeSubagentTranscriptSource implements SubagentTranscriptSource 
     this.subscriptions.add(unsubscribe)
 
     void (async () => {
-      const snapshot = await readNativeSubagentTranscript(this.opts.stateDir, sessionId, agentId)
+      const snapshot = await readNativeSubagentTranscript(this.opts.stateDir, sessionId, agentId, this.opts.transcriptPort)
       if (!active) return
       if (snapshot.some(isPromptFrame)) promptResolved = true
       push(true, snapshot)

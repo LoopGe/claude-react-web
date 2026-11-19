@@ -9440,28 +9440,23 @@ export class SessionManager {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
     this.sessions.delete(id)
-    // Drain in-flight eviction chains BEFORE dropping the holder / closing
-    // the sidecar: a tombstone append still awaiting its reconcile would
-    // otherwise be lost, resurrecting an already-withdrawn prompt on the
-    // next rebuild. The holder must still exist here — the chain reconciles
-    // against it. (The synchronous teardown contract above is unaffected:
-    // map removal + broadcasts already happened.)
-    const evictions = this.pendingEvictions.get(id)
-    if (evictions) await Promise.allSettled([...evictions])
-    const transcript = this.transcriptStores.get(id)
-    // Drop the in-memory transcript seq store with the session. The ndjson
-    // sidecar file is deliberately KEPT: unload() (unlike delete()) leaves
-    // the session resumable, so a later resume re-hydrates the seq space
-    // from the sidecar + JSONL instead of rebuilding it.
-    this.transcriptStores.delete(id)
-    this.transcriptReconciles.delete(id)
-    this.dropTranscriptWriter(id)
+    // Synchronous state cleanup FIRST, before any await: fire-and-forget unload
+    // callers (e.g. setCwd's `void unload()`) read the persisted meta / live map
+    // immediately after the call returns, so the map removal, broadcasts and meta
+    // persist must all land synchronously. The transcript HOLDER is deliberately
+    // kept alive past this point — the in-flight durable work drained below
+    // resolves it dynamically (eviction chains via ensureTranscriptReconciled; the
+    // writer's appendBatch dep via holder() → getOrCreateTranscript, see writerFor).
+    // Dropping the holder before that work settles would lose a tombstone append
+    // still awaiting its reconcile (resurrecting an already-withdrawn prompt on the
+    // next rebuild) and let a pending writer commit re-create a fresh sidecar whose
+    // recoverTail/truncateToLastCommit truncates the landed v1 suffix (the final
+    // turn's rows).
     metrics.gauge('sessions_active', this.sessions.size)
-    // Clear the recap state. The session is no longer in the manager's
-    // map so getPhase will return 'unknown' from inside the manager —
-    // we still call invalidate() to end any subscribers and clear the
-    // legacy in-flight slot. Recap is in-memory only, so dropping the
-    // session here is the end of the line for it.
+    // Clear the recap state. The session is no longer in the manager's map so
+    // getPhase will return 'unknown' from inside the manager — we still call
+    // invalidate() to end any subscribers and clear the legacy in-flight slot.
+    // Recap is in-memory only, so dropping the session here is the end of the line.
     this.recapManager.invalidate(id)
     this.recapManager.cleanup(id)
     this.permBroker.removeDenialTracker(id)
@@ -9477,9 +9472,29 @@ export class SessionManager {
     } else if (!this.completedPermanentDeletes.has(id)) {
       this.writeStore(s)
     }
-    // State cleanup above stays synchronous for dormant unload callers. Only
-    // after that contract is satisfied do we stop appends, drain queued rows,
-    // and release the old fd; the ndjson file itself remains for resume.
+    // Drain in-flight durable work against the still-live holder. Both drains are
+    // conditional so an idle session never yields a microtask here (preserving the
+    // synchronous contract above); only genuinely pending work awaits. The writer
+    // quiesce covers BOTH serial chains: dispatchQueue feeds writerQueue, so a
+    // writer-only drain could miss a commit a dispatch task issues mid-drain — that
+    // commit would run after the holder drop and re-create the sidecar.
+    const evictions = this.pendingEvictions.get(id)
+    if (evictions) await Promise.allSettled([...evictions])
+    const writer = this.transcriptWriters.get(id)
+    if (writer?.hasPendingWork) await writer.quiesce()
+    // Quiesce settled all pending commits against the live holder. Now FENCE the
+    // writer (dropTranscriptWriter → close sets closedFlag) so any straggler commit
+    // no-ops instead of re-resolving a fresh holder/sidecar after teardown (I3),
+    // then drop the holder. The ndjson sidecar file is deliberately KEPT: unload()
+    // (unlike delete()) leaves the session resumable, so a later resume re-hydrates
+    // the seq space from the sidecar + JSONL instead of rebuilding it.
+    const transcript = this.transcriptStores.get(id)
+    this.dropTranscriptWriter(id)
+    this.transcriptStores.delete(id)
+    this.transcriptReconciles.delete(id)
+    // Only after the synchronous contract is satisfied and the durable work is
+    // drained do we stop appends and release the old fd; the ndjson file itself
+    // remains for resume. close() flushes the sidecar's own queued rows.
     if (transcript) await transcript.sidecar.close()
   }
 

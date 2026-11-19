@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { NativeProvider } from './native-provider.js'
+import { makeNativePorts } from '../native-host-adapters.js'
 import type { CreateSessionOptions, ProviderSessionHandle } from '../types.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { FileReadResult } from '../../../shared/read-file.js'
@@ -60,7 +61,7 @@ async function setup(
   const dir = await tempDir('native-host-read-')
   await mkdir(join(dir, '.claude', 'skills'), { recursive: true })
   await writeFile(join(dir, 'a.txt'), 'body', 'utf8')
-  const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf(defs) })
+  const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf(defs), ports: makeNativePorts({ stateDir: dir }) })
   const session = provider.createSession({ id: `host-read-${sessions.length}`, cwd: dir, ...opts })
   sessions.push(session)
   return { dir, provider, session }

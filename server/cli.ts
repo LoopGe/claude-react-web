@@ -27,6 +27,7 @@ import { attachWebSocket } from './ws.js'
 import { SubagentTranscriptHub } from './subagent-transcript-hub.js'
 import { ProviderSubagentTranscriptHub } from './subagent-transcript-source.js'
 import { NativeSubagentTranscriptSource } from './providers/native/subagent-transcript-source.js'
+import { createNativeHostPorts } from './providers/native-host-adapters.js'
 import { checkForUpdates } from './update-checker.js'
 import { startEventLoopProbe } from './event-loop-probe.js'
 import { normalizeClaudeConfigDirEnv } from './claude-config-dir.js'
@@ -253,6 +254,7 @@ async function runServer(args: CliArgs): Promise<void> {
     native: new NativeSubagentTranscriptSource({
       stateDir: ctx.stateDir,
       subscribeLive: (id, emit, onTermination) => sessionManager.subscribeLiveSubagentFrames(id, emit, onTermination),
+      transcriptPort: createNativeHostPorts({ stateDir: ctx.stateDir }).transcript,
     }),
   })
   const wsShutdown = attachWebSocket(

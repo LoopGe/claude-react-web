@@ -51,27 +51,15 @@ import type { AuxLlmTarget } from './anthropic-api.js'
 import { ClassifierLimiter } from './auto-classifier-limiter.js'
 import { getMessagesForClassifier } from './session-utils.js'
 import { AutoDenialTracker } from './auto-denial-tracker.js'
+import { QUESTION_RESULT } from '../shared/question-result.js'
 
-/** Host-internal marker on a broker denial that carries the user's ANSWER to
- *  an AskUserQuestion (answer / clarify / malformed) rather than a permission
- *  failure. Symbol-keyed, so JSON serialization onto the SDK's control-response
- *  wire drops it: this is not part of the wire protocol and the Claude
- *  provider's behavior is unchanged. The native loop is the only consumer. */
-export const QUESTION_RESULT: unique symbol = Symbol.for('claude-react-web.question-result')
+// The question-result marker + check live in shared/question-result.ts
+// (neutral, host-free); the broker stamps the marker and re-exports both so
+// host consumers can keep importing them from here.
+export { QUESTION_RESULT, isQuestionResult } from '../shared/question-result.js'
 
 /** A broker result that may carry the internal question-result marker. */
 export type BrokerPermissionResult = PermissionResult & { [QUESTION_RESULT]?: true }
-
-/** True when a broker result carries an AskUserQuestion ANSWER rather than a
- *  permission failure. Interrupt/abort, `denyAll`, missing-handler and
- *  ordinary permission denials never set the marker. */
-export function isQuestionResult(result: unknown): boolean {
-  return (
-    typeof result === 'object' &&
-    result !== null &&
-    (result as Record<PropertyKey, unknown>)[QUESTION_RESULT] === true
-  )
-}
 
 /** The SDK's `CanUseTool` with the return narrowed to non-nullable. SDK
  *  ≥0.3.25x allows a callback to return null under the out-of-band protocol

@@ -37,6 +37,7 @@ import type {
 } from '@modelcontextprotocol/sdk/shared/auth.js'
 import type { OAuthClientProvider, OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { withTimeout } from './with-timeout.js'
+import type { McpTransportTarget } from '../shared/mcp-transport.js'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
 import { createLogger } from './log.js'
@@ -611,16 +612,10 @@ function clearInvalidOAuthCredentials(server: StoredMcpServer, err: unknown): bo
   return true
 }
 
-/** Serializable subset of a stored server needed to build a client transport.
- *  `StoredMcpServer` is structurally assignable to it. */
-export interface McpTransportTarget {
-  type: 'stdio' | 'sse' | 'http'
-  command?: string
-  args?: string[]
-  env?: Record<string, string>
-  url?: string
-  headers?: Record<string, string>
-}
+// The transport-target shape lives in shared/mcp-transport.ts (neutral,
+// host-free); this module re-exports it so host consumers can keep importing
+// from here.
+export type { McpTransportTarget } from '../shared/mcp-transport.js'
 
 /** Build the MCP client transport for a stdio / sse / http target.
  *
