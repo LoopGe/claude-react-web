@@ -619,6 +619,11 @@ export interface PendingInputOp {
   /** The public wire payload stored on the first input row (D7); the
    *  materialize/re-dispatch path publishes + enqueues it. */
   payload: unknown
+  /** Dispatch route (spec §8.1 drain-preserve-replay). Only the
+   *  `drained-to-pending` bucket carries a non-user kind: a preserved
+   *  supplement replays as a normal queued user turn, a preserved control
+   *  seed replays via sendControlMessage. Defaults to 'user' when absent. */
+  kind?: 'user' | 'supplement' | 'control'
 }
 
 /** Crash-recovery classification of the durable dispatch states (spec §7.2/§8.1,
@@ -628,6 +633,11 @@ export interface PendingInputOp {
  *  - `notAttempted`: enqueue-not-attempted, no dispatch evidence → auto-retry.
  *  - `dispatchUnknown`: enqueue-attempted, NO evidence the provider took it →
  *    surface for manual recovery, NEVER auto re-dispatch (§7.2).
+ *  - `drainedToPending`: drained-to-pending (spec §8.1 quiesce drain-preserve) →
+ *    a rebuild quiesce preserved this entry's payload/ordinal/kind. It is a
+ *    READ-ONLY view: the generic crash-recovery path must NOT auto re-dispatch
+ *    it (the original batch is not a re-dispatch source); only the rebuild
+ *    executor's explicit resume replay consumes it, in dispatchOrdinal order.
  *  - `withdrawn`: a durable withdrawn state → exclude (already retracted).
  *  Evidence that resolves an op to dispatched (excluded from every pending list):
  *  a consumed lifecycle row, the prompt's own materialized message row, or its
@@ -636,6 +646,7 @@ export interface PendingInputView {
   queued: PendingInputOp[]
   notAttempted: PendingInputOp[]
   dispatchUnknown: PendingInputOp[]
+  drainedToPending: PendingInputOp[]
   withdrawn: string[]
 }
 
@@ -659,6 +670,7 @@ export function classifyPendingInputs(
     payload: unknown
     inputState?: string
     lifecycleState?: string
+    inputKind?: string
   }
   const byOp = new Map<string, Acc>()
   const accOf = (op: string, ordinal: number): Acc => {
@@ -676,16 +688,30 @@ export function classifyPendingInputs(
       const a = accOf(op, r.dispatchOrdinal)
       a.inputState = state
       if (r.payload !== undefined && a.payload === undefined) a.payload = r.payload
+      if (typeof r.inputKind === 'string') a.inputKind = r.inputKind
     } else {
       // Lifecycle row (consumed/steered/requeued): no dispatchOrdinal.
       accOf(op, byOp.get(op)?.dispatchOrdinal ?? 0).lifecycleState = state
     }
   }
 
-  const view: PendingInputView = { queued: [], notAttempted: [], dispatchUnknown: [], withdrawn: [] }
+  const view: PendingInputView = { queued: [], notAttempted: [], dispatchUnknown: [], drainedToPending: [], withdrawn: [] }
   for (const [operationId, a] of byOp) {
     if (a.inputState === undefined) continue
     if (a.inputState === 'withdrawn') { view.withdrawn.push(operationId); continue }
+    if (a.inputState === 'drained-to-pending') {
+      // Drain-preserve (spec §8.1): the entry was pulled from a live queue
+      // BEFORE the provider consumed it, so its prompt row being in the app
+      // projection (materializedUuids) is NOT dispatch evidence — only an
+      // actual consumed lifecycle or the provider log carrying the uuid
+      // resolves it. The executor's resume replay advances the state past
+      // drained-to-pending, so this bucket holds only UNREPLAYED entries.
+      const taken = a.lifecycleState === 'consumed' || canonicalUuids.has(operationId)
+      if (taken) continue
+      const kind = a.inputKind === 'supplement' || a.inputKind === 'control' ? a.inputKind : 'user'
+      view.drainedToPending.push({ operationId, dispatchOrdinal: a.dispatchOrdinal, payload: a.payload, kind })
+      continue
+    }
     const resolved =
       a.lifecycleState === 'consumed'
       || materializedUuids.has(operationId)
@@ -700,6 +726,7 @@ export function classifyPendingInputs(
   view.queued.sort(byOrdinal)
   view.notAttempted.sort(byOrdinal)
   view.dispatchUnknown.sort(byOrdinal)
+  view.drainedToPending.sort(byOrdinal)
   return view
 }
 

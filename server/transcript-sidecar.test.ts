@@ -857,6 +857,55 @@ describe('classifyPendingInputs (T7b-6 crash-recovery classification)', () => {
     ]
     expect(classifyPendingInputs(rows).queued.map((o) => o.operationId)).toEqual(['u1', 'u2', 'u3'])
   })
+
+  // ── drained-to-pending (spec §8.1 drain-preserve-replay, Task 5) ──
+  const drainedBatch = (operationId: string, dispatchOrdinal: number, inputKind: string, p?: unknown) => {
+    const batchId = `dr-${++bid}`
+    const row = { v: 2, batchId, operationId, dispatchOrdinal, state: 'drained-to-pending', inputKind, ...(p !== undefined ? { payload: p } : {}) }
+    return [row, makeCommitV2({ batchId, batchType: 'input', generation: 0, reason: 'initial', contentPolicy: 'preserve', rows: [row] })]
+  }
+
+  it('drained-to-pending → drainedToPending bucket, NEVER auto re-dispatch (not queued/notAttempted)', () => {
+    const rows = [...drainedBatch('u1', 1, 'user', payload('u1'))]
+    const view = classifyPendingInputs(rows)
+    expect(view.drainedToPending).toEqual([{ operationId: 'u1', dispatchOrdinal: 1, payload: payload('u1'), kind: 'user' }])
+    expect(view.queued).toEqual([])
+    expect(view.notAttempted).toEqual([])
+    expect(view.dispatchUnknown).toEqual([])
+  })
+
+  it('drained-to-pending preserves supplement/control kind for the resume replay', () => {
+    const rows = [
+      ...drainedBatch('c1', 1, 'control', payload('c1')),
+      ...drainedBatch('s1', 2, 'supplement', payload('s1')),
+      ...drainedBatch('u1', 3, 'user', payload('u1')),
+    ]
+    const view = classifyPendingInputs(rows)
+    expect(view.drainedToPending.map((o) => [o.operationId, o.kind])).toEqual([['c1', 'control'], ['s1', 'supplement'], ['u1', 'user']])
+  })
+
+  it('drained-to-pending stays pending even when its prompt row is materialized (materialization is NOT dispatch evidence)', () => {
+    // A drained host-queue turn was published at send time (live row) but the
+    // provider never consumed it — it must still replay, unlike a queued op
+    // whose materialization resolves it.
+    const rows = [...drainedBatch('u1', 1, 'user', payload('u1')), ...liveBatch(2, 'u1')]
+    expect(classifyPendingInputs(rows).drainedToPending.map((o) => o.operationId)).toEqual(['u1'])
+    expect(classifyPendingInputs(rows).queued).toEqual([])
+  })
+
+  it('drained-to-pending resolved by consumed lifecycle / canonical provider uuid → excluded', () => {
+    const consumed = [...drainedBatch('u1', 1, 'user', payload('u1')), ...lifecycleBatch('u1', 'consumed')]
+    expect(classifyPendingInputs(consumed).drainedToPending).toEqual([])
+    const canonical = [...drainedBatch('u1', 1, 'user', payload('u1'))]
+    expect(classifyPendingInputs(canonical, new Set(['u1'])).drainedToPending).toEqual([])
+  })
+
+  it('drained-to-pending advanced to enqueue-attempted by the replay → dispatchUnknown (no longer drained)', () => {
+    const rows = [...drainedBatch('u1', 1, 'user', payload('u1')), ...inputBatch('u1', 1, 'enqueue-attempted')]
+    const view = classifyPendingInputs(rows)
+    expect(view.drainedToPending).toEqual([])
+    expect(view.dispatchUnknown.map((o) => o.operationId)).toEqual(['u1'])
+  })
 })
 
 describe('readPendingRebuilds (rebuild-pending recovery, spec §8.1/§8.3)', () => {

@@ -296,6 +296,17 @@ export type { SessionPhase, SessionRecap, SessionRecapStats } from '../shared/se
  *  drift. */
 export type { SessionActivity } from '../shared/app-plugins/rpc-protocol.js'
 
+/** One host-dispatched input tracked for the rebuild drain-preserve-replay
+ *  (spec §8.1, Task 5). `payload` is the public wire form (ring/broadcast);
+ *  `providerPayload` is the resolved form the provider enqueue uses (absent
+ *  for plain-text sends, where payload === providerPayload). */
+export interface DispatchLedgerEntry {
+  kind: 'user' | 'supplement' | 'control'
+  dispatchOrdinal: number
+  payload: SDKUserMessage
+  providerPayload?: unknown
+}
+
 export interface Session {
   id: string
   provider: string
@@ -810,6 +821,18 @@ export interface Session {
    *  turn-end fallback can recover the original message even after ring
    *  eviction (historyCap). */
   steeredInFlight: Map<string, SDKUserMessage>
+  /** Per-session dispatch ledger (spec §8.1 drain-preserve-replay, Task 5):
+   *  every input the host dispatched (user / supplement / control) keyed by its
+   *  queueEntryId (uuid), carrying the global dispatchOrdinal + public payload
+   *  + resolved provider payload. The rebuild quiesce's drainInputQueue joins
+   *  the live queues (writer queued-not-published, host Pushable, undelivered
+   *  supplements) against this ledger to preserve each entry's ordinal/kind/
+   *  payload for the resume replay. Runtime-only: read at drain (before
+   *  teardown); the durable drained-to-pending rows drive the post-resume
+   *  replay, so a fresh Session starts empty. Optional so minimal test fixtures
+   *  that never dispatch input can omit it; spawn always initializes it and the
+   *  dispatch sites lazily create it (`??=`) for any fixture that does dispatch. */
+  dispatchLedger?: Map<string, DispatchLedgerEntry>
   /** Snapshot anchor captures deferred because send() fired while the
    *  session was working (pendingTurns>0, queueDepth>0, etc). Each uuid
    *  is a user message that needs capture+recordAnchor when the turn

@@ -414,6 +414,56 @@ export class TranscriptWriter {
     this.queued.unshift(...ops)
   }
 
+  /** Persist a rebuild-quiesce drain as `drained-to-pending` (spec §8.1 step 3,
+   *  Task 5): ONE input batch carrying every preserved entry's public payload,
+   *  queueEntryId (operationId), kind and global dispatchOrdinal. This is NOT a
+   *  withdrawal — classifyPendingInputs routes these to the read-only
+   *  drainedToPending bucket (no auto re-dispatch); only the rebuild executor's
+   *  explicit resume replay consumes them. Chained on dispatchQueue so the
+   *  batch lands AFTER any in-flight queued-not-published / dispatch-state
+   *  commit (the drained state must be the LAST input state per operationId).
+   *  The provider payload is deliberately NOT stored: replay re-resolves
+   *  attachment file blocks through the send-path resolver (spec §10), exactly
+   *  as crash recovery does, so the sidecar never holds resolved native paths. */
+  drainToPending(ops: readonly DispatchOp[]): Promise<void> {
+    if (ops.length === 0) return Promise.resolve()
+    const run = this.dispatchQueue.then(async () => {
+      const batchId = nextBatchId()
+      const rows = ops.map((op) => ({
+        v: 2,
+        batchId,
+        operationId: op.operationId,
+        dispatchOrdinal: op.dispatchOrdinal,
+        state: 'drained-to-pending',
+        inputKind: op.kind,
+        payload: op.payload,
+      }))
+      await this.commit(
+        rows,
+        makeCommitV2({ batchId, batchType: 'input', generation: this.deps.generation(), reason: 'initial', contentPolicy: 'preserve', rows }),
+      )
+    })
+    this.pendingDispatch++
+    this.dispatchQueue = run.catch(() => {}).finally(() => { this.pendingDispatch-- })
+    return run
+  }
+
+  /** Advance preserved entries past `drained-to-pending` once the resume replay
+   *  has dispatched them (spec §8.1 step 6): commit `enqueue-attempted` per op
+   *  so a crash mid-replay classifies them as dispatch-unknown (manual recovery,
+   *  never auto re-dispatched) rather than stranding them in the read-only
+   *  drained bucket. The materialized prompt row / consumed lifecycle resolves
+   *  them on the next reconcile. */
+  markDrainedDispatched(ops: readonly DispatchOp[]): Promise<void> {
+    if (ops.length === 0) return Promise.resolve()
+    const run = this.dispatchQueue.then(async () => {
+      for (const op of ops) await this.inputCommit(op, 'enqueue-attempted')
+    })
+    this.pendingDispatch++
+    this.dispatchQueue = run.catch(() => {}).finally(() => { this.pendingDispatch-- })
+    return run
+  }
+
   deferOldCommit(msg: unknown, seq: number): void {
     this.deferred.push({ msg, seq })
   }
