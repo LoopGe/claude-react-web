@@ -19,7 +19,7 @@ describe('POST /sessions/:id/messages', () => {
       body: JSON.stringify({ text: 'hello' }),
     })
     expect(res.status).toBe(200)
-    expect(sm.send).toHaveBeenCalledWith('s1', 'hello')
+    expect(sm.send).toHaveBeenCalledWith('s1', 'hello', undefined)
     expect(await res.json()).toEqual({ ok: true, message: { uuid: 'u1', receivedAt: 1 } })
   })
 
@@ -31,7 +31,7 @@ describe('POST /sessions/:id/messages', () => {
       body: JSON.stringify({ content: [{ type: 'text', text: 'hi' }] }),
     })
     expect(res.status).toBe(200)
-    expect(sm.sendContent).toHaveBeenCalledWith('s1', [{ type: 'text', text: 'hi' }])
+    expect(sm.sendContent).toHaveBeenCalledWith('s1', [{ type: 'text', text: 'hi' }], undefined)
     expect(await res.json()).toEqual({ ok: true, message: { uuid: 'u2', receivedAt: 2 } })
   })
 
@@ -59,7 +59,7 @@ describe('POST /sessions/:id/messages', () => {
     })
 
     expect(res.status).toBe(200)
-    expect(sm.sendContent).toHaveBeenCalledWith('s1', content)
+    expect(sm.sendContent).toHaveBeenCalledWith('s1', content, undefined)
     expect(await res.json()).toEqual({ ok: true, message: { uuid: 'u2', receivedAt: 2 } })
   })
 })
