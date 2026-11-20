@@ -13,10 +13,13 @@ import {
   truncateToLastCommit,
   unsupersededCorrupt,
   makeCommitV2,
+  makeRebuildPendingRow,
+  readPendingRebuilds,
   recordTranscriptMessage,
   transcriptRow,
   type TranscriptHolder,
 } from './transcript-sidecar'
+import type { PendingOperation } from './transcript-reconcile'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -853,5 +856,81 @@ describe('classifyPendingInputs (T7b-6 crash-recovery classification)', () => {
       ...inputBatch('u2', 2, 'queued-not-published', payload('u2')),
     ]
     expect(classifyPendingInputs(rows).queued.map((o) => o.operationId)).toEqual(['u1', 'u2', 'u3'])
+  })
+})
+
+describe('readPendingRebuilds (rebuild-pending recovery, spec §8.1/§8.3)', () => {
+  let bid = 0
+  const resultMsg = (uuid: string) => ({ type: 'result', uuid, subtype: 'success', assistantUuid: `A-${uuid}`, num_turns: 1 })
+  const pendingOp = (operationId: string, uuid: string, source: 'result' | 'app' | 'provider' = 'result'): PendingOperation => ({
+    operationId,
+    entry: { occurrenceId: `uuid:${uuid}:${source === 'result' ? 'result' : 'user'}:app:hash`, msg: resultMsg(uuid), source, aliases: [], evicted: false },
+  })
+  function pendingBatch(op: PendingOperation, dispatchOrdinal: number, generation = 0) {
+    const batchId = `rp-${++bid}`
+    const row = makeRebuildPendingRow(op, batchId, dispatchOrdinal)
+    return [row, makeCommitV2({ batchId, batchType: 'recovery', generation, reason: 'initial', contentPolicy: 'preserve', rows: [row] })]
+  }
+  function generationBatch(generation: number) {
+    const batchId = `gen-${++bid}`
+    return [makeCommitV2({ batchId, batchType: 'generation', generation, reason: 'ordered-rebuild', contentPolicy: 'preserve', rows: [] })]
+  }
+  function resetBatch(generation: number) {
+    const batchId = `rst-${++bid}`
+    return [makeCommitV2({ batchId, batchType: 'reset', generation, reason: 'clear', contentPolicy: 'replace', rows: [] })]
+  }
+
+  it('recovers the full payload + entry identity from a committed recovery row', () => {
+    const op = pendingOp('op1', 'R1')
+    expect(readPendingRebuilds(pendingBatch(op, 1))).toEqual([op])
+  })
+
+  it('drops the pending once a newer generation commits (superseded)', () => {
+    const op = pendingOp('op1', 'R1')
+    const rows = [...pendingBatch(op, 1, 0), ...generationBatch(1)]
+    expect(readPendingRebuilds(rows)).toEqual([])
+  })
+
+  it('keeps the pending when the committed generation is not newer', () => {
+    const op = pendingOp('op1', 'R1')
+    const rows = [...pendingBatch(op, 1, 5), ...generationBatch(5)]
+    expect(readPendingRebuilds(rows)).toEqual([op])
+  })
+
+  it('a reset (clear) generation supersedes the pending', () => {
+    const op = pendingOp('op1', 'R1')
+    const rows = [...pendingBatch(op, 1, 0), ...resetBatch(1)]
+    expect(readPendingRebuilds(rows)).toEqual([])
+  })
+
+  it('ignores an uncommitted crash tail (no commit record)', () => {
+    const op = pendingOp('op1', 'R1')
+    const row = makeRebuildPendingRow(op, 'rp-tail', 1)
+    expect(readPendingRebuilds([row])).toEqual([])
+  })
+
+  it('ignores a corrupt (bad-checksum) recovery commit', () => {
+    const op = pendingOp('op1', 'R1')
+    const batch = pendingBatch(op, 1)
+    const commit = batch[1] as { checksum: string }
+    commit.checksum = 'deadbeef'
+    expect(readPendingRebuilds(batch)).toEqual([])
+  })
+
+  it('ignores non-rebuild-pending recovery rows', () => {
+    const batchId = 'rp-other'
+    const row = { v: 2, batchId, kind: 'result-revision', operationId: 'op1', payload: { kind: 'result-revision' } }
+    const rows = [row, makeCommitV2({ batchId, batchType: 'recovery', generation: 0, reason: 'initial', contentPolicy: 'preserve', rows: [row] })]
+    expect(readPendingRebuilds(rows)).toEqual([])
+  })
+
+  it('orders recovered ops by dispatchOrdinal and dedups by operationId (last wins)', () => {
+    const op1 = pendingOp('op1', 'R1')
+    const op2 = pendingOp('op2', 'R2')
+    const op2b = pendingOp('op2', 'R2b') // retry re-persists op2 with a newer payload
+    const rows = [...pendingBatch(op2, 2), ...pendingBatch(op1, 1), ...pendingBatch(op2b, 3)]
+    const recovered = readPendingRebuilds(rows)
+    expect(recovered.map((o) => o.operationId)).toEqual(['op1', 'op2'])
+    expect(recovered[1]).toEqual(op2b) // last committed payload wins, exactly once
   })
 })

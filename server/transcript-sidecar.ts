@@ -30,6 +30,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { createLogger } from './log.js'
 import { assistantMessageShapeOf } from '../shared/assistant-message.js'
 import type { HydrateRow, TranscriptStore } from './transcript-store.js'
+import type { PendingOperation } from './transcript-reconcile.js'
 import { isRenderableSdkMessage } from './history-utils.js'
 
 const log = createLogger('transcript')
@@ -345,6 +346,28 @@ export function makeCommitV2(opts: {
     contentPolicy: opts.contentPolicy,
     count: opts.rows.length,
     checksum: batchChecksum(opts.rows),
+  }
+}
+
+/** Durable row for one rebuild-pending operation (spec §8.1/§8.3), appended in
+ *  a non-public `recovery` batch. Carries the full wire payload (`op.entry.msg`)
+ *  PLUS the entry identity (occurrenceId/source/aliases/evicted): the pure
+ *  reader cannot re-derive the composition layer's disambiguated occurrenceId
+ *  (a content-hash ctx, see SessionManager.reconcileOrdered), so persisting it
+ *  is what makes crash recovery reconstruct the EXACT PendingOperation and the
+ *  rebuild include it exactly once. `dispatchOrdinal` orders recovered ops. */
+export function makeRebuildPendingRow(op: PendingOperation, batchId: string, dispatchOrdinal: number): SidecarRow {
+  return {
+    v: 2,
+    batchId,
+    kind: 'rebuild-pending',
+    operationId: op.operationId,
+    dispatchOrdinal,
+    payload: op.entry.msg,
+    occurrenceId: op.entry.occurrenceId,
+    source: op.entry.source,
+    aliases: op.entry.aliases,
+    evicted: op.entry.evicted,
   }
 }
 
@@ -668,6 +691,50 @@ export function classifyPendingInputs(
   view.notAttempted.sort(byOrdinal)
   view.dispatchUnknown.sort(byOrdinal)
   return view
+}
+
+/** Recover the durable rebuild-pending operations (spec §8.1/§8.3, Task 1).
+ *  Pure: extracts committed `rebuild-pending` recovery rows NOT superseded by a
+ *  later committed generation, mirroring `unsupersededCorrupt` — a pending row
+ *  written at generation G is superseded once a generation/reset batch commits
+ *  above G (the rebuild that included it, or a clear/compact that wiped it).
+ *  With no committed generation batch every pending row survives (the gen-0
+ *  case). Uncommitted crash tails and demoted corrupt commits are excluded by
+ *  parseBatches. Dedups by operationId (a retry re-persists the same op — last
+ *  committed payload wins, exactly once) and orders by dispatchOrdinal. */
+export function readPendingRebuilds(rows: readonly SidecarRow[]): PendingOperation[] {
+  const committed = parseBatches(rows).batches.filter((b) => b.commit !== null)
+  const genGens = committed
+    .filter((b) => b.commit!.batchType === 'generation' || b.commit!.batchType === 'reset')
+    .map((b) => Number(b.commit!.generation))
+  const adopted = genGens.length > 0 ? Math.max(...genGens) : null
+  const byOp = new Map<string, { ordinal: number; op: PendingOperation }>()
+  for (const b of committed) {
+    if (b.commit!.batchType !== 'recovery') continue
+    const batchGen = Number(b.commit!.generation)
+    if (adopted !== null && adopted > batchGen) continue // superseded by a later committed generation
+    for (const r of b.rows) {
+      if (r.kind !== 'rebuild-pending') continue
+      if (typeof r.operationId !== 'string' || typeof r.occurrenceId !== 'string') continue
+      const source = r.source
+      if (source !== 'provider' && source !== 'result' && source !== 'app') continue
+      const ordinal = typeof r.dispatchOrdinal === 'number' ? r.dispatchOrdinal : 0
+      byOp.set(r.operationId, {
+        ordinal,
+        op: {
+          operationId: r.operationId,
+          entry: {
+            occurrenceId: r.occurrenceId,
+            msg: r.payload,
+            source,
+            aliases: Array.isArray(r.aliases) ? r.aliases.filter((a): a is string => typeof a === 'string') : [],
+            evicted: r.evicted === true,
+          },
+        },
+      })
+    }
+  }
+  return [...byOp.values()].sort((a, b) => a.ordinal - b.ordinal).map((v) => v.op)
 }
 
 /** Truncate raw sidecar text to the last VALID commit record of ANY batchType

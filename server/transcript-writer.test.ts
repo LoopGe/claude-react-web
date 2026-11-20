@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { TranscriptWriter, GenerationLedger, type WriterDeps } from './transcript-writer.js'
 import { TranscriptStore } from './transcript-store.js'
+import { readPendingRebuilds, type SidecarRow } from './transcript-sidecar.js'
+import type { PendingOperation } from './transcript-reconcile.js'
 
 function makeDeps(over: Partial<WriterDeps> = {}) {
   const store = new TranscriptStore('sid')
@@ -406,5 +408,104 @@ describe('TranscriptWriter.recordDispatchAttempt (T7b Task 1)', () => {
     await expect(w.appendDurable({ type: 'user', uuid: 'u' })).rejects.toThrow(/closed/)
     await w.recordDispatchAttempt({ operationId: 'u', dispatchOrdinal: 1, kind: 'user', payload: {} })
     expect(appendBatch).not.toHaveBeenCalled()
+  })
+})
+
+describe('TranscriptWriter.beginRebuild (rebuild-pending, spec §8.1/§8.3)', () => {
+  const flush = () => new Promise<void>((r) => setImmediate(r))
+  const pendingOp = (operationId: string): PendingOperation => ({
+    operationId,
+    entry: {
+      occurrenceId: `uuid:${operationId}:result:app:hash`,
+      msg: { type: 'result', uuid: operationId, subtype: 'success', assistantUuid: 'A', num_turns: 1 },
+      source: 'result',
+      aliases: [],
+      evicted: false,
+    },
+  })
+
+  it('persists a non-public rebuild-pending recovery batch: no seq, no ring/WS publish', async () => {
+    const batches: Array<{ rows: object[]; commit: { batchType?: string } }> = []
+    const { deps, store } = makeDeps({
+      appendBatch: vi.fn(async (rows, commit) => { batches.push({ rows, commit: commit as { batchType?: string } }) }),
+    })
+    const w = new TranscriptWriter(deps)
+    const op = pendingOp('R1')
+    await w.beginRebuild(op)
+    expect(store.headSeq).toBe(0) // no seq allocated
+    expect(deps.publish).not.toHaveBeenCalled() // no ring/WS frame
+    expect(deps.publishQueued).not.toHaveBeenCalled()
+    expect(batches).toHaveLength(1)
+    expect(batches[0].commit.batchType).toBe('recovery')
+    const row = batches[0].rows[0] as { kind?: string; operationId?: string; payload?: unknown; dispatchOrdinal?: number; occurrenceId?: string; source?: string }
+    expect(row.kind).toBe('rebuild-pending')
+    expect(row.operationId).toBe('R1')
+    expect(row.payload).toEqual(op.entry.msg)
+    expect(typeof row.dispatchOrdinal).toBe('number')
+    expect(row.occurrenceId).toBe(op.entry.occurrenceId)
+    expect(row.source).toBe('result')
+    expect(w.rebuilding).toBe(true)
+    expect(w.pendingRebuilds).toEqual([op])
+  })
+
+  it('fsyncs before resolve and adds to pendingRebuilds only after durable', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    let synced = false
+    const appendBatch = vi.fn(async () => { await gate; synced = true })
+    const { deps } = makeDeps({ appendBatch })
+    const w = new TranscriptWriter(deps)
+    const p = w.beginRebuild(pendingOp('R1'))
+    await flush()
+    expect(w.rebuilding).toBe(true) // flag set before the durable commit
+    expect(synced).toBe(false) // parked inside the fsync
+    expect(w.pendingRebuilds).toHaveLength(0) // not pending before durable
+    release()
+    await p
+    expect(synced).toBe(true)
+    expect(w.pendingRebuilds).toHaveLength(1)
+  })
+
+  it('a write error rejects and leaves pendingRebuilds empty (nothing published)', async () => {
+    const appendBatch = vi.fn(async () => { throw new Error('disk full') })
+    const { deps } = makeDeps({ appendBatch })
+    const w = new TranscriptWriter(deps)
+    await expect(w.beginRebuild(pendingOp('R1'))).rejects.toThrow('disk full')
+    expect(w.pendingRebuilds).toHaveLength(0)
+    expect(deps.publish).not.toHaveBeenCalled()
+  })
+
+  it('round-trips through readPendingRebuilds (durable row → faithful PendingOperation)', async () => {
+    const captured: SidecarRow[] = []
+    const { deps } = makeDeps({ appendBatch: vi.fn(async (rows, commit) => { captured.push(...(rows as SidecarRow[]), commit as SidecarRow) }) })
+    const w = new TranscriptWriter(deps)
+    const op = pendingOp('R1')
+    await w.beginRebuild(op)
+    expect(readPendingRebuilds(captured)).toEqual([op])
+  })
+
+  it('abortRebuild(cancelled) clears rebuilding, retains pending, releases deferred old commits', async () => {
+    const { deps } = makeDeps()
+    const w = new TranscriptWriter(deps)
+    const op = pendingOp('R1')
+    await w.beginRebuild(op)
+    w.deferOldCommit(userMsg('x'), 5)
+    await w.abortRebuild('cancelled')
+    expect(w.rebuilding).toBe(false)
+    expect(w.degraded).toBe(false)
+    expect(w.pendingRebuilds).toEqual([op])
+    expect(deps.publish).toHaveBeenCalledTimes(1) // deferred old commit released in order
+    expect((deps.publish as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe(5)
+  })
+
+  it('abortRebuild(failed) sets degraded and retains pending', async () => {
+    const { deps } = makeDeps()
+    const w = new TranscriptWriter(deps)
+    const op = pendingOp('R1')
+    await w.beginRebuild(op)
+    await w.abortRebuild('failed')
+    expect(w.rebuilding).toBe(false)
+    expect(w.degraded).toBe(true)
+    expect(w.pendingRebuilds).toEqual([op])
   })
 })

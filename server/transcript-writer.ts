@@ -13,7 +13,7 @@
  * SessionManager wires the real sidecar/store/provider in Tasks 6–7.
  */
 
-import { makeCommitV2, type GenerationRecord } from './transcript-sidecar.js'
+import { makeCommitV2, makeRebuildPendingRow, type GenerationRecord } from './transcript-sidecar.js'
 import type { PendingOperation } from './transcript-reconcile.js'
 import type { ResetJournal } from './reset-journal.js'
 
@@ -419,6 +419,24 @@ export class TranscriptWriter {
   }
   addPendingRebuild(op: PendingOperation): void {
     this.pending.push(op)
+  }
+
+  /** Initiate an ordered rebuild for one pending operation (spec §8.1/§8.3,
+   *  Task 1): set the rebuilding flag, durably append a non-public `recovery`
+   *  batch carrying the full rebuild-pending payload + entry identity (fsync
+   *  BEFORE resolve), THEN add the op to pendingRebuilds. No seq, no ring, no
+   *  WS frame — this record is the only write allowed before capability upgrade
+   *  and never advances a client cursor. A write failure rejects (durable-
+   *  before-publish barrier) and leaves pendingRebuilds empty. */
+  async beginRebuild(op: PendingOperation): Promise<void> {
+    this.rebuildingFlag = true
+    const batchId = nextBatchId()
+    const row = makeRebuildPendingRow(op, batchId, this.nextDispatchOrdinal())
+    await this.commit(
+      [row],
+      makeCommitV2({ batchId, batchType: 'recovery', generation: this.deps.generation(), reason: 'initial', contentPolicy: 'preserve', rows: [row] }),
+    )
+    this.addPendingRebuild(op)
   }
 
   /** Release deferred old-generation commits in order; retain pendingRebuilds
