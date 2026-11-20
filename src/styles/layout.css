@@ -1806,6 +1806,7 @@ body.resizing-col .app {
    reads at a glance without changing the card silhouette. */
 .session-item-mode-badge {
   display: inline-flex;
+  flex: none; /* flex item of .session-item-title — must not be squeezed by a long label */
   align-items: center;
   justify-content: center;
   width: var(--size-18px);
@@ -1817,7 +1818,6 @@ body.resizing-col .app {
      non-text bar (mode-plan: --warn on its own 15% tint is 2.31:1); the tint
      above stays on --mode-color so the chip keeps its amber wash. */
   color: var(--mode-ink, var(--mode-color, var(--fg-muted)));
-  vertical-align: middle;
 }
 .session-item.mode-default { --mode-color: var(--fg-muted); }
 .session-item.mode-plan {

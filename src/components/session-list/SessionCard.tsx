@@ -255,6 +255,7 @@ export const SessionCard = memo(function SessionCard({
               <PermissionModeIcon mode={permissionMode} size={12} />
             </span>
             <span
+              className="session-item-title-text"
               onDoubleClick={(e) => {
                 e.stopPropagation()
                 onStartRename(s)
