@@ -956,6 +956,7 @@
    filled for focused. */
 .session-item-slot {
   display: inline-flex;
+  flex: none; /* flex item of .session-item-title — must not be squeezed by a long label */
   align-items: center;
   justify-content: center;
   width: var(--size-18px);
@@ -968,7 +969,6 @@
   font-family: var(--mono);
   font-size: var(--fs-2xs);
   font-weight: 700;
-  vertical-align: middle;
 }
 .session-item-slot.focused {
   background: var(--accent);
@@ -1007,9 +1007,6 @@
 .session-item-slot.slot-out {
   animation: session-slot-out var(--motion-duration-base) var(--motion-ease-exit) both;
   overflow: hidden;
-  /* Match the open pill's alignment: both are bare spans now (the Tooltip
-     wrapper is gone), so a top-aligned clone would jump ~1.8px mid-exit. */
-  vertical-align: middle;
 }
 /* Unread cards brighten their title via this rule. */
 .session-item.unread strong { color: var(--fg); }
@@ -1020,13 +1017,15 @@
    as errors. */
 .session-item-perm-badge {
   display: inline-flex;
+  flex: none; /* flex item of .session-item-title — must not be squeezed by a long label */
   align-items: center;
   justify-content: center;
   min-width: var(--size-18px);
   height: var(--size-18px);
   padding: 0 var(--space-1);
   /* Rounded-square family shared with .session-item-slot (the other numeric
-     title-row badge); both are middle-aligned bare spans. */
+     title-row badge); both are flex items of .session-item-title, centered
+     by its align-items:center. */
   border-radius: var(--radius-xs);
   background: var(--warn);
   color: var(--bg);
@@ -1035,7 +1034,6 @@
   font-weight: 700;
   line-height: 1;
   margin-right: var(--space-1-5);
-  vertical-align: middle;
   /* Pulsing = opacity-ONLY breathing (no transform, no outward box-shadow).
      Both of the alternatives paint beyond the badge's own box — an outward
      ring and a scale() — and ancestor `.session-item-title`'s overflow:hidden
@@ -1058,16 +1056,34 @@
 }
 .session-item-row { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); min-width: 0; }
 .session-item-title {
+  /* Flex row: the slot/mode badges and the label share ONE centering
+     mechanism (align-items: center). The previous inline flow centered the
+     badges with vertical-align:middle, which aligns to the font's x-height
+     midpoint, not the line box's center — at 12px/20px that sat the 18px
+     badges ~1.2px below the row center while the text and status dot (flex-
+     centered) sat true. Flex centering is geometric, so they can't drift. */
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  /* Keeps the opacity-pulse badges inside the card even mid-animation. */
+  overflow: hidden;
+  /* The session label is the same text in the sidebar and the header tabs, so
+     it uses the tabs' --fs-sm step on both surfaces instead of inheriting the
+     14px body size here. The 20px line box — inherited by the
+     .session-item-title-text flex item — sets the single-line row height
+     (6px card padding ×2 + 20px) and clears the 18px slot/mode badges; keep
+     the label a DIRECT flex child so the inheritance chain holds. */
+  font-size: var(--fs-sm);
+  line-height: var(--size-20px);
+}
+/* The label itself is the ellipsis carrier: as a flex item it needs
+   min-width:0 to shrink below its content, then the classic nowrap+ellipsis
+   pair truncates it while the leading badges keep their fixed 18px boxes. */
+.session-item-title-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* The session label is the same text in the sidebar and the header tabs, so
-     it uses the tabs' --fs-sm step on both surfaces instead of inheriting the
-     14px body size here. The 20px line box sets the single-line row height
-     (6px card padding ×2 + 20px) and clears the 18px slot/mode badges. */
-  font-size: var(--fs-sm);
-  line-height: var(--size-20px);
 }
 /* Rename: dedicated full-width row so the input isn't squeezed next to
    badges. Hides the normal title row; takes its visual slot. */
