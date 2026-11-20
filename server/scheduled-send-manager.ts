@@ -17,6 +17,11 @@ export interface ScheduledSendDeps {
   /** Session-removed feed (sm.subscribeGlobal). Each `removed` drops that
    *  session's schedules so deleted sessions can't leave garbage. */
   subscribeGlobal?(): { iterable: AsyncIterable<{ kind: string; id?: string }>; unsubscribe(): void }
+  /** True while a transcript rebuild is pending/in flight/user-deferred for
+   *  the session (sm.isRebuildPending). A due send refused with a transient
+   *  teardown status (404/409/410) while this holds is deferred, not failed
+   *  (spec §8.1, final review #2). */
+  isRebuildPending?(sessionId: string): boolean
   now?(): number
   tickMs?: number
 }
@@ -24,7 +29,9 @@ export interface ScheduledSendDeps {
 /** The transcript-mutation admission refusal (spec §8.1): a due send that
  *  hits it is DEFERRED (retried in order once admission restores), not failed
  *  — REBUILD_REQUIRED is not a persistence failure and must not lose the
- *  scheduled payload. Any other error keeps the terminal-failure semantics. */
+ *  scheduled payload. Other errors keep the terminal-failure semantics
+ *  EXCEPT transient rebuild-teardown refusals while a rebuild is pending
+ *  (see fire's catch, final review #2). */
 const isRebuildRequired = (err: unknown): boolean =>
   err instanceof HttpError && err.status === 409 && err.message === REBUILD_REQUIRED
 
@@ -128,8 +135,9 @@ export class ScheduledSendManager {
   }
 
   /** Attempt one due/deferred record. Returns true when it reached a terminal
-   *  state (sent/failed); false when it was refused with REBUILD_REQUIRED and
-   *  must stay deferred (payload retained, retried in order — spec §8.1). */
+   *  state (sent/failed); false when it was refused with REBUILD_REQUIRED or a
+   *  transient rebuild-teardown refusal while a rebuild is pending, and must
+   *  stay deferred (payload retained, retried in order — spec §8.1). */
   private async fire(sessionId: string, rec: ScheduledSend): Promise<boolean> {
     try {
       const { uuid } = await this.deps.send(sessionId, rec.body)
@@ -138,7 +146,17 @@ export class ScheduledSendManager {
       this.pushTerminal(sessionId, rec)
       return true
     } catch (err) {
-      if (isRebuildRequired(err)) {
+      // Transient rebuild-teardown refusals (spec §8.1, final review #2):
+      // during quiesceAndRebuild the session is terminated (410) then removed
+      // from the map (404), and a not-running session refuses 409 — all
+      // BEFORE the REBUILD_REQUIRED admission fence is reached. While a
+      // rebuild is pending/in flight these are not payload failures: defer
+      // and retry in order. Permanent payload errors (400 validation / 413
+      // too large) keep terminal-failure semantics even while pending.
+      const transientTeardown = err instanceof HttpError
+        && (err.status === 404 || err.status === 409 || err.status === 410)
+        && this.deps.isRebuildPending?.(sessionId) === true
+      if (isRebuildRequired(err) || transientTeardown) {
         rec.status = 'deferred'
         return false
       }

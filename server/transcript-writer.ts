@@ -212,6 +212,14 @@ export class TranscriptWriter {
     return ++this.dispatchOrdinalCounter
   }
 
+  /** Raise the dispatch-ordinal floor past a recovered/replayed max WITHOUT
+   *  enqueuing (the drained bucket replays straight to the provider, never the
+   *  queued queue — final review #3, RF5). Bump-only: a lower ordinal never
+   *  lowers the floor. */
+  seedDispatchOrdinal(ordinal: number): void {
+    if (ordinal > this.dispatchOrdinalCounter) this.dispatchOrdinalCounter = ordinal
+  }
+
   /** Record the durable dispatch states (enqueue-not-attempted → enqueue-
    *  attempted) for a prompt the manager dispatches synchronously (T7b Task 1).
    *  Fire-and-forget from the send path so synchronous dispatch timing is

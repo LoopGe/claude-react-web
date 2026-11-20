@@ -400,6 +400,19 @@ describe('TranscriptWriter.recordDispatchAttempt (T7b Task 1)', () => {
     expect(w.nextDispatchOrdinal()).toBe(43)
   })
 
+  it('seedDispatchOrdinal raises the floor without enqueuing; a lower ordinal never lowers it', () => {
+    const { deps } = makeDeps()
+    const w = new TranscriptWriter(deps)
+    expect(w.nextDispatchOrdinal()).toBe(1)
+    // The drained bucket replays straight to the provider, never the queued
+    // queue — the seed is bump-only (final review #3, RF5).
+    w.seedDispatchOrdinal(40)
+    expect(w.queuedCount).toBe(0)
+    expect(w.nextDispatchOrdinal()).toBe(41)
+    w.seedDispatchOrdinal(10)
+    expect(w.nextDispatchOrdinal()).toBe(42)
+  })
+
   it('close() fences appendDurable and no-ops in-flight commits (I3)', async () => {
     const appendBatch = vi.fn(async () => {})
     const { deps } = makeDeps({ appendBatch })

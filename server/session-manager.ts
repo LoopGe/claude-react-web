@@ -1087,11 +1087,14 @@ export class SessionManager {
   /** In-flight transcript reconciles, keyed by session id — getTranscriptWindow
    *  and resume() can both trigger one; they must share the same promise. */
   private readonly transcriptReconciles = new Map<string, Promise<TranscriptHolder>>()
-  /** Sessions with an auto pending-rebuild run in flight (spec §8.1, Task 4).
-   *  The scheduler is idempotent: while a run is in flight, further lifecycle
-   *  events re-evaluate but never re-fire the executor. Held across the WHOLE
-   *  executor call (including its internal resume), so the resume/recovery hooks
-   *  it triggers cannot loop back into a second concurrent rebuild. */
+  /** Sessions with a pending-rebuild run in flight (spec §8.1, Task 4; final
+   *  review #1). The SINGLE single-flight guard shared by BOTH executor entry
+   *  points — the auto-scheduler (schedulePendingRebuilds) and the explicit
+   *  Retry (retryTranscriptReconcile): while a run is in flight, lifecycle
+   *  events re-evaluate but never re-fire, and a concurrent Retry/defer is
+   *  refused 409. Held across the WHOLE executor call (including its internal
+   *  resume), so the resume/recovery hooks it triggers cannot loop back into a
+   *  second concurrent rebuild. */
   private readonly pendingRebuildRuns = new Set<string>()
   /** Sessions whose auto-rebuild scheduling the user PAUSED via deferRebuild
    *  (spec §8.1, Task 6). In-memory only: a process restart loses the pause, so
@@ -9192,7 +9195,18 @@ export class SessionManager {
     // An explicit Retry resumes auto-scheduling the user may have deferred (spec
     // §8.1, Task 6) and forces the rebuild regardless of the pause.
     this.rebuildDeferred.delete(id)
-    return this.quiesceAndRebuild(id, { preserveQueued: false })
+    // Single-writer serialization (spec §8.1, final review #1): the SAME
+    // pendingRebuildRuns guard the auto-scheduler uses covers this entry point
+    // too. Check-then-add is synchronous (no await between), so a Retry racing
+    // an in-flight auto run is refused 409 instead of starting a second
+    // concurrent executor over the same teardown.
+    if (this.pendingRebuildRuns.has(id)) throw new HttpError(409, REBUILD_REQUIRED)
+    this.pendingRebuildRuns.add(id)
+    try {
+      return await this.quiesceAndRebuild(id, { preserveQueued: false })
+    } finally {
+      this.pendingRebuildRuns.delete(id)
+    }
   }
 
   /** Shared quiesce → rebuild → resume executor (spec §8.1, Task 5). Two quiesce
@@ -9409,6 +9423,11 @@ export class SessionManager {
     const s = this.sessions.get(id)
     if (!s || !s.running) return
     const writer = this.writerFor(id)
+    // RF5 (final review #3): seed the dispatch-ordinal floor past every replayed
+    // entry (drained is non-empty here) so a later new send allocates ABOVE them
+    // — a SECOND drain while a replayed entry is still unconsumed must keep the
+    // original user-turn order, not sort the new send before the older replay.
+    writer.seedDispatchOrdinal(Math.max(...drained.map((o) => o.dispatchOrdinal)))
     const dispatched = new Set<string>()
     // Entries are sorted by dispatchOrdinal (classifyPendingInputs). Advance each
     // entry's durable state to enqueue-attempted BEFORE its own provider call
@@ -9424,10 +9443,26 @@ export class SessionManager {
         return false
       }
     }
+    // Re-register the dispatch ledger for every replayed entry (final review
+    // #3): a subsequent drainInputQueue joins the live queues against this
+    // ledger, so an unconsumed replayed entry keeps its ORIGINAL ordinal/kind/
+    // PUBLIC payload (never the resolved forSdk form — the drain re-resolves
+    // attachments at replay, exactly as the send sites store the public form).
+    // Registered BEFORE the provider call so a synchronous consume (native
+    // direct hand-off) drops it again — the ledger holds only the unconsumed
+    // set (onInputConsumed owns the drop, unchanged).
+    const registerLedger = (op: PendingInputOp): void => {
+      ;(s.dispatchLedger ??= new Map()).set(op.operationId, {
+        kind: op.kind ?? 'user',
+        dispatchOrdinal: op.dispatchOrdinal,
+        payload: op.payload as SDKUserMessage,
+      })
+    }
     for (const op of drained) {
       const kind = op.kind ?? 'user'
       if (kind === 'control') {
         if (!(await advance(op))) break
+        registerLedger(op)
         const control = s.handle.sendControlMessage
         if (typeof control === 'function') control.call(s.handle, op.payload as AgentUserMessage)
         else s.handle.enqueueUserMessage(op.payload as AgentUserMessage)
@@ -9465,6 +9500,7 @@ export class SessionManager {
           this.recordPromptUuid(s, op.payload as AnyAgentUserMessage)
         }
         if (!(await advance(op))) break
+        registerLedger(op)
         s.handle.enqueueUserMessage(forSdk)
       }
       dispatched.add(op.operationId)
@@ -9635,6 +9671,22 @@ export class SessionManager {
     if (this.transcriptStores.get(id)?.rebuildAdmissionPending === true) {
       throw new HttpError(409, REBUILD_REQUIRED)
     }
+  }
+
+  /** Whether a rebuild is pending OR in flight for the session (spec §8.1,
+   *  final review #2). Three terms, one per window a scheduled send can hit:
+   *  - `pendingRebuildRuns`: an executor (auto OR Retry) is mid-run — covers
+   *    the TEARDOWN window, where the holder is already dropped and
+   *    requireRunnable refuses 410/409/404 BEFORE the admission fence above.
+   *  - `rebuildAdmissionPending`: the holder flag — the degraded/waiting
+   *    aftermath, where the live-admission 409 REBUILD_REQUIRED fires.
+   *  - `rebuildDeferred`: a user pause — the payload waits for Retry/anomaly.
+   *  ScheduledSendManager defers transient teardown refusals (404/409/410)
+   *  while this holds instead of failing the payload terminally. */
+  isRebuildPending(id: string): boolean {
+    return this.pendingRebuildRuns.has(id)
+      || this.transcriptStores.get(id)?.rebuildAdmissionPending === true
+      || this.rebuildDeferred.has(id)
   }
 
   /** Durable-aware rebuild-admission fence (spec §8.1 / §11, Task 5 carried
@@ -9858,20 +9910,24 @@ export class SessionManager {
    *  retained with a warning. A new anomaly (beginTranscriptRebuild) or an
    *  explicit Retry (retryTranscriptReconcile) resumes scheduling; a process
    *  restart loses the in-memory pause so crash recovery auto-fires (§9).
-   *  Idempotent no-op (deferred:false) when nothing is pending. */
+   *  Idempotent no-op (deferred:false) when nothing is pending; refused 409
+   *  REBUILD_REQUIRED while a rebuild run is in flight (final review #1). */
   async deferRebuild(id: string): Promise<{ deferred: boolean; pendingOperationCount: number }> {
     this.requireKnownSession(id)
+    // A run in flight owns the writer and the teardown (final review #1, T6
+    // deferred-minor fold): a pause the run would ignore is refused, not
+    // silently accepted. The next lifecycle event / explicit Retry acts on the
+    // settled state instead.
+    if (this.pendingRebuildRuns.has(id)) throw new HttpError(409, REBUILD_REQUIRED)
     const pendingOperationCount = this.transcriptWriters.get(id)?.pendingRebuilds.length ?? 0
     const armed = this.transcriptStores.get(id)?.rebuildAdmissionPending === true
-    if (!armed && !this.pendingRebuildRuns.has(id)) {
+    if (!armed) {
       return { deferred: false, pendingOperationCount }
     }
     this.rebuildDeferred.add(id)
     // Restores admission + releases deferred old-generation commits in order;
     // retains the pending payload. Also clears the waiting status (the user
-    // acted on it). When a run is already quiescing it owns the writer, but the
-    // UI clears the banner at quiesce start so this race is curl-only and the
-    // abort is benign (empty deferred list, flag already clearing).
+    // acted on it).
     await this.abortTranscriptRebuild(id, 'cancelled')
     log.warn(
       `[session ${id}] transcript rebuild deferred by user: ${pendingOperationCount} pending operation(s) retained, ` +
@@ -11548,6 +11604,9 @@ export class SessionManager {
    *  executing-turn check covers it; broker-blocked and dormant queued input is
    *  a legal drain state (the executor drains/preserves it). */
   quiesceEligible(s: Session): boolean {
+    // Mid-unload window (final review #1): running flips false BEFORE the
+    // session leaves the map — a torn-down provider is not a quiesce target.
+    if (!s.running) return false
     // Active mutation windows are not quiesced (mirror phaseOf's working maps).
     if (s.clearing || s.handoffAbort) return false
     // Executing turn/tool work. turnActive is the CLI-side proof a turn started;
