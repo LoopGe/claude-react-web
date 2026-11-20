@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../extract'
+import { fileHandleText } from '../../../shared/upload-handle'
+import { imageHandleText } from '../../../shared/image-handle'
 import type { SdkMessage } from '../../types'
+
+const FILE_HANDLE = fileHandleText({ id: 'u1', name: 'report.pdf', size: 42 }, '/private/report.pdf')
+const IMAGE_HANDLE = imageHandleText(
+  { id: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png', bytes: 68, width: 1, height: 1 },
+  `/store/images/aa/${'a'.repeat(64)}`,
+)
 
 describe('extractPlainText', () => {
   it('strips inline emphasis', () => {
@@ -141,6 +149,20 @@ describe('extractMessagePlainText', () => {
   it('falls back to msg.error for system error frames', () => {
     const msg = { type: 'system', subtype: 'error', error: 'boom' } as unknown as SdkMessage
     expect(extractMessagePlainText(msg)).toBe('boom')
+  })
+
+  it('strips file and image handles from string content', () => {
+    const msg = { type: 'user', message: { content: `look ${FILE_HANDLE} ${IMAGE_HANDLE}` } } as unknown as SdkMessage
+    expect(extractMessagePlainText(msg)).toBe('look')
+  })
+
+  it('strips image-handle plumbing from a [handle text, base64 image] row', () => {
+    const b64 = { type: 'image', source: { type: 'base64', data: 'AAAA', media_type: 'image/png' } }
+    const handleBlock = { type: 'text', text: IMAGE_HANDLE }
+    const msg = (content: unknown[]) => ({ type: 'user', message: { content } }) as unknown as SdkMessage
+    // Image-only: the handle is projection noise, nothing searchable remains.
+    expect(extractMessagePlainText(msg([handleBlock, b64]))).toBeNull()
+    expect(extractMessagePlainText(msg([{ type: 'text', text: 'look' }, handleBlock, b64]))).toBe('look')
   })
 })
 

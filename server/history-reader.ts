@@ -49,8 +49,8 @@ import type { HistoryEntry, HistoryPage, HistoryReadResult, RawLine } from '../s
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createLogger } from './log.js'
 import { condensePromptPreview } from '../shared/prompt-preview.js'
-import { stripFileHandles } from '../shared/upload-handle.js'
-import { parseImageHandle, stripImageHandles } from '../shared/image-handle.js'
+import { stripHandles } from '../shared/attachment-handle.js'
+import { parseImageHandle } from '../shared/image-handle.js'
 import type { ImageRefBlock } from '../shared/image-attachment.js'
 import { extractMessageSearchSegments } from '../shared/search/extract.js'
 
@@ -263,7 +263,7 @@ export function parseLastUserPrompt(tail: string): string | undefined {
       // recency-by-file-position rule honest. text may be undefined here.
       const raw = typeof o.lastPrompt === 'string'
         ? (() => {
-            const cleaned = stripImageHandles(stripFileHandles(o.lastPrompt as string))
+            const cleaned = stripHandles(o.lastPrompt as string)
             return cleaned ? condensePromptPreview(cleaned) : attachmentNameFallback(o.lastPrompt)
           })()
         : undefined
@@ -273,7 +273,7 @@ export function parseLastUserPrompt(tail: string): string | undefined {
     if (!userHit && o.type === 'user' && !o.isMeta && !o.isSidechain && !o.isCompactSummary) {
       const content = o.message?.content
       if (typeof content === 'string') {
-        const cleaned = stripImageHandles(stripFileHandles(content))
+        const cleaned = stripHandles(content)
         if (!isInterruptPlaceholder(cleaned) && !SYNTHETIC_FRAME_PREFIX_RE.test(cleaned)) {
           const text = condensePromptPreview(cleaned)
           if (text) userHit = { index: i, text }
@@ -297,7 +297,7 @@ export function parseLastUserPrompt(tail: string): string | undefined {
           if (b.type === 'tool_result') hasToolResult = true
           else if (b.type === 'text' && typeof b.text === 'string') texts.push(b.text)
         }
-        const joined = stripImageHandles(stripFileHandles(texts.join(' ')))
+        const joined = stripHandles(texts.join(' '))
         if (!hasToolResult && joined && !SYNTHETIC_FRAME_PREFIX_RE.test(joined)) {
           const text = condensePromptPreview(joined)
           if (text) userHit = { index: i, text }

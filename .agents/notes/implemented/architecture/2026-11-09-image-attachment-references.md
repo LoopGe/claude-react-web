@@ -108,6 +108,15 @@ malformed handle degrades to raw text. The SDK JSONL therefore still holds
 base64 plus the handle text; the model gets the image bytes and a read-only
 path for tool-based editing.
 
+Preview and plain-text extractors that read raw SDK content (resume-picker
+previews, recap, search extraction, classifier context, user-text rendering)
+strip handle text through `stripHandles` (`shared/attachment-handle.ts`), the
+single decision point composing `stripFileHandles` and `stripImageHandles`.
+The two grammar modules stay independent siblings; a future attachment handle
+type extends the one helper instead of each extraction site. File handles
+strip first, so a file handle is removed atomically even when its quoted name
+or path embeds text shaped like another handle.
+
 ### 5. History and reconcile recovery
 
 The SDK JSONL still holds base64, so two projection points recover refs:
@@ -253,6 +262,12 @@ What it costs / leaves bounded:
   `parseImageHandle(imageHandleText(ref, path))` round-trip (all ref fields +
   path, across path shapes and media types); `shared/image-attachment.test.ts`
   pins the ref guard.
+- `shared/attachment-handle.test.ts` pins the composed stripper: both handle
+  kinds, mixed text, malformed input never throws, and byte-parity with
+  `stripFileHandles` when no image handle is present. The recap,
+  search-extract, classifier, `extractUserText`, and `splitUserBlocks` suites
+  pin image-handle stripping at their extraction sites; the resume-picker
+  suites (`history-reader`, `claude-provider.resumable`) pin both kinds.
 - `server/attachment-object-store.test.ts` and `server/routes/image-uploads.test.ts`
   pin publication/dedupe, verified reads, tamper → 404/500, and the admission
   limits/statuses.

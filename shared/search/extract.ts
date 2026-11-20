@@ -39,7 +39,7 @@ import { flattenHast, type HastNode } from './hast-walk.js'
 import { lineDiff } from './line-diff.js'
 import { rehypeStripStructuralWhitespace } from './rehype-strip-structural-whitespace.js'
 import { htmlAsTextHandlers } from '../markdown-html-text.js'
-import { stripFileHandles } from '../upload-handle.js'
+import { stripHandles } from '../attachment-handle.js'
 import { isFileBlock } from '../attachments.js'
 import { splitFileHandleText, type MessageSearchSegment } from './segments.js'
 import { toolResultTextRuns } from '../tool-result-text.js'
@@ -186,7 +186,7 @@ export function extractMessagePlainText(msg: SearchableMessage): string | null {
   const message = msg.message
   const content = message && typeof message === 'object' ? (message as { content?: unknown }).content : undefined
   if (typeof content === 'string') {
-    const text = extractPlainText(stripFileHandles(content))
+    const text = extractPlainText(stripHandles(content))
     return text || null
   }
   if (Array.isArray(content)) {
@@ -194,7 +194,7 @@ export function extractMessagePlainText(msg: SearchableMessage): string | null {
     for (const b of content as SearchableBlock[]) {
       if (b.type === 'text' && typeof b.text === 'string') {
         // File handles are model-facing plumbing; the UI renders a chip.
-        const text = extractPlainText(stripFileHandles(b.text))
+        const text = extractPlainText(stripHandles(b.text))
         if (text) parts.push(text)
       } else if (b.type === 'tool_result') {
         // tool_result content can be a string or an array of nested blocks.
@@ -242,7 +242,7 @@ export function extractMessageSearchSegments(msg: SearchableMessage): MessageSea
     !(blocks?.some((block) => block.type === 'tool_result') ?? false)
   const pushUserText = (raw: string): void => {
     if (!isRealUser) {
-      pushMarkdown(stripFileHandles(raw))
+      pushMarkdown(stripHandles(raw))
       return
     }
     for (const segment of splitFileHandleText(raw)) {

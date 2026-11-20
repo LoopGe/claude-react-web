@@ -4,7 +4,8 @@
 // persisted (replay/restart); both become the same chip row.
 
 import { isFileBlock, type FileAttachmentRef } from '../../shared/attachments'
-import { parseFileHandle, stripFileHandles } from '../../shared/upload-handle'
+import { parseFileHandle } from '../../shared/upload-handle'
+import { stripHandles } from '../../shared/attachment-handle'
 import { splitFileHandleText } from '../../shared/search/segments'
 import type { Block } from '../types'
 
@@ -55,7 +56,7 @@ export function splitUserBlocks(blocks: readonly Block[]): UserContentParts {
       const parsed = parseFileHandle(block.text)
       if (parsed !== null) files.push(parsed.attachment)
       else {
-        const cleaned = stripFileHandles(block.text)
+        const cleaned = stripHandles(block.text)
         if (cleaned !== '') text.push(cleaned)
       }
       continue
