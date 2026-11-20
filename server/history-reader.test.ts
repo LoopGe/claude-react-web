@@ -936,6 +936,39 @@ describe('parseLastUserPrompt — tail text → last prompt preview', () => {
     expect(parseLastUserPrompt(jsonl([{ type: 'last-prompt', lastPrompt: handle }]))).toBe('quarterly read it.] report.pdf')
   })
 
+  describe('image-handle previews (ref-image sends)', () => {
+    const DIGEST = 'a'.repeat(64)
+    const REF: ImageAttachmentRef = { id: imageRefId(DIGEST), mediaType: 'image/png', bytes: 68, width: 1, height: 1 }
+    const HANDLE = imageHandleText(REF, `/store/images/${DIGEST.slice(0, 2)}/${DIGEST}`)
+    const handleBlock = { type: 'text', text: HANDLE }
+    const b64 = { type: 'image', source: { type: 'base64', data: 'AAAA', media_type: 'image/png' } }
+
+    it('strips an image handle from the last-prompt preview', () => {
+      // Image-only: no preview noise (images have no name, so no attachment
+      // fallback either — the row simply has no prompt preview).
+      expect(parseLastUserPrompt(jsonl([{ type: 'last-prompt', lastPrompt: HANDLE }]))).toBeUndefined()
+      expect(parseLastUserPrompt(jsonl([{ type: 'last-prompt', lastPrompt: `before ${HANDLE}` }]))).toBe('before')
+    })
+
+    it('strips image handles from a raw [handle text, base64 image] user row', () => {
+      const row = (content: unknown[]) => ({ type: 'user', uuid: 'u-img', message: { role: 'user', content } })
+      // Image-only prompt condenses to empty — the handle text must not
+      // surface as the preview.
+      expect(parseLastUserPrompt(jsonl([row([handleBlock, b64])]))).toBeUndefined()
+      // Text + image: the user's own text only.
+      expect(parseLastUserPrompt(jsonl([row([{ type: 'text', text: 'look' }, handleBlock, b64])]))).toBe('look')
+    })
+
+    it('strips an image handle from a string-content user row (file-handle parity)', () => {
+      expect(parseLastUserPrompt(jsonl([
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: HANDLE } },
+      ]))).toBeUndefined()
+      expect(parseLastUserPrompt(jsonl([
+        { type: 'user', uuid: 'u2', message: { role: 'user', content: `before ${HANDLE}` } },
+      ]))).toBe('before')
+    })
+  })
+
   it('falls back to a structured FileBlock name for an attachment-only prompt', () => {
     expect(parseLastUserPrompt(jsonl([{
       type: 'user',

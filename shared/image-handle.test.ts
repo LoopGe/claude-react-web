@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { imageHandleText, parseImageHandle } from './image-handle'
+import { imageHandleText, parseImageHandle, stripImageHandles } from './image-handle'
 import type { ImageAttachmentRef } from './image-attachment'
 
 const DIGEST = '0123456789abcdef'.repeat(4)
@@ -138,6 +138,58 @@ describe('parseImageHandle', () => {
     ]) {
       expect(() => parseImageHandle(text)).not.toThrow()
       expect(parseImageHandle(text)).toBeNull()
+    }
+  })
+})
+
+describe('stripImageHandles', () => {
+  it('removes a handle appended after the user text', () => {
+    const text = `look ${imageHandleText(REF, PATH)}`
+    expect(stripImageHandles(text)).toBe('look')
+  })
+
+  it('removes every handle in one string', () => {
+    const other: ImageAttachmentRef = { ...REF, id: `sha256:${'f'.repeat(64)}` }
+    const text = `${imageHandleText(REF, PATH)} ${imageHandleText(other, '/state/other')} after`
+    expect(stripImageHandles(text)).toBe('after')
+  })
+
+  it('leaves ordinary text untouched', () => {
+    expect(stripImageHandles('  just text  ')).toBe('just text')
+    expect(stripImageHandles('see [Image attached] below')).toBe('see [Image attached] below')
+  })
+
+  it('removes a valid handle whose path contains the terminator text', () => {
+    const tricky = '/tmp/quarterly read it.] report.png'
+    const text = `before${imageHandleText(REF, tricky)}after`
+    expect(stripImageHandles(text)).toBe('beforeafter')
+  })
+
+  it('condenses an image-only prompt to empty', () => {
+    expect(stripImageHandles(imageHandleText(REF, PATH))).toBe('')
+    expect(stripImageHandles(`  ${imageHandleText(REF, PATH)}  `)).toBe('')
+  })
+
+  it('never throws on truncated input and leaves the unparseable handle as raw text', () => {
+    const text = imageHandleText(REF, PATH)
+    for (let end = 0; end < text.length; end += 7) {
+      expect(() => stripImageHandles(text.slice(0, end))).not.toThrow()
+    }
+    // A truncation that loses the structural terminator is not a handle:
+    // the raw text survives (trimmed), mirroring stripFileHandles.
+    const truncated = text.slice(0, text.indexOf('. Read that path'))
+    expect(stripImageHandles(truncated)).toBe(truncated.trim())
+  })
+
+  it('never throws on malformed input and leaves it intact', () => {
+    for (const text of [
+      '[Image ',
+      '[Image "',
+      '[Image "x" (',
+      '[Image "x" (1x1, image/png, 1 bytes, sha256:zz, attachment:sha256:zz): normalized read-only copy saved at "unterminated',
+    ]) {
+      expect(() => stripImageHandles(text)).not.toThrow()
+      expect(stripImageHandles(text)).toBe(text.trim())
     }
   })
 })

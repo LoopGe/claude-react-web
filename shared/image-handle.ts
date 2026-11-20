@@ -117,3 +117,44 @@ export function parseImageHandle(text: string): ParsedImageHandle | null {
   if (!isImageRefBlock(block)) return null
   return { attachment: block.attachment, path: path.value }
 }
+
+const HANDLE_END = 'read it.]'
+
+/** Parse a handle at a known prefix, trying later structural terminators when
+ * the marker appears inside the JSON label or path. `end` is exclusive.
+ * Mirrors upload-handle's parseFileHandleAt. */
+export function parseImageHandleAt(
+  text: string,
+  start: number,
+): { handle: ParsedImageHandle; end: number } | null {
+  if (!text.startsWith(PREFIX, start)) return null
+  let end = text.indexOf(HANDLE_END, start)
+  while (end !== -1) {
+    const candidateEnd = end + HANDLE_END.length
+    const handle = parseImageHandle(text.slice(start, candidateEnd))
+    if (handle !== null) return { handle, end: candidateEnd }
+    end = text.indexOf(HANDLE_END, candidateEnd)
+  }
+  return null
+}
+
+/**
+ * Remove every generated image-handle occurrence from free text, leaving the
+ * user's own text. Used by previews/recaps/plain-text extractors that read raw
+ * SDK content instead of the structured image ref. Mirrors stripFileHandles.
+ */
+export function stripImageHandles(text: string): string {
+  let result = text
+  let index = result.indexOf(PREFIX)
+  while (index !== -1) {
+    const parsed = parseImageHandleAt(result, index)
+    if (parsed !== null) {
+      result = result.slice(0, index) + result.slice(parsed.end)
+      // Restart at the same offset: the next handle (if any) shifted here.
+      index = result.indexOf(PREFIX, index)
+    } else {
+      index = result.indexOf(PREFIX, index + PREFIX.length)
+    }
+  }
+  return result.trim()
+}
