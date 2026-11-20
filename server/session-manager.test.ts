@@ -384,6 +384,7 @@ import { cleanupGitFixtures, makeRepo } from './test-git-fixtures.js'
 import { branchExists } from './git.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
 import { TranscriptSidecar, makeCommitV2, readPendingRebuilds } from './transcript-sidecar.js'
+import { TranscriptWriter } from './transcript-writer.js'
 import { buildOrderedProjection, type PendingOperation, type ProjectionEntry } from './transcript-reconcile.js'
 import { occurrenceIdOf } from './transcript-projection.js'
 import { ScheduledSendManager } from './scheduled-send-manager.js'
@@ -11126,17 +11127,22 @@ describe('SessionManager', () => {
         asst('A1', 'reply'),
       ])
       await arm(info.id)
-      // Record the resume-replay dispatch order on the fresh handle.
-      const enqSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'enqueueUserMessage')
-      const ctrlSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'sendControlMessage')
+      // Record a UNIFIED dispatch sequence across both provider methods (review
+      // #10): a regression dispatching all users before controls must fail.
+      const seq: Array<{ m: 'control' | 'user'; uuid: string }> = []
+      const origEnq = ClaudeSessionHandle.prototype.enqueueUserMessage
+      const origCtrl = ClaudeSessionHandle.prototype.sendControlMessage
+      const enqSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'enqueueUserMessage').mockImplementation(function (this: ClaudeSessionHandle, msg) {
+        seq.push({ m: 'user', uuid: (msg as { uuid: string }).uuid })
+        return origEnq.call(this, msg)
+      })
+      const ctrlSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'sendControlMessage').mockImplementation(function (this: ClaudeSessionHandle, msg) {
+        seq.push({ m: 'control', uuid: (msg as { uuid: string }).uuid })
+        return origCtrl.call(this, msg)
+      })
       let r: { generation: number; headSeq: number; degraded: boolean }
-      let ctrlUuids: Array<string | undefined> = []
-      let enqUuids: Array<string | undefined> = []
       try {
         r = await sm.quiesceAndRebuild(info.id, { preserveQueued: true })
-        // Capture BEFORE mockRestore (which resets the recorded calls).
-        ctrlUuids = ctrlSpy.mock.calls.map((c) => (c[0] as { uuid?: string }).uuid)
-        enqUuids = enqSpy.mock.calls.map((c) => (c[0] as { uuid?: string }).uuid)
       } finally {
         enqSpy.mockRestore()
         ctrlSpy.mockRestore()
@@ -11149,15 +11155,13 @@ describe('SessionManager', () => {
       expect(withdrawn).not.toContain(queued)
       expect(withdrawn).not.toContain(supp)
       expect(withdrawn).not.toContain(seedUuid)
-      // Replayed in dispatchOrdinal order: control seed BEFORE its dependent user
-      // turn, supplement last (it was dispatched after the queued user).
-      expect(ctrlUuids).toContain(seedUuid)
-      expect(enqUuids).toEqual([queued, supp])
-      // The control seed dispatched before the dependent user turn (ordinal order
-      // across the two methods): seed ordinal < queued ordinal.
-      const seedOrdinal = s.dispatchLedger!.get(seedUuid)!.dispatchOrdinal
-      const queuedOrdinal = s.dispatchLedger!.get(queued)!.dispatchOrdinal
-      expect(seedOrdinal).toBeLessThan(queuedOrdinal)
+      // UNIFIED replay sequence in dispatchOrdinal order: control seed FIRST,
+      // then the dependent user turn, then the supplement (last dispatched).
+      expect(seq).toEqual([
+        { m: 'control', uuid: seedUuid },
+        { m: 'user', uuid: queued },
+        { m: 'user', uuid: supp },
+      ])
       // The preserved prompts are in the rebuilt projection (queued materialized,
       // supplement + seed kept their app-only rows).
       const win = await sm.getTranscriptWindow(info.id)
@@ -11263,6 +11267,323 @@ describe('SessionManager', () => {
       expect(sm.quiesceEligible(s)).toBe(false)
       s.execAbort = undefined
       expect(sm.quiesceEligible(s)).toBe(true)
+    })
+  })
+
+  describe('drain-preserve-replay loss edges (Task 5 review round 1)', () => {
+    let prevConfigDir: string | undefined
+    beforeEach(() => {
+      prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    })
+
+    const live = (id: string): Session =>
+      (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)!
+    const internals = () => sm as unknown as {
+      writerFor(id: string): { drainToPending(ops: unknown[]): Promise<void>; queuedCount: number }
+      ensureTranscriptReconciled(id: string, opts?: { forcePendingRebuild?: boolean }): Promise<{ store: { generation: number } }>
+      replayDrained(id: string): Promise<void>
+      recoveredProviderPayload(id: string, payload: unknown): Promise<unknown>
+      subscriptionHub: { allSubscribersCapable(id: string): boolean }
+      assertRebuildAdmissionDurable(id: string): Promise<void>
+    }
+    const emitAssistant = (uuid: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant', uuid, parent_tool_use_id: null,
+        message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+    const asst = (uuid: string, text: string) =>
+      JSON.stringify({ type: 'assistant', uuid, message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text }] } })
+    const writeJsonl = (sessionId: string, lines: string[]) => {
+      const p = join(dir, 'projects', encodeCwd(TEST_CWD), `${sessionId}.jsonl`)
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, lines.join('\n') + '\n')
+    }
+    const userPayload = (uuid: string, text = uuid) =>
+      ({ type: 'user', uuid, parent_tool_use_id: null, session_id: 'x', message: { role: 'user', content: text } })
+    const controlPayload = (uuid: string) =>
+      ({ type: 'user', uuid, parent_tool_use_id: null, session_id: 'x', isSynthetic: true, isCompactSummary: true, shouldQuery: false, message: { role: 'user', content: 'summary' } })
+    const filePayload = (uuid: string) =>
+      ({ type: 'user', uuid, parent_tool_use_id: null, session_id: 'x', message: { role: 'user', content: [{ type: 'file', attachment: { id: 'missing-file', name: 'f.txt', size: 1 } }] } })
+    const arm = (id: string) =>
+      sm.beginTranscriptRebuild(id, {
+        operationId: 'op-1',
+        entry: { occurrenceId: 'occ-R', msg: { type: 'assistant', uuid: 'R', parent_tool_use_id: null, message: { id: 'mR', role: 'assistant', content: [{ type: 'text', text: 'pending' }] } }, source: 'provider', aliases: [], evicted: false },
+      })
+    const sidecarRows = (id: string) => new TranscriptSidecar(dir, id).load()
+    /** Seed turn 1 (first prompt + A1) and write the matching provider log. */
+    const seedTurn = async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const first = (await sm.send(info.id, 'first') as { uuid: string }).uuid
+      emitAssistant('A1', 'reply')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 2)).toBe(true)
+      writeJsonl(info.id, [
+        JSON.stringify({ type: 'user', uuid: first, parent_tool_use_id: null, message: { role: 'user', content: 'first' } }),
+        asst('A1', 'reply'),
+      ])
+      return { info, first }
+    }
+    /** Record a unified dispatch sequence across both provider methods. */
+    const recordSeq = () => {
+      const seq: Array<{ m: 'control' | 'user'; uuid: string }> = []
+      const origEnq = ClaudeSessionHandle.prototype.enqueueUserMessage
+      const origCtrl = ClaudeSessionHandle.prototype.sendControlMessage
+      const enqSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'enqueueUserMessage').mockImplementation(function (this: ClaudeSessionHandle, msg) {
+        seq.push({ m: 'user', uuid: (msg as { uuid: string }).uuid })
+        return origEnq.call(this, msg)
+      })
+      const ctrlSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'sendControlMessage').mockImplementation(function (this: ClaudeSessionHandle, msg) {
+        seq.push({ m: 'control', uuid: (msg as { uuid: string }).uuid })
+        return origCtrl.call(this, msg)
+      })
+      return { seq, restore: () => { enqSpy.mockRestore(); ctrlSpy.mockRestore() } }
+    }
+    const lastState = (rows: Array<{ operationId?: string; state?: string }>, op: string) =>
+      rows.filter((r) => r.operationId === op && r.state !== undefined).at(-1)?.state
+
+    it('#1a: Retry-after-degraded replays the prior auto attempt’s preserved rows (durable bucket, not fresh drain)', async () => {
+      const { info } = await seedTurn()
+      // A prior auto attempt preserved these inputs durably (drain committed).
+      await internals().writerFor(info.id).drainToPending([
+        { operationId: 'c1', dispatchOrdinal: 1, kind: 'control', payload: controlPayload('c1') },
+        { operationId: 'u1', dispatchOrdinal: 2, kind: 'user', payload: userPayload('u1') },
+      ])
+      await arm(info.id)
+      // First attempt: corrupt provider log → rebuild fails degraded → NO resume,
+      // drained rows retained.
+      writeJsonl(info.id, [asst('A1', 'reply'), 'NOT VALID JSON', asst('N', 'x')])
+      const r1 = await sm.quiesceAndRebuild(info.id, { preserveQueued: true })
+      expect(r1.degraded).toBe(true)
+      const rows1 = await sidecarRows(info.id)
+      expect(lastState(rows1, 'c1')).toBe('drained-to-pending')
+      expect(lastState(rows1, 'u1')).toBe('drained-to-pending')
+      // User clicks Retry (preserveQueued:false): live queues are empty, but the
+      // DURABLE bucket must still replay — the old fresh-drain gate stranded these.
+      writeJsonl(info.id, [asst('A1', 'reply')])
+      const { seq, restore } = recordSeq()
+      let r2: { degraded: boolean }
+      try {
+        r2 = await sm.retryTranscriptReconcile(info.id)
+      } finally {
+        restore()
+      }
+      expect(r2.degraded).toBe(false)
+      expect(seq).toEqual([{ m: 'control', uuid: 'c1' }, { m: 'user', uuid: 'u1' }])
+      expect(sm.get(info.id).running).toBe(true)
+    })
+
+    it('#1b: crash between drain commit and replay — restart resume replays the durable bucket', async () => {
+      const { info } = await seedTurn()
+      await internals().writerFor(info.id).drainToPending([
+        { operationId: 'c1', dispatchOrdinal: 1, kind: 'control', payload: controlPayload('c1') },
+        { operationId: 'u1', dispatchOrdinal: 2, kind: 'user', payload: userPayload('u1') },
+      ])
+      // Crash: unload after the drain commit, before any replay.
+      await sm.unload(info.id)
+      const { seq, restore } = recordSeq()
+      try {
+        await sm.resume(info.id)
+      } finally {
+        restore()
+      }
+      expect(seq).toEqual([{ m: 'control', uuid: 'c1' }, { m: 'user', uuid: 'u1' }])
+    })
+
+    it('#4+#2: attachment re-resolution failure strands the tail (no public dispatch); prefix advanced; re-replay never double-dispatches', async () => {
+      const { info } = await seedTurn()
+      await internals().writerFor(info.id).drainToPending([
+        { operationId: 'c1', dispatchOrdinal: 1, kind: 'control', payload: controlPayload('c1') },
+        { operationId: 'uA', dispatchOrdinal: 2, kind: 'user', payload: userPayload('uA') },
+        { operationId: 'uB', dispatchOrdinal: 3, kind: 'user', payload: filePayload('uB') },
+      ])
+      // uB's attachment resolution fails; text payloads resolve to undefined.
+      const resolveSpy = vi.spyOn(internals(), 'recoveredProviderPayload').mockImplementation(async (_id, payload) => {
+        if ((payload as { uuid?: string }).uuid === 'uB') throw new Error('attachment resolve failed')
+        return undefined
+      })
+      await sm.unload(info.id)
+      const rec1 = recordSeq()
+      try {
+        await sm.resume(info.id)
+      } finally {
+        rec1.restore()
+      }
+      // c1 + uA dispatched; uB stranded (NOT dispatched as the path-less public form).
+      expect(rec1.seq).toEqual([{ m: 'control', uuid: 'c1' }, { m: 'user', uuid: 'uA' }])
+      const rows = await sidecarRows(info.id)
+      // #2: dispatched prefix advanced to enqueue-attempted BEFORE dispatch; the
+      // stranded tail keeps drained-to-pending (so a re-replay targets only it).
+      expect(lastState(rows, 'c1')).toBe('enqueue-attempted')
+      expect(lastState(rows, 'uA')).toBe('enqueue-attempted')
+      expect(lastState(rows, 'uB')).toBe('drained-to-pending')
+      // Second replay with resolution fixed: ONLY uB dispatches (no double-dispatch
+      // of the already-advanced c1/uA).
+      resolveSpy.mockImplementation(async () => undefined)
+      const rec2 = recordSeq()
+      try {
+        await internals().replayDrained(info.id)
+      } finally {
+        rec2.restore()
+        resolveSpy.mockRestore()
+      }
+      expect(rec2.seq).toEqual([{ m: 'user', uuid: 'uB' }])
+    })
+
+    it('#3: a failed drain commit restores all three live homes (no input lost)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const s = live(info.id)
+      await sm.send(info.id, 'first')
+      emitAssistant('A1', 'reply')
+      const queued = (await sm.send(info.id, 'queued user') as { uuid: string }).uuid
+      await (sm as unknown as { seedCompactSummary(id: string, summary: string, handoff: boolean): Promise<void> })
+        .seedCompactSummary(info.id, 'summary', false)
+      const handle = s.handle as ClaudeSessionHandle
+      handle.enqueueSupplement = () => true
+      const supp = (await sm.send(info.id, 'pivot') as { uuid: string }).uuid
+      handle.drainSupplements = () => [{ uuid: supp }]
+      const depthBefore = s.handle.queueDepth
+      expect(depthBefore).toBeGreaterThan(0)
+      // Fail the durable drain commit once.
+      const drainSpy = vi.spyOn(TranscriptWriter.prototype, 'drainToPending').mockRejectedValueOnce(new Error('disk full'))
+      try {
+        await expect(sm.quiesceAndRebuild(info.id, { preserveQueued: true })).rejects.toThrow('disk full')
+      } finally {
+        drainSpy.mockRestore()
+      }
+      // All three homes restored; session still live (quiesce aborted).
+      expect(internals().writerFor(info.id).queuedCount).toBe(1)
+      expect(s.handle.queueDepth).toBeGreaterThanOrEqual(depthBefore)
+      expect(s.steeredInFlight.has(supp)).toBe(true)
+      expect(sm.get(info.id).running).toBe(true)
+      void queued
+    })
+
+    it('#5: a replayed user turn AND supplement are withdrawable by Stop (promptUuids backfill)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const s = live(info.id)
+      const first = (await sm.send(info.id, 'first') as { uuid: string }).uuid
+      emitAssistant('A1', 'reply')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 2)).toBe(true)
+      await (sm as unknown as { seedCompactSummary(id: string, summary: string, handoff: boolean): Promise<void> })
+        .seedCompactSummary(info.id, 'summary', false)
+      const queued = (await sm.send(info.id, 'dependent user') as { uuid: string }).uuid
+      const handle = s.handle as ClaudeSessionHandle
+      handle.enqueueSupplement = () => true
+      const supp = (await sm.send(info.id, 'pivot') as { uuid: string }).uuid
+      handle.drainSupplements = () => [{ uuid: supp }]
+      writeJsonl(info.id, [
+        JSON.stringify({ type: 'user', uuid: first, parent_tool_use_id: null, message: { role: 'user', content: 'first' } }),
+        asst('A1', 'reply'),
+      ])
+      await arm(info.id)
+      await sm.quiesceAndRebuild(info.id, { preserveQueued: true })
+      // After replay the control seed is consumed (spawn waiter); the queued user
+      // + supplement sit unconsumed in the host queue. Both must be withdrawable.
+      const frames: Array<{ kind?: string; uuids?: string[] }> = []
+      const sub = sm.subscribeMessageStatus(info.id)
+      void (async () => { for await (const f of sub!.iterable) frames.push(f as { kind?: string; uuids?: string[] }) })()
+      await sm.interrupt(info.id, { cancelQueued: true })
+      expect(await waitFor(() => frames.some((f) => f.kind === 'messages-withdrawn'))).toBe(true)
+      const w = frames.find((f) => f.kind === 'messages-withdrawn')!
+      expect(w.uuids).toContain(queued)
+      expect(w.uuids).toContain(supp)
+      sub!.unsubscribe()
+    })
+
+    it('#7: a forced rebuild is honored against an in-flight PASSIVE reconcile (dedup race)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      emitAssistant('A', 'first')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 1)).toBe(true)
+      writeJsonl(info.id, [asst('A', 'first')])
+      await arm(info.id)
+      // Start a passive reconcile (registers an in-flight promise), then request a
+      // forced one synchronously — it must NOT consume the passive append-only result.
+      const passive = internals().ensureTranscriptReconciled(info.id)
+      const forced = await internals().ensureTranscriptReconciled(info.id, { forcePendingRebuild: true })
+      await passive
+      expect(forced.store.generation).toBeGreaterThan(0)
+      expect(readPendingRebuilds(await sidecarRows(info.id))).toEqual([])
+    })
+
+    it('#8: dispatch ledger stays bounded to the unconsumed set (dropped on consumption + withdrawal)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const s = live(info.id)
+      await sm.send(info.id, 'first') // idle → consumed synchronously → dropped
+      expect(s.dispatchLedger!.size).toBe(0)
+      emitAssistant('A1', 'reply')
+      const q = (await sm.send(info.id, 'queued') as { uuid: string }).uuid // mid-turn → unconsumed
+      expect(s.dispatchLedger!.size).toBe(1)
+      expect(s.dispatchLedger!.has(q)).toBe(true)
+      await sm.interrupt(info.id, { cancelQueued: true }) // withdrawn → dropped
+      expect(s.dispatchLedger!.has(q)).toBe(false)
+      expect(s.dispatchLedger!.size).toBe(0)
+    })
+
+    it('#10 edge: control-only drain replays via sendControlMessage', async () => {
+      const { info } = await seedTurn()
+      await internals().writerFor(info.id).drainToPending([
+        { operationId: 'c1', dispatchOrdinal: 1, kind: 'control', payload: controlPayload('c1') },
+      ])
+      await sm.unload(info.id)
+      const { seq, restore } = recordSeq()
+      try { await sm.resume(info.id) } finally { restore() }
+      expect(seq).toEqual([{ m: 'control', uuid: 'c1' }])
+    })
+
+    it('#10 edge: supplement-only drain replays as a normal user turn', async () => {
+      const { info } = await seedTurn()
+      await internals().writerFor(info.id).drainToPending([
+        { operationId: 's1', dispatchOrdinal: 1, kind: 'supplement', payload: userPayload('s1', 'pivot') },
+      ])
+      await sm.unload(info.id)
+      const { seq, restore } = recordSeq()
+      try { await sm.resume(info.id) } finally { restore() }
+      expect(seq).toEqual([{ m: 'user', uuid: 's1' }])
+    })
+
+    it('#10 edge: empty queue — auto-rebuild still commits, replay no-ops', async () => {
+      const { info } = await seedTurn()
+      await arm(info.id)
+      const r = await sm.quiesceAndRebuild(info.id, { preserveQueued: true })
+      expect(r.degraded).toBe(false)
+      expect(r.generation).toBeGreaterThan(0)
+      expect(sm.get(info.id).running).toBe(true)
+    })
+
+    it('#10 edge: capability refusal mid-drain restores + replays the preserved rows', async () => {
+      const { info } = await seedTurn()
+      await internals().writerFor(info.id).drainToPending([
+        { operationId: 'c1', dispatchOrdinal: 1, kind: 'control', payload: controlPayload('c1') },
+        { operationId: 'u1', dispatchOrdinal: 2, kind: 'user', payload: userPayload('u1') },
+      ])
+      await arm(info.id)
+      // Pre-check passes, then an incapable tab attaches mid-quiesce → the forced
+      // reconcile's capability gate refuses → abortRebuild('cancelled') + resume.
+      const capSpy = vi.spyOn(internals().subscriptionHub, 'allSubscribersCapable').mockReturnValueOnce(true).mockReturnValue(false)
+      const { seq, restore } = recordSeq()
+      try {
+        await expect(sm.quiesceAndRebuild(info.id, { preserveQueued: true })).rejects.toMatchObject({ status: 409 })
+      } finally {
+        capSpy.mockRestore()
+        restore()
+      }
+      expect(seq).toEqual([{ m: 'control', uuid: 'c1' }, { m: 'user', uuid: 'u1' }])
+      expect(sm.get(info.id).running).toBe(true)
+    })
+
+    it('#12: durable admission gate is a safe no-op without a configured store dir', async () => {
+      const sm2 = new SessionManager({})
+      try {
+        // Holder absent + no store dir → no durable sidecar can exist → no throw.
+        await expect((sm2 as unknown as { assertRebuildAdmissionDurable(id: string): Promise<void> }).assertRebuildAdmissionDurable('unknown-id')).resolves.toBeUndefined()
+      } finally {
+        await sm2.shutdown()
+      }
     })
   })
 

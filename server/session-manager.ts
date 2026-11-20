@@ -158,6 +158,7 @@ import {
   unsupersededCorrupt,
   type TranscriptHolder,
   type PendingInputView,
+  type PendingInputOp,
   type SidecarRow,
 } from './transcript-sidecar.js'
 import { occurrenceIdOf, semanticMessageProjection, type ProjectionEntry } from './transcript-projection.js'
@@ -2330,6 +2331,14 @@ export class SessionManager {
     // Crash recovery (spec §7.2): re-materialize/re-dispatch prompts that were
     // queued-not-published / enqueue-not-attempted when the prior process died.
     await this.recoverPendingInputs(id)
+    // Drain-preserve replay (spec §8.1 step 6, Task 5 review #1): replay the
+    // DURABLE drained-to-pending bucket on EVERY successful resume — independent
+    // of whether this resume came from the auto-executor, an explicit Retry, or a
+    // crash restart. A prior auto attempt's preserved rows must survive a later
+    // Retry (preserveQueued:false) and a crash between drain and replay; gating on
+    // the fresh live-queue drain would strand them in the read-only bucket forever.
+    // No-ops when the bucket is empty.
+    await this.replayDrained(id)
     // Process recovery (spec §8.1, Task 4): the session is now live again. If a
     // durable pending rebuild survived the restart (re-armed during reconcile),
     // re-evaluate the auto-rebuild now that a provider exists to quiesce.
@@ -4426,6 +4435,15 @@ export class SessionManager {
       })
       return
     }
+    // Dispatch ledger (spec §8.1 drain-preserve, review #8): record BEFORE enqueue
+    // so a synchronous direct hand-off's onInputConsumed can drop the entry again
+    // (the ledger holds only the unconsumed drainable set). An idle prompt is
+    // usually consumed synchronously; a provider that parks it (native durable-
+    // retry) leaves it in the host queue, where the drain preserves + replays it.
+    const writer = this.writerFor(s.id)
+    const dispatchOrdinal = writer.nextDispatchOrdinal()
+    const ledger = (s.dispatchLedger ??= new Map())
+    ledger.set(userMsg.uuid!, { kind: 'user', dispatchOrdinal, payload: userMsg as SDKUserMessage, providerPayload: forSdk })
     // Record the sent prompt BEFORE enqueue: a provider that consumes the
     // message synchronously (the native direct hand-off) pairs the uuid inside
     // enqueueUserMessage's consume callback, which runs before this method
@@ -4445,14 +4463,6 @@ export class SessionManager {
     // is preserved; the full durable-before-publish async dispatch + queued-
     // not-published materialization is Task 2. The input-batch payload lets
     // recovery re-materialize the prompt (D7).
-    const writer = this.writerFor(s.id)
-    const dispatchOrdinal = writer.nextDispatchOrdinal()
-    // Dispatch ledger (spec §8.1 drain-preserve): an idle prompt is usually
-    // consumed synchronously (direct hand-off), but a provider that parks it
-    // (native durable-retry) leaves it in the host queue — track it so a
-    // rebuild quiesce can preserve + replay it if still unconsumed.
-    const ledger = (s.dispatchLedger ??= new Map())
-    ledger.set(userMsg.uuid!, { kind: 'user', dispatchOrdinal, payload: userMsg as SDKUserMessage, providerPayload: forSdk })
     void writer.recordDispatchAttempt({
       operationId: userMsg.uuid!,
       dispatchOrdinal,
@@ -4856,6 +4866,9 @@ export class SessionManager {
         // heal probe read "work still queued" or retain a dead entry. The
         // sidecar persists paired mappings at echo time, so no save here.
         s.promptUuids = (s.promptUuids ?? []).filter((e) => !uuids.has(e.u))
+        // Dispatch-ledger retention (review #8): a withdrawn entry is dead work —
+        // drop it so the ledger stays bounded to the unconsumed drainable set.
+        for (const u of uuids) s.dispatchLedger?.delete(u)
         // A withdrawn prompt's deferred snapshot anchor is dead too — drop it
         // so it cannot linger until /clear (mirrors the steer-path cleanup).
         if (s.pendingSnapshotAnchors?.length) {
@@ -8150,6 +8163,9 @@ export class SessionManager {
       }
     }
     s.steeredInFlight.delete(uuid)
+    // Dispatch-ledger retention (review #8): a delivered supplement is no longer
+    // undelivered/drainable — drop its ledger entry.
+    s.dispatchLedger?.delete(uuid)
     void this.steeredStore.markInjected(id, uuid, Date.now())
     this.pushMessageStatus(id, { kind: 'message-steered', sessionId: id, uuid, state: 'injected' })
     log.info(`[session ${id}] steered ${uuid.slice(0, 8)} injected at ${outcome.boundary}`)
@@ -8203,6 +8219,10 @@ export class SessionManager {
     if (typeof uuid !== 'string') return
     const s = this.sessions.get(id)
     if (s) {
+      // Dispatch-ledger retention (review #8): a consumed entry is no longer
+      // drainable, so drop it — the ledger holds only the unconsumed set the
+      // rebuild drain needs, not every payload for the session lifetime.
+      s.dispatchLedger?.delete(uuid)
       // Consumption is the turn-start signal for BOTH providers: the SDK
       // read the prompt off the input queue, so a turn is under way and an
       // aborted result stays owed until `result` clears it. A shouldQuery:false
@@ -8793,14 +8813,31 @@ export class SessionManager {
    *  (resume / first window read) passes false: it stays append-only when the
    *  old projection is an ordered subsequence, leaving the pending op unresolved
    *  (admission re-armed in the finally) for the auto-scheduler's executor to
-   *  force the genuine rebuild once the session is quiesced. This keeps the
-   *  held-back anomaly from being mis-appended at the tail by a passive back-fill
-   *  while still bringing the session up; the executor's rebuild corrects order. */
+   *  force the genuine rebuild once the session is quiesced. The passive back-fill
+   *  EXCLUDES the pending uuids, so the held-back anomaly stays suppressed (as the
+   *  live detector left it) rather than being mis-appended at the tail; the
+   *  executor's forced rebuild then places it correctly include-once. */
   private async ensureTranscriptReconciled(id: string, opts?: { forcePendingRebuild?: boolean }): Promise<TranscriptHolder> {
-    const t = this.getOrCreateTranscript(id)
-    if (t.reconciled) return t
+    const force = opts?.forcePendingRebuild === true
+    let t = this.getOrCreateTranscript(id)
+    if (t.reconciled && !force) return t
     const inFlight = this.transcriptReconciles.get(id)
-    if (inFlight) return inFlight
+    if (inFlight) {
+      if (!force) return inFlight
+      // A forced request racing an in-flight PASSIVE reconcile must not consume
+      // the passive (pendingOps=[]) result — that would silently skip the
+      // pending-op rebuild the executor requires (review #7). Let the passive
+      // reconcile settle, then run a fresh forced reconcile from a clean holder.
+      await inFlight.catch(() => {})
+      this.transcriptStores.delete(id)
+      this.transcriptReconciles.delete(id)
+      t = this.getOrCreateTranscript(id)
+    } else if (t.reconciled && force) {
+      // Forced re-reconcile of an already-reconciled holder (the executor drops
+      // its holder first, so this is the fresh-rebuild path): start clean.
+      this.transcriptStores.delete(id)
+      t = this.getOrCreateTranscript(id)
+    }
     const p = (async () => {
       // Rebuild-pending recovery bookkeeping (consumed in the finally): the
       // freshest loaded rows and the pre-reconcile generation decide whether
@@ -8872,8 +8909,15 @@ export class SessionManager {
         const writerPending = this.transcriptWriters.get(id)?.pendingRebuilds ?? []
         const seenOp = new Set(durablePending.map((p) => p.operationId))
         const mergedPending = [...durablePending, ...writerPending.filter((p) => !seenOp.has(p.operationId))]
-        const pendingOps = opts?.forcePendingRebuild === true ? mergedPending : []
-        if (!this.isSessionDeleteTombstoned(id)) await this.reconcileOrdered(t, id, composed, pendingOps)
+        const pendingOps = force ? mergedPending : []
+        // Passive back-fill excludes the pending uuids so a held-back anomaly is
+        // not mis-appended at the tail before the executor's forced rebuild (review #9).
+        const pendingExcludeUuids = new Set<string>()
+        for (const p of mergedPending) {
+          const u = (p.entry.msg as { uuid?: unknown })?.uuid
+          if (typeof u === 'string') pendingExcludeUuids.add(u)
+        }
+        if (!this.isSessionDeleteTombstoned(id)) await this.reconcileOrdered(t, id, composed, pendingOps, pendingExcludeUuids)
       } catch (err) {
         if (err instanceof TranscriptRebuildBlockedError) {
           // Capability refusal (spec §8.3): NOT a degradation — the old
@@ -8944,8 +8988,13 @@ export class SessionManager {
    *  backfillFromEntries would re-append the anomaly at the TAIL — recreating the
    *  inversion and never resolving the pending op (admission stuck closed). A
    *  pending op must enter a COMMITTED generation include-once (§7.4), which only
-   *  the ordered builder does — so pending ops force the rebuild path. */
-  private async reconcileOrdered(t: TranscriptHolder, id: string, composed: SDKMessage[], pendingOps: PendingOperation[] = []): Promise<void> {
+   *  the ordered builder does — so pending ops force the rebuild path.
+   *
+   *  `pendingExcludeUuids` are the durable pending-operation uuids excluded from a
+   *  PASSIVE append-only back-fill (spec §8.1, Task 5): a held-back anomaly stays
+   *  suppressed (as the live detector left it) instead of being mis-appended at the
+   *  tail, until the executor's forced rebuild places it correctly. */
+  private async reconcileOrdered(t: TranscriptHolder, id: string, composed: SDKMessage[], pendingOps: PendingOperation[] = [], pendingExcludeUuids: ReadonlySet<string> = new Set()): Promise<void> {
     const uuidOf = (m: unknown): string | null => {
       const u = (m as { uuid?: unknown })?.uuid
       return typeof u === 'string' ? u : null
@@ -9008,7 +9057,7 @@ export class SessionManager {
     // back-fill ignores pending ops, so it can never resolve one into a committed
     // generation — and for a held-back anomaly it would mis-append at the tail.
     if (pendingOps.length === 0 && isOrderedSubsequence(oldSharedUuids, canonUuids)) {
-      backfillFromEntries(t, composed)
+      backfillFromEntries(t, composed, pendingExcludeUuids)
       metrics.count('transcript_reconcile_total', { mode: 'append', result: 'success' })
       return
     }
@@ -9132,7 +9181,6 @@ export class SessionManager {
    *  keeps the session fenced read-only (abortRebuild 'failed', no resume). */
   async quiesceAndRebuild(id: string, opts: { preserveQueued: boolean }): Promise<{ generation: number; headSeq: number; degraded: boolean }> {
     const wasLive = this.sessions.has(id)
-    let drained: DispatchOp[] = []
     if (wasLive) {
       // Capability pre-check BEFORE any mutation (spec §8.3): an incapable tab
       // keeps its live channel on the old generation; the user reloads it and
@@ -9146,8 +9194,10 @@ export class SessionManager {
         // their queue and the host queue holds its unconsumed entries. Doing
         // this before the interrupt means the plain interrupt's steer-requeue
         // finds an empty supplement queue (nothing to requeue) and the drained
-        // entries cannot slip into a post-interrupt turn.
-        drained = await this.drainInputQueue(this.sessions.get(id)!)
+        // entries cannot slip into a post-interrupt turn. The durable
+        // drained-to-pending rows (not the returned live array) drive the replay,
+        // so they survive a failed rebuild + later Retry / crash restart (#1).
+        await this.drainInputQueue(this.sessions.get(id)!)
         // Abort the waiting turn WITHOUT withdrawing queued input (spec §8.1
         // step 2). A failed interrupt control op must not strand the rebuild —
         // the destroy below quiesces regardless.
@@ -9188,10 +9238,9 @@ export class SessionManager {
       // never stranded by a refusal. The pre-check above already refuses an
       // incapable tab BEFORE teardown; this covers a tab that attached mid-quiesce.
       await this.abortTranscriptRebuild(id, 'cancelled')
-      if (wasLive) {
-        await this.resume(id)
-        if (opts.preserveQueued && drained.length > 0) await this.replayDrained(id)
-      }
+      // resume() replays the durable drained bucket (review #1), so a drain is
+      // never stranded by a refusal.
+      if (wasLive) await this.resume(id)
       throw new HttpError(409, t.rebuildBlocked)
     }
     if (t.degraded) {
@@ -9205,12 +9254,10 @@ export class SessionManager {
       // Dormant sessions stay dormant — opening them is the user's call.
       const meta = this.store?.get(id)
       const terminatedTransient = meta?.terminated === true && isTransientTerminatedReason(meta.terminatedReason)
-      if (wasLive || terminatedTransient) {
-        await this.resume(id)
-        // Resume replay (spec §8.1 step 6): the preserved entries dispatch in
-        // dispatchOrdinal order onto the fresh handle, after the new pump starts.
-        if (opts.preserveQueued && drained.length > 0) await this.replayDrained(id)
-      }
+      // resume() replays the durable drained bucket in dispatchOrdinal order onto
+      // the fresh handle (spec §8.1 step 6, review #1) — for the auto-executor AND
+      // a Retry recovering a prior failed attempt's preserved rows.
+      if (wasLive || terminatedTransient) await this.resume(id)
     }
     const head = this.transcriptHead(id)
     return {
@@ -9233,16 +9280,27 @@ export class SessionManager {
     const writer = this.writerFor(s.id)
     const ledger = s.dispatchLedger ?? new Map()
     const ops: DispatchOp[] = []
+    // Destructively pull the three live homes, capturing each piece so a failed
+    // durable commit can RESTORE them (review #3) — emptying the queues before the
+    // fsync and losing the commit would otherwise drop the inputs with no durable
+    // row and no live home.
     // 1. queued-not-published root prompts (never reached the host queue). The
     //    writer's DispatchOp already carries ordinal/kind/payload/providerPayload.
-    for (const op of writer.drainQueued()) ops.push(op)
+    const queuedOps = writer.drainQueued()
+    for (const op of queuedOps) ops.push(op)
     // 2. host Pushable: unconsumed user turns + control seeds. The ledger holds
     //    the PUBLIC payload (the host queue holds the resolved form); replay
     //    re-resolves attachments from the public form (spec §10).
     const hostMsgs = s.handle.drainQueuedInput?.() ?? []
     for (const m of hostMsgs) {
       const uuid = (m as { uuid?: unknown }).uuid
-      if (typeof uuid !== 'string') continue
+      if (typeof uuid !== 'string') {
+        // Surface loudly (review #11): a uuid-less host-queue entry cannot be
+        // preserved/replayed by uuid; restore it rather than silently discard.
+        log.warn(`[session ${s.id}] rebuild drain: host-queue entry without a uuid restored, not preserved`)
+        s.handle.enqueueUserMessage(m)
+        continue
+      }
       const entry = ledger.get(uuid)
       const kind = entry?.kind ?? ((m as { shouldQuery?: boolean }).shouldQuery === false ? 'control' : 'user')
       ops.push({
@@ -9255,10 +9313,15 @@ export class SessionManager {
     }
     // 3. undelivered supplements → replayed as normal queued user turns.
     const supplements = (s.handle as ProviderSessionHandle & { drainSupplements?: () => Array<{ uuid: string }> }).drainSupplements?.() ?? []
+    const suppRestores: Array<{ uuid: string; userMsg: SDKUserMessage }> = []
     for (const { uuid } of supplements) {
       const userMsg = s.steeredInFlight.get(uuid)
       s.steeredInFlight.delete(uuid)
-      if (!userMsg) continue
+      if (!userMsg) {
+        log.warn(`[session ${s.id}] rebuild drain: supplement ${uuid} had no in-flight payload (already delivered/withdrawn)`)
+        continue
+      }
+      suppRestores.push({ uuid, userMsg })
       const entry = ledger.get(uuid)
       ops.push({
         operationId: uuid,
@@ -9268,7 +9331,25 @@ export class SessionManager {
       })
     }
     ops.sort((a, b) => a.dispatchOrdinal - b.dispatchOrdinal)
-    await writer.drainToPending(ops)
+    try {
+      await writer.drainToPending(ops)
+    } catch (err) {
+      // Durable preservation failed — restore every live home so no input is lost
+      // (review #3, mirrors interrupt's restoreQueued). The turn is still active
+      // (drain runs before the interrupt), so re-enqueue queues rather than
+      // direct-hand-off consumes. Rethrow so the executor aborts the quiesce.
+      writer.restoreQueued(queuedOps)
+      for (const m of hostMsgs) {
+        if (typeof (m as { uuid?: unknown }).uuid === 'string') s.handle.enqueueUserMessage(m)
+      }
+      for (const { uuid, userMsg } of suppRestores) {
+        s.steeredInFlight.set(uuid, userMsg)
+        const enq = (s.handle as ProviderSessionHandle & { enqueueSupplement?: (e: { uuid: string; text: string }) => boolean }).enqueueSupplement
+        enq?.call(s.handle, { uuid, text: userTextOf(userMsg) })
+      }
+      log.error(`[session ${s.id}] rebuild drain commit failed; restored ${ops.length} input(s) to live queues: ${(err as Error).message ?? err}`)
+      throw err
+    }
     if (ops.length > 0) {
       log.info(`[session ${s.id}] rebuild quiesce drained ${ops.length} input(s) to pending (preserve-replay)`)
     }
@@ -9293,22 +9374,43 @@ export class SessionManager {
     const s = this.sessions.get(id)
     if (!s || !s.running) return
     const writer = this.writerFor(id)
-    const dispatched: DispatchOp[] = []
+    const dispatched = new Set<string>()
+    // Entries are sorted by dispatchOrdinal (classifyPendingInputs). Advance each
+    // entry's durable state to enqueue-attempted BEFORE its own provider call
+    // (spec §8.1, review #2): a crash mid-loop then leaves already-dispatched
+    // entries as dispatch-unknown (manual recovery), never drained-to-pending —
+    // so the durable-bucket replay (#1) cannot double-dispatch them.
+    const advance = async (op: PendingInputOp): Promise<boolean> => {
+      try {
+        await writer.markDrainedDispatched([{ operationId: op.operationId, dispatchOrdinal: op.dispatchOrdinal, kind: op.kind ?? 'user', payload: op.payload }])
+        return true
+      } catch (err) {
+        log.warn(`[session ${id}] drained-replay state commit failed for ${op.operationId} (tail stays pending): ${(err as Error).message ?? err}`)
+        return false
+      }
+    }
     for (const op of drained) {
       const kind = op.kind ?? 'user'
       if (kind === 'control') {
+        if (!(await advance(op))) break
         const control = s.handle.sendControlMessage
         if (typeof control === 'function') control.call(s.handle, op.payload as AgentUserMessage)
         else s.handle.enqueueUserMessage(op.payload as AgentUserMessage)
       } else {
-        // Re-resolve attachment file blocks from the public payload (spec §10),
-        // exactly as crash recovery does; text/image payloads dispatch unchanged.
+        // Re-resolve attachment file blocks from the public payload (spec §10).
+        // On failure STRAND the unresolved tail (review #4, mirrors
+        // recoverPendingInputs): dispatching the public form would durably corrupt
+        // the provider log with path-less file handles. The tail keeps its durable
+        // drained-to-pending state + deletion guard for a later resume.
         let providerPayload: unknown
         try {
           providerPayload = await this.recoveredProviderPayload(id, op.payload)
         } catch (err) {
-          log.warn(`[session ${id}] drained-input attachment re-resolution failed for ${op.operationId}: ${(err as Error).message ?? err}`)
-          providerPayload = undefined
+          log.warn(
+            `[session ${id}] drained-input attachment re-resolution failed for ${op.operationId} ` +
+            `(${drained.length - dispatched.size} input(s) stay pending): ${(err as Error).message ?? err}`,
+          )
+          break
         }
         const forSdk = (providerPayload ?? op.payload) as AgentUserMessage
         const published = t!.store.seqOf(op.operationId) !== undefined
@@ -9319,30 +9421,30 @@ export class SessionManager {
           pushBounded(s.history, op.payload as SDKUserMessage, this.historyCap)
           this.afterUserMessagePublished(s)
         }
-        // A supplement replayed as a normal user turn never had a promptUuids
-        // ledger entry (steering skips it); backfill BEFORE enqueue so the
-        // consumption fact pairs (mirrors requeueSteeredLeftovers, spec §6.3).
-        if (kind === 'supplement') this.recordPromptUuid(s, op.payload as AnyAgentUserMessage)
+        // Backfill the promptUuids ledger for EVERY replayed user/supplement turn
+        // (review #5) so a later Stop cancelQueued can withdraw it and the heal
+        // probe sees it. Guard against duplicating an existing unconsumed entry
+        // (the same-process auto path already recorded it at send time); the
+        // crash-restart path lacks it (recordPromptUuid persists only at echo).
+        if (!(s.promptUuids ?? []).some((e) => e.u === op.operationId && e.c == null)) {
+          this.recordPromptUuid(s, op.payload as AnyAgentUserMessage)
+        }
+        if (!(await advance(op))) break
         s.handle.enqueueUserMessage(forSdk)
       }
-      dispatched.push({ operationId: op.operationId, dispatchOrdinal: op.dispatchOrdinal, kind, payload: op.payload })
+      dispatched.add(op.operationId)
     }
-    // Advance the durable state past drained-to-pending so a crash mid-replay
-    // classifies these as dispatch-unknown (manual recovery), never auto-replayed.
-    try {
-      await writer.markDrainedDispatched(dispatched)
-    } catch (err) {
-      log.warn(`[session ${id}] drained-replay state commit failed: ${(err as Error).message ?? err}`)
-    }
-    // Consume the replayed entries from the recovery view so a re-reconcile
-    // cannot surface them again (their materialized row / consumed lifecycle now
-    // resolves them).
+    // Consume only the dispatched prefix from the recovery view; the stranded tail
+    // keeps its durable state + deletion guard. A re-reconcile resolves dispatched
+    // entries via their materialized row / consumed lifecycle.
     if (t && view) {
-      const gone = new Set(dispatched.map((o) => o.operationId))
-      t.pendingRecovery = { ...view, drainedToPending: view.drainedToPending.filter((o) => !gone.has(o.operationId)) }
+      t.pendingRecovery = { ...view, drainedToPending: view.drainedToPending.filter((o) => !dispatched.has(o.operationId)) }
       this.registerPendingInputReferences(id, t.pendingRecovery)
     }
-    log.info(`[session ${id}] replayed ${dispatched.length} drained input(s) after rebuild`)
+    if (dispatched.size > 0) log.info(`[session ${id}] replayed ${dispatched.size} drained input(s) after rebuild`)
+    if (dispatched.size < drained.length) {
+      log.warn(`[session ${id}] ${drained.length - dispatched.size} drained input(s) stranded for a later resume (resolution/commit failure)`)
+    }
   }
 
   /** Register the file attachments referenced by a session's durable pending
@@ -9352,7 +9454,11 @@ export class SessionManager {
    *  where the in-memory lease is gone and the prompt is not yet in the log. */
   private registerPendingInputReferences(id: string, view: PendingInputView): void {
     const ids = new Set<string>()
-    for (const op of [...view.queued, ...view.notAttempted, ...view.dispatchUnknown]) {
+    // drainedToPending included (review #4): during the drain→rebuild→resume
+    // window the in-memory send lease is gone, so a preserved file attachment
+    // needs the durable pending-input reference to block a concurrent upload
+    // deletion until the replay re-dispatches it.
+    for (const op of [...view.queued, ...view.notAttempted, ...view.dispatchUnknown, ...view.drainedToPending]) {
       const content = (op.payload as { message?: { content?: unknown } })?.message?.content
       if (!Array.isArray(content)) continue
       for (const block of content) {
@@ -9511,7 +9617,11 @@ export class SessionManager {
       if (t.rebuildAdmissionPending === true) throw new HttpError(409, REBUILD_REQUIRED)
       return
     }
-    const sidecar = new TranscriptSidecar(this.store?.getDir(), id)
+    // No store dir (review #12): without a configured state dir there is no
+    // durable sidecar, so no durable pending payload can exist — nothing to gate.
+    const dir = this.store?.getDir()
+    if (!dir) return
+    const sidecar = new TranscriptSidecar(dir, id)
     const rows = await sidecar.load()
     if (readPendingRebuilds(rows).length > 0) throw new HttpError(409, REBUILD_REQUIRED)
   }

@@ -990,8 +990,15 @@ export function recordTranscriptMessage(t: TranscriptHolder, msg: unknown): numb
  * each carries its own block, so they must NOT be skipped — the store's
  * first block would otherwise hide every sibling. Returns the number of rows
  * appended.
+ *
+ * `excludeUuids` (spec §8.1, Task 5): uuids of durable rebuild-pending operations
+ * are SKIPPED by a passive back-fill. A held-back anomaly's canonical position is
+ * mid-history, but back-fill appends at the tail — recording it there would
+ * recreate the very inversion the rebuild exists to fix (and the live detector
+ * already suppressed it). Excluding it keeps the anomaly out of the projection
+ * until the executor's forced ordered rebuild places it correctly include-once.
  */
-export function backfillFromEntries(t: TranscriptHolder, entries: readonly unknown[]): number {
+export function backfillFromEntries(t: TranscriptHolder, entries: readonly unknown[], excludeUuids?: ReadonlySet<string>): number {
   let appended = 0
   for (let i = 0; i < entries.length; i++) {
     const msg = entries[i]
@@ -1000,6 +1007,7 @@ export function backfillFromEntries(t: TranscriptHolder, entries: readonly unkno
       : null
     if (uuid !== null) {
       if (t.store.seqOf(uuid) !== undefined) continue
+      if (excludeUuids?.has(uuid)) continue
     } else if (i < t.store.headSeq) {
       continue
     }
