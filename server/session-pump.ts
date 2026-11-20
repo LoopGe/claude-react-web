@@ -949,16 +949,22 @@ export interface PumpDeps {
    *  uuid-anchored replay overlap detection works after a restart. Optional so
    *  test fixtures can omit it. */
   onPromptEcho?: (session: Session, echoUuid: string) => void
-  /** Seq-assign a durable transcript message at ring-ingestion time (called
-   *  right after the pushBounded into the ring, BEFORE the subscriber
-   *  broadcast — Task 3 of the transcript seq refactor). The SessionManager
-   *  runs the renderability gate (isRenderableSdkMessage) inside
-   *  recordTranscriptMessage: renderable frames get a store seq + a
-   *  fire-and-forget sidecar append; ephemeral/sidechain frames get nothing.
-   *  The seq→message association rides the manager's WeakMap so Task 5 can
-   *  stamp it onto WS frames. Optional so test fixtures that don't exercise
-   *  the seq store can omit it. */
-  onDurableMessage?: (session: Session, msg: SDKMessage) => void
+  /** Ingest a durable transcript message BEFORE any public publication (ring
+   *  append + subscriber broadcast). The SessionManager seq-assigns renderable
+   *  frames (isRenderableSdkMessage gate inside recordTranscriptMessage: a
+   *  store seq + a fire-and-forget sidecar append; ephemeral/sidechain frames
+   *  get nothing) and runs the live rebuild-trigger detector (spec §8.1,
+   *  auto-rebuild Task 3). The seq→message association rides the manager's
+   *  WeakMap so the WS frame path can stamp it.
+   *
+   *  Returns 'rebuild-required' when the frame is a genuine chronology anomaly
+   *  (a result/completion that belongs before the transcript tail, or a
+   *  same-uuid semantic revision): the manager has persisted it as
+   *  rebuild-pending and closed admission, and the pump MUST suppress both its
+   *  ring append and its broadcast — it is never head-appended. Any other
+   *  return (void) publishes normally. Optional so test fixtures that don't
+   *  exercise the seq store can omit it. */
+  onDurableMessage?: (session: Session, msg: SDKMessage) => void | 'rebuild-required'
   /** A `system/model_refusal_fallback` frame retracted already-streamed
    *  messages (`retracted_message_uuids`). The SessionManager tombstones
    *  them in the transcript seq store and broadcasts a `messages-evicted`
@@ -1581,32 +1587,38 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           stampUnaccountedTurn(session, deps)
         }
         const fanoutStart = performance.now()
+        // Live anomaly detection (spec §8.1, auto-rebuild Task 3): the
+        // manager's ingest decision runs BEFORE any public publication. It
+        // seq-assigns the frame and, for a result/completion that belongs
+        // before the transcript tail (or a same-uuid semantic revision),
+        // persists it as rebuild-pending + closes admission and returns
+        // 'rebuild-required' — the frame must then enter NEITHER the replay
+        // ring NOR the subscriber broadcast (no head-append, no broadcast).
+        let rebuildRequired = false
         if (isTranscriptMessage(msg)) {
-          // Split by frame origin: subagent frames (parent_tool_use_id
-          // set — tool hops plus the text/thinking frames forwarded when
-          // Options.forwardSubagentText is on) live in their own FIFO ring
-          // with a separate budget, so a long subagent turn can evict only
-          // older subagent frames, never main-thread ones. Read surfaces
-          // see the two rings through SessionManager.mergedHistory().
-          const isSubagentFrame = getParentToolUseId(msg) != null
-          pushBounded(
-            isSubagentFrame ? session.subagentHistory : session.history,
-            msg,
-            isSubagentFrame ? deps.subagentHistoryCap : deps.historyCap,
-          )
-          // Transcript seq assignment (Task 3): assign ONCE per message, at
-          // ingestion, before the broadcast — later tasks attach the seq to
-          // the WS frames. The renderability gate lives inside the manager's
-          // recordTranscriptMessage (isRenderableSdkMessage), so ephemeral
-          // and sidechain frames allocate no seq here.
-          deps.onDurableMessage?.(session, msg)
+          rebuildRequired = deps.onDurableMessage?.(session, msg) === 'rebuild-required'
+          if (!rebuildRequired) {
+            // Split by frame origin: subagent frames (parent_tool_use_id
+            // set — tool hops plus the text/thinking frames forwarded when
+            // Options.forwardSubagentText is on) live in their own FIFO ring
+            // with a separate budget, so a long subagent turn can evict only
+            // older subagent frames, never main-thread ones. Read surfaces
+            // see the two rings through SessionManager.mergedHistory().
+            const isSubagentFrame = getParentToolUseId(msg) != null
+            pushBounded(
+              isSubagentFrame ? session.subagentHistory : session.history,
+              msg,
+              isSubagentFrame ? deps.subagentHistoryCap : deps.historyCap,
+            )
+          }
         }
 
         // Only broadcast system messages that the frontend actually needs.
         // Other system frames (init, status, — are kept in history for
         // fastModeState extraction, but skip the broadcast to save
-        // bandwidth and client memory.
-        if (shouldBroadcastMessage(msg as { type?: string; subtype?: string })) {
+        // bandwidth and client memory. A rebuild-required frame is suppressed
+        // entirely (its payload lives in the durable rebuild-pending batch).
+        if (!rebuildRequired && shouldBroadcastMessage(msg as { type?: string; subtype?: string })) {
           for (const sub of session.subscribers.values()) {
             try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
           }

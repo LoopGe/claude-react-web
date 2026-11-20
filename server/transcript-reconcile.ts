@@ -14,6 +14,7 @@
 
 import { isDeepStrictEqual } from 'node:util'
 import { assistantMessageShapeOf } from '../shared/assistant-message.js'
+import { isEmptyResultFrame } from '../shared/results.js'
 import { frameKindOf, LIFECYCLE_KEYS, semanticEquivalent, type ProjectionEntry, type TombstoneKind } from './transcript-projection.js'
 
 export type { ProjectionEntry } from './transcript-projection.js'
@@ -102,6 +103,69 @@ export function decideReconcile(input: ReconcileInput): { mode: ReconcileMode } 
   )
   if (newRetraction) return { mode: 'ordered-rebuild' }
   return { mode: 'append-only' }
+}
+
+/** Turn-anchor input for the live rebuild trigger (spec §8.1). The composition
+ *  layer supplies the incoming result's turn anchor — the uuid of the turn's
+ *  LAST main-thread assistant message (the pump's lastAssistantUuid, the same
+ *  pairing recordResultFrame persists). Cheap turn-terminal evidence: no
+ *  provider-log read / full canonical compose per result. */
+export interface RebuildTriggerAnchors {
+  assistantUuid?: string | null
+}
+
+/** Live anomaly detector (spec §8.1, auto-rebuild Task 3): decides whether an
+ *  incoming live result/completion may append at the seq tail or must trigger
+ *  an ordered rebuild. PURE — operates on the in-memory projection the manager
+ *  supplies (cheap identities: detection matches by uuid+frameKind and scans
+ *  turn membership, never occurrenceId, so no per-entry semantic hashing).
+ *
+ *  rebuild-required when:
+ *   - a same-uuid+frameKind result/completion already exists with NON-equivalent
+ *     content (a semantic revision — §5.3 forbids in-place content swaps; the
+ *     append path's uuid dedup would otherwise silently keep the stale copy);
+ *   - the incoming RESULT's canonical turn-terminal position (after every turn
+ *     member, before the next root prompt — turnTerminalIndex) PRECEDES the
+ *     current tail: the next turn's root prompt was already published, so a
+ *     tail append would invert chronology (the A,U,R incident shape live).
+ *
+ *  append-only otherwise — including the normal tail result (terminal == tail)
+ *  and every non-result/completion frame (a queued user send is never a trigger;
+ *  T7b's queued-not-published guarantee). Live completions (task_notification)
+ *  get the revision check only: their canonical live position IS the arrival
+ *  tail (§5.1 live-only record; §7.2.3 places them after the launch ack with a
+ *  completedAt-crossable weak upper bound), so they carry no turn-terminal
+ *  constraint to invert. Empty result bookends are excluded before identity/
+ *  placement (§5.1). An absent anchor is no position evidence → append-only. */
+export function detectRebuildTrigger(
+  old: ProjectionEntry[],
+  incoming: ProjectionEntry,
+  anchors: RebuildTriggerAnchors,
+): 'append-only' | 'rebuild-required' {
+  const m = obj(incoming.msg)
+  const isResult = m?.type === 'result'
+  const isCompletion = m?.type === 'system' && m?.subtype === 'task_notification'
+  if (!isResult && !isCompletion) return 'append-only'
+  if (isResult && isEmptyResultFrame(incoming.msg as { type?: string })) return 'append-only'
+
+  // Same-uuid semantic revision (result OR completion).
+  const uuid = uuidOf(incoming.msg)
+  if (uuid !== null) {
+    const fk = frameKindOf(incoming.msg)
+    const prior = old.find((e) => uuidOf(e.msg) === uuid && frameKindOf(e.msg) === fk)
+    if (prior && !semanticEquivalent(prior.msg, incoming.msg)) return 'rebuild-required'
+  }
+
+  // Turn-terminal position check: results only (see docblock for completions).
+  if (!isResult) return 'append-only'
+  const anchor = anchors.assistantUuid
+  if (typeof anchor !== 'string' || anchor.length === 0) return 'append-only'
+  // Mirror turnTerminalIndex's anchor resolution (assistant preferred, any
+  // uuid match fallback); an absent anchor is no position evidence.
+  let aIdx = old.findIndex((e) => obj(e.msg)?.type === 'assistant' && uuidOf(e.msg) === anchor)
+  if (aIdx < 0) aIdx = old.findIndex((e) => uuidOf(e.msg) === anchor)
+  if (aIdx < 0) return 'append-only'
+  return turnTerminalIndex(old, anchor) < old.length ? 'rebuild-required' : 'append-only'
 }
 
 /** Insertion index for a result/pending entry at its assistant's turn terminal

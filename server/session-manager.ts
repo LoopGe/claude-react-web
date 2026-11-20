@@ -162,7 +162,8 @@ import {
 } from './transcript-sidecar.js'
 import { occurrenceIdOf, semanticMessageProjection, type ProjectionEntry } from './transcript-projection.js'
 import { createHash } from 'node:crypto'
-import { alignOldByUuid, buildOrderedProjection, TranscriptRebuildBlockedError, type PendingOperation } from './transcript-reconcile.js'
+import { alignOldByUuid, buildOrderedProjection, detectRebuildTrigger, TranscriptRebuildBlockedError, type PendingOperation } from './transcript-reconcile.js'
+import { isRenderableSdkMessage } from '../shared/transcript-format.js'
 import { REBUILD_REQUIRED } from './ws-protocol.js'
 import { SessionSubscriptionHub } from './session-subscription-hub.js'
 import { ResetJournal, type ResetJournalEntry } from './reset-journal.js'
@@ -412,6 +413,34 @@ export function mergeResultFrames(
   // If nothing was inserted (no assistant matched), return the original
   // array to avoid an unnecessary copy.
   return inserted > 0 ? merged : seed
+}
+
+/** Recursively key-sort a value so its JSON hash is insensitive to object key
+ *  insertion order (sidecar vs normalized wire shapes differ in order, not
+ *  content). Shared by reconcileOrdered's occurrence identity and the live
+ *  rebuild-pending operation (SessionManager.occurrenceCtx). */
+function sortProjectionKeys(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(sortProjectionKeys)
+  if (v !== null && typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const k of Object.keys(o).sort()) out[k] = sortProjectionKeys(o[k])
+    return out
+  }
+  return v
+}
+
+/** Projection source for the live detector's lightweight old entries
+ *  (detectLiveRebuildTrigger). Only user prompts consult source in the
+ *  turn-terminal scan: a root prompt bounds the prior turn unconditionally
+ *  ('provider'); a steered/injected supplement is an app member (conditional
+ *  boundary — see turnTerminalIndex). Results are 'result'; every other frame
+ *  is provider-shaped for the scan (its source is never consulted). */
+function liveProjectionSource(msg: unknown): ProjectionEntry['source'] {
+  const m = msg as { type?: string; steeredAt?: unknown; injectedAt?: unknown } | null
+  if (m?.type === 'result') return 'result'
+  if (m?.type === 'user' && (m.steeredAt != null || m.injectedAt != null)) return 'app'
+  return 'provider'
 }
 
 /** Scan a resume/disk seed for background Agent launches whose completion
@@ -8427,8 +8456,13 @@ export class SessionManager {
   // ingestion, persisted to an append-only ndjson sidecar so the numbering
   // survives restarts. Three ingestion points feed it, all converging on
   // recordTranscriptFor:
-  //   1. the pump's ring-append (PumpDeps.onDurableMessage) — assistant /
-  //      result / broadcast-system / tool_use_summary frames;
+  //   1. the pump's durable-frame ingest (PumpDeps.onDurableMessage →
+  //      ingestDurableMessage), BEFORE the ring append + broadcast — assistant
+  //      / result / broadcast-system / tool_use_summary frames. Result /
+  //      completion frames first pass the live rebuild-trigger detector
+  //      (spec §8.1, auto-rebuild Task 3): an anomaly is persisted rebuild-
+  //      pending and suppressed (no seq, no ring, no broadcast) instead of
+  //      head-appended;
   //   2. pushToSession — top-level user prompts (the pump drops the SDK's
   //      echo of those, so the pushToSession copy is the only one);
   //   3. seedCompactSummary — the synthetic compact boundary + hand-off seed.
@@ -8479,6 +8513,110 @@ export class SessionManager {
     // its seq was allocated in, or a stale queued frame would carry an old
     // seq under the new generation and collide with the rebuilt space.
     if (seq !== null) this.seqByMessage.set(msg, { seq, generation: t.store.generation })
+  }
+
+  /** Live durable-frame ingest — the pump's onDurableMessage dep (spec §8.1,
+   *  Task 3). Result/completion frames pass the pure rebuild-trigger detector
+   *  BEFORE recordTranscriptFor: on 'rebuild-required' the frame is handed to
+   *  beginTranscriptRebuild (durable rebuild-pending + admission closure) and
+   *  the returned verdict tells the pump to suppress its ring append +
+   *  broadcast — the triggering frame is NEVER head-appended into the
+   *  projection it would invert. Every other frame keeps the existing fast
+   *  path (recordTranscriptFor) unchanged. */
+  private ingestDurableMessage(s: Session, msg: SDKMessage): 'rebuild-required' | void {
+    if (this.detectLiveRebuildTrigger(s, msg)) return 'rebuild-required'
+    this.recordTranscriptFor(s.id, msg)
+  }
+
+  /** Whether a live result/completion frame is a genuine chronology anomaly
+   *  that must signal REBUILD_REQUIRED instead of a tail append (spec §8.1).
+   *  Builds the lightweight in-memory projection (NO provider-log read, NO
+   *  per-entry semantic hashing — the per-result perf constraint) and runs the
+   *  pure detector. On anomaly: arms the single-flight rebuild admission (the
+   *  durable rebuild-pending persist is fire-and-forget; beginTranscriptRebuild
+   *  reserves the flag SYNCHRONOUSLY before its await, so admission is closed
+   *  before the pump continues) and returns true so the caller suppresses the
+   *  frame. A second anomaly while admission is already pending is suppressed
+   *  without a second pending op (single-flight) — the result-frame sidecar the
+   *  pump records independently still carries its payload into the rebuild's
+   *  canonical compose. */
+  private detectLiveRebuildTrigger(s: Session, msg: SDKMessage): boolean {
+    const m = msg as { type?: string; subtype?: string; uuid?: unknown }
+    const isResult = m.type === 'result'
+    const isCompletion = m.type === 'system' && m.subtype === 'task_notification'
+    if (!isResult && !isCompletion) return false
+    // Only frames that would actually enter the seq space can invert it (the
+    // renderability gate rejects sidechain / meta / non-broadcast frames).
+    if (!isRenderableSdkMessage(msg as Parameters<typeof isRenderableSdkMessage>[0])) return false
+    // Empty result bookends are excluded before identity/placement (spec §5.1).
+    if (isResult && isEmptyResultFrame(msg as { type?: string })) return false
+    const t = this.transcriptStores.get(s.id)
+    // No store yet (nothing to invert) or degraded (the retry fence owns recovery).
+    if (!t || t.degraded) return false
+
+    const old: ProjectionEntry[] = []
+    for (let seq = 0; seq < t.store.headSeq; seq++) {
+      const row = t.store.messageAt(seq)
+      if (!row) continue
+      old.push({
+        occurrenceId: `seq:${seq}`,
+        msg: row.msg,
+        source: liveProjectionSource(row.msg),
+        aliases: [],
+        evicted: t.store.isEvicted(seq),
+      })
+    }
+    const incoming: ProjectionEntry = {
+      occurrenceId: 'live:incoming',
+      msg,
+      source: isResult ? 'result' : 'app',
+      aliases: [],
+      evicted: false,
+    }
+    if (detectRebuildTrigger(old, incoming, { assistantUuid: s.lastAssistantUuid ?? null }) === 'append-only') return false
+
+    const uuid = typeof m.uuid === 'string' ? m.uuid : null
+    log.info(
+      `[session ${s.id}] live chronology anomaly: ${isResult ? 'result' : 'completion'} ` +
+      `${uuid ?? '(uuid-less)'} belongs before the transcript tail — REBUILD_REQUIRED`,
+    )
+    metrics.count('transcript_live_rebuild_trigger_total', { kind: isResult ? 'result' : 'completion' })
+    if (t.rebuildAdmissionPending === true) return true // already armed; suppress only
+    const op: PendingOperation = {
+      operationId: uuid ?? `live-anomaly-${randomUUID()}`,
+      entry: {
+        // The SAME content-hash identity reconcileOrdered derives, so the
+        // recovered pending op matches its canonical occurrence (include-once).
+        occurrenceId: occurrenceIdOf(msg, this.occurrenceCtx(msg)),
+        msg,
+        source: isResult ? 'result' : 'app',
+        aliases: [],
+        evicted: false,
+      },
+    }
+    // The fsync failure path restores admission (logged): the suppressed
+    // frame's payload still reaches the rebuild via the result-frame sidecar.
+    void this.beginTranscriptRebuild(s.id, op).catch((err) => {
+      log.warn(`[session ${s.id}] rebuild-pending persist failed for live anomaly: ${(err as Error).message ?? err}`)
+    })
+    return true
+  }
+
+  /** Content-stable occurrence disambiguator (spec §5.2): UUID-less rows of one
+   *  frame kind must not collapse to a single `anon:<kind>` identity, and
+   *  old↔canonical copies of the same occurrence must align. A semantic-content
+   *  hash gives distinct identities to distinct content and matches identical
+   *  content across the live/disk uuid spaces; keys are sorted recursively so
+   *  the hash is insensitive to object key insertion order. SINGLE definition
+   *  shared by reconcileOrdered and the live rebuild-pending operation — a
+   *  pending op persisted with a different identity would insert as a duplicate
+   *  at rebuild instead of matching its canonical occurrence. Full provider
+   *  sourceOrdinal alignment is a refinement; content identity is stable across
+   *  restart. */
+  private occurrenceCtx(m: unknown): { appOperationId: string } {
+    return {
+      appOperationId: createHash('sha256').update(JSON.stringify(sortProjectionKeys(semanticMessageProjection(m)))).digest('hex').slice(0, 16),
+    }
   }
 
   /** Compose the authoritative "what should be in the seq store" list from
@@ -8687,27 +8825,10 @@ export class SessionManager {
       const u = (m as { uuid?: unknown })?.uuid
       return typeof u === 'string' ? u : null
     }
-    // Content-stable disambiguator (spec §5.2): UUID-less rows of one frame kind
-    // must not collapse to a single `anon:<kind>` identity, and old↔canonical
-    // copies of the same occurrence must align. A semantic-content hash gives
-    // distinct identities to distinct content and matches identical content
-    // across the live/disk uuid spaces. Keys are sorted recursively so the hash
-    // is insensitive to object key insertion order (sidecar vs normalized wire
-    // shapes differ in order but not content). Full provider sourceOrdinal
-    // alignment is a refinement; content identity is stable across restart.
-    const sortKeys = (v: unknown): unknown => {
-      if (Array.isArray(v)) return v.map(sortKeys)
-      if (v !== null && typeof v === 'object') {
-        const o = v as Record<string, unknown>
-        const out: Record<string, unknown> = {}
-        for (const k of Object.keys(o).sort()) out[k] = sortKeys(o[k])
-        return out
-      }
-      return v
-    }
-    const occCtx = (m: unknown) => ({
-      appOperationId: createHash('sha256').update(JSON.stringify(sortKeys(semanticMessageProjection(m)))).digest('hex').slice(0, 16),
-    })
+    // Content-stable disambiguator (spec §5.2) — shared with the live
+    // rebuild-pending operation (see occurrenceCtx) so a recovered pending op
+    // matches its canonical occurrence exactly.
+    const occCtx = (m: unknown) => this.occurrenceCtx(m)
     // True when `shared` appears in `canon` in the same relative order (a
     // chronology inversion among UUID-matched records is the incident signal).
     const isOrderedSubsequence = (shared: string[], canon: string[]): boolean => {
@@ -10893,9 +11014,11 @@ export class SessionManager {
         // the init handshake as a free retry when the spawn-time probe
         // timed out (the cache/in-flight guards make it a no-op otherwise).
         seedContextUsage: (s) => this.seedContextUsage(s),
-        // Transcript seq assignment (Task 3): seq-assign every durable
-        // message at its ring-append point, before the broadcast.
-        onDurableMessage: (s, msg) => this.recordTranscriptFor(s.id, msg),
+        // Transcript seq assignment (Task 3) + live anomaly detection (auto-
+        // rebuild Task 3): seq-assign every durable message at ingestion,
+        // BEFORE the ring append + broadcast. A 'rebuild-required' verdict
+        // suppresses both for the triggering result/completion frame.
+        onDurableMessage: (s, msg) => this.ingestDurableMessage(s, msg),
         // Retraction eviction (Task 5): the CLI retracted already-streamed
         // messages (model_refusal_fallback). Tombstone them in the seq
         // store and broadcast messages-evicted. Fire-and-forget: the pump

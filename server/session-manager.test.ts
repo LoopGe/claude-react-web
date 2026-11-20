@@ -10430,6 +10430,122 @@ describe('SessionManager', () => {
       }
     })
   })
+  describe('live anomaly detection → REBUILD_REQUIRED (spec §8.1, Task 3)', () => {
+    let prevConfigDir: string | undefined
+    beforeEach(() => {
+      prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    })
+
+    const emitAssistant = (uuid: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant',
+        uuid,
+        parent_tool_use_id: null,
+        message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+    const emitResult = (uuid: string, extra: Record<string, unknown> = {}) => {
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid, num_turns: 1, result: `answer-${uuid}`, ...extra })
+    }
+    const rebuildPendingRows = async (id: string) =>
+      (await new TranscriptSidecar(dir, id).load()).filter((r) => r.kind === 'rebuild-pending')
+    const liveHistory = (id: string) =>
+      (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)!.history
+
+    it('(a) a live result belonging mid-history persists rebuild-pending, closes admission, and is NOT head-appended or broadcast', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const p1 = (await sm.send(info.id, 'first') as { uuid: string }).uuid // seq 0
+      emitAssistant('A1', 'first reply')                                    // seq 1, lastAssistantUuid=A1
+      // An empty background bookend ends the turn WITHOUT a real result (the
+      // CLI's held-back-result / do-while shape): turn state clears, A1 stays
+      // the last assistant.
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r0', num_turns: 0, result: '' }) // seq 2 (empty)
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      const p2 = (await sm.send(info.id, 'second') as { uuid: string }).uuid // idle → seq 3 (next root prompt published)
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 4)).toBe(true)
+
+      // Capture live broadcasts from here on (the ring already holds P1,A1,r0,P2).
+      const sub = sm.subscribe(info.id)
+      const frames: Array<{ type?: string; uuid?: string }> = []
+      void (async () => { for await (const f of sub.iterable) frames.push(f as { type?: string; uuid?: string }) })()
+
+      // The REAL turn-1 result arrives late — its turn terminal (after A1) is
+      // BEFORE the published P2: a genuine chronology anomaly.
+      emitResult('r1', { result: 'first turn answer' })
+      expect(await waitFor(async () => (await rebuildPendingRows(info.id)).length === 1)).toBe(true)
+      await tick()
+
+      // NOT head-appended: the seq space stays at 4 (no r1), generation unbumped.
+      expect(sm.transcriptHead(info.id)?.headSeq).toBe(4)
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(win.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual([p1, 'A1', 'r0', p2])
+      expect(win.generation).toBe(0)
+      // NOT in the replay ring, NOT broadcast.
+      expect(liveHistory(info.id).some((m) => (m as { uuid?: string }).uuid === 'r1')).toBe(false)
+      expect(frames.some((f) => f.type === 'result' && f.uuid === 'r1')).toBe(false)
+      sub.unsubscribe()
+
+      // The durable pending payload is the FULL triggering frame.
+      const rows = await rebuildPendingRows(info.id)
+      expect(rows[0].operationId).toBe('r1')
+      expect(rows[0].payload).toMatchObject({ type: 'result', uuid: 'r1', result: 'first turn answer' })
+      // Admission closed: the next send is refused REBUILD_REQUIRED.
+      await expect(sm.send(info.id, 'third')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+    })
+
+    it('(b) a same-resultUuid semantic revision triggers rebuild-pending and is not head-appended', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await sm.send(info.id, 'first')        // seq 0
+      emitAssistant('A1', 'reply')           // seq 1
+      emitResult('r1', { result: 'v1' })     // seq 2 (normal tail append)
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      // Same uuid, revised content: the append path's uuid dedup would silently
+      // keep v1 — the detector must route it to a rebuild instead.
+      emitResult('r1', { result: 'v2' })
+      expect(await waitFor(async () => (await rebuildPendingRows(info.id)).length === 1)).toBe(true)
+      expect(sm.transcriptHead(info.id)?.headSeq).toBe(3) // no duplicate seq
+      const rows = await rebuildPendingRows(info.id)
+      expect(rows[0].operationId).toBe('r1')
+      expect(rows[0].payload).toMatchObject({ uuid: 'r1', result: 'v2' })
+      await expect(sm.send(info.id, 'next')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+    })
+
+    it('(c) a normal tail result appends with NO trigger (negative case)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await sm.send(info.id, 'first')      // seq 0
+      emitAssistant('A1', 'reply')         // seq 1
+      emitResult('r1')                     // seq 2 — turn terminal == tail
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(win.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual([expect.any(String), 'A1', 'r1'])
+      expect(win.generation).toBe(0)
+      expect(await rebuildPendingRows(info.id)).toHaveLength(0)
+      // Admission stays open.
+      await expect(sm.send(info.id, 'next')).resolves.toMatchObject({ uuid: expect.any(String) })
+    })
+
+    it('(d) a normal mid-turn queued send does NOT trigger (T7b queued-not-published guarantee)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await sm.send(info.id, 'turn1')                 // seq 0 (U1)
+      emitAssistant('A', 'reply')                     // seq 1
+      const queued = await sm.send(info.id, 'turn2') as { uuid: string } // mid-turn → queued-not-published
+      expect(sm.transcriptHead(info.id)?.headSeq).toBe(2) // U2 has NO public seq yet
+      // The result arrives while U2 is still queued: old = [U1, A], terminal ==
+      // tail → append-only. U2 materializes AFTER the result (A,R,U).
+      emitResult('R')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 4)).toBe(true)
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(win.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual([expect.any(String), 'A', 'R', queued.uuid])
+      expect(win.generation).toBe(0)
+      expect(await rebuildPendingRows(info.id)).toHaveLength(0)
+      await expect(sm.send(info.id, 'turn3')).resolves.toMatchObject({ uuid: expect.any(String) })
+    })
+  })
   describe('fork pre-seed spawn-marker recovery (spec §11)', () => {
     let prevConfigDir: string | undefined
     beforeEach(() => {

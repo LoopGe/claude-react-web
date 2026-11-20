@@ -4,6 +4,7 @@ import {
   buildOrderedProjection,
   validateProjection,
   alignOldByUuid,
+  detectRebuildTrigger,
   type ProjectionEntry,
   type ReconcileInput,
 } from './transcript-reconcile.js'
@@ -278,5 +279,86 @@ describe('alignOldByUuid (wire/disk twin dedup)', () => {
     const out = buildOrderedProjection(input(aligned.old, aligned.canonical))
     const canon = out.filter((e) => e.source !== 'app')
     expect(decideReconcile(input(out, canon))).toEqual({ mode: 'append-only' })
+  })
+})
+
+// ─── detectRebuildTrigger: live anomaly → REBUILD_REQUIRED (spec §8.1) ──────
+//
+// The live result/completion append path consults this pure detector BEFORE
+// recordTranscriptFor. rebuild-required ONLY on a genuine anomaly: a result
+// whose canonical turn-terminal position precedes the current tail (the A,U,R
+// incident shape arriving live), or a same-uuid semantic revision. Normal tail
+// results and queued user sends must stay append-only (the T7b guarantee).
+
+const anchors = (assistantUuid: string | null) => ({ assistantUuid })
+const completion = (uuid: string, status: string, extra: Record<string, unknown> = {}) =>
+  pe(`uuid:${uuid}:system:task_notification`, { type: 'system', subtype: 'task_notification', uuid, tool_use_id: 'tu', status, ...extra }, 'app')
+
+describe('detectRebuildTrigger (spec §8.1 live anomaly trigger)', () => {
+  it('(a) incident shape: a result whose turn terminal precedes the tail is rebuild-required', () => {
+    const A = assistant('A')
+    const U = prompt('U') // the next root prompt was already published
+    expect(detectRebuildTrigger([A, U], result('R', 'A'), anchors('A'))).toBe('rebuild-required')
+  })
+
+  it('(a2) the full P,A,U shape with a trailing result anchor still inverts', () => {
+    const P = prompt('P'), A = assistant('A'), U = prompt('U')
+    expect(detectRebuildTrigger([P, A, U], result('R', 'A'), anchors('A'))).toBe('rebuild-required')
+  })
+
+  it('(b) a same-resultUuid semantic revision is rebuild-required', () => {
+    const A = assistant('A')
+    const R1 = result('R', 'A')
+    const R2 = pe('uuid:R:result', { type: 'result', uuid: 'R', subtype: 'success', assistantUuid: 'A', num_turns: 1, result: 'revised answer' }, 'result')
+    expect(detectRebuildTrigger([A, R1], R2, anchors('A'))).toBe('rebuild-required')
+  })
+
+  it('(b2) a same-resultUuid EQUIVALENT redelivery stays append-only (dedup, not a revision)', () => {
+    const A = assistant('A')
+    const R1 = result('R', 'A')
+    const copy = pe('uuid:R:result', { ...(R1.msg as object) }, 'result')
+    expect(detectRebuildTrigger([A, R1], copy, anchors('A'))).toBe('append-only')
+  })
+
+  it('(c) a normal tail result (turn terminal == tail) is append-only — NO trigger', () => {
+    const P = prompt('P'), A = assistant('A')
+    expect(detectRebuildTrigger([P, A], result('R', 'A'), anchors('A'))).toBe('append-only')
+  })
+
+  it('(c2) turn members after the anchor (tool_result carrier, steering supplement) are not an inversion', () => {
+    const P = prompt('P')
+    const A = assistant('A', 'tool_use')
+    const carrier = pe('uuid:C:user', { type: 'user', uuid: 'C', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu', content: 'ok' }] } })
+    const S = pe('uuid:S:user', { type: 'user', uuid: 'S', message: { role: 'user', content: 'steer' } }, 'app')
+    expect(detectRebuildTrigger([P, A, carrier, S], result('R', 'A'), anchors('A'))).toBe('append-only')
+  })
+
+  it('(d) a queued user send is never a trigger (T7b): non-result/completion incoming is append-only', () => {
+    const P = prompt('P'), A = assistant('A')
+    expect(detectRebuildTrigger([P, A], prompt('U2', 'app'), anchors('A'))).toBe('append-only')
+  })
+
+  it('empty result bookends are excluded before identity/placement (spec §5.1)', () => {
+    const A = assistant('A'), U = prompt('U')
+    const empty = pe('uuid:E:result', { type: 'result', uuid: 'E', subtype: 'success', num_turns: 0, result: '' }, 'result')
+    expect(detectRebuildTrigger([A, U], empty, anchors('A'))).toBe('append-only')
+  })
+
+  it('no anchor / anchor absent from the projection: no position evidence, append-only', () => {
+    const A = assistant('A'), U = prompt('U')
+    const R = result('R', 'A')
+    expect(detectRebuildTrigger([A, U], R, anchors(null))).toBe('append-only')
+    expect(detectRebuildTrigger([A, U], R, anchors('ghost'))).toBe('append-only')
+  })
+
+  it('a completion revision (same uuid, non-equivalent) is rebuild-required; a fresh completion is append-only', () => {
+    const A = assistant('A')
+    const stopped = completion('N', 'stopped')
+    const completed = completion('N', 'completed', { summary: 'done' })
+    expect(detectRebuildTrigger([A, stopped], completed, anchors('A'))).toBe('rebuild-required')
+    // A live completion's canonical position is its arrival tail (§5.1/§7.2.3):
+    // a fresh uuid never inverts, even published after a later root prompt.
+    const U = prompt('U')
+    expect(detectRebuildTrigger([A, U], completion('M', 'completed'), anchors('A'))).toBe('append-only')
   })
 })
