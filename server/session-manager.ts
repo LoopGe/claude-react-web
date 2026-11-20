@@ -8594,10 +8594,19 @@ export class SessionManager {
         evicted: false,
       },
     }
-    // The fsync failure path restores admission (logged): the suppressed
-    // frame's payload still reaches the rebuild via the result-frame sidecar.
+    // beginTranscriptRebuild restores admission on a fsync failure. Retry once
+    // so a transient write error does not strand the anomaly suppressed with no
+    // rebuild armed. If the retry ALSO fails, the frame stays suppressed and
+    // admission is open: no auto-rebuild is armed, and recovery is a later
+    // reconcile/retry — for a RESULT the pump's independent result-frame sidecar
+    // record still carries the payload into that reconcile's canonical compose;
+    // a COMPLETION revision keeps its prior copy in the store (uuid dedup). The
+    // failure is logged loudly rather than silently head-appending the inversion.
     void this.beginTranscriptRebuild(s.id, op).catch((err) => {
-      log.warn(`[session ${s.id}] rebuild-pending persist failed for live anomaly: ${(err as Error).message ?? err}`)
+      log.warn(`[session ${s.id}] rebuild-pending persist failed for live anomaly (retrying once): ${(err as Error).message ?? err}`)
+      void this.beginTranscriptRebuild(s.id, op).catch((err2) => {
+        log.error(`[session ${s.id}] rebuild-pending persist failed twice; anomalous frame stays suppressed (admission restored), recover via reconcile/retry: ${(err2 as Error).message ?? err2}`)
+      })
     })
     return true
   }

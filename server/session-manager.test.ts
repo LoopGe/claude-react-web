@@ -384,7 +384,8 @@ import { cleanupGitFixtures, makeRepo } from './test-git-fixtures.js'
 import { branchExists } from './git.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
 import { TranscriptSidecar, makeCommitV2, readPendingRebuilds } from './transcript-sidecar.js'
-import type { PendingOperation } from './transcript-reconcile.js'
+import { buildOrderedProjection, type PendingOperation, type ProjectionEntry } from './transcript-reconcile.js'
+import { occurrenceIdOf } from './transcript-projection.js'
 import { ScheduledSendManager } from './scheduled-send-manager.js'
 import { REBUILD_REQUIRED } from '../shared/ws-protocol.js'
 import { SessionSubscriptionRegistry } from './session-plugin-subscription.js'
@@ -10544,6 +10545,141 @@ describe('SessionManager', () => {
       expect(win.generation).toBe(0)
       expect(await rebuildPendingRows(info.id)).toHaveLength(0)
       await expect(sm.send(info.id, 'turn3')).resolves.toMatchObject({ uuid: expect.any(String) })
+    })
+
+    // ── round 1: CLOSED-ANCHOR guard — a stale lastAssistantUuid on a later
+    //    turn's interrupt / immediate-error result must NOT false-trigger. ──
+    const completedTurnThenIdleSend = async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const p1 = (await sm.send(info.id, 'first') as { uuid: string }).uuid // seq 0
+      emitAssistant('A1', 'first reply')                                    // seq 1
+      emitResult('r1', { result: 'first turn answer' })                     // seq 2 — turn 1 CLOSED
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      const p2 = (await sm.send(info.id, 'second') as { uuid: string }).uuid // idle → seq 3
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 4)).toBe(true)
+      return { info, p1, p2 }
+    }
+
+    it('(e) an interrupt BEFORE any assistant of turn 2 does NOT trigger (closed anchor); admission stays open', async () => {
+      const { info, p1, p2 } = await completedTurnThenIdleSend()
+      // Turn 2 interrupted before its first model round-trip: a zero-turn success
+      // with terminal_reason 'interrupted' is NON-EMPTY (shared/results.ts), and
+      // lastAssistantUuid is still the stale A1.
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r2', num_turns: 0, result: '', terminal_reason: 'interrupted' })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 5)).toBe(true)
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(win.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual([p1, 'A1', 'r1', p2, 'r2'])
+      expect(win.generation).toBe(0)
+      expect(await rebuildPendingRows(info.id)).toHaveLength(0)
+      await expect(sm.send(info.id, 'third')).resolves.toMatchObject({ uuid: expect.any(String) })
+    })
+
+    it('(f) an immediate API-error result of turn 2 does NOT trigger (closed anchor); admission stays open', async () => {
+      const { info, p1, p2 } = await completedTurnThenIdleSend()
+      mockHandles[0].emit({ type: 'result', subtype: 'error_during_execution', uuid: 'r2', is_error: true, num_turns: 0, result: 'API Error: 500' })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 5)).toBe(true)
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(win.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual([p1, 'A1', 'r1', p2, 'r2'])
+      expect(await rebuildPendingRows(info.id)).toHaveLength(0)
+      await expect(sm.send(info.id, 'third')).resolves.toMatchObject({ uuid: expect.any(String) })
+    })
+
+    it('a LIVE-SHAPED pending op (raw result frame, no assistantUuid) matches its canonical occurrence include-once', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const p1 = (await sm.send(info.id, 'first') as { uuid: string }).uuid
+      emitAssistant('A1', 'first reply')
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r0', num_turns: 0, result: '' })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      const p2 = (await sm.send(info.id, 'second') as { uuid: string }).uuid
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 4)).toBe(true)
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', num_turns: 1, result: 'first turn answer' })
+      expect(await waitFor(async () => (await rebuildPendingRows(info.id)).length === 1)).toBe(true)
+
+      const internals = sm as unknown as { occurrenceCtx(m: unknown): { appOperationId: string } }
+      // Source the op from the DURABLE authority (as crash recovery reconstructs
+      // it) — stable once the recovery batch commits, unlike the in-memory writer
+      // list which lags the fsync by a microtask.
+      const op = readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load()).find((p) => p.operationId === 'r1')!
+      // The pending op carries the RAW live frame — no sidecar-side assistantUuid.
+      expect((op.entry.msg as { assistantUuid?: unknown }).assistantUuid).toBeUndefined()
+      // Identity coherence: its occurrenceId is exactly what reconcileOrdered
+      // derives for the same frame (the shared occurrenceCtx), and what persisted.
+      const canonicalId = occurrenceIdOf(op.entry.msg, internals.occurrenceCtx(op.entry.msg))
+      expect(op.entry.occurrenceId).toBe(canonicalId)
+      expect((await rebuildPendingRows(info.id))[0].occurrenceId).toBe(canonicalId)
+
+      // Include-once through the real rebuild algorithm: canonical compose carries
+      // the same raw frame (mergeResultFrames places it after A1). The pending op
+      // must MATCH that canonical occurrence in place, not insert a duplicate.
+      const win = await sm.getTranscriptWindow(info.id)
+      const byUuid = new Map(win.messages.map((m) => [(m.msg as { uuid?: string }).uuid, m.msg]))
+      const ctx = (m: unknown) => internals.occurrenceCtx(m)
+      const pe = (msg: unknown, source: ProjectionEntry['source']): ProjectionEntry =>
+        ({ occurrenceId: occurrenceIdOf(msg, ctx(msg)), msg, source, aliases: [], evicted: false })
+      const P1 = byUuid.get(p1)!, A1 = byUuid.get('A1')!, P2 = byUuid.get(p2)!
+      const out = buildOrderedProjection({
+        old: [pe(P1, 'provider'), pe(A1, 'provider'), pe(P2, 'provider')],
+        canonical: [pe(P1, 'provider'), pe(A1, 'provider'), pe(op.entry.msg, 'result'), pe(P2, 'provider')],
+        pending: [op],
+        oldTombstones: [],
+      })
+      const r1Rows = out.filter((e) => (e.msg as { uuid?: string }).uuid === 'r1')
+      expect(r1Rows).toHaveLength(1) // include-once, no duplicate
+      expect(out.map((e) => (e.msg as { uuid?: string }).uuid)).toEqual([p1, 'A1', 'r1', p2])
+    })
+
+    it('a transient rebuild-pending fsync failure is retried once and arms admission', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await sm.send(info.id, 'first')
+      emitAssistant('A1', 'first reply')
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r0', num_turns: 0, result: '' })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      await sm.send(info.id, 'second')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 4)).toBe(true)
+      // Fail only the FIRST recovery-batch write (beginRebuild); other batch
+      // traffic (dispatch states) and the retry pass through.
+      const orig = TranscriptSidecar.prototype.appendBatch
+      let recoveryCalls = 0
+      const spy = vi.spyOn(TranscriptSidecar.prototype, 'appendBatch').mockImplementation(async function (this: TranscriptSidecar, rows, commit) {
+        if ((commit as { batchType?: string }).batchType === 'recovery' && ++recoveryCalls === 1) throw new Error('disk full')
+        return orig.call(this, rows, commit)
+      })
+      try {
+        mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', num_turns: 1, result: 'first turn answer' })
+        expect(await waitFor(async () => (await rebuildPendingRows(info.id)).length === 1)).toBe(true)
+        expect(recoveryCalls).toBe(2) // first failed, retry succeeded
+        await expect(sm.send(info.id, 'third')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
+    it('a permanent rebuild-pending fsync failure restores admission and leaves the frame suppressed (no head-append)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await sm.send(info.id, 'first')
+      emitAssistant('A1', 'first reply')
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r0', num_turns: 0, result: '' })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      await sm.send(info.id, 'second')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 4)).toBe(true)
+      const orig = TranscriptSidecar.prototype.appendBatch
+      let recoveryCalls = 0
+      const spy = vi.spyOn(TranscriptSidecar.prototype, 'appendBatch').mockImplementation(async function (this: TranscriptSidecar, rows, commit) {
+        if ((commit as { batchType?: string }).batchType === 'recovery') { recoveryCalls++; throw new Error('disk full') }
+        return orig.call(this, rows, commit)
+      })
+      try {
+        mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', num_turns: 1, result: 'first turn answer' })
+        // Both attempts fail (wait for the retry to run so the admission flag has
+        // settled back to open, not mid-retry re-armed).
+        expect(await waitFor(() => recoveryCalls === 2)).toBe(true)
+        await tick()
+        expect(await rebuildPendingRows(info.id)).toHaveLength(0)
+        expect(sm.transcriptHead(info.id)?.headSeq).toBe(4) // r1 never head-appended
+        await expect(sm.send(info.id, 'third')).resolves.toMatchObject({ uuid: expect.any(String) })
+      } finally {
+        spy.mockRestore()
+      }
     })
   })
   describe('fork pre-seed spawn-marker recovery (spec §11)', () => {

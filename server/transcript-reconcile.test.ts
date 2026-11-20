@@ -361,4 +361,44 @@ describe('detectRebuildTrigger (spec §8.1 live anomaly trigger)', () => {
     const U = prompt('U')
     expect(detectRebuildTrigger([A, U], completion('M', 'completed'), anchors('A'))).toBe('append-only')
   })
+
+  // ── CLOSED-ANCHOR guard: a stale lastAssistantUuid on a later turn's
+  //    interrupt/immediate-error result must NOT false-trigger (round 1). ──
+  const interruptResult = (uuid: string) =>
+    pe(`uuid:${uuid}:result`, { type: 'result', uuid, subtype: 'success', num_turns: 0, result: '', terminal_reason: 'interrupted' }, 'result')
+  const errorResult = (uuid: string) =>
+    pe(`uuid:${uuid}:result`, { type: 'result', uuid, subtype: 'error_during_execution', is_error: true, num_turns: 0, result: 'API Error' }, 'result')
+  const emptyBookend = (uuid: string) =>
+    pe(`uuid:${uuid}:result`, { type: 'result', uuid, subtype: 'success', num_turns: 0, result: '' }, 'result')
+  // A harness <task-notification> injection: a root prompt (starts a CLI
+  // continuation turn), classified 'provider' by liveProjectionSource.
+  const injection = (uuid: string) =>
+    pe(`uuid:${uuid}:user`, { type: 'user', uuid, message: { role: 'user', content: `<task-notification><tool-use-id>tu</tool-use-id><status>completed</status></task-notification>` } })
+
+  it('CLOSED anchor: an interrupt result for a later turn (prior real result present) is append-only, NOT a trigger', () => {
+    // Turn 1 completed [P,A,R1]; idle send published U; turn 2 interrupted before
+    // any assistant → stale anchor A. R1 closes A's turn → R2 belongs to turn 2.
+    const P = prompt('P'), A = assistant('A'), R1 = result('R1', 'A'), U = prompt('U')
+    expect(detectRebuildTrigger([P, A, R1, U], interruptResult('R2'), anchors('A'))).toBe('append-only')
+  })
+
+  it('CLOSED anchor: an immediate-error result for a later turn is append-only, NOT a trigger', () => {
+    const P = prompt('P'), A = assistant('A'), R1 = result('R1', 'A'), U = prompt('U')
+    expect(detectRebuildTrigger([P, A, R1, U], errorResult('E2'), anchors('A'))).toBe('append-only')
+  })
+
+  it('an EMPTY bookend does NOT close the anchor turn — the genuine held-back result still triggers', () => {
+    const P = prompt('P'), A = assistant('A'), U = prompt('U')
+    expect(detectRebuildTrigger([P, A, emptyBookend('B'), U], result('R', 'A'), anchors('A'))).toBe('rebuild-required')
+  })
+
+  it('a <task-notification> injection is a root boundary: a held-back result before it triggers', () => {
+    const P = prompt('P'), A = assistant('A'), INJ = injection('INJ')
+    expect(detectRebuildTrigger([P, A, INJ], result('R', 'A'), anchors('A'))).toBe('rebuild-required')
+  })
+
+  it('an injection-turn interrupt with a CLOSED anchor (prior real result) is append-only', () => {
+    const P = prompt('P'), A = assistant('A'), R1 = result('R1', 'A'), INJ = injection('INJ')
+    expect(detectRebuildTrigger([P, A, R1, INJ], interruptResult('Rinj'), anchors('A'))).toBe('append-only')
+  })
 })

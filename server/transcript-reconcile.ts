@@ -136,7 +136,19 @@ export interface RebuildTriggerAnchors {
  *  tail (§5.1 live-only record; §7.2.3 places them after the launch ack with a
  *  completedAt-crossable weak upper bound), so they carry no turn-terminal
  *  constraint to invert. Empty result bookends are excluded before identity/
- *  placement (§5.1). An absent anchor is no position evidence → append-only. */
+ *  placement (§5.1). An absent anchor is no position evidence → append-only.
+ *
+ *  CLOSED-ANCHOR guard: lastAssistantUuid is never cleared between turns, so a
+ *  result for a LATER turn that produced no assistant yet (an interrupt or
+ *  immediate API error before the first model round-trip) arrives with a STALE
+ *  anchor pointing at the previous turn's assistant. If a NON-EMPTY result
+ *  already sits among the anchor's turn members (before the next root prompt),
+ *  that turn is already CLOSED — the incoming result belongs to a later turn and
+ *  appends at the tail, NOT an inversion. Without this guard a routine Stop press
+ *  would false-trigger (and the stale sidecar pairing would compound into a
+ *  dropped footer at rebuild). An EMPTY bookend does NOT close the turn, so the
+ *  genuine held-back-result anomaly (only an empty bookend after the anchor)
+ *  still triggers. */
 export function detectRebuildTrigger(
   old: ProjectionEntry[],
   incoming: ProjectionEntry,
@@ -165,7 +177,32 @@ export function detectRebuildTrigger(
   let aIdx = old.findIndex((e) => obj(e.msg)?.type === 'assistant' && uuidOf(e.msg) === anchor)
   if (aIdx < 0) aIdx = old.findIndex((e) => uuidOf(e.msg) === anchor)
   if (aIdx < 0) return 'append-only'
-  return turnTerminalIndex(old, anchor) < old.length ? 'rebuild-required' : 'append-only'
+  // Single scan to the turn terminal (same boundary rule as turnTerminalIndex),
+  // with the CLOSED-ANCHOR guard: a non-empty result among the members means the
+  // anchor's turn already terminated, so the incoming result belongs to a later
+  // turn (stale anchor on an interrupt/immediate-error) → tail append.
+  const aStop = stopReasonOf(old[aIdx])
+  let end = aIdx
+  for (let i = aIdx + 1; i < old.length; i++) {
+    const e = old[i]
+    if (isTurnBoundary(e, aStop)) break
+    const em = obj(e.msg)
+    if (em?.type === 'result' && !isEmptyResultFrame(e.msg as { type?: string })) return 'append-only'
+    end = i
+  }
+  return end + 1 < old.length ? 'rebuild-required' : 'append-only'
+}
+
+/** Whether entry `e` bounds the turn whose last assistant has stop reason
+ *  `aStop`: the next root prompt ends the turn. A provider root prompt is an
+ *  unconditional boundary; an app-source user prompt is a boundary UNLESS the
+ *  assistant stopped on tool_use (then it is a mid-turn steering supplement —
+ *  a turn member). Shared by turnTerminalIndex and detectRebuildTrigger so the
+ *  builder's placement and the live trigger's scan cannot drift. */
+function isTurnBoundary(e: ProjectionEntry, aStop: unknown): boolean {
+  if (!isUserPrompt(e)) return false
+  if (e.source === 'provider') return true
+  return e.source === 'app' && aStop !== 'tool_use'
 }
 
 /** Insertion index for a result/pending entry at its assistant's turn terminal
@@ -178,11 +215,7 @@ function turnTerminalIndex(out: ProjectionEntry[], assistantUuid: string): numbe
   const aStop = stopReasonOf(out[aIdx])
   let end = aIdx
   for (let i = aIdx + 1; i < out.length; i++) {
-    const e = out[i]
-    if (isUserPrompt(e)) {
-      if (e.source === 'provider') break
-      if (e.source === 'app' && aStop !== 'tool_use') break
-    }
+    if (isTurnBoundary(out[i], aStop)) break
     end = i
   }
   return end + 1
