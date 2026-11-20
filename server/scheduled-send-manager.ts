@@ -64,7 +64,11 @@ export class ScheduledSendManager {
       throw new HttpError(400, `fireAt must be a finite time at least ${MIN_DELAY_MS / 1000}s in the future`)
     }
     const pending = this.active.get(sessionId)
-    if ((pending?.size ?? 0) >= MAX_PENDING_PER_SESSION) {
+    // Deferred records keep their slot: during a long admission closure they
+    // cycle active→deferred, and counting only active would let the deferred
+    // FIFO grow unbounded past the per-session budget.
+    const deferredCount = this.deferred.get(sessionId)?.length ?? 0
+    if ((pending?.size ?? 0) + deferredCount >= MAX_PENDING_PER_SESSION) {
       throw new HttpError(400, `too many scheduled messages for session ${sessionId}`)
     }
     const rec: ScheduledSend = {

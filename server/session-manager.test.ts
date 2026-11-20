@@ -10287,6 +10287,20 @@ describe('SessionManager', () => {
       await expect(sm.send(info.id, 'after cancel')).resolves.toMatchObject({ uuid: expect.any(String) })
     })
 
+    it('concurrent beginTranscriptRebuild calls admit exactly one (single-flight)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      // Both starts run in the same synchronous tick: the reservation must
+      // happen BEFORE any await, or both calls would pass the flag check.
+      const results = await Promise.allSettled([
+        arm(info.id, 'op-1', 'R'),
+        arm(info.id, 'op-2', 'S'),
+      ])
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+      const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult
+      expect(rejected.reason).toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+      expect(await rebuildPendingRows(info.id)).toHaveLength(1)
+    })
+
     it('admission restores once the pending operation enters a committed generation (retry rebuild)', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
       // Live arrival A,N,R vs provider order A,R,N — a genuine inversion.
@@ -10316,6 +10330,28 @@ describe('SessionManager', () => {
       expect(r.generation).toBe(0) // no generation committed — the op is still pending
       expect(await rebuildPendingRows(info.id)).toHaveLength(1)
       await expect(sm.send(info.id, 'still closed')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+    })
+
+    it('an in-place compact reset supersedes the pending payload and reopens admission', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await arm(info.id)
+      await expect(sm.send(info.id, 'closed')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+      // Drive the native in-place auto-compact (same harness as the
+      // auto-compact suites): a 'compact' reset generation batch commits and
+      // the SAME holder is reset in place (reconciled stays true).
+      const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+      live.handle.compactInPlace = vi.fn(async () => {})
+      live.lastContextUsage = {
+        totalTokens: 90, maxTokens: 100, rawMaxTokens: 100, percentage: 90, model: 'test-model',
+      }
+      await (sm as unknown as { maybeAutoCompact(session: Session): Promise<void> }).maybeAutoCompact(live)
+      expect(sm.transcriptHead(info.id)?.generation).toBe(1)
+      // The reset generation superseded the durable pending rows...
+      expect(readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load())).toEqual([])
+      // ...so admission must reopen consistently — the retained holder's flag
+      // cannot outlive its durable pending payload (no re-reconcile runs).
+      const sent = await sm.send(info.id, 'after compact')
+      expect(sent.uuid).toBeTruthy()
     })
 
     it('abortTranscriptRebuild(cancelled) restores admission and retains the durable payload', async () => {

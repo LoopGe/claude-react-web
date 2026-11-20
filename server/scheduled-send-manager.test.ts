@@ -219,6 +219,19 @@ describe('ScheduledSendManager', () => {
       expect(m.list('s1').map((r) => r.status)).toEqual(['cancelled'])
     })
 
+    it('deferred records count toward the per-session pending cap', async () => {
+      const { m, setNow } = make({
+        send: vi.fn(async () => { throw new HttpError(409, REBUILD_REQUIRED) }),
+      })
+      const t = 2_000_000
+      m.create('s1', { text: 'deferred' }, t)
+      setNow(t + 1)
+      await m.tick() // active → deferred: the slot must stay occupied
+      const future = t + 1 + MIN_DELAY_MS
+      for (let i = 0; i < MAX_PENDING_PER_SESSION - 1; i++) m.create('s1', { text: `m${i}` }, future + 100 + i)
+      expect(() => m.create('s1', { text: 'overflow' }, future + 2000)).toThrow(/too many/)
+    })
+
     it('cancelAll drops deferred records too', async () => {
       const { m, setNow } = make({
         send: vi.fn(async () => { throw new HttpError(409, REBUILD_REQUIRED) }),

@@ -8657,6 +8657,10 @@ export class SessionManager {
           const pendingRebuilds = readPendingRebuilds(rows)
           if (pendingRebuilds.length > 0) {
             this.setRebuildAdmissionPending(id, true)
+            log.info(
+              `[session ${id}] transcript rebuild-pending recovery: ` +
+              `${pendingRebuilds.length} pending operation(s) re-arm admission`,
+            )
             const w = this.writerFor(id)
             // Dedup by operationId: a live beginTranscriptRebuild may have
             // armed this holder BEFORE its first reconcile (the writer already
@@ -9135,7 +9139,15 @@ export class SessionManager {
       (rows, commit) => t.sidecar.appendBatch(rows, commit),
       t.store.generation,
     )
-    return writer.resetGeneration(reason, undefined, journal)
+    const gen = await writer.resetGeneration(reason, undefined, journal)
+    // A committed reset generation supersedes every rebuild-pending row
+    // (readPendingRebuilds' generation/reset filter): the wipe resolves the
+    // pending operation, so admission reopens (spec §8.1) — the reset twin of
+    // reconcileOrdered's publication clear. In-place compact RETAINS this
+    // holder (reconciled stays true, no re-reconcile runs), so without this
+    // clear the flag would outlive its durable pending payload forever.
+    this.setRebuildAdmissionPending(id, false)
+    return gen
   }
 
   /** Startup reset-journal fence (spec §8.3): enforce the invariant *sidecar
