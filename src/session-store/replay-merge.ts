@@ -308,6 +308,10 @@ function blockShape(b: unknown): string {
     return `${t === 'text' ? 't' : 'k'}:${strShape(s)}`
   }
   if (t === 'image') {
+    // A ref block's identity is its attachment id (exact, O(1)); legacy
+    // base64 keeps the length+anchor shape digest.
+    const refId = (b as { attachment?: { id?: unknown } }).attachment?.id
+    if (typeof refId === 'string') return `i:${refId}`
     const d = (b as { source?: { data?: unknown } }).source?.data
     return typeof d === 'string' ? `i:${strShape(d)}` : 'i'
   }

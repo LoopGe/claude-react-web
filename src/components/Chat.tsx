@@ -861,7 +861,7 @@ export const Chat = memo(function Chat({
   const history = useInputHistory(session.id, historyFilter)
 
   const [dragOver, setDragOver] = useState(false)
-  const pastedImages = usePastedImages()
+  const pastedImages = usePastedImages(session.id)
   // Stable callback (usePastedImages memoises it), so intake handlers do not
   // change identity when only the images list or error string does.
   const addPastedImages = pastedImages.addImages

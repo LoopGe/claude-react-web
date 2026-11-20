@@ -12,6 +12,8 @@ import { useDraftImages } from './useDraftImages'
 import type { ImageMutations } from './usePastedImages'
 import type { PastedImage } from '../types'
 import type { PersistedImage } from '../state/inputHistoryImages'
+import type { ImageAttachmentRef } from '../../shared/image-attachment'
+import { clearImageDecodeCache } from '../utils/imageDecodeCache'
 
 // happy-dom has no URL.createObjectURL/revokeObjectURL (same as jsdom — see
 // usePastedImages.test.tsx). The revoke stub matters for the dropped-restore
@@ -42,6 +44,34 @@ function pimg(data: string): PastedImage {
 
 function persist(data: string): PersistedImage {
   return { data, mediaType: 'image/png', width: 10, height: 20, size: 3 }
+}
+
+const REF: ImageAttachmentRef = {
+  id: `sha256:${'ab'.repeat(32)}`,
+  mediaType: 'image/webp',
+  bytes: 3,
+  width: 10,
+  height: 20,
+}
+const DIGEST = REF.id.slice('sha256:'.length)
+
+/** A ref-backed live image (the new intake shape: attachment, empty data). */
+function refPimg(): PastedImage {
+  return {
+    id: 'built-ref',
+    data: '',
+    mediaType: 'image/webp',
+    width: 10,
+    height: 20,
+    size: 3,
+    previewUrl: 'blob:built-ref',
+    attachment: REF,
+  }
+}
+
+/** A ref-backed persisted record (the new draft payload). */
+function persistRef(): PersistedImage {
+  return { data: '', mediaType: 'image/webp', width: 10, height: 20, size: 3, attachment: REF }
 }
 
 async function flushMicrotasks(ticks = 8): Promise<void> {
@@ -188,6 +218,42 @@ describe('useDraftImages persistence', () => {
         debounceMs: 5,
       })
       rerender({ images: [pimg('SMALL')] })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5)
+      })
+      expect(debug).not.toHaveBeenCalled()
+    } finally {
+      debug.mockRestore()
+    }
+  })
+
+  it('persists a ref-backed image as its attachment with an empty base64 payload', async () => {
+    const put = vi.fn()
+    const { rerender } = renderDraft(mutRef().ref, vi.fn(), {
+      get: async () => [],
+      put,
+      del: vi.fn(),
+      build: async () => [],
+      debounceMs: 5,
+    })
+    rerender({ images: [refPimg()] })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5)
+    })
+    expect(put).toHaveBeenCalledWith('s1', [persistRef()])
+  })
+
+  it('does not log ref-backed drafts — the payload is a ref, not base64', async () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      const { rerender } = renderDraft(mutRef().ref, vi.fn(), {
+        get: async () => [],
+        put: vi.fn(),
+        del: vi.fn(),
+        build: async () => [],
+        debounceMs: 5,
+      })
+      rerender({ images: [refPimg()] })
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5)
       })
@@ -526,5 +592,93 @@ describe('useDraftImages restore', () => {
       rerender({ images: [...built, pimg('NEW')] })
     })
     await waitFor(() => expect(put).toHaveBeenCalledWith('s1', [persist('DDDD'), persist('NEW')]))
+  })
+})
+
+// Restore through the REAL decode cache (buildPastedImages): ref records
+// fetch their content from the content route; legacy base64 records keep the
+// data-URL decode path. The orchestration tests above inject `build`; these
+// pin the ref/legacy split end to end.
+describe('useDraftImages restore (real decode cache)', () => {
+  let urlCounter = 0
+  const createObjectURL = vi.fn(() => `blob:mock-${++urlCounter}`)
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    urlCounter = 0
+    createObjectURL.mockClear()
+    Object.defineProperty(URL, 'createObjectURL', {
+      value: createObjectURL, configurable: true, writable: true,
+    })
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/attachments/images/')) {
+        return new Response(new Uint8Array([7, 8, 9]), { headers: { 'Content-Type': 'image/webp' } }) as Response
+      }
+      if (!url.startsWith('data:')) throw new Error(`unexpected fetch: ${url}`)
+      const binary = atob(url.slice(url.indexOf(',') + 1))
+      return new Response(Uint8Array.from(binary, (c) => c.charCodeAt(0))) as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    clearImageDecodeCache()
+  })
+
+  afterEach(() => {
+    clearImageDecodeCache()
+    vi.unstubAllGlobals()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (URL as any).createObjectURL
+  })
+
+  it('restores a ref draft by fetching its content (attachment kept, no base64)', async () => {
+    const apply = vi.fn()
+    renderDraft(mutRef().ref, apply, {
+      get: async () => [persistRef()],
+      put: vi.fn(),
+      del: vi.fn(),
+    })
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1))
+    const built = apply.mock.calls[0][0] as PastedImage[]
+    expect(built).toHaveLength(1)
+    expect(built[0].attachment).toEqual(REF)
+    expect(built[0].data).toBe('')
+    expect(built[0].previewUrl).toBe('blob:mock-1')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`/api/attachments/images/${DIGEST}`)
+  })
+
+  it('does not re-write the record when the restored ref set lands unchanged', async () => {
+    const apply = vi.fn()
+    const put = vi.fn()
+    const { rerender } = renderDraft(mutRef().ref, apply, {
+      get: async () => [persistRef()],
+      put,
+      del: vi.fn(),
+      debounceMs: 5,
+    })
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1))
+    const built = apply.mock.calls[0][0] as PastedImage[]
+    await act(async () => {
+      rerender({ images: built })
+    })
+    await act(async () => {
+      await sleep(25)
+    })
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('restores an old base64 draft through the legacy decode path', async () => {
+    const apply = vi.fn()
+    renderDraft(mutRef().ref, apply, {
+      get: async () => [persist('DDDD')],
+      put: vi.fn(),
+      del: vi.fn(),
+    })
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1))
+    const built = apply.mock.calls[0][0] as PastedImage[]
+    expect(built[0].data).toBe('DDDD')
+    expect(built[0].attachment).toBeUndefined()
+    expect(built[0].previewUrl).toBe('blob:mock-1')
+    expect(String(fetchMock.mock.calls[0][0])).toContain('data:image/png;base64,DDDD')
   })
 })

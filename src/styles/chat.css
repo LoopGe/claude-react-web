@@ -2656,6 +2656,17 @@ button.chat-empty-env-chip:hover {
   margin: var(--space-1) 0;
   object-fit: contain;
 }
+/* Placeholder for a ref-backed image while its content fetch lands. The
+   inline aspect-ratio/width come from the ref's recorded dimensions, so the
+   bubble holds its layout without decoding; the caps mirror .msg-image. */
+.msg-image-loading {
+  display: block;
+  max-width: min(100%, 600px);
+  max-height: 400px;
+  border-radius: var(--radius-xs);
+  margin: var(--space-1) 0;
+  background: var(--code-bg);
+}
 .msg-image-row {
   display: flex;
   flex-wrap: wrap;

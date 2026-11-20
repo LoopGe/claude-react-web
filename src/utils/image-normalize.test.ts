@@ -126,8 +126,6 @@ function fakeDeps(opts: {
           cb(opts.outputBytes?.(spec.type, width, height) ?? outputBlob(spec.type, width, height, spec.size))
         },
       }),
-      // FileReader is browser-only; the test never needs the encoded string.
-      toBase64: async () => 'BASE64',
     },
   }
 }
@@ -145,6 +143,11 @@ describe('preparePastedImage', () => {
     expect(out.width).toBe(2364)
     expect(out.height).toBe(1773)
     expect(out.mediaType).toBe('image/jpeg')
+    // The normalized output is the encoded BLOB (the upload payload) — no
+    // base64 string is produced on the intake path anymore.
+    expect(out.blob).toBeInstanceOf(Blob)
+    expect(out.blob.type).toBe('image/jpeg')
+    expect(out.blob.size).toBe(1000)
     expect(out.original).toEqual({ mediaType: 'image/png', width: 4000, height: 3000, size: 6 })
     expect(qualities).toEqual([{ type: 'image/jpeg', quality: 0.85 }])
     expect(close).toHaveBeenCalled()

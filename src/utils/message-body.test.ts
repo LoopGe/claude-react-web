@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildOutgoingBody } from './message-body.js'
+import type { ImageAttachmentRef } from '../../shared/image-attachment'
 
 const IMG = {
   id: 'img-1',
@@ -10,6 +11,14 @@ const IMG = {
   size: 12,
   previewUrl: 'data:image/png;base64,abc123',
 } as const
+
+const REF: ImageAttachmentRef = {
+  id: `sha256:${'ab'.repeat(32)}`,
+  mediaType: 'image/webp',
+  bytes: 5,
+  width: 10,
+  height: 20,
+}
 
 describe('buildOutgoingBody', () => {
   it('returns a plain text body when there are no images', () => {
@@ -53,6 +62,26 @@ describe('buildOutgoingBody', () => {
   it('sends a file-only message as a content array', () => {
     expect(buildOutgoingBody('  ', [], [FILE])).toEqual({
       content: [{ type: 'file', attachment: FILE }],
+    })
+  })
+
+  it('emits the durable ref block when the image carries an attachment', () => {
+    const body = buildOutgoingBody('hi', [{ ...IMG, data: '', attachment: REF }])
+    expect(body).toEqual({
+      content: [
+        { type: 'text', text: 'hi' },
+        { type: 'image', attachment: REF },
+      ],
+    })
+  })
+
+  it('keeps ref and legacy images in draft order', () => {
+    const body = buildOutgoingBody('', [{ ...IMG, data: '', attachment: REF }, IMG])
+    expect(body).toEqual({
+      content: [
+        { type: 'image', attachment: REF },
+        { type: 'image', source: { type: 'base64', data: 'abc123', media_type: 'image/png' } },
+      ],
     })
   })
 })

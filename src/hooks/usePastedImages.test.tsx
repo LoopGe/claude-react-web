@@ -3,18 +3,33 @@
 // cache). All images are composer-owned — the decode cache is a pure Blob
 // memo and never owns URLs. jsdom has no implementation of
 // URL.createObjectURL/revokeObjectURL, so both are stubbed.
+//
+// New intake normalizes AND uploads: preparePastedImage and uploadImage are
+// both mocked; an image lands only once its own upload resolves with a ref.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { usePastedImages } from './usePastedImages'
 import { getMaxPastedImageBytes, setMaxPastedImageBytes } from './config-store'
 import type { PastedImage } from '../types'
 import { ImageNormalizeError, type NormalizedImage } from '../utils/image-normalize'
+import type { ImageAttachmentRef } from '../../shared/image-attachment'
 
 const prepareMock = vi.hoisted(() => vi.fn())
 vi.mock('../utils/image-normalize', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../utils/image-normalize')>()
   return { ...actual, preparePastedImage: prepareMock }
 })
+
+const uploadMock = vi.hoisted(() => vi.fn())
+vi.mock('../utils/upload-image', () => ({ uploadImage: uploadMock }))
+
+const REF: ImageAttachmentRef = {
+  id: `sha256:${'ab'.repeat(32)}`,
+  mediaType: 'image/webp',
+  bytes: 5,
+  width: 10,
+  height: 20,
+}
 
 /** Browser File with a declared size but no real bytes: the hook only reads
  *  size/type/name, and the normalizer is mocked below. */
@@ -36,7 +51,7 @@ function built(data = 'AAAA'): PastedImage {
 
 function normalizedFor(file: Blob, overrides: Partial<NormalizedImage> = {}): NormalizedImage {
   return {
-    data: 'NORMALIZED',
+    blob: new Blob([new Uint8Array([1, 2, 3, 4, 5])], { type: 'image/webp' }),
     mediaType: 'image/webp',
     width: 10,
     height: 20,
@@ -44,6 +59,10 @@ function normalizedFor(file: Blob, overrides: Partial<NormalizedImage> = {}): No
     original: { mediaType: 'image/png', width: 10, height: 20, size: file.size },
     ...overrides,
   }
+}
+
+async function flushMicrotasks(ticks = 12): Promise<void> {
+  for (let i = 0; i < ticks; i++) await Promise.resolve()
 }
 
 function deferred<T>() {
@@ -66,6 +85,8 @@ beforeEach(() => {
   revokeObjectURL.mockClear()
   prepareMock.mockReset()
   prepareMock.mockImplementation(async (file: Blob) => normalizedFor(file))
+  uploadMock.mockReset()
+  uploadMock.mockImplementation(async () => REF)
   Object.defineProperty(URL, 'createObjectURL', {
     value: createObjectURL, configurable: true, writable: true,
   })
@@ -137,7 +158,8 @@ describe('usePastedImages.applyImages', () => {
       pending.resolve(normalizedFor(file))
       await adding
     })
-    expect(result.current.images.map((i) => i.data)).toEqual(['RESTORED', 'NORMALIZED'])
+    expect(result.current.images.map((i) => i.data)).toEqual(['RESTORED', ''])
+    expect(result.current.images[1].attachment).toEqual(REF)
   })
 })
 
@@ -150,7 +172,10 @@ describe('usePastedImages.addImages', () => {
       await result.current.addImages([a, b])
     })
     expect(prepareMock).toHaveBeenCalledTimes(2)
-    expect(result.current.images.map((i) => i.data)).toEqual(['NORMALIZED', 'NORMALIZED'])
+    expect(uploadMock).toHaveBeenCalledTimes(2)
+    // Ref-backed intake: the draft payload is the attachment, not base64.
+    expect(result.current.images.map((i) => i.data)).toEqual(['', ''])
+    expect(result.current.images.map((i) => i.attachment)).toEqual([REF, REF])
     expect(result.current.images[0]?.original?.size).toBe(a.size)
     expect(result.current.error).toBeNull()
     expect(result.current.mutationsRef.current).toMatchObject({ seq: 2, kind: 'add' })
@@ -200,7 +225,7 @@ describe('usePastedImages.addImages', () => {
         .mockResolvedValueOnce(normalizedFor(good))
       await act(async () => { await result.current.addImages([bad, good]) })
       expect(result.current.images).toHaveLength(1)
-      expect(result.current.images[0]?.data).toBe('NORMALIZED')
+      expect(result.current.images[0]?.attachment).toEqual(REF)
       expect(result.current.error).toBe('bad image')
       expect(result.current.pending).toBe(false)
 
@@ -434,5 +459,149 @@ describe('usePastedImages.mutationsRef', () => {
     })
     expect(result.current.images).toEqual([])
     expect(result.current.mutationsRef.current).toMatchObject({ seq: 2, kind: 'clear' })
+  })
+})
+
+describe('usePastedImages upload queue', () => {
+  /** A controllable uploadImage: each call parks a gate the test releases. */
+  function gatedUploads() {
+    const gates: Array<{
+      resolve: (ref: ImageAttachmentRef) => void
+      reject: (err: unknown) => void
+      signal?: AbortSignal
+      blob: Blob
+    }> = []
+    uploadMock.mockImplementation((blob: Blob, opts?: { signal?: AbortSignal }) => {
+      return new Promise<ImageAttachmentRef>((resolve, reject) => {
+        gates.push({ resolve, reject, signal: opts?.signal, blob })
+      })
+    })
+    return gates
+  }
+
+  it('blocks send (pending) while an upload is in flight; the image lands with its ref', async () => {
+    const gates = gatedUploads()
+    const { result } = renderHook(() => usePastedImages('s1'))
+    const file = new File(['a'], 'a.png', { type: 'image/png' })
+    let adding!: Promise<string | null>
+    await act(async () => {
+      adding = result.current.addImages([file])
+      await flushMicrotasks()
+    })
+    // Normalization done, upload in flight: send stays blocked and nothing
+    // has landed yet (an image lands only once its ref exists).
+    expect(gates).toHaveLength(1)
+    expect(result.current.pending).toBe(true)
+    expect(result.current.images).toEqual([])
+    await act(async () => {
+      gates[0].resolve(REF)
+      await adding
+    })
+    expect(result.current.pending).toBe(false)
+    expect(result.current.images).toHaveLength(1)
+    expect(result.current.images[0].attachment).toEqual(REF)
+    expect(result.current.images[0].data).toBe('')
+    expect(result.current.images[0].previewUrl).toBe('blob:mock-1')
+    // The normalized blob is what uploads, bound to the session.
+    expect(gates[0].blob).toBeInstanceOf(Blob)
+    expect(uploadMock.mock.calls[0][1]).toMatchObject({ sessionId: 's1' })
+  })
+
+  it('a per-image upload failure refuses only that image', async () => {
+    uploadMock
+      .mockRejectedValueOnce(new Error('upload boom'))
+      .mockResolvedValueOnce(REF)
+    const { result } = renderHook(() => usePastedImages())
+    const bad = new File(['a'], 'bad.png', { type: 'image/png' })
+    const good = new File(['b'], 'good.png', { type: 'image/png' })
+    await act(async () => {
+      await result.current.addImages([bad, good])
+    })
+    expect(result.current.images).toHaveLength(1)
+    expect(result.current.images[0].attachment).toEqual(REF)
+    expect(result.current.error).toBe('Could not upload image: upload boom')
+    expect(result.current.pending).toBe(false)
+    // The failed image's preview URL is revoked (it never landed).
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-1')
+  })
+
+  it('uploads at most two images concurrently', async () => {
+    const gates = gatedUploads()
+    const { result } = renderHook(() => usePastedImages())
+    const files = ['a', 'b', 'c'].map((n) => new File([n], `${n}.png`, { type: 'image/png' }))
+    let adding!: Promise<string | null>
+    await act(async () => {
+      adding = result.current.addImages(files)
+      await flushMicrotasks()
+    })
+    // Two uploads started; the third waits for a slot.
+    expect(gates).toHaveLength(2)
+    await act(async () => {
+      gates[0].resolve(REF)
+      await flushMicrotasks()
+    })
+    expect(gates).toHaveLength(3)
+    await act(async () => {
+      gates[1].resolve(REF)
+      gates[2].resolve(REF)
+      await adding
+    })
+    expect(result.current.images).toHaveLength(3)
+    expect(result.current.pending).toBe(false)
+  })
+
+  it('clear() aborts an in-flight upload and discards the image without an error', async () => {
+    const gates = gatedUploads()
+    const { result } = renderHook(() => usePastedImages())
+    const file = new File(['a'], 'a.png', { type: 'image/png' })
+    let adding!: Promise<string | null>
+    await act(async () => {
+      adding = result.current.addImages([file])
+      await flushMicrotasks()
+    })
+    expect(gates).toHaveLength(1)
+    await act(async () => {
+      result.current.clear()
+      // The abort surfaces as AbortError, exactly like a real fetch abort.
+      gates[0].reject(new DOMException('The operation was aborted.', 'AbortError'))
+      await adding
+    })
+    expect(gates[0].signal?.aborted).toBe(true)
+    expect(result.current.images).toEqual([])
+    expect(result.current.error).toBeNull()
+    expect(result.current.pending).toBe(false)
+  })
+
+  it('an upload failure after clear() is not surfaced on the empty composer', async () => {
+    const gates = gatedUploads()
+    const { result } = renderHook(() => usePastedImages())
+    const file = new File(['a'], 'a.png', { type: 'image/png' })
+    let failure: string | null = null
+    await act(async () => {
+      const adding = result.current.addImages([file])
+      await flushMicrotasks()
+      result.current.clear()
+      gates[0].reject(new Error('late boom'))
+      failure = await adding
+    })
+    expect(failure).toBeNull()
+    expect(result.current.error).toBeNull()
+    expect(result.current.images).toEqual([])
+  })
+
+  it('an upload landing after clear() does not repopulate the composer', async () => {
+    const gates = gatedUploads()
+    const { result } = renderHook(() => usePastedImages())
+    const file = new File(['a'], 'a.png', { type: 'image/png' })
+    let adding!: Promise<string | null>
+    await act(async () => {
+      adding = result.current.addImages([file])
+      await flushMicrotasks()
+      result.current.clear()
+      gates[0].resolve(REF)
+      await adding
+    })
+    expect(result.current.images).toEqual([])
+    expect(result.current.mutationsRef.current).toMatchObject({ seq: 1, kind: 'clear' })
   })
 })

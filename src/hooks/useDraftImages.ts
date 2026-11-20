@@ -82,7 +82,9 @@ function sameOriginal(
 
 /** Payload equality on the persisted shape (the runtime-only `id` and
  *  `previewUrl` are excluded — a restored set differs from its stash only in
- *  those). String compares on `data` are memcmp-fast. */
+ *  those). String compares on `data` are memcmp-fast; ref-backed records
+ *  compare by attachment id (the digest IS the image identity — same id
+ *  means same stored bytes and metadata). */
 function persistedEquals(a: PersistedImage[], b: PersistedImage[]): boolean {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) {
@@ -92,6 +94,7 @@ function persistedEquals(a: PersistedImage[], b: PersistedImage[]): boolean {
       || a[i].width !== b[i].width
       || a[i].height !== b[i].height
       || a[i].size !== b[i].size
+      || (a[i].attachment?.id ?? null) !== (b[i].attachment?.id ?? null)
       || !sameOriginal(a[i].original, b[i].original)
     ) return false
   }

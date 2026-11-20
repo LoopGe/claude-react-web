@@ -22,7 +22,7 @@ export type OutgoingMessageBody = { text: string } | { content: OutgoingContentB
  *  only when the text has non-whitespace content. */
 export function buildOutgoingBody(
   text: string,
-  images: readonly (PastedImage & { attachment?: ImageAttachmentRef })[],
+  images: readonly PastedImage[],
   files: readonly FileAttachmentRef[] = [],
 ): OutgoingMessageBody {
   if (images.length === 0 && files.length === 0) return { text }
@@ -31,9 +31,7 @@ export function buildOutgoingBody(
   for (const img of images) {
     // A published image rides as its durable ref; the bytes stay in the object
     // store and the server verifies them at dispatch. The legacy base64 shape
-    // stays for drafts without a ref (PastedImage.attachment lands with the
-    // client upload wiring — the structural optional keeps this builder ahead
-    // of that type change).
+    // stays for restored pre-ref drafts (no attachment).
     if (img.attachment !== undefined) {
       content.push({ type: 'image', attachment: img.attachment })
     } else {

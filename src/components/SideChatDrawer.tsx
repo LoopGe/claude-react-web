@@ -123,7 +123,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const editorRef = useRef<HTMLDivElement>(null)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
-  const pastedImages = usePastedImages()
+  const pastedImages = usePastedImages(session.id)
   const toast = useToast()
   // Collapsed pastes: a long clipboard is replaced in the input by a
   // `[Pasted text #N]` reference whose body lives here and is spliced back in

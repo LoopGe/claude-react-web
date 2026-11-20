@@ -4,6 +4,7 @@
 
 import type { SessionInfoBase } from '../shared/session-info'
 import type { SupportedImageMediaType } from '../shared/image-media'
+import type { ImageAttachmentRef } from '../shared/image-attachment'
 import {
   USER_SELECTABLE_PERMISSION_MODES,
   type SdkAgentPermissionMode,
@@ -481,6 +482,8 @@ export interface PastedImageOriginal {
 
 export interface PastedImage {
   id: string
+  /** Legacy base64 payload (restored pre-ref drafts). EMPTY for ref-backed
+   *  images — the durable payload is `attachment`, not inline bytes. */
   data: string
   mediaType: SupportedImageMediaType
   width: number
@@ -490,6 +493,10 @@ export interface PastedImage {
   previewUrl: string
   /** Source facts, present when the image was normalized on intake. */
   original?: PastedImageOriginal
+  /** Durable store reference, present once the normalized blob has uploaded.
+   *  buildOutgoingBody emits the ref block when this is set; the legacy
+   *  base64 block only when it is absent (old restored drafts). */
+  attachment?: ImageAttachmentRef
 }
 
 // ── MCP Server Status ─────────────────────────────────────────────
