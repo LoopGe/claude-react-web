@@ -154,6 +154,7 @@ import {
   foldSidecarRowsV2,
   makeCommitV2,
   recordTranscriptMessage,
+  unsupersededCorrupt,
   type TranscriptHolder,
   type PendingInputView,
 } from './transcript-sidecar.js'
@@ -8565,6 +8566,17 @@ export class SessionManager {
           id, t, folded.hasCommittedGeneration ? folded.generation : -1,
         )
         if (fenceWrote) folded = foldSidecarRowsV2(await t.sidecar.load())
+        // Warn only for corruption that still affects the adopted projection.
+        // A corrupt batch superseded by a valid rebuild is dead history left
+        // in the append-only file; re-warning on every reconcile would be a
+        // permanent false alarm masking genuine new corruption.
+        const activeCorrupt = unsupersededCorrupt(folded)
+        if (activeCorrupt.length > 0) {
+          log.warn(
+            `[session ${id}] sidecar corrupt batches demoted, rebuilding from provider log: ` +
+            activeCorrupt.map((c) => `${c.batchId} (${c.reason})`).join('; '),
+          )
+        }
         if (folded.hasCommittedGeneration) {
           t.store.hydrate(folded.entries)
           t.store.generation = folded.generation
@@ -9790,9 +9802,9 @@ export class SessionManager {
     // writer's appendBatch dep via holder() → getOrCreateTranscript, see writerFor).
     // Dropping the holder before that work settles would lose a tombstone append
     // still awaiting its reconcile (resurrecting an already-withdrawn prompt on the
-    // next rebuild) and let a pending writer commit re-create a fresh sidecar whose
-    // recoverTail/truncateToLastCommit truncates the landed v1 suffix (the final
-    // turn's rows).
+    // next rebuild) and let a pending writer commit re-create a fresh sidecar out
+    // from under the drain. (recoverTail no longer truncates the landed v1 suffix —
+    // it keeps every complete line — so the drain is about ordering, not clipping.)
     metrics.gauge('sessions_active', this.sessions.size)
     // Clear the recap state. The session is no longer in the manager's map so
     // getPhase will return 'unknown' from inside the manager — we still call

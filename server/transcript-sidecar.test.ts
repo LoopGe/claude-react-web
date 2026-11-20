@@ -11,6 +11,7 @@ import {
   foldSidecarRowsV2,
   classifyPendingInputs,
   truncateToLastCommit,
+  unsupersededCorrupt,
   makeCommitV2,
   recordTranscriptMessage,
   transcriptRow,
@@ -592,13 +593,144 @@ describe('sidecar v2 batch commits / fold / crash recovery (spec §8.2/§9)', ()
     expect(salvaged).toEqual([])
   })
 
-  it('a complete commit record with a bad checksum is not truncatable; fold throws corrupt-sidecar', () => {
+  it('a bad-checksum commit is demoted: fold falls back to v1, truncate skips the corrupt anchor', () => {
     const g0 = [msgRow('g0', 0, 'a')]
     const badCommit = { ...genCommit('g0', 0, g0), checksum: 'deadbeef' }
     const raw = lines(...g0, badCommit)
-    expect(() => truncateToLastCommit(raw)).toThrow(/corrupt-sidecar/)
+    const { prefix, salvaged } = truncateToLastCommit(raw)
+    expect(prefix).toBe('') // no valid anchor → nothing committed survives
+    expect(salvaged.map((r) => r.batchId)).toContain('g0')
     const rows = raw.split('\n').filter(Boolean).map((l) => JSON.parse(l))
-    expect(() => foldSidecarRowsV2(rows)).toThrow(/corrupt-sidecar/)
+    const folded = foldSidecarRowsV2(rows)
+    expect(folded.hasCommittedGeneration).toBe(false)
+    expect(folded.corrupt.map((c) => c.batchId)).toEqual(['g0'])
+  })
+
+  it('demotes a count-mismatched committed generation and adopts the previous valid one', () => {
+    const g1 = [msgRow('g1', 0, 'a')]
+    const g2 = [msgRow('g2', 0, 'a'), msgRow('g2', 1, 'b')]
+    const badG2 = { ...genCommit('g2', 2, g2), count: 3 } // declares 3 rows, carries 2
+    const folded = foldSidecarRowsV2([...g1, genCommit('g1', 1, g1), ...g2, badG2])
+    expect(folded.generation).toBe(1)
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['a']) // g2 rows excluded
+    expect(folded.corrupt.map((c) => c.batchId)).toEqual(['g2'])
+  })
+
+  it('no valid generation survives a corrupt commit → hasCommittedGeneration false', () => {
+    const g1 = [msgRow('g1', 0, 'a')]
+    const bad = { ...genCommit('g1', 1, g1), count: 2 }
+    const folded = foldSidecarRowsV2([...g1, bad])
+    expect(folded.hasCommittedGeneration).toBe(false)
+    expect(folded.corrupt.map((c) => c.batchId)).toEqual(['g1'])
+  })
+
+  it('checksum mismatch demotes like count mismatch', () => {
+    const g1 = [msgRow('g1', 0, 'a')]
+    const g2 = [msgRow('g2', 0, 'b')]
+    const badG2 = { ...genCommit('g2', 2, g2), checksum: 'deadbeef' }
+    const folded = foldSidecarRowsV2([...g1, genCommit('g1', 1, g1), ...g2, badG2])
+    expect(folded.generation).toBe(1)
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['a'])
+    expect(folded.corrupt).toHaveLength(1)
+  })
+
+  it('unsupersededCorrupt drops corrupt batches superseded by the adopted generation', () => {
+    const g1 = [msgRow('g1', 0, 'a')]
+    const g2 = [msgRow('g2', 0, 'b')]
+    const badG2 = { ...genCommit('g2', 2, g2), count: 3 }
+    const folded = foldSidecarRowsV2([...g1, genCommit('g1', 1, g1), ...g2, badG2])
+    expect(folded.generation).toBe(1)
+    expect(unsupersededCorrupt(folded).map((c) => c.batchId)).toEqual(['g2']) // gen 2 > adopted 1
+    // A valid rebuild at gen 2 supersedes the corrupt gen-2 batch.
+    const goodG2 = [msgRow('g2b', 0, 'b')]
+    const folded2 = foldSidecarRowsV2([...g1, genCommit('g1', 1, g1), ...g2, badG2, ...goodG2, genCommit('g2b', 2, goodG2)])
+    expect(folded2.generation).toBe(2)
+    expect(unsupersededCorrupt(folded2)).toEqual([]) // corrupt gen 2 not > adopted 2
+  })
+
+  it('truncateToLastCommit keeps a valid re-commit that reuses a demoted batch id', () => {
+    const rows1 = [msgRow('rb', 0, 'a')]
+    const bad = { ...genCommit('rb', 1, rows1), count: 5 }
+    const rows2 = [msgRow('rb', 0, 'a'), msgRow('rb', 1, 'b')]
+    const good = genCommit('rb', 1, rows2) // SAME id, valid, later in file
+    const raw = lines(...rows1, bad, ...rows2, good)
+    const { prefix } = truncateToLastCommit(raw)
+    expect(prefix).toBe(raw) // the valid re-commit is the anchor; nothing truncated
+  })
+
+  it('appendBatch after a no-newline torn tail writes a clean intact batch', async () => {
+    const dir = await tmpDir()
+    const file = path.join(dir, 'transcripts', 'sid-1.ndjson')
+    const sc = new TranscriptSidecar(dir, 'sid-1')
+    await sc.appendRow({ seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a', message: { role: 'user', content: 'hi' } } })
+    await sc.close()
+    // A crash mid-write leaves a torn fragment WITHOUT a trailing newline.
+    await appendFile(file, '{"v":2,"batchId":"dead","seq":9')
+    const sc2 = new TranscriptSidecar(dir, 'sid-1')
+    await sc2.load() // derives the durable boundary, clipping the torn tail
+    const rows = [msgRow('g1', 0, 'b')]
+    await sc2.appendBatch(rows, genCommit('g1', 1, rows))
+    await sc2.close()
+    const raw = await readFile(file, 'utf8')
+    // No fused line: every non-empty physical line parses.
+    for (const line of raw.split('\n')) {
+      if (line.trim()) expect(() => JSON.parse(line)).not.toThrow()
+    }
+    const folded = foldSidecarRowsV2(await new TranscriptSidecar(dir, 'sid-1').load())
+    expect(folded.corrupt).toEqual([])
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['b'])
+  })
+
+  it('goodOffset is byte-exact with multibyte UTF-8 content', async () => {
+    const dir = await tmpDir()
+    const file = path.join(dir, 'transcripts', 'sid-1.ndjson')
+    const sc = new TranscriptSidecar(dir, 'sid-1')
+    const cjk = { seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a', message: { role: 'user', content: '继续 🚀 café' } } }
+    await sc.appendRow(cjk)
+    const rows = [msgRow('g1', 1, 'b')]
+    await sc.appendBatch(rows, genCommit('g1', 1, rows))
+    await sc.close()
+    const raw = await readFile(file, 'utf8')
+    for (const line of raw.split('\n')) {
+      if (line.trim()) expect(() => JSON.parse(line)).not.toThrow()
+    }
+    const folded = foldSidecarRowsV2(await new TranscriptSidecar(dir, 'sid-1').load())
+    expect(folded.corrupt).toEqual([])
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['b'])
+  })
+
+  it('boundary truncation preserves a committed v1 suffix after a generation batch', async () => {
+    const dir = await tmpDir()
+    const sc = new TranscriptSidecar(dir, 'sid-1')
+    const g = [msgRow('g0', 0, 'a')]
+    await sc.appendBatch(g, genCommit('g0', 0, g))
+    // v1 live-ingest suffix appended after the generation commit.
+    await sc.appendRow({ seq: 1, uuid: 'c', type: 'assistant', msg: { type: 'assistant', uuid: 'c', message: { role: 'assistant', content: [] } } })
+    await sc.close()
+    const sc2 = new TranscriptSidecar(dir, 'sid-1')
+    await sc2.load()
+    const live = [msgRow('l1', 2, 'd')]
+    await sc2.appendBatch(live, liveCommit('l1', 0, live))
+    await sc2.close()
+    const folded = foldSidecarRowsV2(await new TranscriptSidecar(dir, 'sid-1').load())
+    expect(folded.corrupt).toEqual([])
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['a', 'c', 'd'])
+  })
+
+  it('recoverTail truncates a torn v1 tail byte-exact (multibyte row survives)', async () => {
+    const dir = await tmpDir()
+    const file = path.join(dir, 'transcripts', 'sid-1.ndjson')
+    const sc = new TranscriptSidecar(dir, 'sid-1')
+    const cjk = { seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a', message: { role: 'user', content: '继续 🚀 café' } } }
+    await sc.appendRow(cjk)
+    await sc.close()
+    await appendFile(file, '{"seq":1,"uuid":"b"') // torn v1 tail, no newline
+    const sc2 = new TranscriptSidecar(dir, 'sid-1')
+    await sc2.appendRow({ seq: 1, uuid: 'b', type: 'user', msg: { type: 'user', uuid: 'b', message: { role: 'user', content: 'ok' } } })
+    await sc2.close()
+    const rows = await new TranscriptSidecar(dir, 'sid-1').load()
+    expect(rows.map((r) => r.uuid)).toEqual(['a', 'b'])
+    expect((rows[0].msg as { message: { content: string } }).message.content).toBe('继续 🚀 café')
   })
 
   it('v1 duplicate base seq fails with duplicate-seq', () => {

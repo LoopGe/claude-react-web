@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, t
 vi.setConfig({ testTimeout: 30_000 })
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as nodeFs from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -9347,6 +9347,107 @@ describe('SessionManager', () => {
       h.emit({ type: 'result', subtype: 'success', uuid: 'r-2', num_turns: 1, result: 'ok' })
       await waitFor(() => s.pendingTurns === 0)
       expect(s.workingSince).toBeUndefined()
+    })
+
+    it('crash-corrupt generation batch is demoted; reconcile rebuilds the full window from the provider log', async () => {
+      // The 2d6a7e71 incident shape: a committed generation batch whose count
+      // mismatches its rows (a torn tail ate a row). Pre-fix the fold threw
+      // corrupt-sidecar → holder degraded → getTranscriptWindow 423 → blank
+      // panel. Now the batch is demoted and reconcile rebuilds from the JSONL.
+      const prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        const info = await sm.create({ cwd: TEST_CWD })
+        await sm.shutdown()
+        // Authoritative provider log: the full ordered transcript.
+        const jsonlPath = join(dir, 'projects', encodeCwd(TEST_CWD), `${info.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(jsonlPath, [
+          JSON.stringify({ type: 'user', uuid: 'u0', message: { role: 'user', content: 'hi' } }),
+          JSON.stringify({ type: 'assistant', uuid: 'a0', message: { id: 'm0', role: 'assistant', content: [{ type: 'text', text: 'r0' }] } }),
+          JSON.stringify({ type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'r1' }] } }),
+        ].join('\n') + '\n')
+        // Crash damage appended to the sidecar (fd closed after shutdown): a
+        // generation commit declaring 5 rows but carrying 1, bad checksum.
+        const sidecarPath = join(dir, 'transcripts', `${info.id}.ndjson`)
+        mkdirSync(dirname(sidecarPath), { recursive: true })
+        const corruptBatch = [
+          { v: 2, batchId: `rebuild-${info.id}-1`, seq: 0, uuid: 'u0', type: 'user', msg: { type: 'user', uuid: 'u0', message: { role: 'user', content: 'hi' } } },
+          { v: 2, commit: true, batchId: `rebuild-${info.id}-1`, batchType: 'generation', generation: 1, reason: 'ordered-rebuild', contentPolicy: 'preserve', count: 5, checksum: 'deadbeef' },
+        ]
+        appendFileSync(sidecarPath, corruptBatch.map((r) => JSON.stringify(r)).join('\n') + '\n')
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const win = await sm2.getTranscriptWindow(info.id)
+          const uuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+          expect(uuids).toEqual(['u0', 'a0', 'a1']) // rebuilt from the provider log
+          const holder = (sm2 as unknown as { transcriptStores: Map<string, { degraded: boolean }> }).transcriptStores.get(info.id)!
+          expect(holder.degraded).toBe(false)
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+      }
+    })
+
+    it('incident shape: torn uncommitted tail fuses with the next generation seq-0 row; demote + rebuild recovers', async () => {
+      // The exact 2d6a7e71 mechanism: a crash leaves an uncommitted batch's
+      // last row WITHOUT a newline; the next committed generation's seq-0 row
+      // concatenates onto it (both unparseable), so that generation parses one
+      // row short of its declared count. Pre-fix: validateCommit threw →
+      // degraded → blank panel. Now: demote → v1 fallback → rebuild from JSONL.
+      const prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        const info = await sm.create({ cwd: TEST_CWD })
+        await sm.shutdown()
+        const jsonlPath = join(dir, 'projects', encodeCwd(TEST_CWD), `${info.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(jsonlPath, [
+          JSON.stringify({ type: 'user', uuid: 'base', message: { role: 'user', content: 'old' } }),
+          JSON.stringify({ type: 'user', uuid: 'u0', message: { role: 'user', content: 'hi' } }),
+          JSON.stringify({ type: 'assistant', uuid: 'a0', message: { id: 'm0', role: 'assistant', content: [{ type: 'text', text: 'r0' }] } }),
+          JSON.stringify({ type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'r1' }] } }),
+        ].join('\n') + '\n')
+        const bid = `rebuild-${info.id}-1`
+        const g1Rows = [
+          { v: 2, batchId: bid, seq: 0, uuid: 'u0', type: 'user', msg: { type: 'user', uuid: 'u0', message: { role: 'user', content: 'hi' } } },
+          { v: 2, batchId: bid, seq: 1, uuid: 'a0', type: 'assistant', msg: { type: 'assistant', uuid: 'a0', message: { id: 'm0', role: 'assistant', content: [{ type: 'text', text: 'r0' }] } } },
+        ]
+        const g1Commit = makeCommitV2({ batchId: bid, batchType: 'generation', generation: 1, reason: 'ordered-rebuild', contentPolicy: 'preserve', rows: g1Rows })
+        const baseRow = { seq: 0, uuid: 'base', type: 'user', msg: { type: 'user', uuid: 'base', message: { role: 'user', content: 'old' } } }
+        const deadRow0 = { v: 2, batchId: 'dead', seq: 0, uuid: 'd0', type: 'user', msg: { type: 'user', uuid: 'd0', message: { role: 'user', content: 'x' } } }
+        const deadTorn = { v: 2, batchId: 'dead', seq: 1, uuid: 'd1', type: 'user', msg: { type: 'user', uuid: 'd1', message: { role: 'user', content: 'torn' } } }
+        const sidecarPath = join(dir, 'transcripts', `${info.id}.ndjson`)
+        mkdirSync(dirname(sidecarPath), { recursive: true })
+        const raw =
+          JSON.stringify(baseRow) + '\n' +
+          JSON.stringify(deadRow0) + '\n' +
+          JSON.stringify(deadTorn) +           // NO trailing newline — the crash tear
+          JSON.stringify(g1Rows[0]) + '\n' +   // fuses onto deadTorn → both unparseable
+          JSON.stringify(g1Rows[1]) + '\n' +
+          JSON.stringify(g1Commit) + '\n'
+        writeFileSync(sidecarPath, raw)
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const win = await sm2.getTranscriptWindow(info.id)
+          const uuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+          expect(uuids).toEqual(['base', 'u0', 'a0', 'a1'])
+          const holder = (sm2 as unknown as { transcriptStores: Map<string, { degraded: boolean }> }).transcriptStores.get(info.id)!
+          expect(holder.degraded).toBe(false)
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+      }
     })
 
     it('fork restart reconcile never re-appends an inherited prompt (v→u bridge)', async () => {
