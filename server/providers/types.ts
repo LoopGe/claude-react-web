@@ -378,6 +378,37 @@ export interface ProviderCapabilities {
    *  false), so this flag is about the provider's mechanism, not the CLI
    *  version of a particular spawn (spec §5.5). */
   supportsSteering: boolean
+  /** Sandboxed execution (claude's flag-settings sandbox layer). Providers
+   *  without it reject a sandbox-enabled create with 501. */
+  supportsSandbox: boolean
+  /** Background tasks survive a server restart (the claude CLI resumes its
+   *  own). When false, the host reconciles non-terminal task records to
+   *  'stopped' on hydrate — the provider's workers died with the process. */
+  tasksSurviveRestart: boolean
+  /** The provider's history log interleaves main-thread and subagent frames
+   *  in one stream (native), so a resume seed page must budget both rings;
+   *  false (claude) pages the main ring only. */
+  interleavedSubagentHistory: boolean
+  /** The host drives proactive auto-compaction before an idle dispatch
+   *  (native). When false (claude), the CLI auto-compacts internally and the
+   *  host does not pre-compact sends. */
+  hostDrivenAutoCompact: boolean
+  /** Attachments are content-addressed references that persist across turns
+   *  (native log): leases register per prompt uuid and release on
+   *  error/withdrawal. When false (claude), attachments are inline base64 and
+   *  leases release immediately after dispatch. */
+  persistentAttachmentRefs: boolean
+  /** The provider has CLI-side plan steering (claude): only SDK-forwarded
+   *  permission modes reach the handle, and a rejected switch releases plan
+   *  steering with 'default'. When false (native), the handle owns the actual
+   *  base mode (incl. acceptEdits/bypass) and a rejected switch keeps the
+   *  local mode enforced via canUseTool. */
+  cliSidePlanSteering: boolean
+  /** The provider owns a CLI transcript JSONL under the projects dir (claude).
+   *  The host scans it for transcript-size retention metrics only when true;
+   *  other providers (native logs elsewhere) would pay a scan for a file that
+   *  cannot exist. */
+  ownsCliTranscriptJsonl: boolean
 }
 
 export interface ListResumableOptions {

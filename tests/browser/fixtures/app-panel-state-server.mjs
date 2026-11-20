@@ -121,6 +121,15 @@ const capabilities = {
   supportsReadFile: false,
   supportsSubagentTranscripts: false,
   supportsSteering: false,
+  // Registered as 'claude': claude-equivalent values preserve the pre-capability
+  // behavior (this .mjs fixture escapes typecheck, so the flags must be explicit).
+  supportsSandbox: true,
+  tasksSurviveRestart: true,
+  interleavedSubagentHistory: false,
+  hostDrivenAutoCompact: false,
+  persistentAttachmentRefs: false,
+  cliSidePlanSteering: true,
+  ownsCliTranscriptJsonl: true,
 }
 const registry = new ProviderRegistry()
 registry.register({ name: 'claude', capabilities, createSession: (opts) => new FixtureHandle(opts) })

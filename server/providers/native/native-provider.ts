@@ -133,6 +133,13 @@ export class NativeProvider implements AgentProvider {
     supportsReadFile: true,
     supportsSubagentTranscripts: true,
     supportsSteering: true,
+    supportsSandbox: false,
+    tasksSurviveRestart: false,
+    interleavedSubagentHistory: true,
+    hostDrivenAutoCompact: true,
+    persistentAttachmentRefs: true,
+    cliSidePlanSteering: false,
+    ownsCliTranscriptJsonl: false,
   }
 
   readonly subagentTranscripts = {

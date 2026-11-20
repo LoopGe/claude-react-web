@@ -392,6 +392,13 @@ export class ClaudeProvider implements AgentProvider {
     // Mid-run steering 机制已实现；旧 CLI 的运行时退化由 supplement session
     // 不创建 + enqueueSupplement 恒 false 实现（spec §5.5）。
     supportsSteering: true,
+    supportsSandbox: true,
+    tasksSurviveRestart: true,
+    interleavedSubagentHistory: false,
+    hostDrivenAutoCompact: false,
+    persistentAttachmentRefs: false,
+    cliSidePlanSteering: true,
+    ownsCliTranscriptJsonl: true,
   }
 
   readonly subagentTranscripts = {

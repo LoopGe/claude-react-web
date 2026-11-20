@@ -1577,7 +1577,7 @@ export class SessionManager {
       if (this.sessions.get(id) !== session) return
       if (!records || records.length === 0) return
       let reconciled = false
-      if (session.provider === 'native') {
+      if (!this.capsOf(session.provider).tasksSurviveRestart) {
         const endedAt = Date.now()
         records = records.map((rec) => {
           if (isTerminalTaskStatus(rec.status)) return rec
@@ -1850,16 +1850,17 @@ export class SessionManager {
       model: opts.model ?? profileDefaultModel(profile),
     }
     // The sandbox is applied post-spawn through the flag-settings layer, which
-    // only the claude provider implements. Reject the intent for native BEFORE
-    // worktree provisioning: a rejected create must not leave an orphan
-    // worktree + branch behind. (The native provider has the same guard for
-    // direct createSession callers; this one runs earlier so no side effects
-    // happen at all.)
+    // not every provider implements. Reject a sandbox-enabled create for a
+    // provider without supportsSandbox BEFORE worktree provisioning: a rejected
+    // create must not leave an orphan worktree + branch behind. (Providers that
+    // lack sandbox also guard direct createSession callers; this one runs
+    // earlier so no side effects happen at all.)
+    const createProvider = withDefault.provider ?? this.defaultProvider
     if (
-      withDefault.provider === 'native'
+      !this.capsOf(createProvider).supportsSandbox
       && (opts as { sandbox?: SandboxSetting }).sandbox?.enabled === true
     ) {
-      throw new HttpError(501, 'provider native does not support sandbox')
+      throw new HttpError(501, `provider ${createProvider} does not support sandbox`)
     }
     // Create-time per-first-party-server override (app-level `firstPartyTools`
     // body field — NOT an SDK Options key; the provider whitelists what
@@ -2161,7 +2162,7 @@ export class SessionManager {
       // `slice(-subagentHistoryCap)`), do not depend on the page width.
       // NB: `sliceWindow` clamps `limit` to 1000, so the full-budget guarantee
       // degrades once historyCap + subagentHistoryCap exceeds 1000.
-      const pageLimit = provider === 'native'
+      const pageLimit = this.capsOf(provider).interleavedSubagentHistory
         ? this.historyCap + this.subagentHistoryCap
         : this.historyCap
       const page = await this.readProviderHistoryPage(provider, id, {
@@ -3852,7 +3853,7 @@ export class SessionManager {
           ? await this.clientOperationStore.get(id, clientOperationId)
           : null
         if (prior) return { uuid: prior.promptUuid, receivedAt: prior.receivedAt } as SentUserMessage
-        if (s.provider === 'native' && this.phaseOf(s) === 'idle') {
+        if (this.capsOf(s.provider).hostDrivenAutoCompact && this.phaseOf(s) === 'idle') {
           await this.autoCompactBeforeSend(s, lifecycle)
           this.assertSendCurrent(s, lifecycle)
         }
@@ -3970,7 +3971,7 @@ export class SessionManager {
     return this.opLock.run(id, async () => {
       this.assertSendCurrent(s, lifecycle)
       let leaseIds = new Set<string>()
-      let nativeLeaseRegistered = false
+      let leaseRegistered = false
       let userUuid: string | undefined
       try {
         // Idempotency before lease acquisition: a retry returns the original
@@ -3979,7 +3980,7 @@ export class SessionManager {
           ? await this.clientOperationStore.get(id, clientOperationId)
           : null
         if (prior) return { uuid: prior.promptUuid, receivedAt: prior.receivedAt } as SentUserMessage
-        if (s.provider === 'native' && this.phaseOf(s) === 'idle') {
+        if (this.capsOf(s.provider).hostDrivenAutoCompact && this.phaseOf(s) === 'idle') {
           await this.autoCompactBeforeSend(s, lifecycle)
           this.assertSendCurrent(s, lifecycle)
         }
@@ -4000,10 +4001,10 @@ export class SessionManager {
           uuid: randomUUID(),
           session_id: s.id,
         }
-        if (s.provider === 'native') {
+        if (this.capsOf(s.provider).persistentAttachmentRefs) {
           userUuid = userMsg.uuid!
           this.registerAttachmentLeases(id, userUuid, leaseIds)
-          nativeLeaseRegistered = true
+          leaseRegistered = true
         }
         const blockSummary = content.map((b) => b.type).join('+')
         const imagePayload = imagePayloadOfContent(content)
@@ -4033,14 +4034,14 @@ export class SessionManager {
         }
         return sent
       } catch (err) {
-        if (s.provider === 'native') {
-          if (nativeLeaseRegistered && userUuid !== undefined) {
+        if (this.capsOf(s.provider).persistentAttachmentRefs) {
+          if (leaseRegistered && userUuid !== undefined) {
             this.releaseAttachmentLeasesForUuid(id, userUuid)
           } else this.releaseAttachmentLeaseIds(leaseIds)
         }
         throw err
       } finally {
-        if (s.provider !== 'native') this.releaseAttachmentLeaseIds(leaseIds)
+        if (!this.capsOf(s.provider).persistentAttachmentRefs) this.releaseAttachmentLeaseIds(leaseIds)
         this.endSend(s, lifecycle)
       }
     })
@@ -4106,7 +4107,7 @@ export class SessionManager {
     s: Session,
     lifecycle: SendLifecycleState & { controller: AbortController },
   ): Promise<void> {
-    if (s.provider !== 'native' || this.phaseOf(s) !== 'idle') return
+    if (!this.capsOf(s.provider).hostDrivenAutoCompact || this.phaseOf(s) !== 'idle') return
     let joined: Promise<void> | undefined
     for (;;) {
       const inFlight = this.autoCompactOperations.get(s)
@@ -6232,9 +6233,10 @@ export class SessionManager {
     // Any SDK error is swallowed: local state already took effect, so the
     // switch never fails.
     const forwarded: PermissionMode = isSdkForwardedMode(mode) ? mode : 'default'
-    // Native has no CLI-side plan steering: its handle owns the actual base
-    // mode, including acceptEdits/bypassPermissions, so clear can restore it.
-    const providerMode = s.provider === 'native' ? mode : forwarded
+    // A provider without CLI-side plan steering owns the actual base mode in
+    // its handle (incl. acceptEdits/bypassPermissions), so clear can restore
+    // it; a provider with CLI-side steering forwards only SDK modes.
+    const providerMode = this.capsOf(s.provider).cliSidePlanSteering ? forwarded : mode
     // Lazy resolution keeps the sync 501/capability throw inside the awaited
     // try below, so a provider without this method still can't fail the switch.
     const setSdkMode = () =>
@@ -6255,7 +6257,7 @@ export class SessionManager {
       // enforces it locally, and releasing on an ambiguous error (e.g. a
       // control-request timeout after the CLI already applied the new mode)
       // would strip a mode that actually engaged.
-      if (s.provider === 'native' || forwarded === 'default' || previousMode !== 'plan') {
+      if (!this.capsOf(s.provider).cliSidePlanSteering || forwarded === 'default' || previousMode !== 'plan') {
         log.warn(
           `[session ${id}] SDK setPermissionMode(${providerMode}) failed; ` +
           `mode kept locally and enforced via canUseTool:`,
@@ -8378,9 +8380,9 @@ export class SessionManager {
       const sessions = [...this.sessions.values()]
       const files = await Promise.all(
         sessions.map((s) => (
-          // Only the claude provider owns a CLI JSONL; native/other providers
-          // would pay a projects-dir scan for a file that cannot exist.
-          s.provider === 'claude' ? findTranscriptFile(s.id).catch(() => null) : Promise.resolve(null)
+          // Only a provider that owns a CLI JSONL is scanned; others would pay
+          // a projects-dir scan for a file that cannot exist.
+          this.capsOf(s.provider).ownsCliTranscriptJsonl ? findTranscriptFile(s.id).catch(() => null) : Promise.resolve(null)
         )),
       )
       const ring = ringImagePayload(sessions)
@@ -10371,6 +10373,16 @@ export class SessionManager {
     log.info(`[session ${s.id}] model switch confirmed on retry`)
   }
 
+  /** Capabilities of a provider, the single idiom for provider-specific manager
+   *  behavior (reads a flag instead of hardcoding a provider name). Callers
+   *  include disk/body-derived names (create's body.provider, resume's
+   *  meta.provider), not only live sessions: ProviderRegistry.get throws
+   *  HttpError(400) for an unknown name, so an unregistered provider surfaces
+   *  as a 400 rather than a silent capability-less fallback. */
+  private capsOf(provider: string): ProviderCapabilities {
+    return this.providers.get(provider).capabilities
+  }
+
   private requireHandleMethod<T extends (...args: never[]) => unknown>(
     s: Session,
     method: keyof ProviderSessionHandle,
@@ -10479,7 +10491,7 @@ export class SessionManager {
       effortLevel: x.effortLevel,
       thinking: x.thinking,
       taskBudget: x.taskBudget,
-      taskControlSupported: this.providers.get(x.provider ?? 'claude').capabilities.supportsTaskControl,
+      taskControlSupported: this.capsOf(x.provider ?? 'claude').supportsTaskControl,
       terminated: x.terminated,
       terminatedReason: x.terminatedReason,
       canRetryResume: x.terminated && isTransientTerminatedReason(x.terminatedReason),
@@ -10518,7 +10530,7 @@ export class SessionManager {
       thinkingSupported: s.thinkingSupported,
       steeringSupported:
         (s.handle as ProviderSessionHandle).steeringActive ??
-        this.providers.get(s.provider).capabilities.supportsSteering,
+        this.capsOf(s.provider).supportsSteering,
       running: s.running,
       recovering: s.recovering,
       working: isWorking,
@@ -11299,8 +11311,8 @@ export class SessionManager {
     // Guard: session must still be live and not explicitly stopped.
     if (!this.sessions.has(session.id)) return false
     if (session.terminated || session.clearing) return false
-    const caps = this.providers.get(session.provider)?.capabilities
-    if (!caps?.supportsResume) return this.crashRecoveryGiveUp(session)
+    const caps = this.capsOf(session.provider)
+    if (!caps.supportsResume) return this.crashRecoveryGiveUp(session)
 
     const attempt = this.crashRecoveryCounts.get(session) ?? 0
     if (attempt >= this.maxCrashRecovery) {

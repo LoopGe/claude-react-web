@@ -51,9 +51,28 @@ Pure structural refactor, no behavior change.
 
 Scope boundary: the native-only optional handle methods (`getAttachmentCatalog`,
 `seedCompactSummary`, `compactInPlace`, etc.) stay optional members of the neutral
-contract (now neutral-typed). Capability-gating them and removing session-manager's
-11 `'native'` special-cases is option A item 4, NOT this change. Full SDK-frame
-vocabulary / persistence independence is option C, NOT this change.
+contract (now neutral-typed). Full SDK-frame vocabulary / persistence independence
+is option C, still open.
+
+**Option A item 4 — DONE (2026-11-20).** session-manager's provider-name
+special-cases are removed (the 11 `'native'` branches plus a `'claude'` branch
+in recordRetentionMetrics); provider-specific manager behavior now reads seven
+capability flags on `ProviderCapabilities` (claude / native values):
+`supportsSandbox` (true/false — sandbox-enabled create 501),
+`tasksSurviveRestart` (true/false — host reconciles non-terminal tasks to
+'stopped' on hydrate when false), `interleavedSubagentHistory` (false/true —
+resume seed page budgets both rings when true), `hostDrivenAutoCompact`
+(false/true — host pre-compacts idle sends when true), `persistentAttachmentRefs`
+(false/true — leases register per prompt uuid and release on error/withdrawal
+when true, else release immediately after dispatch), `cliSidePlanSteering`
+(true/false — forwarded SDK modes + plan-steering release on rejection when
+true, else the handle owns the base mode and a rejected switch keeps the local
+mode), `ownsCliTranscriptJsonl` (true/false — host scans the projects-dir JSONL
+for retention metrics only when true). All capability reads route through one
+`capsOf(provider)` helper (ProviderRegistry.get throws 400 on unknown names). A
+structural pin (`seam-neutrality.test.ts`) asserts session-manager contains zero
+`===`/`!==` comparisons against `'native'` or `'claude'` (both quote styles).
+Behavior unchanged.
 
 ## Alternatives considered
 

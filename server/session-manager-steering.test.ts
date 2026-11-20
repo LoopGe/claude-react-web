@@ -90,6 +90,15 @@ const FAKE_CAPS: ProviderCapabilities = {
   supportsReadFile: false,
   supportsSubagentTranscripts: false,
   supportsSteering: true,
+  // 'fake' provider is not 'native': claude-equivalent values preserve the
+  // pre-capability behavior (every native special-case was false for it).
+  supportsSandbox: true,
+  tasksSurviveRestart: true,
+  interleavedSubagentHistory: false,
+  hostDrivenAutoCompact: false,
+  persistentAttachmentRefs: false,
+  cliSidePlanSteering: true,
+  ownsCliTranscriptJsonl: false,
 }
 
 class FakeProvider implements AgentProvider {

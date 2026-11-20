@@ -85,6 +85,15 @@ const CAPS: ProviderCapabilities = {
   supportsReadFile: false,
   supportsSubagentTranscripts: false,
   supportsSteering: false,
+  // 'test' provider is not 'native': preserve the pre-capability behavior
+  // (every native special-case was false for it) — claude-equivalent values.
+  supportsSandbox: true,
+  tasksSurviveRestart: true,
+  interleavedSubagentHistory: false,
+  hostDrivenAutoCompact: false,
+  persistentAttachmentRefs: false,
+  cliSidePlanSteering: true,
+  ownsCliTranscriptJsonl: false,
 }
 
 class TestHandle implements ProviderSessionHandle {

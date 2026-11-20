@@ -37,4 +37,14 @@ describe('provider seam neutrality', () => {
     expect(existsSync(here('./native/attachment-reference-index.ts'))).toBe(true)
     expect(existsSync(here('../attachment-reference-index.ts'))).toBe(false)
   })
+
+  it('session-manager has no provider-name special-cases (capability-gated)', () => {
+    // Item ④ of the seam neutralization: every provider-specific behavior the
+    // manager branches on must read a capability flag, not hardcode a provider
+    // name. Both quote styles are accepted (a single-quote-only scan would miss
+    // a double-quoted comparison — see importSpecifiers above).
+    const src = readFileSync(here('../session-manager.ts'), 'utf8')
+    const specialCases = src.match(/[!=]== ['"](native|claude)['"]/g) ?? []
+    expect(specialCases).toHaveLength(0)
+  })
 })
