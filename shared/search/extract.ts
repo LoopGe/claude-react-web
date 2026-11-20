@@ -193,7 +193,7 @@ export function extractMessagePlainText(msg: SearchableMessage): string | null {
     const parts: string[] = []
     for (const b of content as SearchableBlock[]) {
       if (b.type === 'text' && typeof b.text === 'string') {
-        // File handles are model-facing plumbing; the UI renders a chip.
+        // Attachment handles (file/image) are model-facing plumbing; the UI renders a chip.
         const text = extractPlainText(stripHandles(b.text))
         if (text) parts.push(text)
       } else if (b.type === 'tool_result') {

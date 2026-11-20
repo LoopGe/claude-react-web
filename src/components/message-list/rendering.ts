@@ -9,8 +9,8 @@ export function extractUserText(msg: SdkMessage): string | null {
   if (typeof content === 'string') return stripHandles(content) || null
   if (Array.isArray(content)) {
     const text = (content as Block[])
-      // A file handle is model-facing plumbing, not something the user typed;
-      // the chip row renders it instead.
+      // Attachment handles (file/image) are model-facing plumbing, not something
+      // the user typed; the chip row renders them instead.
       .filter((b) => b.type === 'text' && typeof b.text === 'string')
       .map((b) => stripHandles(b.text as string))
       .filter((part) => part !== '')
