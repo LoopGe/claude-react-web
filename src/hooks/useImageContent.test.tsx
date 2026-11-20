@@ -54,6 +54,10 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+async function flushMicrotasks(ticks = 20): Promise<void> {
+  for (let i = 0; i < ticks; i++) await Promise.resolve()
+}
+
 beforeEach(() => {
   urlCounter = 0
   createObjectURL.mockClear()
@@ -186,5 +190,54 @@ describe('useImageContent', () => {
     await waitFor(() => expect(result.current.url).toBe('blob:content-2'))
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(String(fetchMock.mock.calls[1][0])).toBe(`/api/attachments/images/${digestOf(REF_B)}`)
+  })
+
+  // Row-reuse race (Virtuoso hands a mounted row a new block): the previous
+  // ref's load is still in flight when the ref switches. Its late settlement
+  // must not paint over the current ref's state — the render-phase guard
+  // never re-corrects (trackedId already equals the new id).
+  it('a slow load for a previous ref cannot overwrite the current ref on row reuse', async () => {
+    const gateA = deferred<Response>()
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith(digestOf(REF_A))) return gateA.promise
+      return Promise.resolve(new Response(new Uint8Array([1, 2, 3, 4])) as Response)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { result, rerender } = renderHook(({ r }: { r: ImageAttachmentRef }) => useImageContent(r), {
+      initialProps: { r: REF_A },
+    })
+    // A's fetch is gated; switch the row to B, whose content lands immediately.
+    rerender({ r: REF_B })
+    await waitFor(() => expect(result.current.url).toBe('blob:content-1'))
+    // Release A's slow fetch LAST. Its load completes (a URL is minted and
+    // cached for future use) but the stale callback must not set state.
+    await act(async () => {
+      gateA.resolve(new Response(new Uint8Array([9, 9, 9, 9])) as Response)
+      await flushMicrotasks()
+    })
+    expect(createObjectURL).toHaveBeenCalledTimes(2) // A's load DID complete
+    expect(result.current.url).toBe('blob:content-1') // still B, not A
+    expect(result.current.failed).toBe(false)
+  })
+
+  it('a slow refusal for a previous ref cannot mark the current ref failed', async () => {
+    const gateA = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith(digestOf(REF_A))) return gateA.promise
+      return Promise.resolve(new Response(new Uint8Array([1, 2, 3, 4])) as Response)
+    }))
+    const { result, rerender } = renderHook(({ r }: { r: ImageAttachmentRef }) => useImageContent(r), {
+      initialProps: { r: REF_A },
+    })
+    rerender({ r: REF_B })
+    await waitFor(() => expect(result.current.url).toBe('blob:content-1'))
+    // A's 404 lands after the switch — it must not flip B to failed.
+    await act(async () => {
+      gateA.resolve(new Response('gone', { status: 404 }) as Response)
+      await flushMicrotasks()
+    })
+    expect(result.current).toEqual({ url: 'blob:content-1', failed: false })
   })
 })

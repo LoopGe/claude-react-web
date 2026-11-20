@@ -131,6 +131,12 @@ export function useImageContent(ref: ImageAttachmentRef | null): ImageContentSta
 
   useEffect(() => {
     if (id === null) return
+    // Stale-closure guard: when the row is reused for a new ref (or
+    // unmounts) before this load settles, the late callback must not paint
+    // the OLD ref's outcome over the new state — the render-phase read
+    // never re-corrects (trackedId already equals the new id). The load
+    // itself still completes and caches its entry for future subscribers.
+    let active = true
     subscribers.set(id, (subscribers.get(id) ?? 0) + 1)
     const cached = cache.get(id)
     if (cached !== undefined) touch(id, cached)
@@ -140,10 +146,11 @@ export function useImageContent(ref: ImageAttachmentRef | null): ImageContentSta
     // effect, and keeps the effect body free of synchronous setState).
     const resolved = cached !== undefined ? Promise.resolve(cached) : load(id)
     resolved.then(
-      (entry) => setState({ url: entry.url, failed: false }),
-      () => setState({ url: null, failed: true }),
+      (entry) => { if (active) setState({ url: entry.url, failed: false }) },
+      () => { if (active) setState({ url: null, failed: true }) },
     )
     return () => {
+      active = false
       const remaining = (subscribers.get(id) ?? 1) - 1
       if (remaining <= 0) subscribers.delete(id)
       else subscribers.set(id, remaining)
