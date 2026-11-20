@@ -936,6 +936,13 @@ export interface PumpDeps {
    *  the real completion isn't double-reported. Optional so test fixtures
    *  can omit it. */
   onTaskNotification?: (sessionId: string, toolUseId: string) => void
+  /** Called after the pump folds a background-task TERMINAL signal — a
+   *  `task_notification` completion or a `background_tasks_changed` live-set
+   *  replace that can settle running tasks. The SessionManager re-evaluates its
+   *  pending-rebuild scheduler (spec §8.1, Task 4): a settled background task may
+   *  clear the last quiesce blocker. Fired after the fold, so the task map already
+   *  reflects the terminal state. Optional so test fixtures can omit it. */
+  onBackgroundTaskSettled?: (sessionId: string) => void
   /** Called when a CLI notification frame (SDK `system/notification`) arrives.
    *  The SessionManager mirrors it onto the global WS channel so App-level
    *  code can fire a browser/OS notification even when the session's Chat
@@ -1530,6 +1537,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             applyBackgroundTasksChanged(session, msg)
             try { deps.recordTasksSnapshot?.(session.id) }
             catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
+            // A live-set replace can settle running background tasks — notify the
+            // pending-rebuild scheduler (spec §8.1, Task 4).
+            try { deps.onBackgroundTaskSettled?.(session.id) }
+            catch (err) { log.warn(`[session ${session.id}] onBackgroundTaskSettled threw: ${err}`) }
             continue
           }
           if (subtype === 'task_notification') {
@@ -1549,6 +1560,11 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             // user message or main-thread Task tool_result.
             try { deps.onTaskListChanged?.(session.id) }
             catch (err) { log.warn(`[session ${session.id}] onTaskListChanged threw: ${err}`) }
+            // A completion settles a background task — notify the pending-rebuild
+            // scheduler (spec §8.1, Task 4). The fold above already terminal-ized
+            // the record, so backgroundSubagentCount reflects the settled state.
+            try { deps.onBackgroundTaskSettled?.(session.id) }
+            catch (err) { log.warn(`[session ${session.id}] onBackgroundTaskSettled threw: ${err}`) }
           }
         }
         // Only durable transcript messages enter the bounded history ring

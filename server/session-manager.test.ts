@@ -10682,6 +10682,222 @@ describe('SessionManager', () => {
       }
     })
   })
+  describe('quiesceEligible + pendingRebuilds auto-scheduler (spec §8.1, Task 4)', () => {
+    let prevConfigDir: string | undefined
+    beforeEach(() => {
+      prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    })
+
+    const live = (id: string): Session =>
+      (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)!
+    const emitAssistant = (uuid: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant', uuid, parent_tool_use_id: null,
+        message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+    const emitResult = (uuid: string, extra: Record<string, unknown> = {}) => {
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid, num_turns: 1, result: `answer-${uuid}`, ...extra })
+    }
+    const pendingOp = (operationId: string, uuid: string): PendingOperation => ({
+      operationId,
+      entry: {
+        occurrenceId: `occ-${uuid}`,
+        msg: { type: 'assistant', uuid, parent_tool_use_id: null, message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text: 'pending' }] } },
+        source: 'provider', aliases: [], evicted: false,
+      },
+    })
+    const arm = (id: string, operationId = 'op-1', uuid = 'R') =>
+      sm.beginTranscriptRebuild(id, pendingOp(operationId, uuid))
+    const capableSub = (id: string) => sm.subscribe(id, { orderedRebase: true })
+    const stubExecutor = () =>
+      vi.spyOn(sm, 'retryTranscriptReconcile').mockResolvedValue({ generation: 1, headSeq: 0, degraded: false })
+    const seedBackgroundSubagent = (s: Session, taskId = 't1') => {
+      s.tasks.set(taskId, {
+        taskId, description: 'bg', status: 'running', taskType: 'subagent',
+        isBackgrounded: true, updatedAt: Date.now(),
+      } as TaskRecordUi)
+    }
+
+    describe('quiesceEligible predicate', () => {
+      it('an idle session is eligible', async () => {
+        const info = await sm.create({ cwd: TEST_CWD })
+        expect(sm.quiesceEligible(live(info.id))).toBe(true)
+      })
+      it('an executing turn (pendingTurns > 0) rejects', async () => {
+        const info = await sm.create({ cwd: TEST_CWD })
+        live(info.id).pendingTurns = 1
+        expect(sm.quiesceEligible(live(info.id))).toBe(false)
+      })
+      it('turnActive rejects even with pendingTurns 0', async () => {
+        const info = await sm.create({ cwd: TEST_CWD })
+        live(info.id).turnActive = true
+        expect(sm.quiesceEligible(live(info.id))).toBe(false)
+      })
+      it('a running background subagent rejects', async () => {
+        const info = await sm.create({ cwd: TEST_CWD })
+        seedBackgroundSubagent(live(info.id))
+        expect(sm.quiesceEligible(live(info.id))).toBe(false)
+      })
+      it('a broker-blocked session (pending permission ONLY) IS eligible — unlike phaseOf', async () => {
+        const info = await sm.create({ cwd: TEST_CWD })
+        const s = live(info.id)
+        s.pending.set('p1', { resolve: () => {} } as never)
+        // phaseOf maps broker-blocked to 'working'; quiesceEligible must NOT.
+        expect(sm.phaseOf(s)).toBe('working')
+        expect(sm.quiesceEligible(s)).toBe(true)
+      })
+      it('queued input WITHOUT an executing turn is a legal drain state (eligible)', async () => {
+        const info = await sm.create({ cwd: TEST_CWD })
+        const s = live(info.id)
+        Object.defineProperty(s.handle, 'queueDepth', { configurable: true, value: 1 })
+        expect(s.pendingTurns).toBe(0)
+        expect(sm.quiesceEligible(s)).toBe(true)
+      })
+      it('an in-flight send rejects', async () => {
+        const info = await sm.create({ cwd: TEST_CWD })
+        const s = live(info.id)
+        ;(sm as unknown as { sendState(x: Session): { controller?: AbortController } }).sendState(s).controller = new AbortController()
+        expect(sm.quiesceEligible(s)).toBe(false)
+      })
+      it('an accepted plugin invocation rejects (probe seam)', async () => {
+        const info = await sm.create({ cwd: TEST_CWD })
+        sm.setPluginInvocationProbe((id) => id === info.id)
+        expect(sm.quiesceEligible(live(info.id))).toBe(false)
+        sm.setPluginInvocationProbe(() => false)
+        expect(sm.quiesceEligible(live(info.id))).toBe(true)
+      })
+      it('clearing and handoff windows reject', async () => {
+        const info = await sm.create({ cwd: TEST_CWD })
+        const s = live(info.id)
+        s.clearing = true
+        expect(sm.quiesceEligible(s)).toBe(false)
+        s.clearing = false
+        s.handoffAbort = new AbortController()
+        expect(sm.quiesceEligible(s)).toBe(false)
+      })
+    })
+
+    it('auto-fires the rebuild when the turn idles (capable tab attached)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      capableSub(info.id)
+      const exec = stubExecutor()
+      await sm.send(info.id, 'first')          // turn starts (pendingTurns=1)
+      emitAssistant('A1', 'reply')
+      await arm(info.id)                        // pending rebuild armed mid-turn
+      emitResult('r1')                          // normal tail result settles the turn
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+    })
+
+    it('does NOT fire while a turn executes; fires once it settles', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      capableSub(info.id)
+      const exec = stubExecutor()
+      await sm.send(info.id, 'first')          // executing turn
+      await arm(info.id)
+      sm.schedulePendingRebuilds(info.id)       // re-evaluate while executing
+      await tick()
+      expect(exec).not.toHaveBeenCalled()
+      emitAssistant('A1', 'reply')
+      emitResult('r1')                          // turn settles → onTurnSettling hook
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+    })
+
+    it('does NOT fire while a background task runs; re-evaluates on its terminal', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      capableSub(info.id)
+      const exec = stubExecutor()
+      await arm(info.id)
+      seedBackgroundSubagent(live(info.id), 't1')
+      sm.schedulePendingRebuilds(info.id)       // background blocker present
+      await tick()
+      expect(exec).not.toHaveBeenCalled()
+      // The CLI's completion frame folds the task terminal and notifies the scheduler.
+      mockHandles[0].emit({ type: 'system', subtype: 'task_notification', task_id: 't1', status: 'completed', tool_use_id: 'tu1' })
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+    })
+
+    it('capability-incapable subscriber → no fire', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      sm.subscribe(info.id, { orderedRebase: false })
+      const exec = stubExecutor()
+      await arm(info.id)
+      sm.schedulePendingRebuilds(info.id)
+      await tick()
+      expect(exec).not.toHaveBeenCalled()
+    })
+
+    it('no capable consumer attached → no fire; a capable subscribe fires it', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const exec = stubExecutor()
+      await arm(info.id)
+      sm.schedulePendingRebuilds(info.id)       // quiesced + capable, but unwatched
+      await tick()
+      expect(exec).not.toHaveBeenCalled()
+      capableSub(info.id)                        // capability-change hook re-evaluates
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+    })
+
+    it('is idempotent: a run in flight is not re-fired', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      capableSub(info.id)
+      let resolveExec!: (v: { generation: number; headSeq: number; degraded: boolean }) => void
+      const exec = vi.spyOn(sm, 'retryTranscriptReconcile').mockReturnValue(
+        new Promise((r) => { resolveExec = r }) as never,
+      )
+      await arm(info.id)
+      sm.schedulePendingRebuilds(info.id)
+      expect(await waitFor(() => exec.mock.calls.length === 1)).toBe(true)
+      sm.schedulePendingRebuilds(info.id)       // run still in flight → no re-fire
+      sm.schedulePendingRebuilds(info.id)
+      await tick()
+      expect(exec).toHaveBeenCalledTimes(1)
+      resolveExec({ generation: 1, headSeq: 0, degraded: false })
+      await tick()
+    })
+
+    it('durable authority: a compact-superseded pending does not fire (writer list retained)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      capableSub(info.id)
+      const exec = stubExecutor()
+      await arm(info.id)
+      // In-place compact reset commits a new generation, superseding the durable
+      // pending row and clearing the holder flag — but the writer's in-memory
+      // pendingRebuilds list retains the op (no writer clear API).
+      const s = live(info.id)
+      ;(s.handle as unknown as { compactInPlace: () => Promise<void> }).compactInPlace = vi.fn(async () => {})
+      s.lastContextUsage = { totalTokens: 90, maxTokens: 100, rawMaxTokens: 100, percentage: 90, model: 'test-model' }
+      await (sm as unknown as { maybeAutoCompact(x: Session): Promise<void> }).maybeAutoCompact(s)
+      expect(sm.transcriptHead(info.id)?.generation).toBe(1)
+      expect(readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load())).toEqual([])
+      const writer = (sm as unknown as { transcriptWriters: Map<string, { pendingRebuilds: unknown[] }> }).transcriptWriters.get(info.id)!
+      expect(writer.pendingRebuilds.length).toBe(1) // stale in-memory list retained
+      sm.schedulePendingRebuilds(info.id)        // must NOT fire off the stale list
+      await tick()
+      expect(exec).not.toHaveBeenCalled()
+    })
+
+    it('handles an executor refusal gracefully: pending retained, no re-fire loop', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      capableSub(info.id)
+      const exec = vi.spyOn(sm, 'retryTranscriptReconcile').mockRejectedValue(new HttpError(409, 'client-upgrade-required'))
+      await arm(info.id)
+      sm.schedulePendingRebuilds(info.id)
+      expect(await waitFor(() => exec.mock.calls.length === 1)).toBe(true)
+      await tick()
+      await tick()
+      expect(exec).toHaveBeenCalledTimes(1)     // refusal does not loop
+      // Admission stays closed; the durable payload is retained for a later event.
+      await expect(sm.send(info.id, 'still closed')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+      expect(readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load())).toHaveLength(1)
+    })
+  })
+
   describe('fork pre-seed spawn-marker recovery (spec §11)', () => {
     let prevConfigDir: string | undefined
     beforeEach(() => {

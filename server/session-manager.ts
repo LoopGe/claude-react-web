@@ -967,6 +967,12 @@ export class SessionManager {
    * persists or is withdrawn. Non-native sends release at dispatch completion. */
   private readonly attachmentSendLeases = new Map<string, Map<string, Set<string>>>()
   private readonly sendStates = new WeakMap<Session, SendLifecycleState>()
+  /** Optional probe for accepted (in-flight) app-plugin invocations on a session
+   *  (spec §8.1 quiesceEligible). The App Plugin host owns the invocation registry
+   *  (AppPluginManager.inFlight); it wires this probe so a rebuild never quiesces
+   *  over a running plugin command. Undefined when the app-plugin subsystem is
+   *  absent/disabled — then no plugin invocation can block a rebuild. */
+  private pluginInvocationProbe?: (sessionId: string) => boolean
   private promptUuidStore: PromptUuidStore
   /** Send idempotency (spec §8.3): clientOperationId → original dispatch ack. */
   private clientOperationStore: ClientOperationStore
@@ -1080,6 +1086,12 @@ export class SessionManager {
   /** In-flight transcript reconciles, keyed by session id — getTranscriptWindow
    *  and resume() can both trigger one; they must share the same promise. */
   private readonly transcriptReconciles = new Map<string, Promise<TranscriptHolder>>()
+  /** Sessions with an auto pending-rebuild run in flight (spec §8.1, Task 4).
+   *  The scheduler is idempotent: while a run is in flight, further lifecycle
+   *  events re-evaluate but never re-fire the executor. Held across the WHOLE
+   *  executor call (including its internal resume), so the resume/recovery hooks
+   *  it triggers cannot loop back into a second concurrent rebuild. */
+  private readonly pendingRebuildRuns = new Set<string>()
   /** Message → seq association for messages that entered the history ring
    *  AFTER seq assignment (pump ingest + direct ring appends). A WeakMap
    *  keyed by the message OBJECT (not a ring index) so later tasks can read
@@ -1222,6 +1234,10 @@ export class SessionManager {
         // watcher vanishes across a restart.
         applyTaskEvent(s, msg)
         this.persistTasks(s)
+        // The watcher's synthesized completion settles a background subagent
+        // OUTSIDE the pump loop (no onBackgroundTaskSettled dep fires) — it can
+        // clear the last quiesce blocker, so re-evaluate the pending rebuild.
+        this.schedulePendingRebuilds(s.id)
       },
       broadcastGlobal: (ev) => this.broadcastGlobal(ev),
       info: (s) => this.info(s),
@@ -2314,6 +2330,10 @@ export class SessionManager {
     // Crash recovery (spec §7.2): re-materialize/re-dispatch prompts that were
     // queued-not-published / enqueue-not-attempted when the prior process died.
     await this.recoverPendingInputs(id)
+    // Process recovery (spec §8.1, Task 4): the session is now live again. If a
+    // durable pending rebuild survived the restart (re-armed during reconcile),
+    // re-evaluate the auto-rebuild now that a provider exists to quiesce.
+    this.schedulePendingRebuilds(id)
     return spawned
   }
 
@@ -4102,6 +4122,11 @@ export class SessionManager {
   private endSend(s: Session, lifecycle: SendLifecycleState & { controller: AbortController }): void {
     const state = this.sendState(s)
     if (state.controller === lifecycle.controller) state.controller = undefined
+    // In-flight send settle (spec §8.1, Task 4): a send that started before
+    // admission closed was a quiesce blocker; its settle re-evaluates the pending
+    // rebuild. A send that dispatched a turn keeps pendingTurns > 0, so the
+    // scheduler stays gated until that turn settles.
+    this.schedulePendingRebuilds(s.id)
   }
 
   private cancelPendingSend(id: string, reason: 'interrupt' | 'clear' | 'delete'): void {
@@ -8306,6 +8331,9 @@ export class SessionManager {
     const sub = createAsyncSubscription<SessionLiveFrame>(() => {
       s.subscribers.delete(subId)
       this.subscriptionHub.detach(id, subId)
+      // Capability change (spec §8.1, Task 4): a departing subscriber can clear
+      // the last incapable blocker (or remove the capable consumer). Re-evaluate.
+      this.schedulePendingRebuilds(id)
     })
     const sdkSub: Subscriber = {
       id: subId,
@@ -8327,6 +8355,10 @@ export class SessionManager {
         get closed() { return sub.closed },
         orderedRebase: opts.orderedRebase === true,
       })
+      // Capability change (spec §8.1, Task 4): a capable browser attaching is the
+      // consumer the auto-rebuild waits for (e.g. the first reconnect after a
+      // process recovery). Re-evaluate a pending rebuild now that one is present.
+      this.schedulePendingRebuilds(id)
     }
 
     return {
@@ -8816,6 +8848,11 @@ export class SessionManager {
             for (const op of pendingRebuilds) {
               if (!have.has(op.operationId)) w.addPendingRebuild(op)
             }
+            // Process recovery (spec §8.1, Task 4): the re-armed pending payload
+            // re-evaluates the auto-rebuild. No-op unless the session is live,
+            // quiesced and watched by a capable tab — during resume the session is
+            // not yet live, so the post-resume hook / first capable subscribe fires.
+            this.schedulePendingRebuilds(id)
           }
         }
       }
@@ -9233,6 +9270,68 @@ export class SessionManager {
   async abortTranscriptRebuild(id: string, outcome: 'cancelled' | 'failed'): Promise<void> {
     await this.transcriptWriters.get(id)?.abortRebuild(outcome)
     if (outcome === 'cancelled') this.setRebuildAdmissionPending(id, false)
+  }
+
+  /** Event-driven auto-scheduler for pending rebuilds (spec §8.1, Task 4).
+   *  Re-evaluated on every lifecycle event that can clear a quiesce blocker —
+   *  turn settling, background-task terminal, in-flight send settle, subscriber
+   *  capability change, process recovery, and resume. Fires the rebuild executor
+   *  ONLY when a durable pending operation exists AND the session is quiesced
+   *  AND a capable browser consumer is attached. A blocker that is still present
+   *  retains the pending payload and waits for the next event (no polling loop).
+   *
+   *  The holder's rebuildAdmissionPending flag is the FAST admission signal; the
+   *  durable authority (readPendingRebuilds over the sidecar rows) is consulted
+   *  in the async runner before firing, so a pending op superseded by a committed
+   *  generation/reset (e.g. an in-place compact that retained the writer's
+   *  in-memory list) never fires a stale rebuild.
+   *
+   *  INTERIM executor: retryTranscriptReconcile (Task 5 replaces it with the
+   *  drain-preserve-replay quiesceAndRebuild and repoints this scheduler). */
+  schedulePendingRebuilds(id: string): void {
+    const t = this.transcriptStores.get(id)
+    if (t?.rebuildAdmissionPending !== true) return
+    if (this.pendingRebuildRuns.has(id)) return // idempotent: a run is in flight
+    const s = this.sessions.get(id)
+    // A dormant session has no live provider to quiesce; the auto path waits for
+    // it to resume (the resume hook re-evaluates). Explicit Retry handles dormant.
+    if (!s || !this.quiesceEligible(s)) return
+    if (!this.subscriptionHub.allSubscribersCapable(id)) return
+    if (!this.subscriptionHub.hasLiveCapableSubscriber(id)) return
+    this.pendingRebuildRuns.add(id)
+    void this.runPendingRebuild(id).finally(() => { this.pendingRebuildRuns.delete(id) })
+  }
+
+  /** The scheduler's async leg: confirm the durable pending payload, re-check the
+   *  quiesce/capability gates after the async reads (state may have moved), then
+   *  run the executor. Refusal/degraded outcomes are logged and the pending
+   *  payload retained — recovery is a later lifecycle event or an explicit Retry,
+   *  never an immediate re-fire (which would loop). */
+  private async runPendingRebuild(id: string): Promise<void> {
+    try {
+      // Let an in-flight rebuild-pending fsync land before reading the durable
+      // authority — detection persists fire-and-forget, so the recovery batch may
+      // still be queued when the turn-settling event fires the scheduler.
+      const w = this.transcriptWriters.get(id)
+      if (w?.hasPendingCommits) await w.drain()
+      const t = this.transcriptStores.get(id)
+      if (t?.rebuildAdmissionPending !== true) return // resolved while awaiting
+      const rows = await t.sidecar.load()
+      if (readPendingRebuilds(rows).length === 0) return // durable authority: nothing pending
+      const s = this.sessions.get(id)
+      if (!s || !this.quiesceEligible(s)) return
+      if (!this.subscriptionHub.allSubscribersCapable(id)) return
+      if (!this.subscriptionHub.hasLiveCapableSubscriber(id)) return
+      log.info(`[session ${id}] auto pending-rebuild: session quiesced, firing reconcile/rebuild`)
+      const res = await this.retryTranscriptReconcile(id)
+      if (res.degraded) {
+        log.warn(`[session ${id}] auto pending-rebuild left the transcript degraded; explicit Retry required`)
+      }
+    } catch (err) {
+      // Capability refusal (409) / reconcile failure: the old projection is intact
+      // and the pending payload retained. Wait for the next event, do not re-fire.
+      log.warn(`[session ${id}] auto pending-rebuild did not complete (pending retained): ${(err as Error).message ?? err}`)
+    }
   }
 
   /** The session's persisted reset journal (spec §8.3), lazily created, under
@@ -10858,6 +10957,46 @@ export class SessionManager {
     return 'idle'
   }
 
+  /** Register the app-plugin invocation probe used by quiesceEligible (spec
+   *  §8.1). The App Plugin host (AppPluginManager) calls this with a predicate
+   *  over its in-flight invocation registry so an accepted plugin command counts
+   *  as work that must complete before a rebuild quiesces the session. */
+  setPluginInvocationProbe(probe: (sessionId: string) => boolean): void {
+    this.pluginInvocationProbe = probe
+  }
+
+  /** Whether a live session is quiesced enough to run an ordered rebuild (spec
+   *  §8.1). True when there is no executing tool/turn work, no active/waiting
+   *  background task, no accepted plugin invocation, and no in-flight send.
+   *
+   *  Deliberately NOT `phaseOf(s) === 'idle'`: phaseOf maps a broker-blocked
+   *  session (pending permission / elicitation / dialog) to 'working', but such
+   *  a session IS eligible — the rebuild's first step settles the broker
+   *  (denyAll/cancelAll), so a pending prompt must not block the rebuild.
+   *
+   *  `queuedInputs > 0` rejects ONLY while a turn/tool is actually executing:
+   *  a live queued input always carries pendingTurns > 0 (the pump keeps the
+   *  working state continuous across back-to-back turns via moreQueued), so the
+   *  executing-turn check covers it; broker-blocked and dormant queued input is
+   *  a legal drain state (the executor drains/preserves it). */
+  quiesceEligible(s: Session): boolean {
+    // Active mutation windows are not quiesced (mirror phaseOf's working maps).
+    if (s.clearing || s.handoffAbort) return false
+    // Executing turn/tool work. turnActive is the CLI-side proof a turn started;
+    // pendingTurns covers a dispatched turn awaiting its result (and the
+    // moreQueued bridge between back-to-back turns).
+    if (s.pendingTurns > 0 || s.turnActive === true) return false
+    // Active/waiting background tasks (CLI-authoritative folded task map).
+    if (this.backgroundSubagentCount(s) > 0) return false
+    // Accepted plugin invocation — registered work that must complete first.
+    if (this.pluginInvocationProbe?.(s.id) === true) return false
+    // In-flight send (the send lifecycle controller is set until dispatch settles).
+    if (this.sendState(s).controller !== undefined) return false
+    // Broker-blocked (pending permission/elicitation/dialog) is ELIGIBLE — the
+    // rebuild settles it first. Deliberately not checked here.
+    return true
+  }
+
   /** Project a persisted meta into the SessionInfo shape. Dormant sessions
    *  have running=false and no live subscribers; messageCount is the last
    *  known value from before the Query was unloaded. */
@@ -10926,6 +11065,14 @@ export class SessionManager {
               log.warn(`[session ${s.id}] auto-compact failed:`, err)
             })
           })
+          // Auto pending-rebuild (spec §8.1, Task 4): a REAL turn terminal is a
+          // quiesce event. Deferred to the next macrotask for the same reason as
+          // maybeAutoCompact — the pump clears turnActive/pendingTurns AFTER this
+          // dep returns, so quiesceEligible must read the settled state. A
+          // background bookend (settlesTurn=false) is not a turn end.
+          if (settlesTurn) {
+            setImmediate(() => this.schedulePendingRebuilds(s.id))
+          }
           return materialized
         },
         persist: (s) => this.persist(s),
@@ -10959,6 +11106,9 @@ export class SessionManager {
         onTaskListChanged: (id) => this.broadcaster.broadcastTaskListChanged(id),
         onTaskNotification: (sessionId, toolUseId) =>
           this.cancelBackgroundWatcher(sessionId, toolUseId),
+        // Background-task terminal (spec §8.1, Task 4): a settled background task
+        // can clear the last quiesce blocker — re-evaluate the pending rebuild.
+        onBackgroundTaskSettled: (sessionId) => this.schedulePendingRebuilds(sessionId),
         // Mirror CLI notification frames onto the global WS channel so
         // App-level code can fire a browser/OS notification even when the
         // session's Chat panel isn't mounted (same rationale as the

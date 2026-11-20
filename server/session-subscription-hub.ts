@@ -85,6 +85,21 @@ export class SessionSubscriptionHub {
     return true
   }
 
+  /** True when at least one LIVE (non-closed) browser subscriber declares
+   *  ordered-rebase support. The auto-rebuild scheduler uses this alongside
+   *  allSubscribersCapable: a rebuild publishes a `transcript-rebased` envelope
+   *  to its subscribers, so the AUTO path waits for a capable consumer to be
+   *  attached rather than rebuilding an unwatched session (explicit Retry still
+   *  forces a rebuild regardless). Closed connections never count. */
+  hasLiveCapableSubscriber(sessionId: string): boolean {
+    const ch = this.sessions.get(sessionId)
+    if (!ch) return false
+    for (const conn of ch.conns.values()) {
+      if (!conn.closed && conn.orderedRebase === true) return true
+    }
+    return false
+  }
+
   /** Fan a frame out to every live connection on the session's queue. */
   publish(sessionId: string, frame: unknown): void {
     const ch = this.sessions.get(sessionId)
