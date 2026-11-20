@@ -1,4 +1,5 @@
 import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
+import type { RebuildBlocker } from '../../shared/ws-protocol'
 import type { ContextUsage } from '../types/context-usage'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { emptyWindow, type WindowState } from './seq-window'
@@ -502,6 +503,14 @@ export interface ServerMirror {
    *  Ephemeral — lives outside items/messages/IDB, reset on CLEAR_TRANSCRIPT.
    *  Null until the first frame. */
   sessionState: CliSessionState | null
+  /** Actionable rebuild-waiting status (spec §8.1, `rebuild-waiting` frame): a
+   *  rebuild-pending operation is admitted but a long-term blocker keeps the
+   *  session from quiescing. Non-null while blockers remain; the Composer renders
+   *  task-stop / Retry / defer actions. Ephemeral — lives outside items/messages/
+   *  IDB; an empty-blockers frame clears it, and every mirror reset (rebase /
+   *  clear / bump / resync) drops it via createInitialServerMirror (the
+   *  generation guard: a committed rebuild resets the window and the status). */
+  rebuildWaiting: RebuildWaitingState | null
   /** message-consumed frames that arrived before the matching message row.
    *  The WS channels are independent, so an idle session can deliver the
    *  consumed signal before the user-message broadcast. Cache it here and
@@ -601,6 +610,15 @@ export interface ServerMirror {
  *  CLI waits on the user). Null until the first frame. */
 export type CliSessionState = 'idle' | 'running' | 'requires_action'
 
+/** Actionable rebuild-waiting status mirrored from the `rebuild-waiting` frame
+ *  (spec §8.1). `blockers` is non-empty while a pending rebuild cannot quiesce;
+ *  the Composer offers task-stop / Retry / defer. An empty-blockers frame clears
+ *  the slot (null). */
+export interface RebuildWaitingState {
+  blockers: RebuildBlocker[]
+  pendingOperationCount: number
+}
+
 /** Client-only intent. The server has no opinion about this layer; only
  *  user actions originate writes here (with one carve-out: ERROR frames
  *  from the server set `intent.error`, but the lifecycle — cleared by the
@@ -676,6 +694,10 @@ export type SessionAction =
   /** Latest authoritative CLI session state (`system/session_state_changed`
    *  frame). Ephemeral — never transcript content; drives derived status. */
   | { type: 'SESSION_STATE'; state: CliSessionState }
+  /** Actionable rebuild-waiting status (spec §8.1, `rebuild-waiting` frame).
+   *  Non-empty `blockers` sets the mirror slot (Composer banner); an empty array
+   *  clears it (the rebuild fired / was deferred / its payload committed). */
+  | { type: 'REBUILD_WAITING'; blockers: RebuildBlocker[]; pendingOperationCount: number }
   /** The session reached `terminated` — no further frame of ANY kind will
    *  arrive for it. Runs the same turn-end sweep as the `result` frame, which
    *  a dead session never delivers: without it a stranded SYNC (foreground)
@@ -851,6 +873,9 @@ export interface SessionSnapshot {
   /** Latest authoritative CLI session state mirrored from ServerMirror
    *  (see there). Null until the first frame. */
   sessionState: CliSessionState | null
+  /** Actionable rebuild-waiting status mirrored from ServerMirror (see there).
+   *  Null when no rebuild is waiting on a blocker. */
+  rebuildWaiting: RebuildWaitingState | null
   // ── Seq window view (transcript-seq refactor, Task 7) ───────────────
   // Mirrors of ServerMirror.window for the loadOlder / render-anchor
   // consumers (Tasks 8/9). Task 9 anchors MessageList rows on `oldestSeq`
@@ -896,6 +921,7 @@ export function createInitialServerMirror(): ServerMirror {
     apiRetry: null,
     thinkingTokens: null,
     sessionState: null,
+    rebuildWaiting: null,
     pendingConsumedMessages: new Map<string, number>(),
     draft: null,
     frozenDrafts: [],

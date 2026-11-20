@@ -57,7 +57,7 @@ import {
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
 import { imagePayloadOfContent, taskNotificationToolUseId } from '../shared/user-frames.js'
-import type { WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased, WsRebuildWaiting, RebuildBlocker } from './ws-protocol.js'
 import type { TurnChangesPayload, TurnDiffOptions, TurnDiffPayload, WsTurnChanges } from '../shared/turn-changes.js'
 import { toolTargetPaths } from './snapshot/tool-targets.js'
 import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
@@ -1093,6 +1093,20 @@ export class SessionManager {
    *  executor call (including its internal resume), so the resume/recovery hooks
    *  it triggers cannot loop back into a second concurrent rebuild. */
   private readonly pendingRebuildRuns = new Set<string>()
+  /** Sessions whose auto-rebuild scheduling the user PAUSED via deferRebuild
+   *  (spec §8.1, Task 6). In-memory only: a process restart loses the pause, so
+   *  crash recovery re-arms and auto-fires the durable pending payload (§9).
+   *  Cleared by a new anomaly (beginTranscriptRebuild) or an explicit Retry
+   *  (retryTranscriptReconcile) — the two resume triggers. canAutoFire respects
+   *  it, and the recovery re-arm honors it by leaving admission open (the user
+   *  chose to keep working on the old projection with the payload retained). */
+  private readonly rebuildDeferred = new Set<string>()
+  /** Sessions with an active (non-empty) rebuild-waiting status frame pushed to
+   *  their subscribers (spec §8.1, Task 6). Tracked so the clear frame is only
+   *  emitted when a waiting frame was actually shown — every admission clear
+   *  (commit / reset / abort) routes through here, but a session that never
+   *  waited must not spam empty status frames on each /clear or compact. */
+  private readonly rebuildWaitingEmitted = new Set<string>()
   /** Message → seq association for messages that entered the history ring
    *  AFTER seq assignment (pump ingest + direct ring appends). A WeakMap
    *  keyed by the message OBJECT (not a ring index) so later tasks can read
@@ -8469,9 +8483,11 @@ export class SessionManager {
     void (async () => {
       try {
         for await (const frame of sub.iterable) {
-          // The primary queue also carries the ordered-rebase control
-          // envelope (spec §8.3) — not an SDK frame, not a subagent frame.
-          if ((frame as { kind?: string }).kind === 'transcript-rebased') continue
+          // The primary queue also carries control frames (spec §8.1/§8.3) —
+          // the ordered-rebase envelope and the rebuild-waiting status. Neither
+          // is an SDK frame nor a subagent frame.
+          const kind = (frame as { kind?: string }).kind
+          if (kind === 'transcript-rebased' || kind === 'rebuild-waiting') continue
           emit(frame as SDKMessage)
         }
         terminate(new Error(`live subagent frame subscription for session ${id} ended unexpectedly`))
@@ -8949,11 +8965,6 @@ export class SessionManager {
         if (t.store.generation === genBeforeReconcile) {
           const pendingRebuilds = readPendingRebuilds(rows)
           if (pendingRebuilds.length > 0) {
-            this.setRebuildAdmissionPending(id, true)
-            log.info(
-              `[session ${id}] transcript rebuild-pending recovery: ` +
-              `${pendingRebuilds.length} pending operation(s) re-arm admission`,
-            )
             const w = this.writerFor(id)
             // Dedup by operationId: a live beginTranscriptRebuild may have
             // armed this holder BEFORE its first reconcile (the writer already
@@ -8962,11 +8973,29 @@ export class SessionManager {
             for (const op of pendingRebuilds) {
               if (!have.has(op.operationId)) w.addPendingRebuild(op)
             }
-            // Process recovery (spec §8.1, Task 4): the re-armed pending payload
-            // re-evaluates the auto-rebuild. No-op unless the session is live,
-            // quiesced and watched by a capable tab — during resume the session is
-            // not yet live, so the post-resume hook / first capable subscribe fires.
-            this.schedulePendingRebuilds(id)
+            if (this.rebuildDeferred.has(id)) {
+              // The user deferred this rebuild (spec §8.1, Task 6): honor the
+              // choice across the holder lifecycle — admission stays OPEN (the
+              // old projection is usable) and auto-scheduling stays paused. The
+              // payload remains durable + in the writer list so a later explicit
+              // Retry or new anomaly resolves it include-once. After a real crash
+              // the in-memory pause is gone, so the else branch re-closes admission.
+              log.info(
+                `[session ${id}] transcript rebuild-pending recovery: ` +
+                `${pendingRebuilds.length} pending operation(s) retained (rebuild deferred; admission stays open)`,
+              )
+            } else {
+              this.setRebuildAdmissionPending(id, true)
+              log.info(
+                `[session ${id}] transcript rebuild-pending recovery: ` +
+                `${pendingRebuilds.length} pending operation(s) re-arm admission`,
+              )
+              // Process recovery (spec §8.1, Task 4): the re-armed pending payload
+              // re-evaluates the auto-rebuild. No-op unless the session is live and
+              // quiesced — during resume the session is not yet live, so the
+              // post-resume hook / first capable subscribe fires.
+              this.schedulePendingRebuilds(id)
+            }
           }
         }
       }
@@ -9160,6 +9189,9 @@ export class SessionManager {
    *  (`preserveQueued:true`) is the lossless path for an unattended rebuild. Both
    *  share quiesceAndRebuild's reconcile/resume tail. */
   async retryTranscriptReconcile(id: string): Promise<{ generation: number; headSeq: number; degraded: boolean }> {
+    // An explicit Retry resumes auto-scheduling the user may have deferred (spec
+    // §8.1, Task 6) and forces the rebuild regardless of the pause.
+    this.rebuildDeferred.delete(id)
     return this.quiesceAndRebuild(id, { preserveQueued: false })
   }
 
@@ -9181,6 +9213,9 @@ export class SessionManager {
    *  keeps the session fenced read-only (abortRebuild 'failed', no resume). */
   async quiesceAndRebuild(id: string, opts: { preserveQueued: boolean }): Promise<{ generation: number; headSeq: number; degraded: boolean }> {
     const wasLive = this.sessions.has(id)
+    // The rebuild is executing now — clear any waiting status before quiesce so
+    // the banner disappears while the session tears down (spec §8.1, Task 6).
+    this.clearRebuildWaiting(id)
     if (wasLive) {
       // Capability pre-check BEFORE any mutation (spec §8.3): an incapable tab
       // keeps its live channel on the old generation; the user reloads it and
@@ -9634,6 +9669,9 @@ export class SessionManager {
   private setRebuildAdmissionPending(id: string, on: boolean): void {
     const t = this.transcriptStores.get(id)
     if (t) t.rebuildAdmissionPending = on
+    // Admission reopened (committed generation / reset supersession / cancelled
+    // abort): the rebuild is no longer waiting, so clear any waiting status.
+    if (!on) this.clearRebuildWaiting(id)
   }
 
   /** Admit ONE rebuild-pending operation (spec §8.1): durably persist it via
@@ -9662,6 +9700,9 @@ export class SessionManager {
       t.rebuildAdmissionPending = false
       throw err
     }
+    // A new anomaly resumes auto-scheduling the user may have deferred (spec
+    // §8.1, Task 6): the fresh pending operation supersedes the defer choice.
+    this.rebuildDeferred.delete(id)
   }
 
   /** Abort a pending rebuild (spec §8.1): the writer's abortRebuild releases
@@ -9687,6 +9728,9 @@ export class SessionManager {
    *  hook / explicit Retry handles it. */
   private canAutoFire(id: string): boolean {
     if (this.transcriptStores.get(id)?.rebuildAdmissionPending !== true) return false
+    // A user defer pauses auto-scheduling (spec §8.1, Task 6) until a new
+    // anomaly or an explicit Retry resumes it.
+    if (this.rebuildDeferred.has(id)) return false
     const s = this.sessions.get(id)
     if (!s || !this.quiesceEligible(s)) return false
     return this.subscriptionHub.allSubscribersCapable(id)
@@ -9709,9 +9753,17 @@ export class SessionManager {
    *  quiesce (Task 5), so an unattended auto-rebuild never withdraws user input. */
   schedulePendingRebuilds(id: string): void {
     if (this.pendingRebuildRuns.has(id)) return // idempotent: a run is in flight
-    if (!this.canAutoFire(id)) return
-    this.pendingRebuildRuns.add(id)
-    void this.runPendingRebuild(id).finally(() => { this.pendingRebuildRuns.delete(id) })
+    if (this.canAutoFire(id)) {
+      // The rebuild is about to fire — the waiting status (if any) is over.
+      this.clearRebuildWaiting(id)
+      this.pendingRebuildRuns.add(id)
+      void this.runPendingRebuild(id).finally(() => { this.pendingRebuildRuns.delete(id) })
+      return
+    }
+    // Blocked (or no pending): while a rebuild-pending operation is admitted and
+    // the user has NOT deferred it, report the actionable waiting status so the
+    // UI shows task-stop / Retry / defer instead of an infinite load (spec §8.1).
+    this.emitRebuildWaitingIfBlocked(id)
   }
 
   /** The scheduler's async leg: confirm the durable pending payload, re-check
@@ -9726,11 +9778,11 @@ export class SessionManager {
       // still be queued when the turn-settling event fires the scheduler.
       const w = this.transcriptWriters.get(id)
       if (w?.hasPendingCommits) await w.drain()
-      if (!this.canAutoFire(id)) return // resolved / blocked while awaiting
+      if (!this.canAutoFire(id)) { this.emitRebuildWaitingIfBlocked(id); return } // resolved / blocked while awaiting
       // canAutoFire just proved the holder exists; no await separates the two.
       const rows = await this.transcriptStores.get(id)!.sidecar.load()
       if (readPendingRebuilds(rows).length === 0) return // durable authority: nothing pending
-      if (!this.canAutoFire(id)) return
+      if (!this.canAutoFire(id)) { this.emitRebuildWaitingIfBlocked(id); return }
       log.info(`[session ${id}] auto pending-rebuild: session quiesced, firing drain-preserve-replay rebuild`)
       const res = await this.quiesceAndRebuild(id, { preserveQueued: true })
       if (res.degraded) {
@@ -9741,6 +9793,91 @@ export class SessionManager {
       // and the pending payload retained. Wait for the next event, do not re-fire.
       log.warn(`[session ${id}] auto pending-rebuild did not complete (pending retained): ${(err as Error).message ?? err}`)
     }
+  }
+
+  /** The quiesce blockers currently keeping a pending rebuild from firing
+   *  (spec §8.1, Task 6) — the reportable mirror of `quiesceEligible`. Each
+   *  predicate maps to one RebuildBlocker; executing turn/tool/send/exec work
+   *  and the clearing/handoff mutation windows all report as `turn`. */
+  private rebuildBlockersOf(s: Session): RebuildBlocker[] {
+    const blockers: RebuildBlocker[] = []
+    if (
+      s.clearing || s.handoffAbort
+      || s.pendingTurns > 0 || s.turnActive === true
+      || this.sendState(s).controller !== undefined
+      || s.execAbort !== undefined
+    ) blockers.push('turn')
+    if (this.backgroundWorkCount(s) > 0) blockers.push('background-task')
+    if (this.pluginInvocationProbe?.(s.id) === true) blockers.push('plugin-invocation')
+    if (!this.subscriptionHub.allSubscribersCapable(s.id)) blockers.push('client-upgrade')
+    return blockers
+  }
+
+  /** Emit the actionable rebuild-waiting status when a rebuild-pending
+   *  operation is admitted but blocked (spec §8.1, Task 6). No-op when nothing
+   *  is pending, the user deferred the rebuild, the session is dormant (no
+   *  subscribers; the post-resume hook re-evaluates), or no blocker remains
+   *  (the scheduler fires that case). Re-emitted on each blocked re-evaluation
+   *  so a tab attaching mid-wait receives the current status via the subscribe
+   *  hook's re-evaluation. */
+  private emitRebuildWaitingIfBlocked(id: string): void {
+    if (this.transcriptStores.get(id)?.rebuildAdmissionPending !== true) return
+    if (this.rebuildDeferred.has(id)) return
+    const s = this.sessions.get(id)
+    if (!s) return
+    const blockers = this.rebuildBlockersOf(s)
+    if (blockers.length === 0) return
+    const frame: WsRebuildWaiting = {
+      kind: 'rebuild-waiting',
+      sessionId: id,
+      blockers,
+      pendingOperationCount: this.transcriptWriters.get(id)?.pendingRebuilds.length ?? 0,
+    }
+    this.rebuildWaitingEmitted.add(id)
+    for (const sub of s.subscribers.values()) sub.push(frame)
+  }
+
+  /** Clear the rebuild-waiting status (spec §8.1, Task 6): an EMPTY blockers
+   *  array tells every tab the rebuild is no longer waiting (it fired, was
+   *  deferred/aborted, or its payload entered a committed generation). Only
+   *  emitted when a waiting frame was actually shown, so a session that never
+   *  waited does not spam clear frames on each /clear or compact reset. */
+  private clearRebuildWaiting(id: string): void {
+    if (!this.rebuildWaitingEmitted.has(id)) return
+    this.rebuildWaitingEmitted.delete(id)
+    const s = this.sessions.get(id)
+    if (!s) return
+    const frame: WsRebuildWaiting = { kind: 'rebuild-waiting', sessionId: id, blockers: [], pendingOperationCount: 0 }
+    for (const sub of s.subscribers.values()) sub.push(frame)
+  }
+
+  /** Defer a pending rebuild (spec §8.1, Task 6): the user chooses to keep
+   *  working on the old projection instead of waiting for the blocker to clear.
+   *  abortRebuild('cancelled') restores provider/admission (the old projection
+   *  is intact), auto-scheduling is PAUSED, and the durable pending payload is
+   *  retained with a warning. A new anomaly (beginTranscriptRebuild) or an
+   *  explicit Retry (retryTranscriptReconcile) resumes scheduling; a process
+   *  restart loses the in-memory pause so crash recovery auto-fires (§9).
+   *  Idempotent no-op (deferred:false) when nothing is pending. */
+  async deferRebuild(id: string): Promise<{ deferred: boolean; pendingOperationCount: number }> {
+    this.requireKnownSession(id)
+    const pendingOperationCount = this.transcriptWriters.get(id)?.pendingRebuilds.length ?? 0
+    const armed = this.transcriptStores.get(id)?.rebuildAdmissionPending === true
+    if (!armed && !this.pendingRebuildRuns.has(id)) {
+      return { deferred: false, pendingOperationCount }
+    }
+    this.rebuildDeferred.add(id)
+    // Restores admission + releases deferred old-generation commits in order;
+    // retains the pending payload. Also clears the waiting status (the user
+    // acted on it). When a run is already quiescing it owns the writer, but the
+    // UI clears the banner at quiesce start so this race is curl-only and the
+    // abort is benign (empty deferred list, flag already clearing).
+    await this.abortTranscriptRebuild(id, 'cancelled')
+    log.warn(
+      `[session ${id}] transcript rebuild deferred by user: ${pendingOperationCount} pending operation(s) retained, ` +
+      `auto-scheduling paused (a new anomaly or explicit Retry resumes)`,
+    )
+    return { deferred: true, pendingOperationCount }
   }
 
   /** The session's persisted reset journal (spec §8.3), lazily created, under
@@ -10159,6 +10296,10 @@ export class SessionManager {
     this.transcriptStores.delete(id)
     this.transcriptReconciles.delete(id)
     this.dropTranscriptWriter(id)
+    // Drop the rebuild UX state so a reused id does not inherit a stale defer
+    // pause or waiting-status marker (spec §8.1, Task 6).
+    this.rebuildDeferred.delete(id)
+    this.rebuildWaitingEmitted.delete(id)
     const removals = await Promise.allSettled([...sidecars].map((sidecar) => sidecar.remove(opts)))
     const failed = removals.find((r) => r.status === 'rejected')
     if (failed) throw failed.reason

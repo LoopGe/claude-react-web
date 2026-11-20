@@ -1075,6 +1075,61 @@ describe('SessionSynchronizer ordered-rebase (spec §8.3)', () => {
   })
 })
 
+describe('SessionSynchronizer rebuild-waiting routing (spec §8.1, Task 6)', () => {
+  beforeEach(() => {
+    currentSessionListeners = new Map()
+    transcripts.clear()
+    staleNext = null
+    deferredFetches = []
+    mockSubscribe.mockClear()
+    mockApiGet.mockReset()
+    mockApiGet.mockImplementation(defaultApiGetImpl)
+    void sessionStoreRegistry.clear()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('a rebuild-waiting frame sets the snapshot slot; an empty-blockers frame clears it', async () => {
+    const sid = 'rebuild-waiting'
+    const t = transcript(sid)
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    expect(store.getSnapshot().rebuildWaiting).toBeNull()
+    dispatchToSession(sid, { kind: 'rebuild-waiting', sessionId: sid, blockers: ['background-task'], pendingOperationCount: 2 })
+    expect(store.getSnapshot().rebuildWaiting).toEqual({ blockers: ['background-task'], pendingOperationCount: 2 })
+    // The blocker settles and the rebuild fires → empty blockers clears the slot.
+    dispatchToSession(sid, { kind: 'rebuild-waiting', sessionId: sid, blockers: [], pendingOperationCount: 0 })
+    expect(store.getSnapshot().rebuildWaiting).toBeNull()
+    sync.stop()
+  })
+
+  it('generation guard: a committed rebuild (transcript-rebased) drops the waiting status', async () => {
+    const sid = 'rebuild-waiting-rebase'
+    const t = transcript(sid)
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    dispatchToSession(sid, { kind: 'rebuild-waiting', sessionId: sid, blockers: ['turn'], pendingOperationCount: 1 })
+    expect(store.getSnapshot().rebuildWaiting).not.toBeNull()
+    t.generation = 3
+    t.msgs = [{ seq: 0, msg: fakeMsg(sid, 100) }]
+    t.headSeq = 1
+    dispatchToSession(sid, { kind: 'transcript-rebased', sessionId: sid, reason: 'ordered-rebuild', generation: 3, headSeq: 1 })
+    await vi.waitFor(() => expect(store.getSnapshot().generation).toBe(3))
+    expect(store.getSnapshot().rebuildWaiting).toBeNull()
+    sync.stop()
+  })
+})
+
 describe('SessionSynchronizer transcript recovery (spec §10)', () => {
   beforeEach(() => {
     currentSessionListeners = new Map()

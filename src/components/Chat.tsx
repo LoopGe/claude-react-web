@@ -86,7 +86,8 @@ import { useScheduledSends } from '../hooks/useScheduledSends'
 import { useTaskList } from '../hooks/useTaskList'
 import { SessionSearchPanel } from './SessionSearchPanel'
 import type { MessagePreviewTarget } from '../hooks/useMessagePreview'
-import { useSessionTaskCounts, useSessionField, useSessionSelector, selectHasActivePhase, selectHasTranscriptBackground, selectHasLiveSyncSubagent } from '../session-store/selectors'
+import { useSessionTaskCounts, useSessionField, useSessionSelector, getSessionStore, selectHasActivePhase, selectHasTranscriptBackground, selectHasLiveSyncSubagent } from '../session-store/selectors'
+import { isTerminalTaskStatus } from '../../shared/tasks'
 import { computeWaiting, computeTurnActive, autoTitleDescription, isHumanUserMessage, countQueuedUserTurns } from '../session-store/normalize'
 import { createDedupGuard, shouldMountWorkingBubble, shouldOfferBackgroundAction } from '../utils/task-actions'
 import { composeOutgoing } from '../utils/outgoing-text'
@@ -686,6 +687,7 @@ export const Chat = memo(function Chat({
   const toolResults = useSessionField(session.id, 'toolResults')
   const contextUsage = useSessionField(session.id, 'contextUsage')
   const promptSuggestion = useSessionField(session.id, 'promptSuggestion')
+  const rebuildWaiting = useSessionField(session.id, 'rebuildWaiting')
   const hasOlder = useSessionField(session.id, 'hasOlder')
   // Boolean turn-status primitives — derived so a transition re-renders
   // exactly once, not on every snapshot dispatch.
@@ -1746,6 +1748,36 @@ export const Chat = memo(function Chat({
     }
   }, [session.id])
 
+  /** Defer a pending transcript rebuild (spec §8.1): the user chooses to keep
+   *  working on the old projection. The server restores admission, pauses
+   *  auto-scheduling, and retains the payload; it emits an empty-blockers
+   *  rebuild-waiting frame that clears the banner. A new anomaly or Retry resumes. */
+  const deferRebuild = useCallback(async () => {
+    try {
+      await api.post(`/sessions/${session.id}/transcript/defer-rebuild`, {})
+    } catch (e) {
+      setLocalError((e as Error).message)
+    }
+  }, [session.id])
+
+  /** Stop the session's running background tasks — the rebuild-waiting banner's
+   *  task-stop action clears a background-task blocker so the auto-rebuild can
+   *  quiesce. Reads the task list at click time (no subscription churn) and stops
+   *  every non-terminal backgrounded record (mirrors backgroundWorkCount). */
+  const stopBackgroundTasks = useCallback(async () => {
+    const tasks = getSessionStore(session.id).getSnapshot().tasks
+    const running = tasks.filter((t) =>
+      t.isBackgrounded !== false && t.ambient !== true && t.skipTranscript !== true && !isTerminalTaskStatus(t.status),
+    )
+    try {
+      await Promise.all(running.map((t) =>
+        api.post(`/sessions/${session.id}/tasks/${encodeURIComponent(t.taskId)}/stop`, {}),
+      ))
+    } catch (e) {
+      setLocalError((e as Error).message)
+    }
+  }, [session.id])
+
   // Expose the interrupt callback to the parent so the ESC shortcut in
   // App.tsx can trigger the same code-path. The "interrupted" (? result
   // label is now derived from the SDK result message's `terminal_reason`,
@@ -2381,6 +2413,9 @@ export const Chat = memo(function Chat({
               error={session.error}
               recovery={paging.recovery}
               onRetryReconcile={() => void paging.retryReconcile()}
+              rebuildWaiting={rebuildWaiting}
+              onDeferRebuild={() => void deferRebuild()}
+              onStopBackgroundTasks={() => void stopBackgroundTasks()}
               onResume={onResume ? () => onResume(session.id) : undefined}
               onForkFromLastCompleted={
                 onForkFromLastCompleted ? () => onForkFromLastCompleted(session.id) : undefined

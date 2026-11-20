@@ -18,6 +18,7 @@ const FIXTURES = resolvePath(__dirname, '..', '..', 'fixtures', 'app-plugins')
 // touch sessions).
 const smStub = {
   subscribeSessionCleared: () => null,
+  schedulePendingRebuilds: () => {},
 } as unknown as SessionManager
 
 describe('App Plugins — fixture integration (Stage D)', () => {
@@ -148,6 +149,7 @@ describe('App Plugins — fixture integration (Stage D)', () => {
         iterable: (async function*() {})(),
         unsubscribe: () => {}
       }),
+      schedulePendingRebuilds: () => {},
       sessions: {
         subscribe: () => Promise.resolve(),
         unsubscribe: () => Promise.resolve()

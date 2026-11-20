@@ -222,6 +222,30 @@ export interface WsTranscriptRebased {
   rebaseEpoch?: number
   clearEpoch?: number
 }
+/** Why a pending transcript rebuild cannot quiesce yet (spec §8.1). Mirrors
+ *  the manager's `quiesceEligible` predicate: executing turn/tool/send/exec
+ *  work (`turn`), active/waiting background tasks (`background-task`), an
+ *  accepted plugin invocation (`plugin-invocation`), or an attached browser
+ *  subscriber that lacks ordered-rebase capability (`client-upgrade`). */
+export type RebuildBlocker = 'background-task' | 'plugin-invocation' | 'turn' | 'client-upgrade'
+
+/** Actionable rebuild-waiting status (spec §8.1): a rebuild-pending operation
+ *  is durably admitted but a long-term blocker keeps the session from
+ *  quiescing, so the server reports the blockers instead of letting the UI
+ *  spin forever. Rides the PRIMARY message queue (like `transcript-rebased`),
+ *  never the history ring. Re-emitted on each lifecycle re-evaluation that
+ *  still finds the rebuild blocked; an EMPTY `blockers` array clears the
+ *  status (the rebuild fired, was deferred/aborted, or its pending payload
+ *  entered a committed generation). The client renders task-stop / Retry /
+ *  defer actions while `blockers` is non-empty. */
+export interface WsRebuildWaiting {
+  kind: 'rebuild-waiting'
+  sessionId: string
+  blockers: RebuildBlocker[]
+  /** Number of rebuild-pending operations awaiting their committed generation. */
+  pendingOperationCount: number
+}
+
 /** Server-authoritative eviction notice: the named seqs were tombstoned in
  *  the session's transcript seq store (refusal-fallback retraction or a
  *  resolved user dialog's retracted uuids). Complements the uuid-based
@@ -705,6 +729,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsMessagesWithdrawn
   | WsAttached
   | WsTranscriptRebased
+  | WsRebuildWaiting
   | WsMessageSteered
   | WsMessageQueued
   | WsMessagesEvicted

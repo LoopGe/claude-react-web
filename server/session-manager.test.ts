@@ -11587,6 +11587,397 @@ describe('SessionManager', () => {
     })
   })
 
+  describe('rebuild-waiting status + deferRebuild (spec §8.1, Task 6)', () => {
+    let prevConfigDir: string | undefined
+    beforeEach(() => {
+      prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    })
+
+    const live = (id: string): Session =>
+      (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)!
+    const internals = () => sm as unknown as {
+      setRebuildAdmissionPending(id: string, on: boolean): void
+      canAutoFire(id: string): boolean
+      rebuildDeferred: Set<string>
+    }
+    const pendingOp = (operationId: string, uuid: string): PendingOperation => ({
+      operationId,
+      entry: {
+        occurrenceId: `occ-${uuid}`,
+        msg: { type: 'assistant', uuid, parent_tool_use_id: null, message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text: 'pending' }] } },
+        source: 'provider', aliases: [], evicted: false,
+      },
+    })
+    const arm = (id: string, operationId = 'op-1', uuid = 'R') =>
+      sm.beginTranscriptRebuild(id, pendingOp(operationId, uuid))
+    const sidecarRows = (id: string) => new TranscriptSidecar(dir, id).load()
+    const stubExecutor = () =>
+      vi.spyOn(sm, 'quiesceAndRebuild').mockResolvedValue({ generation: 1, headSeq: 0, degraded: false })
+    /** Attach a capable subscriber and collect every primary-queue frame. */
+    const captureFrames = (id: string) => {
+      const sub = sm.subscribe(id, { orderedRebase: true })
+      const frames: Array<{ kind?: string; blockers?: string[]; pendingOperationCount?: number }> = []
+      void (async () => { for await (const f of sub.iterable) frames.push(f as { kind?: string }) })()
+      return { frames, sub }
+    }
+    const waitingFrames = (frames: Array<{ kind?: string; blockers?: string[]; pendingOperationCount?: number }>) =>
+      frames.filter((f) => f.kind === 'rebuild-waiting')
+    const seedBackground = (s: Session, taskId = 't1', taskType: 'subagent' | 'shell' = 'subagent') => {
+      s.tasks.set(taskId, { taskId, description: 'bg', status: 'running', taskType, isBackgrounded: true, updatedAt: Date.now() } as TaskRecordUi)
+    }
+
+    it('a pending rebuild blocked by a running background task emits rebuild-waiting {blockers:[background-task], pendingOperationCount}', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const { frames, sub } = captureFrames(info.id)
+      const exec = stubExecutor()
+      await arm(info.id)
+      seedBackground(live(info.id))
+      sm.schedulePendingRebuilds(info.id)
+      await tick()
+      expect(exec).not.toHaveBeenCalled()
+      const waiting = waitingFrames(frames)
+      expect(waiting.length).toBeGreaterThanOrEqual(1)
+      expect(waiting.at(-1)).toMatchObject({ kind: 'rebuild-waiting', sessionId: info.id, blockers: ['background-task'], pendingOperationCount: 1 })
+      sub.unsubscribe()
+    })
+
+    it('reports every active blocker (turn + background + plugin + client-upgrade)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const { frames, sub } = captureFrames(info.id)
+      stubExecutor()
+      await arm(info.id)
+      const s = live(info.id)
+      s.pendingTurns = 1
+      seedBackground(s)
+      sm.setPluginInvocationProbe((id) => id === info.id)
+      const incapable = sm.subscribe(info.id, { orderedRebase: false })
+      sm.schedulePendingRebuilds(info.id)
+      await tick()
+      const blockers = waitingFrames(frames).at(-1)!.blockers!
+      expect(blockers).toEqual(expect.arrayContaining(['turn', 'background-task', 'plugin-invocation', 'client-upgrade']))
+      incapable.unsubscribe()
+      sm.setPluginInvocationProbe(() => false)
+      sub.unsubscribe()
+    })
+
+    it('the waiting status clears (empty blockers) when the blocker settles and the rebuild fires', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const { frames, sub } = captureFrames(info.id)
+      const exec = stubExecutor()
+      await arm(info.id)
+      seedBackground(live(info.id), 't1')
+      sm.schedulePendingRebuilds(info.id)
+      await tick()
+      expect(waitingFrames(frames).at(-1)!.blockers).toEqual(['background-task'])
+      // The background task completes → terminal hook re-evaluates → fires + clears.
+      mockHandles[0].emit({ type: 'system', subtype: 'task_notification', task_id: 't1', status: 'completed', tool_use_id: 'tu1' })
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+      await tick()
+      expect(waitingFrames(frames).at(-1)).toMatchObject({ blockers: [], pendingOperationCount: 0 })
+      sub.unsubscribe()
+    })
+
+    it('a blocked rebuild with NO subscriber still auto-fires when quiesced (no waiting frame spam)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const exec = stubExecutor()
+      await arm(info.id)
+      seedBackground(live(info.id), 't1')
+      sm.schedulePendingRebuilds(info.id)
+      await tick()
+      expect(exec).not.toHaveBeenCalled()
+      mockHandles[0].emit({ type: 'system', subtype: 'task_notification', task_id: 't1', status: 'completed', tool_use_id: 'tu1' })
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+    })
+
+    it('deferRebuild restores admission, retains the durable payload, and pauses auto-scheduling', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const { frames, sub } = captureFrames(info.id)
+      const exec = stubExecutor()
+      await arm(info.id)
+      seedBackground(live(info.id))
+      sm.schedulePendingRebuilds(info.id)
+      await tick()
+      expect(waitingFrames(frames).length).toBeGreaterThanOrEqual(1)
+      // Defer: admission restored, payload retained, waiting cleared.
+      const res = await sm.deferRebuild(info.id)
+      expect(res).toMatchObject({ deferred: true, pendingOperationCount: 1 })
+      await expect(sm.send(info.id, 'works again')).resolves.toMatchObject({ uuid: expect.any(String) })
+      expect(readPendingRebuilds(await sidecarRows(info.id))).toHaveLength(1)
+      await tick()
+      expect(waitingFrames(frames).at(-1)).toMatchObject({ blockers: [] })
+      // Auto-scheduling paused: even with the flag re-armed, canAutoFire respects the defer.
+      internals().setRebuildAdmissionPending(info.id, true)
+      expect(internals().canAutoFire(info.id)).toBe(false)
+      sm.schedulePendingRebuilds(info.id)
+      await tick()
+      expect(exec).not.toHaveBeenCalled()
+      sub.unsubscribe()
+    })
+
+    it('deferRebuild is an idempotent no-op when nothing is pending', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const res = await sm.deferRebuild(info.id)
+      expect(res).toMatchObject({ deferred: false, pendingOperationCount: 0 })
+      expect(internals().rebuildDeferred.has(info.id)).toBe(false)
+    })
+
+    it('the defer pause survives the holder lifecycle: resume re-arm keeps admission OPEN and does not auto-fire', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const exec = stubExecutor()
+      emitAssistantLocal(info.id, 'A', 'first')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 1)).toBe(true)
+      writeJsonlLocal(info.id, [asstLocal('A', 'first')])
+      await arm(info.id)
+      await sm.deferRebuild(info.id)
+      await sm.unload(info.id) // holder/writer dropped; durable pending survives
+      await sm.resume(info.id) // fresh reconcile re-arms — but honors the defer
+      await tick()
+      // Admission stayed open (the user chose to keep working); no auto-fire.
+      await expect(sm.send(info.id, 'still open')).resolves.toMatchObject({ uuid: expect.any(String) })
+      expect(exec).not.toHaveBeenCalled()
+      expect(readPendingRebuilds(await sidecarRows(info.id))).toHaveLength(1)
+    })
+
+    it('a new anomaly resumes auto-scheduling after a defer', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const exec = stubExecutor()
+      await arm(info.id)
+      await sm.deferRebuild(info.id)
+      expect(internals().rebuildDeferred.has(info.id)).toBe(true)
+      // A fresh anomaly arms a new pending op and clears the defer pause.
+      await arm(info.id, 'op-2', 'R2')
+      expect(internals().rebuildDeferred.has(info.id)).toBe(false)
+      sm.schedulePendingRebuilds(info.id)
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+    })
+
+    it('an explicit Retry resumes auto-scheduling after a defer', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await arm(info.id)
+      await sm.deferRebuild(info.id)
+      expect(internals().rebuildDeferred.has(info.id)).toBe(true)
+      const exec = stubExecutor()
+      await sm.retryTranscriptReconcile(info.id)
+      expect(internals().rebuildDeferred.has(info.id)).toBe(false)
+      expect(exec).toHaveBeenCalledTimes(1)
+    })
+
+    it('PRODUCTION PATH: a plugin invocation SETTLE auto-fires the pending rebuild without an explicit scheduler call (carried T4 ruling)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const exec = stubExecutor()
+      const apmStore = new AppPluginStore({ stateDir: dir })
+      const apm = new AppPluginManager({ store: apmStore, stateDir: dir, hostVersion: '0.6.0', hostNodeMajor: 20, sm })
+      try {
+        const pluginDir = buildHangPlugin(dir, 'com.example.settle')
+        await apm.install({ type: 'local', path: pluginDir })
+        await apm.enable('com.example.settle')
+        sm.setPluginInvocationProbe((id) => apm.hasInFlightInvocation(id))
+        await arm(info.id)
+        const pending = apm.executeCommand({
+          pluginId: 'com.example.settle',
+          commandId: 'com.example.settle.run',
+          context: { source: 'session', sessionId: info.id, commandId: 'com.example.settle.run', invokedAt: Date.now() } as never,
+        }).catch(() => {})
+        expect(await waitFor(() => apm.hasInFlightInvocation(info.id))).toBe(true)
+        sm.schedulePendingRebuilds(info.id)
+        await tick()
+        expect(exec).not.toHaveBeenCalled() // accepted plugin work blocks
+        // Cancel the invocation → it SETTLES → the finally hook re-evaluates the
+        // scheduler. NO explicit schedulePendingRebuilds call here — the hook fires it.
+        await apm.disable('com.example.settle')
+        await pending
+        expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+      } finally {
+        await apm.shutdown().catch(() => {})
+      }
+    }, 20_000)
+
+    // Local frame/jsonl helpers (this describe does not share the T3/T5 closures).
+    function emitAssistantLocal(id: string, uuid: string, text: string) {
+      const idx = mockHandles.findIndex((h) => (h.options.sessionId as string) === id)
+      mockHandles[idx === -1 ? 0 : idx].emit({
+        type: 'assistant', uuid, parent_tool_use_id: null,
+        message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+    function asstLocal(uuid: string, text: string) {
+      return JSON.stringify({ type: 'assistant', uuid, message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text }] } })
+    }
+    function writeJsonlLocal(sessionId: string, lines: string[]) {
+      const p = join(dir, 'projects', encodeCwd(TEST_CWD), `${sessionId}.jsonl`)
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, lines.join('\n') + '\n')
+    }
+  })
+
+  describe('auto-rebuild end-to-end integration (spec §8.1/§9, Task 6)', () => {
+    let prevConfigDir: string | undefined
+    beforeEach(() => {
+      prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    })
+
+    const live = (id: string): Session =>
+      (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)!
+    const emitAssistant = (uuid: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant', uuid, parent_tool_use_id: null,
+        message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+    const asst = (uuid: string, text: string) =>
+      JSON.stringify({ type: 'assistant', uuid, message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text }] } })
+    const userLine = (uuid: string, text: string) =>
+      JSON.stringify({ type: 'user', uuid, parent_tool_use_id: null, message: { role: 'user', content: text } })
+    const writeJsonl = (sessionId: string, lines: string[]) => {
+      const p = join(dir, 'projects', encodeCwd(TEST_CWD), `${sessionId}.jsonl`)
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, lines.join('\n') + '\n')
+    }
+    const rebuildPendingRows = async (id: string) =>
+      (await new TranscriptSidecar(dir, id).load()).filter((r) => r.kind === 'rebuild-pending')
+    const controlPayload = (uuid: string) =>
+      ({ type: 'user', uuid, parent_tool_use_id: null, session_id: 'x', isSynthetic: true, isCompactSummary: true, shouldQuery: false, message: { role: 'user', content: 'summary' } })
+
+    /** Seed turn 1 (P1,A1,empty bookend r0) then turn 2's root prompt P2. The
+     *  provider log carries ONLY user/assistant frames (the SDK never writes
+     *  result frames to it); the held-back real result r1 reaches the canonical
+     *  compose through the result-frame sidecar the pump records on arrival. The
+     *  live store holds [P1,A1,r0,P2]; r1 arrives late and is suppressed. */
+    const seedIncident = async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const p1 = (await sm.send(info.id, 'first') as { uuid: string }).uuid
+      emitAssistant('A1', 'first reply')
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r0', num_turns: 0, result: '' })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      const p2 = (await sm.send(info.id, 'second') as { uuid: string }).uuid // turn 2 root (idle hand-off)
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 4)).toBe(true)
+      writeJsonl(info.id, [userLine(p1, 'first'), asst('A1', 'first reply'), userLine(p2, 'second')])
+      return { info, p1, p2 }
+    }
+    const emitLateResult = () =>
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', num_turns: 1, result: 'first turn answer' })
+
+    it('live incident-shape anomaly → auto REBUILD_REQUIRED → quiesce → rebuild → transcript-rebased envelope → resume replay', async () => {
+      const { info } = await seedIncident()
+      // A capable browser subscriber attached (the auto-fire capability gate reads
+      // allSubscribersCapable). Its queue ends at the rebuild's teardown unload.
+      const sub = sm.subscribe(info.id, { orderedRebase: true })
+      // Call-through spy on the executor: the AUTO scheduler still fires it (the
+      // real chain runs), but we capture its promise so the assertions wait for the
+      // durable commit + resume to fully settle (no fsync race).
+      const realExec = sm.quiesceAndRebuild.bind(sm)
+      let execPromise: Promise<{ generation: number; headSeq: number; degraded: boolean }> | undefined
+      vi.spyOn(sm, 'quiesceAndRebuild').mockImplementation((id, opts) => {
+        execPromise = realExec(id, opts)
+        return execPromise
+      })
+      // A preserved control input in the durable drained bucket (a prior drain):
+      // the auto rebuild's resume must replay it (the resume-replay leg).
+      const writer = (sm as unknown as { writerFor(id: string): { drainToPending(ops: unknown[]): Promise<void> } }).writerFor(info.id)
+      await writer.drainToPending([{ operationId: 'seed-1', dispatchOrdinal: 1, kind: 'control', payload: controlPayload('seed-1') }])
+
+      // The REAL turn-1 result arrives late — its turn terminal (after A1) precedes
+      // the published P2: a genuine chronology anomaly. Detection arms pending
+      // durably and suppresses the frame; the pump still settles the turn on the
+      // result, so the session reaches idle and the auto-scheduler fires.
+      emitLateResult()
+      expect(await waitFor(async () => (await rebuildPendingRows(info.id)).length === 1)).toBe(true)
+      // Admission closed: the next send is refused REBUILD_REQUIRED.
+      await expect(sm.send(info.id, 'blocked')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+      // r1 was NOT head-appended (suppressed).
+      expect(live(info.id).history.some((m) => (m as { uuid?: string }).uuid === 'r1')).toBe(false)
+
+      // Auto quiesce → rebuild → resume, with NO explicit Retry. Await the executor
+      // the scheduler fired so the durable generation commit + resume are settled.
+      expect(await waitFor(() => execPromise !== undefined)).toBe(true)
+      const res = await execPromise!
+      expect(res.degraded).toBe(false)
+      expect(res.generation).toBeGreaterThan(0)
+      expect(sm.get(info.id).running).toBe(true)
+
+      // RF2: the rebuilt projection INCLUDES the anomalous payload (not merely
+      // admission reopened) — r1 present include-once with its full result text.
+      const win = await sm.getTranscriptWindow(info.id)
+      const r1Rows = win.messages.filter((m) => (m.msg as { uuid?: string }).uuid === 'r1')
+      expect(r1Rows).toHaveLength(1)
+      expect((r1Rows[0].msg as { result?: string }).result).toBe('first turn answer')
+      expect(win.generation).toBe(res.generation)
+      // Admission reopened after the committed generation; pending rows superseded.
+      await expect(sm.send(info.id, 'after rebuild')).resolves.toMatchObject({ uuid: expect.any(String) })
+      expect(readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load())).toHaveLength(0)
+
+      // The ordered rebuild published a new generation carrying the rebase record
+      // (the transcript-rebased envelope's durable source). The AUTO path quiesces
+      // via teardown (unload ends the old subscriber queues BEFORE publication), so
+      // the envelope is not pushed to the ended old queues — clients re-anchor to the
+      // new generation via the attached handshake after resume (Task 5 ruling #1).
+      // The envelope-before-new-frames FIFO itself is pinned by the in-place
+      // publication tests (spec §8.3). Here we verify the rebase generation record.
+      const holder = (sm as unknown as { transcriptStores: Map<string, { generationHistory?: Array<{ generation: number; reason: string }> }> }).transcriptStores.get(info.id)!
+      expect(holder.generationHistory).toEqual(expect.arrayContaining([expect.objectContaining({ generation: win.generation, reason: 'ordered-rebuild' })]))
+      // The preserved control input replayed on resume: its durable state advanced
+      // past drained-to-pending to enqueue-attempted (replayDrained's advance).
+      const rows = await new TranscriptSidecar(dir, info.id).load()
+      const seedState = rows.filter((r) => r.operationId === 'seed-1' && r.state !== undefined).at(-1)?.state
+      expect(seedState).toBe('enqueue-attempted')
+      sub.unsubscribe()
+    })
+
+    it('crash after rebuild-pending persist, before the rebuild: restart recovers the payload and resumes the rebuild EXACTLY once', async () => {
+      // Isolate the live auto-scheduler so the pending payload survives on the
+      // FIRST manager (the crash happens before any rebuild commits).
+      vi.spyOn(sm, 'schedulePendingRebuilds').mockImplementation(() => {})
+      const { info } = await seedIncident()
+      emitLateResult()
+      expect(await waitFor(async () => (await rebuildPendingRows(info.id)).length === 1)).toBe(true)
+      expect(sm.transcriptHead(info.id)?.generation).toBe(0) // no rebuild yet
+      // The process dies: drop all in-memory state and bring up a FRESH manager
+      // over the same store (no in-memory carryover — only the durable sidecar).
+      await sm.unload(info.id)
+      const sm2 = new SessionManager({ store })
+      // Call-through spy: count fires AND capture the promise so the assertions
+      // wait for the durable commit + resume to settle (no fsync race).
+      const realExec2 = sm2.quiesceAndRebuild.bind(sm2)
+      let exec2Promise: Promise<{ generation: number; headSeq: number; degraded: boolean }> | undefined
+      const exec2 = vi.spyOn(sm2, 'quiesceAndRebuild').mockImplementation((id, opts) => {
+        exec2Promise = realExec2(id, opts)
+        return exec2Promise
+      })
+      try {
+        await sm2.resume(info.id)
+        // Recovery re-arms admission from the durable payload; the post-resume hook
+        // auto-fires the rebuild — exactly once (the run guard prevents loops).
+        expect(await waitFor(() => exec2.mock.calls.length >= 1)).toBe(true)
+        const res = await exec2Promise!
+        expect(res.degraded).toBe(false)
+        await tick()
+        expect(exec2).toHaveBeenCalledTimes(1)
+        expect(exec2.mock.calls[0][1]).toEqual({ preserveQueued: true })
+        expect(sm2.get(info.id).running).toBe(true)
+        // RF2: the recovered payload entered the rebuilt projection include-once.
+        const win = await sm2.getTranscriptWindow(info.id)
+        const r1Rows = win.messages.filter((m) => (m.msg as { uuid?: string }).uuid === 'r1')
+        expect(r1Rows).toHaveLength(1)
+        expect((r1Rows[0].msg as { result?: string }).result).toBe('first turn answer')
+        // Admission reopened; the durable pending rows are superseded.
+        await expect(sm2.send(info.id, 'recovered')).resolves.toMatchObject({ uuid: expect.any(String) })
+        expect(readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load())).toHaveLength(0)
+      } finally {
+        await sm2.shutdown()
+      }
+    })
+  })
+
   describe('fork pre-seed spawn-marker recovery (spec §11)', () => {
     let prevConfigDir: string | undefined
     beforeEach(() => {

@@ -30,7 +30,7 @@ import type { SessionSkillOverride } from '../shared/skills.js'
 import type { SessionToolProfile } from '../shared/tool-profile.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
-import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased, WsTurnChanges } from '../shared/ws-protocol.js'
+import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased, WsRebuildWaiting, WsTurnChanges } from '../shared/ws-protocol.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 import type { FirstPartyToolStatus } from '../shared/first-party.js'
 
@@ -125,11 +125,12 @@ export interface DebugSessionDetail extends DebugSessionSummary {
   contextUsageMismatch: boolean
 }
 
-/** One frame on the primary per-session message queue: an SDK message, or
- *  the ordered-rebase control envelope (spec §8.3). The envelope rides the
- *  SAME FIFO so every connection receives the reset before any
- *  new-generation frame; frame-bridge distinguishes it by `kind`. */
-export type SessionLiveFrame = SDKMessage | WsTranscriptRebased
+/** One frame on the primary per-session message queue: an SDK message, the
+ *  ordered-rebase control envelope (spec §8.3), or the actionable
+ *  rebuild-waiting status (spec §8.1). Both control frames ride the SAME FIFO
+ *  so every connection receives them in order relative to live frames;
+ *  frame-bridge distinguishes them by `kind` and forwards them unwrapped. */
+export type SessionLiveFrame = SDKMessage | WsTranscriptRebased | WsRebuildWaiting
 
 /** Subscriber — each connected client gets one of these. */
 export interface Subscriber {

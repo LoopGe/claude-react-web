@@ -97,6 +97,27 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       return withMirror(state, { ...state.mirror, promptSuggestion: action.suggestion })
     case 'SESSION_STATE':
       return withMirror(state, { ...state.mirror, sessionState: action.state })
+    case 'REBUILD_WAITING': {
+      // Non-empty blockers set the actionable waiting slot; an empty array clears
+      // it (the rebuild fired / was deferred / its payload committed). The frame
+      // re-emits on each blocked lifecycle re-evaluation, so reuse the previous
+      // reference when nothing changed (no subscriber churn). The generation guard
+      // is structural: every mirror reset (REBASE_TRANSCRIPT / WINDOW_BUMP /
+      // CLEAR_TRANSCRIPT / TRANSCRIPT_RESYNC) starts from createInitialServerMirror
+      // (rebuildWaiting null), so a committed rebuild drops the status.
+      const next = action.blockers.length > 0
+        ? { blockers: action.blockers, pendingOperationCount: action.pendingOperationCount }
+        : null
+      const prev = state.mirror.rebuildWaiting
+      if (next === null && prev === null) return state
+      if (
+        next && prev
+        && prev.pendingOperationCount === next.pendingOperationCount
+        && prev.blockers.length === next.blockers.length
+        && prev.blockers.every((b, i) => b === next.blockers[i])
+      ) return state
+      return withMirror(state, { ...state.mirror, rebuildWaiting: next })
+    }
     case 'SESSION_TERMINATED': {
       // Same sweep the `result` frame runs, for the session state in which no
       // result frame can ever arrive. Without it a stranded SYNC subagent

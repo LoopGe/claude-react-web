@@ -549,6 +549,12 @@ export class AppPluginManager implements AppPluginBroadcaster {
     } finally {
       this.inFlight.delete(invocationId)
       clearedSub?.unsubscribe()
+      // The invocation settled (success OR failure) — the accepted-work quiesce
+      // blocker it registered is gone. Re-evaluate a pending transcript rebuild
+      // so an idle session whose only blocker was this command auto-fires promptly
+      // instead of waiting for the next unrelated lifecycle event (spec §8.1,
+      // Task 6 carried ruling). No-op when no rebuild is pending.
+      if (sessionId) this.sm.schedulePendingRebuilds(sessionId)
     }
   }
 
