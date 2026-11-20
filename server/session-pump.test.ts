@@ -20,6 +20,7 @@ import {
   resultUsageUnverifiable,
   saneCacheBucket,
   pump,
+  applyContextUsage,
   applySdkAutoCompactFacts,
   parseSdkAutoCompactFacts,
   toolResultIds,
@@ -2772,6 +2773,161 @@ describe('pump: context-usage seed on init', () => {
     // (by design — fastModeState extraction) and the result.
     expect(broadcasts.map((m) => (m as { subtype?: string }).subtype)).toEqual(['success'])
     expect(session.history.map((m) => (m as { subtype?: string }).subtype)).toEqual(['init', 'success'])
+  })
+})
+
+describe('pump: aggregate-wire mid-turn context gate', () => {
+  // On the aggregate-reporting wire (e.g. the Mify proxy) the live assistant
+  // frame carries the message_start usage — a NON-zero input_tokens with no
+  // cache buckets — which under-reports the prompt. Deriving the bar from it
+  // mid-turn drags the bar down, then the turn-end reconcile probe corrects it:
+  // a per-turn oscillation (live-reproduced: a 142k prompt painted as 57k).
+  // The pump latches the wire from the first unverifiable result and lets the
+  // probe be the sole authority, so the bar holds its last-good value mid-turn.
+  const partialAssistant = {
+    type: 'assistant',
+    parent_tool_use_id: null,
+    uuid: 'a1',
+    message: { role: 'assistant', content: [], usage: { input_tokens: 57781, output_tokens: 0 } },
+  } as unknown as SDKMessage
+
+  it('latches from the turn result and ignores partial assistant frames after it (live order)', async () => {
+    // Live wire order: assistant frames precede their turn's result. The first
+    // turn's partial frame still derives (the documented first-turn dip); the
+    // result latches the wire and its probe corrects the bar; every LATER
+    // partial frame is ignored, so the bar holds steady.
+    const { session } = makePumpSession([
+      partialAssistant, // turn 1 mid-turn — pre-latch, dips to 57781
+      makeResult({
+        usage: { input_tokens: 142000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, iterations: [] },
+        modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+      }),
+      partialAssistant, // turn 2 mid-turn — post-latch, must be ignored
+    ])
+    session.lastContextUsage = {
+      totalTokens: 142000, maxTokens: 200000, rawMaxTokens: 200000,
+      percentage: 71, model: 'claude-opus-4-7', source: 'probe',
+    }
+    const seen: number[] = []
+    session.contextUsageSubscribers = new Set([
+      { push: (u: LiteContextUsage) => { seen.push(u.totalTokens) } },
+    ]) as unknown as Session['contextUsageSubscribers']
+    // Stand in for the turn-end reconcile probe: restore the CLI's accounting.
+    const reconcileContextUsage = vi.fn((s: Session) => {
+      applyContextUsage(s, {
+        totalTokens: 142000, maxTokens: 200000, rawMaxTokens: 200000,
+        percentage: 71, model: 'claude-opus-4-7', source: 'probe',
+      })
+    })
+    await pump(session, makePumpDeps({ reconcileContextUsage }))
+
+    expect(session.aggregateUsageWire).toBe(true)
+    expect(reconcileContextUsage).toHaveBeenCalled()
+    // The dip happened exactly once (turn 1), was corrected, and the post-latch
+    // turn-2 frame did NOT drag the bar down again.
+    expect(seen).toEqual([57781, 142000])
+    expect(session.lastContextUsage!.totalTokens).toBe(142000)
+    expect(session.lastContextUsage!.source).toBe('probe')
+  })
+
+  it('still derives mid-turn from assistant frames on a normal (derivable) wire', async () => {
+    const { session } = makePumpSession([
+      // No `iterations` field → the top-level usage IS the one call's prompt;
+      // the result derives normally and the wire is NOT flagged aggregate.
+      makeResult({
+        usage: { input_tokens: 6, cache_read_input_tokens: 140000, cache_creation_input_tokens: 1000 },
+        modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+      }),
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        uuid: 'a2',
+        message: {
+          role: 'assistant', content: [],
+          usage: { input_tokens: 6, cache_read_input_tokens: 142000, cache_creation_input_tokens: 500, output_tokens: 100 },
+        },
+      } as unknown as SDKMessage,
+    ])
+    await pump(session, makePumpDeps())
+
+    expect(session.aggregateUsageWire).toBeFalsy()
+    // The mid-turn refresh this helper exists for still works on normal wires.
+    expect(session.lastContextUsage!.totalTokens).toBe(142506)
+    expect(session.lastContextUsage!.source).toBe('assistant')
+  })
+
+  it('does not latch the wire when the handle cannot probe (fallback stays live)', async () => {
+    const { session } = makePumpSession([
+      makeResult({
+        usage: { input_tokens: 50000, iterations: [] },
+        modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+      }),
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        uuid: 'a3',
+        message: { role: 'assistant', content: [], usage: { input_tokens: 60000 } },
+      } as unknown as SDKMessage,
+    ])
+    // A provider without getContextUsage can never be probed — the unverifiable
+    // fallback derivation stays available, so the gate must not disable it.
+    delete (session.handle as { getContextUsage?: unknown }).getContextUsage
+    await pump(session, makePumpDeps())
+
+    expect(session.aggregateUsageWire).toBeFalsy()
+    expect(session.lastContextUsage!.totalTokens).toBe(60000)
+  })
+
+  it('does NOT latch on the spawn warm-up placeholder (normal wire keeps mid-turn refresh)', async () => {
+    // The spawn/restart warm-up result ALSO carries iterations=[] but with
+    // all-zero buckets. Latching on it would flag EVERY session (including
+    // normal wires) at spawn and permanently disable mid-turn refresh.
+    const { session } = makePumpSession([
+      makeResult({
+        usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, iterations: [] },
+        modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+      }),
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        uuid: 'a-warm',
+        message: {
+          role: 'assistant', content: [],
+          usage: { input_tokens: 6, cache_read_input_tokens: 142000, cache_creation_input_tokens: 500, output_tokens: 100 },
+        },
+      } as unknown as SDKMessage,
+    ])
+    session.lastContextUsage = {
+      totalTokens: 141000, maxTokens: 200000, rawMaxTokens: 200000,
+      percentage: 70.5, model: 'claude-opus-4-7', source: 'probe',
+    }
+    await pump(session, makePumpDeps())
+
+    expect(session.aggregateUsageWire).toBeFalsy()
+    // The real assistant frame still refreshes the bar mid-turn.
+    expect(session.lastContextUsage!.totalTokens).toBe(142506)
+    expect(session.lastContextUsage!.source).toBe('assistant')
+  })
+
+  it('does NOT latch on an error result (a failed turn does not establish the wire)', async () => {
+    const { session } = makePumpSession([
+      {
+        type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 1,
+        usage: { input_tokens: 142000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, iterations: [] },
+        modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+        uuid: 'r-err',
+      } as unknown as SDKMessage,
+      partialAssistant,
+    ])
+    session.lastContextUsage = {
+      totalTokens: 142000, maxTokens: 200000, rawMaxTokens: 200000,
+      percentage: 71, model: 'claude-opus-4-7', source: 'probe',
+    }
+    await pump(session, makePumpDeps())
+
+    expect(session.aggregateUsageWire).toBeFalsy()
+    // Not latched → the assistant derivation still runs (normal path).
+    expect(session.lastContextUsage!.totalTokens).toBe(57781)
   })
 })
 

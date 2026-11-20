@@ -7080,11 +7080,15 @@ export class SessionManager {
    *
    *  Why: on aggregate-reporting backends (SDK 0.3.278 + e.g. mify proxies)
    *  a result's top-level `usage` is the turn's BILLING SUM across all API
-   *  calls, and the pump's mid-turn assistant correction path is inert there
-   *  (stream assistant messages carry no `message.usage`) — deriving from
-   *  the result would put an inflated reading on the bar (99.5% vs the
-   *  CLI's 16% on a real session), so the derivation refuses the wire and
-   *  this probe feeds it instead.
+   *  calls, and the pump's mid-turn assistant correction path cannot be
+   *  trusted there — depending on the proxy the stream assistant messages
+   *  carry no `message.usage` at all, or only the partial message_start usage
+   *  (a non-zero input_tokens with no cache buckets) that under-reports the
+   *  prompt. Deriving from the result would put an inflated reading on the bar
+   *  (99.5% vs the CLI's 16% on a real session), so the derivation refuses the
+   *  wire and this probe feeds it instead. The pump also latches
+   *  Session.aggregateUsageWire from the first real such result to disable the
+   *  partial assistant derivation mid-turn (see session-pump.ts).
    *
    *  Unlike probeAutoCompactFacts this deliberately does NOT skip while
    *  pendingTurns > 0: queued-input sessions flow from turn to turn without
@@ -11271,6 +11275,11 @@ export class SessionManager {
     session.error = undefined
     session.terminatedReason = undefined
     session.autoInterruptedAt = undefined
+    // The respawn re-resolves the profile/backend, so the usage-wire shape may
+    // differ from the crashed handle's. Drop the latch so the first real result
+    // on the new handle re-classifies it (the field doc's "re-detected after
+    // resume" holds for this in-place path too, not just fresh spawn()).
+    session.aggregateUsageWire = undefined
     // Mirror spawn()'s revive: a relocation during the recovery window
     // tombstoned the snapshot sidecar (snapshotStore.remove), and an
     // in-place respawn is this session's "next spawn" — un-tombstone so the
