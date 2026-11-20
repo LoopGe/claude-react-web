@@ -8367,6 +8367,9 @@ export class SessionManager {
         sub.end()
         s.subscribers.delete(subId)
         this.subscriptionHub.detach(id, subId)
+        // Capability change (spec §8.1, Task 4): end() does NOT run the iterator
+        // cleanup callback, so the detach re-evaluation must also fire here.
+        this.schedulePendingRebuilds(id)
       },
     }
   }
@@ -9272,13 +9275,28 @@ export class SessionManager {
     if (outcome === 'cancelled') this.setRebuildAdmissionPending(id, false)
   }
 
+  /** The single auto-fire decision (spec §8.1, Task 4), shared by the scheduler's
+   *  sync gate and its async runner so the two legs cannot drift: a durable
+   *  pending operation is admitted (holder flag), the session is live and
+   *  quiesced, and every attached browser subscriber is ordered-rebase capable.
+   *  allSubscribersCapable is vacuously true with ZERO subscribers — a live idle
+   *  quiesced session with a pending rebuild auto-heals even unwatched; a tab
+   *  attaching later receives the rebuilt generation via the attached handshake.
+   *  A dormant session (no live provider) is not auto-fired here; the post-resume
+   *  hook / explicit Retry handles it. */
+  private canAutoFire(id: string): boolean {
+    if (this.transcriptStores.get(id)?.rebuildAdmissionPending !== true) return false
+    const s = this.sessions.get(id)
+    if (!s || !this.quiesceEligible(s)) return false
+    return this.subscriptionHub.allSubscribersCapable(id)
+  }
+
   /** Event-driven auto-scheduler for pending rebuilds (spec §8.1, Task 4).
    *  Re-evaluated on every lifecycle event that can clear a quiesce blocker —
    *  turn settling, background-task terminal, in-flight send settle, subscriber
    *  capability change, process recovery, and resume. Fires the rebuild executor
-   *  ONLY when a durable pending operation exists AND the session is quiesced
-   *  AND a capable browser consumer is attached. A blocker that is still present
-   *  retains the pending payload and waits for the next event (no polling loop).
+   *  when canAutoFire holds. A blocker that is still present retains the pending
+   *  payload and waits for the next event (no polling loop).
    *
    *  The holder's rebuildAdmissionPending flag is the FAST admission signal; the
    *  durable authority (readPendingRebuilds over the sidecar rows) is consulted
@@ -9289,24 +9307,17 @@ export class SessionManager {
    *  INTERIM executor: retryTranscriptReconcile (Task 5 replaces it with the
    *  drain-preserve-replay quiesceAndRebuild and repoints this scheduler). */
   schedulePendingRebuilds(id: string): void {
-    const t = this.transcriptStores.get(id)
-    if (t?.rebuildAdmissionPending !== true) return
     if (this.pendingRebuildRuns.has(id)) return // idempotent: a run is in flight
-    const s = this.sessions.get(id)
-    // A dormant session has no live provider to quiesce; the auto path waits for
-    // it to resume (the resume hook re-evaluates). Explicit Retry handles dormant.
-    if (!s || !this.quiesceEligible(s)) return
-    if (!this.subscriptionHub.allSubscribersCapable(id)) return
-    if (!this.subscriptionHub.hasLiveCapableSubscriber(id)) return
+    if (!this.canAutoFire(id)) return
     this.pendingRebuildRuns.add(id)
     void this.runPendingRebuild(id).finally(() => { this.pendingRebuildRuns.delete(id) })
   }
 
-  /** The scheduler's async leg: confirm the durable pending payload, re-check the
-   *  quiesce/capability gates after the async reads (state may have moved), then
-   *  run the executor. Refusal/degraded outcomes are logged and the pending
-   *  payload retained — recovery is a later lifecycle event or an explicit Retry,
-   *  never an immediate re-fire (which would loop). */
+  /** The scheduler's async leg: confirm the durable pending payload, re-check
+   *  canAutoFire after the async reads (state may have moved), then run the
+   *  executor. Refusal/degraded outcomes are logged and the pending payload
+   *  retained — recovery is a later lifecycle event or an explicit Retry, never
+   *  an immediate re-fire (which would loop). */
   private async runPendingRebuild(id: string): Promise<void> {
     try {
       // Let an in-flight rebuild-pending fsync land before reading the durable
@@ -9314,14 +9325,11 @@ export class SessionManager {
       // still be queued when the turn-settling event fires the scheduler.
       const w = this.transcriptWriters.get(id)
       if (w?.hasPendingCommits) await w.drain()
-      const t = this.transcriptStores.get(id)
-      if (t?.rebuildAdmissionPending !== true) return // resolved while awaiting
-      const rows = await t.sidecar.load()
+      if (!this.canAutoFire(id)) return // resolved / blocked while awaiting
+      // canAutoFire just proved the holder exists; no await separates the two.
+      const rows = await this.transcriptStores.get(id)!.sidecar.load()
       if (readPendingRebuilds(rows).length === 0) return // durable authority: nothing pending
-      const s = this.sessions.get(id)
-      if (!s || !this.quiesceEligible(s)) return
-      if (!this.subscriptionHub.allSubscribersCapable(id)) return
-      if (!this.subscriptionHub.hasLiveCapableSubscriber(id)) return
+      if (!this.canAutoFire(id)) return
       log.info(`[session ${id}] auto pending-rebuild: session quiesced, firing reconcile/rebuild`)
       const res = await this.retryTranscriptReconcile(id)
       if (res.degraded) {
@@ -10935,6 +10943,24 @@ export class SessionManager {
     return n
   }
 
+  /** All active/waiting BACKGROUND work — subagents AND shells AND workflows
+   *  (spec §8.1 quiesceEligible: a rebuild must not quiesce over a running
+   *  background shell/workflow even while the main turn is idle). Same exclusions
+   *  as backgroundSubagentCount minus the subagent-only filter: foreground records
+   *  (isBackgrounded===false) are covered by the executing-turn check; ambient /
+   *  skipTranscript records are CLI housekeeping the sweep never settles, so
+   *  counting them would strand the predicate at 'blocked' forever. Kept SEPARATE
+   *  from backgroundSubagentCount, which feeds phaseOf / the sidebar's subagent
+   *  'waiting' dot and must keep its subagent-only semantics. */
+  private backgroundWorkCount(s: Session): number {
+    let n = 0
+    for (const rec of s.tasks.values()) {
+      if (rec.isBackgrounded === false || rec.ambient === true || rec.skipTranscript === true) continue
+      if (!isTerminalTaskStatus(rec.status)) n++
+    }
+    return n
+  }
+
   /** Coarse-grained lifecycle phase. Single source of truth for
    *  client-side gates that today re-derive the same state from the
    *  primitives (working / running / terminated / queueDepth /
@@ -10986,8 +11012,9 @@ export class SessionManager {
     // pendingTurns covers a dispatched turn awaiting its result (and the
     // moreQueued bridge between back-to-back turns).
     if (s.pendingTurns > 0 || s.turnActive === true) return false
-    // Active/waiting background tasks (CLI-authoritative folded task map).
-    if (this.backgroundSubagentCount(s) > 0) return false
+    // Active/waiting background work — subagents AND shells AND workflows
+    // (CLI-authoritative folded task map; see backgroundWorkCount).
+    if (this.backgroundWorkCount(s) > 0) return false
     // Accepted plugin invocation — registered work that must complete first.
     if (this.pluginInvocationProbe?.(s.id) === true) return false
     // In-flight send (the send lifecycle controller is set until dispatch settles).

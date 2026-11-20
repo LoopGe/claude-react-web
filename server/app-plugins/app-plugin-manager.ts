@@ -552,6 +552,17 @@ export class AppPluginManager implements AppPluginBroadcaster {
     }
   }
 
+  /** Whether an accepted (in-flight) command invocation is registered for a
+   *  session. The SessionManager's quiesceEligible probe reads this (wired in
+   *  bootstrap) so an ordered rebuild never quiesces over accepted plugin work
+   *  (spec §8.1). Global commands (no sessionId) never block a specific session. */
+  hasInFlightInvocation(sessionId: string): boolean {
+    for (const entry of this.inFlight.values()) {
+      if (entry.sessionId === sessionId) return true
+    }
+    return false
+  }
+
   /** Abort an in-flight command and notify the child to stop. Used by
    *  session-cleared and disable/uninstall teardown. `code` is the typed
    *  error code the caller will see (vs the generic command-cancelled). */

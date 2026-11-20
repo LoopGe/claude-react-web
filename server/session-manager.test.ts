@@ -389,6 +389,8 @@ import { occurrenceIdOf } from './transcript-projection.js'
 import { ScheduledSendManager } from './scheduled-send-manager.js'
 import { REBUILD_REQUIRED } from '../shared/ws-protocol.js'
 import { SessionSubscriptionRegistry } from './session-plugin-subscription.js'
+import { AppPluginStore } from './app-plugins/app-plugin-store.js'
+import { AppPluginManager } from './app-plugins/app-plugin-manager.js'
 import { ResetJournal } from './reset-journal.js'
 import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
 import { NativeProvider } from './providers/native/native-provider.js'
@@ -534,6 +536,41 @@ type TestSubagentReader = {
 
 function subagentProviderForTest(sm: SessionManager, name: string): AgentProvider & { subagentTranscripts?: TestSubagentReader } {
   return (sm as unknown as { providers: { get(name: string): AgentProvider } }).providers.get(name)
+}
+
+// Minimal stdio JSON-RPC child runtime for the Task 4 production-path plugin
+// blocker test (mirrors app-plugins/plugin-runtime.test.ts's fixture loop). The
+// plugin's executeCommand handler hangs forever, so the invocation stays accepted
+// (in-flight) until the host cancels it — exactly the work quiesceEligible must
+// not rebuild over.
+const PLUGIN_CHILD_RUNTIME = `
+import readline from 'node:readline'
+const rl = readline.createInterface({ input: process.stdin })
+function send(msg) { process.stdout.write(JSON.stringify(msg) + '\\n') }
+const handlers = { activate: async () => ({ ok: true }), deactivate: async () => ({ ok: true }) }
+rl.on('line', (line) => {
+  let msg
+  try { msg = JSON.parse(line) } catch { return }
+  if (!msg || typeof msg !== 'object' || !('method' in msg)) return
+  Promise.resolve(handlers[msg.method]?.(msg.params)).then(
+    (result) => { if (msg.id != null) send({ jsonrpc: '2.0', id: msg.id, result: result ?? null }) },
+    (err) => { if (msg.id != null) send({ jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: err.message } }) },
+  )
+})
+`
+function buildHangPlugin(root: string, id: string): string {
+  const dir = join(root, id.replace(/\./g, '_'))
+  mkdirSync(join(dir, 'dist'), { recursive: true })
+  const manifest = {
+    manifestVersion: 1, id, name: id, version: '1.0.0',
+    engines: { claudeReactWeb: '^0.6.0', node: '>=20' },
+    runtime: { service: 'dist/service.mjs' },
+    permissions: ['storage'],
+    contributes: { commands: [{ id: `${id}.run`, title: 'Run' }], contextMenus: [], actions: [], configuration: { properties: [] } },
+  }
+  writeFileSync(join(dir, 'crw-plugin.json'), JSON.stringify(manifest))
+  writeFileSync(join(dir, 'dist', 'service.mjs'), `${PLUGIN_CHILD_RUNTIME}\nhandlers.executeCommand = async () => { await new Promise(() => {}) }\n`)
+  return dir
 }
 
 describe('SessionManager', () => {
@@ -10322,6 +10359,9 @@ describe('SessionManager', () => {
 
     it('a retry that stays append-only keeps admission closed (pending not resolved)', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
+      // Isolate the Task 4 auto-scheduler so the explicit retry's internal resume
+      // does not auto-fire a second rebuild; this test pins the append-only retry.
+      vi.spyOn(sm, 'schedulePendingRebuilds').mockImplementation(() => {})
       emitAssistant('A', 'mA', 'first')
       await waitLiveRows(info.id, 1)
       writeJsonl(info.id, [asst('A', 'mA', 'first')])
@@ -10384,6 +10424,9 @@ describe('SessionManager', () => {
 
     it('resume re-arms admission from the durable pending rows (crash window, spec §9)', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
+      // Isolate the Task 4 auto-scheduler: this test pins the re-arm of admission,
+      // not the post-resume auto-fire (covered by its own Task 4 hook test).
+      vi.spyOn(sm, 'schedulePendingRebuilds').mockImplementation(() => {})
       emitAssistant('A', 'mA', 'first')
       await waitLiveRows(info.id, 1)
       writeJsonl(info.id, [asst('A', 'mA', 'first')])
@@ -10460,6 +10503,9 @@ describe('SessionManager', () => {
 
     it('(a) a live result belonging mid-history persists rebuild-pending, closes admission, and is NOT head-appended or broadcast', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
+      // Isolate from the Task 4 auto-scheduler: this test pins detection/admission
+      // (the pre-rebuild state), not the auto-fire that now follows a quiesced turn.
+      vi.spyOn(sm, 'schedulePendingRebuilds').mockImplementation(() => {})
       const p1 = (await sm.send(info.id, 'first') as { uuid: string }).uuid // seq 0
       emitAssistant('A1', 'first reply')                                    // seq 1, lastAssistantUuid=A1
       // An empty background bookend ends the turn WITHOUT a real result (the
@@ -10501,6 +10547,7 @@ describe('SessionManager', () => {
 
     it('(b) a same-resultUuid semantic revision triggers rebuild-pending and is not head-appended', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
+      vi.spyOn(sm, 'schedulePendingRebuilds').mockImplementation(() => {}) // isolate auto-scheduler (Task 4)
       await sm.send(info.id, 'first')        // seq 0
       emitAssistant('A1', 'reply')           // seq 1
       emitResult('r1', { result: 'v1' })     // seq 2 (normal tail append)
@@ -10586,6 +10633,7 @@ describe('SessionManager', () => {
 
     it('a LIVE-SHAPED pending op (raw result frame, no assistantUuid) matches its canonical occurrence include-once', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
+      vi.spyOn(sm, 'schedulePendingRebuilds').mockImplementation(() => {}) // isolate auto-scheduler (Task 4)
       const p1 = (await sm.send(info.id, 'first') as { uuid: string }).uuid
       emitAssistant('A1', 'first reply')
       mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r0', num_turns: 0, result: '' })
@@ -10630,6 +10678,7 @@ describe('SessionManager', () => {
 
     it('a transient rebuild-pending fsync failure is retried once and arms admission', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
+      vi.spyOn(sm, 'schedulePendingRebuilds').mockImplementation(() => {}) // isolate auto-scheduler (Task 4)
       await sm.send(info.id, 'first')
       emitAssistant('A1', 'first reply')
       mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r0', num_turns: 0, result: '' })
@@ -10744,6 +10793,16 @@ describe('SessionManager', () => {
         seedBackgroundSubagent(live(info.id))
         expect(sm.quiesceEligible(live(info.id))).toBe(false)
       })
+      it('a running background SHELL or WORKFLOW rejects (broadened count, spec §8.1 amendment)', async () => {
+        const info = await sm.create({ cwd: TEST_CWD })
+        const s = live(info.id)
+        // backgroundSubagentCount ignores non-subagent records; quiesceEligible must not.
+        s.tasks.set('sh1', { taskId: 'sh1', description: 'bg shell', status: 'running', taskType: 'shell', isBackgrounded: true, updatedAt: Date.now() } as TaskRecordUi)
+        expect(sm.quiesceEligible(s)).toBe(false)
+        s.tasks.delete('sh1')
+        s.tasks.set('wf1', { taskId: 'wf1', description: 'bg workflow', status: 'running', taskType: 'workflow', isBackgrounded: true, updatedAt: Date.now() } as TaskRecordUi)
+        expect(sm.quiesceEligible(s)).toBe(false)
+      })
       it('a broker-blocked session (pending permission ONLY) IS eligible — unlike phaseOf', async () => {
         const info = await sm.create({ cwd: TEST_CWD })
         const s = live(info.id)
@@ -10832,14 +10891,11 @@ describe('SessionManager', () => {
       expect(exec).not.toHaveBeenCalled()
     })
 
-    it('no capable consumer attached → no fire; a capable subscribe fires it', async () => {
+    it('ZERO subscribers → auto-fires (allSubscribersCapable vacuously true; an unwatched quiesced session auto-heals)', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
       const exec = stubExecutor()
       await arm(info.id)
-      sm.schedulePendingRebuilds(info.id)       // quiesced + capable, but unwatched
-      await tick()
-      expect(exec).not.toHaveBeenCalled()
-      capableSub(info.id)                        // capability-change hook re-evaluates
+      sm.schedulePendingRebuilds(info.id)       // quiesced + pending, no attached tab
       expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
     })
 
@@ -10896,6 +10952,99 @@ describe('SessionManager', () => {
       await expect(sm.send(info.id, 'still closed')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
       expect(readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load())).toHaveLength(1)
     })
+
+    it('a running background SHELL blocks auto-fire; its terminal re-evaluates (broadened count)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const exec = stubExecutor()
+      await arm(info.id)
+      live(info.id).tasks.set('sh1', { taskId: 'sh1', description: 'bg shell', status: 'running', taskType: 'shell', isBackgrounded: true, updatedAt: Date.now() } as TaskRecordUi)
+      sm.schedulePendingRebuilds(info.id)
+      await tick()
+      expect(exec).not.toHaveBeenCalled()
+      mockHandles[0].emit({ type: 'system', subtype: 'task_notification', task_id: 'sh1', status: 'completed', tool_use_id: 'tu-sh' })
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+    })
+
+    it('endSend settle hook: an in-flight send blocker clears and re-evaluates on settle', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const exec = stubExecutor()
+      await arm(info.id)
+      const s = live(info.id)
+      const ctrl = new AbortController()
+      const internals = sm as unknown as {
+        sendState(x: Session): { interruptEpoch: number; clearGeneration: number; controller?: AbortController }
+        endSend(x: Session, l: { interruptEpoch: number; clearGeneration: number; controller: AbortController }): void
+      }
+      internals.sendState(s).controller = ctrl   // simulate an in-flight send (no turn dispatched)
+      sm.schedulePendingRebuilds(info.id)
+      await tick()
+      expect(exec).not.toHaveBeenCalled()         // in-flight send blocks quiesce
+      internals.endSend(s, { interruptEpoch: 0, clearGeneration: 0, controller: ctrl }) // settle
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+    })
+
+    it('detach hook: removing the last incapable subscriber clears the blocker and auto-fires', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const exec = stubExecutor()
+      await arm(info.id)
+      const blocker = sm.subscribe(info.id, { orderedRebase: false })
+      sm.schedulePendingRebuilds(info.id)
+      await tick()
+      expect(exec).not.toHaveBeenCalled()         // incapable subscriber blocks the rebuild
+      blocker.unsubscribe()                        // detach hook re-evaluates → zero subscribers (vacuously capable)
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+    })
+
+    it('post-resume recovery hook auto-fires a pending rebuild that survived the restart', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const exec = stubExecutor()
+      emitAssistant('A', 'first')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 1)).toBe(true)
+      const p = join(dir, 'projects', encodeCwd(TEST_CWD), `${info.id}.jsonl`)
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, JSON.stringify({ type: 'assistant', uuid: 'A', message: { id: 'mA', role: 'assistant', content: [{ type: 'text', text: 'first' }] } }) + '\n')
+      await arm(info.id)
+      await sm.unload(info.id)                     // holder/writer dropped; durable pending survives
+      await sm.resume(info.id)                     // re-arm + post-resume hook re-evaluates
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+    })
+
+    it('PRODUCTION PATH: a real in-flight plugin invocation blocks quiesce + auto-fire (bootstrap wiring)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const exec = stubExecutor()
+      // Real AppPluginManager over a hanging session-scoped command, wired exactly
+      // as bootstrap does (setPluginInvocationProbe → hasInFlightInvocation).
+      const apmStore = new AppPluginStore({ stateDir: dir })
+      const apm = new AppPluginManager({ store: apmStore, stateDir: dir, hostVersion: '0.6.0', hostNodeMajor: 20, sm })
+      try {
+        const pluginDir = buildHangPlugin(dir, 'com.example.quiesce')
+        await apm.install({ type: 'local', path: pluginDir })
+        await apm.enable('com.example.quiesce')
+        sm.setPluginInvocationProbe((id) => apm.hasInFlightInvocation(id))
+        let caught: unknown
+        const pending = apm.executeCommand({
+          pluginId: 'com.example.quiesce',
+          commandId: 'com.example.quiesce.run',
+          context: { source: 'session', sessionId: info.id, commandId: 'com.example.quiesce.run', invokedAt: Date.now() } as never,
+        }).catch((e) => { caught = e })
+        expect(await waitFor(() => apm.hasInFlightInvocation(info.id))).toBe(true)
+        expect(sm.quiesceEligible(live(info.id))).toBe(false) // accepted plugin work blocks
+        await arm(info.id)
+        sm.schedulePendingRebuilds(info.id)
+        await tick()
+        expect(exec).not.toHaveBeenCalled()         // scheduler must not fire over accepted work
+        // Cancel the invocation → the blocker clears → quiesce eligible → auto-fire.
+        await apm.disable('com.example.quiesce')
+        await pending
+        expect(caught).toBeTruthy()
+        expect(apm.hasInFlightInvocation(info.id)).toBe(false)
+        expect(sm.quiesceEligible(live(info.id))).toBe(true)
+        sm.schedulePendingRebuilds(info.id)
+        expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
+      } finally {
+        await apm.shutdown().catch(() => {})
+      }
+    }, 20_000)
   })
 
   describe('fork pre-seed spawn-marker recovery (spec §11)', () => {
