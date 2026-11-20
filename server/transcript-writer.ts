@@ -426,16 +426,29 @@ export class TranscriptWriter {
    *  batch carrying the full rebuild-pending payload + entry identity (fsync
    *  BEFORE resolve), THEN add the op to pendingRebuilds. No seq, no ring, no
    *  WS frame — this record is the only write allowed before capability upgrade
-   *  and never advances a client cursor. A write failure rejects (durable-
-   *  before-publish barrier) and leaves pendingRebuilds empty. */
+   *  and never advances a client cursor.
+   *
+   *  All-or-nothing postcondition: on resolve the op is durable AND pending AND
+   *  rebuilding is set; on rejection NOTHING is left behind — a closed writer
+   *  rejects up front (mirrors appendDurable's fence, so a no-op commit can never
+   *  smuggle a non-durable op into pendingRebuilds), and a write failure resets
+   *  the flag and rethrows (durable-before-publish barrier), leaving
+   *  pendingRebuilds empty and rebuilding false. Degraded-state admission is a
+   *  Task 2 retry-semantics decision and is deliberately NOT fenced here. */
   async beginRebuild(op: PendingOperation): Promise<void> {
+    if (this.closedFlag) throw new Error('closed: transcript writer fenced')
     this.rebuildingFlag = true
     const batchId = nextBatchId()
     const row = makeRebuildPendingRow(op, batchId, this.nextDispatchOrdinal())
-    await this.commit(
-      [row],
-      makeCommitV2({ batchId, batchType: 'recovery', generation: this.deps.generation(), reason: 'initial', contentPolicy: 'preserve', rows: [row] }),
-    )
+    try {
+      await this.commit(
+        [row],
+        makeCommitV2({ batchId, batchType: 'recovery', generation: this.deps.generation(), reason: 'initial', contentPolicy: 'preserve', rows: [row] }),
+      )
+    } catch (err) {
+      this.rebuildingFlag = false
+      throw err
+    }
     this.addPendingRebuild(op)
   }
 

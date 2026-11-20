@@ -695,13 +695,21 @@ export function classifyPendingInputs(
 
 /** Recover the durable rebuild-pending operations (spec §8.1/§8.3, Task 1).
  *  Pure: extracts committed `rebuild-pending` recovery rows NOT superseded by a
- *  later committed generation, mirroring `unsupersededCorrupt` — a pending row
- *  written at generation G is superseded once a generation/reset batch commits
- *  above G (the rebuild that included it, or a clear/compact that wiped it).
- *  With no committed generation batch every pending row survives (the gen-0
- *  case). Uncommitted crash tails and demoted corrupt commits are excluded by
- *  parseBatches. Dedups by operationId (a retry re-persists the same op — last
- *  committed payload wins, exactly once) and orders by dispatchOrdinal. */
+ *  later committed generation — a pending row written at generation G is
+ *  superseded once a generation/reset batch commits above G (the rebuild that
+ *  included it, or a clear/compact that wiped it). With no committed generation
+ *  batch every pending row survives (the gen-0 case). Uncommitted crash tails
+ *  and demoted corrupt commits are excluded by parseBatches. Dedups by
+ *  operationId (a retry re-persists the same op — last committed payload wins,
+ *  exactly once) and orders by dispatchOrdinal.
+ *
+ *  Same supersession concept as `unsupersededCorrupt`, but the comparison
+ *  direction is INVERTED: a corrupt batch declares the generation it was trying
+ *  to write (ahead of adopted, kept while `> adopted`), whereas a pending row
+ *  sits AT the current generation BEFORE the resolving rebuild commits above
+ *  it. So a pending row is kept while `batchGen >= adopted` and dropped only
+ *  when `adopted > batchGen` — do not "fix" this back to `> adopted`, which
+ *  would wrongly drop a still-pending op written at the current generation. */
 export function readPendingRebuilds(rows: readonly SidecarRow[]): PendingOperation[] {
   const committed = parseBatches(rows).batches.filter((b) => b.commit !== null)
   const genGens = committed

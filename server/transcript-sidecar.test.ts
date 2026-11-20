@@ -897,6 +897,15 @@ describe('readPendingRebuilds (rebuild-pending recovery, spec §8.1/§8.3)', () 
     expect(readPendingRebuilds(rows)).toEqual([op])
   })
 
+  it('supersedes per-batch across multiple pendings: only ops at/above the adopted generation survive', () => {
+    const opA = pendingOp('opA', 'RA') // persisted at gen 0
+    const opB = pendingOp('opB', 'RB') // persisted at gen 1
+    const rows = [...pendingBatch(opA, 1, 0), ...pendingBatch(opB, 2, 1), ...generationBatch(1)]
+    // adopted gen 1 supersedes opA (0 < 1) but NOT opB (1 >= 1) — a global drop
+    // would wrongly lose opB.
+    expect(readPendingRebuilds(rows).map((o) => o.operationId)).toEqual(['opB'])
+  })
+
   it('a reset (clear) generation supersedes the pending', () => {
     const op = pendingOp('op1', 'R1')
     const rows = [...pendingBatch(op, 1, 0), ...resetBatch(1)]

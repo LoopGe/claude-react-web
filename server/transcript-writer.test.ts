@@ -466,13 +466,25 @@ describe('TranscriptWriter.beginRebuild (rebuild-pending, spec §8.1/§8.3)', ()
     expect(w.pendingRebuilds).toHaveLength(1)
   })
 
-  it('a write error rejects and leaves pendingRebuilds empty (nothing published)', async () => {
+  it('a write error rejects, resets the rebuilding flag, and leaves pendingRebuilds empty', async () => {
     const appendBatch = vi.fn(async () => { throw new Error('disk full') })
     const { deps } = makeDeps({ appendBatch })
     const w = new TranscriptWriter(deps)
     await expect(w.beginRebuild(pendingOp('R1'))).rejects.toThrow('disk full')
+    expect(w.rebuilding).toBe(false) // flag healed on rejection (all-or-nothing)
     expect(w.pendingRebuilds).toHaveLength(0)
     expect(deps.publish).not.toHaveBeenCalled()
+  })
+
+  it('rejects on a closed writer before setting the flag or adding pending (no non-durable op)', async () => {
+    const appendBatch = vi.fn(async () => {})
+    const { deps } = makeDeps({ appendBatch })
+    const w = new TranscriptWriter(deps)
+    w.close()
+    await expect(w.beginRebuild(pendingOp('R1'))).rejects.toThrow(/closed/)
+    expect(appendBatch).not.toHaveBeenCalled() // fenced before the no-op commit
+    expect(w.rebuilding).toBe(false)
+    expect(w.pendingRebuilds).toHaveLength(0)
   })
 
   it('round-trips through readPendingRebuilds (durable row → faithful PendingOperation)', async () => {
