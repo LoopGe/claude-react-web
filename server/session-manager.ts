@@ -28,7 +28,9 @@ import { isEmptyResultFrame } from '../shared/results.js'
 import { COMPACT_SUMMARY_TIMEOUT_MS } from '../shared/compact-deadline.js'
 import type { FileAttachmentRef } from '../shared/attachments.js'
 import { fileHandleText } from '../shared/upload-handle.js'
-import { publicAttachmentContent, resolveAttachmentContent } from './attachment-resolver.js'
+import { imageHandleText } from '../shared/image-handle.js'
+import { isImageRefBlock, type ImageRefBlock } from '../shared/image-attachment.js'
+import { isResolvedImageBlock, publicAttachmentContent, resolveAttachmentContent, resolveImageBlocks, type ResolvedImageBlock } from './attachment-resolver.js'
 import type { AgentUserMessage, AnyAgentUserMessage, ProviderContentBlock, ProviderInputContentBlock, PublicAgentUserMessage } from './agent-message.js'
 import { UploadStore } from './upload-store.js'
 import { randomUUID } from 'node:crypto'
@@ -803,6 +805,29 @@ export function projectFileBlocksForSdk(
     ...message,
     message: { ...message.message, content: projected } as SDKUserMessage['message'],
   }
+}
+
+/** Project resolved image occurrences to the SDK copy: a deterministic handle
+ *  text block immediately followed by the base64 image block (the verified
+ *  stored bytes). The ring/broadcast/seq/sidecar keep the structured ref; only
+ *  this provider-bound copy carries bytes. Never mutates the input blocks.
+ *  The single projection point for the live dispatch path — crash recovery
+ *  re-resolves and projects through the same function (recoveredProviderPayload)
+ *  because the writer's dispatchUser enqueues providerPayload verbatim. */
+export function projectImageBlocksForSdk(
+  content: readonly (ProviderContentBlock | ResolvedImageBlock)[],
+): ProviderContentBlock[] {
+  if (!content.some((block) => isResolvedImageBlock(block))) return [...content]
+  const projected: ProviderContentBlock[] = []
+  for (const block of content) {
+    if (isResolvedImageBlock(block)) {
+      projected.push({ type: 'text', text: imageHandleText(block.attachment, block.path) })
+      projected.push({ type: 'image', source: { ...block.source } })
+    } else {
+      projected.push(block)
+    }
+  }
+  return projected
 }
 
 /** The SDK's camelCase model-info shape (translated to the snake_case wire
@@ -3896,7 +3921,7 @@ export class SessionManager {
     })
   }
 
-  private acquireAttachmentLeases(content: readonly ProviderInputContentBlock[]): Set<string> {
+  private acquireAttachmentLeases(content: readonly (ProviderInputContentBlock | ImageRefBlock)[]): Set<string> {
     const ids = new Set<string>()
     for (const block of content) {
       if (block.type !== 'file') continue
@@ -3962,7 +3987,7 @@ export class SessionManager {
    *  `clientOperationId` makes the send idempotent (spec §8.3, see send()). */
   async sendContent(
     id: string,
-    content: ProviderInputContentBlock[],
+    content: (ProviderInputContentBlock | ImageRefBlock)[],
     clientOperationId?: string,
   ): Promise<SentUserMessage> {
     const s = this.requireSendable(id)
@@ -3985,18 +4010,32 @@ export class SessionManager {
           this.assertSendCurrent(s, lifecycle)
         }
         leaseIds = this.acquireAttachmentLeases(content)
-        const providerContent = content.some((block) => block.type === 'file')
-          ? await resolveAttachmentContent(content, {
+        // Two verification steps, each passing the other's blocks through:
+        // file registry resolution (streamed hash), then image ref resolution
+        // (object-store verified read). Both reject BEFORE any dispatch, so a
+        // dangling/tampered attachment never reaches the SDK or the ring.
+        const providerContent: ProviderContentBlock[] = content.some((block) => block.type === 'file')
+          ? await resolveAttachmentContent(content as ProviderInputContentBlock[], {
               sessionId: id,
               signal: lifecycle.controller.signal,
               uploadStore: this.uploadStore,
               stateDir: this.store!.getDir(),
             })
           : content as ProviderContentBlock[]
+        const resolvedContent: readonly (ProviderContentBlock | ResolvedImageBlock)[] =
+          content.some((block) => isImageRefBlock(block))
+            ? await resolveImageBlocks(providerContent, {
+                signal: lifecycle.controller.signal,
+                stateDir: this.store!.getDir(),
+              })
+            : providerContent
         this.assertSendCurrent(s, lifecycle)
         const userMsg: PublicAgentUserMessage = {
           type: 'user',
-          message: { role: 'user', content: publicAttachmentContent(providerContent) },
+          // The public ring/seq/sidecar form keeps ImageRefBlocks. The neutral
+          // input union (agent-message.ts) predates them, so the public form is
+          // asserted at this single boundary.
+          message: { role: 'user', content: publicAttachmentContent(resolvedContent) as ProviderInputContentBlock[] },
           parent_tool_use_id: null,
           uuid: randomUUID(),
           session_id: s.id,
@@ -4016,7 +4055,7 @@ export class SessionManager {
           `[session ${id}] sendContent PRE-PUSH — blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
           `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
         )
-        const sent = this.dispatchNewUserMessage(s, userMsg, providerContent, clientOperationId)
+        const sent = this.dispatchNewUserMessage(s, userMsg, resolvedContent, clientOperationId)
         if (clientOperationId) {
           // Best-effort: the dispatch already succeeded. A record failure must
           // not unwind it — the outer catch would release the live attachment
@@ -4142,13 +4181,13 @@ export class SessionManager {
   private dispatchNewUserMessage(
     s: Session,
     userMsg: PublicAgentUserMessage,
-    providerContent: ProviderContentBlock[],
+    providerContent: readonly (ProviderContentBlock | ResolvedImageBlock)[],
     clientOperationId?: string,
   ): SentUserMessage
   private dispatchNewUserMessage(
     s: Session,
     userMsg: AnyAgentUserMessage,
-    providerContent?: readonly ProviderContentBlock[],
+    providerContent?: readonly (ProviderContentBlock | ResolvedImageBlock)[],
     clientOperationId?: string,
   ): SentUserMessage {
     const rollbackAnchor = this.captureAnchor(s.id, s, userMsg.uuid!)
@@ -4286,7 +4325,7 @@ export class SessionManager {
   private dispatchUserMessage(
     s: Session,
     userMsg: AnyAgentUserMessage,
-    providerContent?: readonly ProviderContentBlock[],
+    providerContent?: readonly (ProviderContentBlock | ResolvedImageBlock)[],
     clientOperationId?: string,
   ): void {
     // A new top-level user turn invalidates the previous turn's predicted
@@ -4306,12 +4345,16 @@ export class SessionManager {
     // undelivered back through the normal path.
     if (this.trySteerMessage(s, userMsg)) return
     // Providers receive resolved neutral blocks; the ring/broadcast keeps the
-    // public structured content. Each provider owns its legacy projection.
+    // public structured content. File blocks stay neutral here (each provider
+    // owns its file projection); resolved image blocks are projected to the
+    // SDK shape — handle text + base64 image — at this single dispatch point,
+    // so the queued-not-published providerPayload (enqueued verbatim at
+    // materialization) carries the same projected form.
     const forSdk = (providerContent === undefined
       ? { ...userMsg }
       : {
           ...userMsg,
-          message: { ...userMsg.message, content: [...providerContent] },
+          message: { ...userMsg.message, content: projectImageBlocksForSdk(providerContent) },
         }) as AgentUserMessage
     // T7b Task 2 (spec §8.1): a mid-turn root prompt that did NOT take the
     // steering route is queued-not-published — durably committed, but NO seq,
@@ -8875,21 +8918,37 @@ export class SessionManager {
 
   /** Rebuild the resolved provider payload for a crash-recovered prompt. The
    *  durable input row stores only the public wire payload (file blocks stripped
-   *  of path/modelForm by publicAttachmentContent), so recovery re-runs the
-   *  send-path resolver before dispatch (spec §10). Returns undefined when the
-   *  payload carries no file blocks — text/image sends dispatch the public form
-   *  unchanged, exactly as sendContent does. */
+   *  of path/modelForm, image blocks kept as refs by publicAttachmentContent),
+   *  so recovery re-runs the send-path resolvers before dispatch (spec §10).
+   *  Returns undefined when the payload carries no file blocks or image refs —
+   *  text/legacy-base64 sends dispatch the public form unchanged, exactly as
+   *  sendContent does. */
   private async recoveredProviderPayload(id: string, payload: unknown): Promise<unknown> {
     const msg = payload as { message?: { content?: unknown } }
     const content = msg?.message?.content
-    if (!Array.isArray(content) || !content.some((b) => (b as { type?: unknown }).type === 'file')) return undefined
-    const resolved = await resolveAttachmentContent(content as ProviderInputContentBlock[], {
-      sessionId: id,
-      signal: new AbortController().signal,
-      uploadStore: this.uploadStore,
-      stateDir: this.store!.getDir(),
-    })
-    return { ...(payload as object), message: { ...(msg.message as object), content: resolved } }
+    if (!Array.isArray(content)) return undefined
+    const hasFiles = content.some((b) => (b as { type?: unknown }).type === 'file')
+    const hasImageRefs = content.some((b) => isImageRefBlock(b))
+    if (!hasFiles && !hasImageRefs) return undefined
+    const fileResolved: ProviderContentBlock[] = hasFiles
+      ? await resolveAttachmentContent(content as ProviderInputContentBlock[], {
+          sessionId: id,
+          signal: new AbortController().signal,
+          uploadStore: this.uploadStore,
+          stateDir: this.store!.getDir(),
+        })
+      : content as ProviderContentBlock[]
+    const resolved = hasImageRefs
+      ? await resolveImageBlocks(fileResolved, {
+          signal: new AbortController().signal,
+          stateDir: this.store!.getDir(),
+        })
+      : fileResolved
+    // The live path projects images in dispatchUserMessage; recovery enqueues
+    // providerPayload verbatim (writer dispatchUser), so project here too.
+    // File blocks pass through — each provider owns its file projection.
+    const projected = projectImageBlocksForSdk(resolved)
+    return { ...(payload as object), message: { ...(msg.message as object), content: projected } }
   }
 
   /** Re-materialize + re-dispatch crash-recovered prompts (spec §7.2, T7b Task 6).

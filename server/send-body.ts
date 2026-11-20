@@ -2,6 +2,7 @@ import type { ScheduledSendBody, ScheduledSendContentBlock } from '../shared/sch
 import { isSupportedImageMediaType } from '../shared/image-media.js'
 import { inspectImageBytes } from '../shared/image-inspect.js'
 import { isFileBlock } from '../shared/attachments.js'
+import { isImageRefBlock } from '../shared/image-attachment.js'
 import {
   MAX_FILES_PER_MESSAGE,
   MAX_IMAGE_BYTES,
@@ -40,6 +41,23 @@ export function validateSendBody(raw: { text?: unknown; content?: unknown; clien
     for (const block of raw.content) {
       const b = block as Record<string, unknown>
       if (b.type === 'image') {
+        if ('attachment' in b) {
+          // Durable ref shape (Task 4): the bytes live in the object store and
+          // are verified at dispatch (resolveImageBlocks), so admission only
+          // checks structure + the shared count/byte policy. No base64 rides
+          // the body, so refs add nothing to totalBase64.
+          if (!isImageRefBlock(block)) {
+            return { ok: false, status: 400, error: 'invalid image reference block' }
+          }
+          imageCount += 1
+          if (imageCount > MAX_IMAGES_PER_MESSAGE) {
+            return { ok: false, status: 400, error: `at most ${MAX_IMAGES_PER_MESSAGE} images per message` }
+          }
+          if (block.attachment.bytes > MAX_IMAGE_BYTES) {
+            return { ok: false, status: 413, error: `image #${imageCount} exceeds ${MAX_IMAGE_BYTES} bytes` }
+          }
+          continue
+        }
         const source = b.source as Record<string, unknown> | undefined
         if (!source || source.type !== 'base64' || typeof source.data !== 'string' || typeof source.media_type !== 'string') {
           return { ok: false, status: 400, error: 'invalid image block: missing base64 source' }

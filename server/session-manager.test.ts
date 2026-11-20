@@ -5,8 +5,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, t
 // precedent (30s).
 vi.setConfig({ testTimeout: 30_000 })
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as nodeFs from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -390,6 +390,13 @@ import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
 import { NativeProvider } from './providers/native/native-provider.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './providers/native/session-log/log.js'
 import type { CanonicalEvent } from './providers/native/canonical.js'
+import { AttachmentObjectStore } from './attachment-object-store.js'
+import { attachmentRoot, imageObjectPathOf } from './attachment-paths.js'
+import { inspectImageBytes } from '../shared/image-inspect.js'
+import { imageRefId, type ImageAttachmentRef } from '../shared/image-attachment.js'
+import { imageHandleText, parseImageHandle } from '../shared/image-handle.js'
+import { fileHandleText } from '../shared/upload-handle.js'
+import { UPLOAD_SUBDIR } from './upload-store.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
@@ -8879,6 +8886,223 @@ describe('SessionManager', () => {
     it('throws for an unknown session id', async () => {
       expect(() => sm.debugSessions()).not.toThrow()
       await expect(sm.debugSession('nope')).rejects.toThrow()
+    })
+  })
+
+  describe('durable image references (Task 4)', () => {
+    const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+    const pngBytes = Buffer.from(PNG_1X1, 'base64')
+
+    /** Publish the fixture PNG into the real object store under the fixture
+     *  state dir and return the ref the upload route would hand back. */
+    async function publishFixtureImage(): Promise<ImageAttachmentRef> {
+      const inspected = inspectImageBytes(pngBytes)
+      if (!inspected.ok) throw new Error('fixture PNG must inspect')
+      const objects = new AttachmentObjectStore(dir)
+      const pub = await objects.publishImage(pngBytes, inspected.image)
+      return {
+        id: imageRefId(pub.digest),
+        mediaType: inspected.image.mediaType,
+        bytes: pub.bytes,
+        width: inspected.image.width,
+        height: inspected.image.height,
+      }
+    }
+
+    const refBlock = (ref: ImageAttachmentRef) => ({ type: 'image' as const, attachment: ref })
+    const imagePathOf = (ref: ImageAttachmentRef) =>
+      imageObjectPathOf(attachmentRoot(dir), ref.id.slice('sha256:'.length))
+
+    type RingMessage = { type: string; uuid?: string; message: { content: unknown } }
+    const ringOf = (id: string): RingMessage[] => (sm as unknown as {
+      sessions: Map<string, { history: RingMessage[] }>
+    }).sessions.get(id)!.history
+
+    type InputRow = { state?: string; operationId?: string; payload?: { uuid?: string; message?: { content?: unknown } }; msg?: { uuid?: string; message?: { content?: unknown } } }
+    const sidecarRows = (id: string) => new TranscriptSidecar(dir, id).load() as Promise<InputRow[]>
+
+    it('keeps the ref in ring/seq/sidecar and projects handle text + base64 for the SDK', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      const sent = await sm.sendContent(info.id, [{ type: 'text', text: 'look' }, refBlock(ref)]) as { uuid: string }
+      const publicContent = [{ type: 'text', text: 'look' }, refBlock(ref)]
+
+      // SDK copy: the handle text block followed by the verified base64 block.
+      const consumed = mockHandles[0].consumed as Array<{ message: { content: unknown[] } }>
+      expect(consumed).toHaveLength(1)
+      expect(consumed[0].message.content).toEqual([
+        { type: 'text', text: 'look' },
+        { type: 'text', text: imageHandleText(ref, imagePathOf(ref)) },
+        { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } },
+      ])
+      // The projected handle recovers the exact ref (parser/projection pair).
+      expect(parseImageHandle((consumed[0].message.content[1] as { text: string }).text))
+        .toEqual({ attachment: ref, path: imagePathOf(ref) })
+
+      // Ring keeps the structured ref — no base64 anywhere in the message.
+      const ringMsg = ringOf(info.id).find((m) => m.uuid === sent.uuid)!
+      expect(ringMsg.message.content).toEqual(publicContent)
+      expect(JSON.stringify(ringMsg)).not.toContain(PNG_1X1)
+
+      // Seq store (the /messages read path) keeps the ref.
+      const win = await sm.getTranscriptWindow(info.id)
+      const seqMsg = win.messages.find((m) => (m.msg as { uuid?: string }).uuid === sent.uuid)!.msg as { message: { content: unknown } }
+      expect(seqMsg.message.content).toEqual(publicContent)
+
+      // Sidecar: the live row AND the durable input-state payload keep the ref.
+      expect(await waitFor(async () => {
+        const rows = await sidecarRows(info.id)
+        return rows.some((r) => r.msg?.uuid === sent.uuid)
+          && rows.some((r) => r.operationId === sent.uuid && r.payload !== undefined)
+      })).toBe(true)
+      const rows = await sidecarRows(info.id)
+      const live = rows.find((r) => r.msg?.uuid === sent.uuid)!
+      expect(live.msg!.message!.content).toEqual(publicContent)
+      const input = rows.find((r) => r.operationId === sent.uuid && r.payload !== undefined)!
+      expect(input.payload!.message!.content).toEqual(publicContent)
+      expect(JSON.stringify(rows)).not.toContain(PNG_1X1)
+    })
+
+    it('rejects a dangling ref before the SDK sees it', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const missing: ImageAttachmentRef = {
+        id: imageRefId('f'.repeat(64)), mediaType: 'image/png', bytes: 68, width: 1, height: 1,
+      }
+      const err = await sm.sendContent(info.id, [refBlock(missing)]).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HttpError)
+      expect((err as HttpError).status).toBe(400)
+      expect((err as Error).message).toMatch(/image not found/)
+      expect(mockHandles[0].consumed).toHaveLength(0)
+      expect(ringOf(info.id)).toHaveLength(0)
+    })
+
+    it('rejects tampered stored bytes before the SDK sees them', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      const objectPath = imagePathOf(ref)
+      chmodSync(objectPath, 0o600)
+      const tampered = Uint8Array.from(pngBytes)
+      tampered[0] ^= 0xff
+      writeFileSync(objectPath, tampered)
+      const err = await sm.sendContent(info.id, [refBlock(ref)]).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HttpError)
+      expect((err as HttpError).status).toBe(400)
+      expect((err as Error).message).toMatch(/integrity/)
+      expect(mockHandles[0].consumed).toHaveLength(0)
+      expect(ringOf(info.id)).toHaveLength(0)
+    })
+
+    it('rejects a ref whose declared facts do not match the stored meta', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      await expect(sm.sendContent(info.id, [refBlock({ ...ref, bytes: ref.bytes + 1 })]))
+        .rejects.toThrow(/does not match/)
+      expect(mockHandles[0].consumed).toHaveLength(0)
+      expect(ringOf(info.id)).toHaveLength(0)
+    })
+
+    it('leaves a legacy base64 send unchanged', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const content = [
+        { type: 'text' as const, text: 'old' },
+        { type: 'image' as const, source: { type: 'base64' as const, data: PNG_1X1, media_type: 'image/png' } },
+      ]
+      const sent = await sm.sendContent(info.id, content) as { uuid: string }
+      const consumed = mockHandles[0].consumed as Array<{ message: { content: unknown[] } }>
+      expect(consumed[0].message.content).toEqual(content)
+      expect(ringOf(info.id).find((m) => m.uuid === sent.uuid)!.message.content).toEqual(content)
+    })
+
+    it('keeps one occurrence per duplicate ref (deduped read, distinct blocks)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      await sm.sendContent(info.id, [refBlock(ref), refBlock(ref)])
+      const consumed = mockHandles[0].consumed as Array<{ message: { content: unknown[] } }>
+      const handle = { type: 'text', text: imageHandleText(ref, imagePathOf(ref)) }
+      const image = { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } }
+      expect(consumed[0].message.content).toEqual([handle, image, handle, image])
+      expect(ringOf(info.id)[0].message.content).toEqual([refBlock(ref), refBlock(ref)])
+    })
+
+    it('queues a mid-turn ref send as ref-only durable state and materializes the projection at the turn terminal', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      await sm.send(info.id, 'turn1')
+      const queued = await sm.sendContent(info.id, [refBlock(ref)]) as { uuid: string }
+      // Not dispatched yet: only turn1 reached the SDK.
+      expect(mockHandles[0].consumed).toHaveLength(1)
+      expect(await waitFor(async () =>
+        (await sidecarRows(info.id)).some((r) => r.state === 'queued-not-published' && r.payload?.uuid === queued.uuid),
+      )).toBe(true)
+      const rows = await sidecarRows(info.id)
+      const qrow = rows.find((r) => r.state === 'queued-not-published' && r.payload?.uuid === queued.uuid)!
+      expect(qrow.payload!.message!.content).toEqual([refBlock(ref)])
+      expect(JSON.stringify(qrow)).not.toContain(PNG_1X1)
+
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: info.id })
+      expect(await waitFor(() => mockHandles[0].consumed.length === 2)).toBe(true)
+      const second = mockHandles[0].consumed[1] as { uuid?: string; message: { content: unknown[] } }
+      expect(second.uuid).toBe(queued.uuid)
+      expect(second.message.content).toEqual([
+        { type: 'text', text: imageHandleText(ref, imagePathOf(ref)) },
+        { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } },
+      ])
+      // The materialized ring copy keeps the ref.
+      expect(ringOf(info.id).find((m) => m.uuid === queued.uuid)!.message.content).toEqual([refBlock(ref)])
+    })
+
+    it('crash recovery re-resolves and re-projects a queued image ref before re-dispatch', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      await sm.send(info.id, 'turn1')
+      const queued = await sm.sendContent(info.id, [refBlock(ref)]) as { uuid: string }
+      expect(await waitFor(async () =>
+        (await sidecarRows(info.id)).some((r) => r.state === 'queued-not-published' && r.payload?.uuid === queued.uuid),
+      )).toBe(true)
+      await sm.unload(info.id) // crash: the in-memory writer queue + projection die
+      await sm.resume(info.id)
+      expect(await waitFor(() => (mockHandles[1]?.consumed.length ?? 0) >= 1)).toBe(true)
+      const recovered = (mockHandles[1].consumed as Array<{ uuid?: string; message: { content: unknown[] } }>)
+        .find((m) => m.uuid === queued.uuid)!
+      // The durable row stores only the public ref; recovery must rebuild the
+      // projected SDK form (handle text + verified base64), not enqueue the ref.
+      expect(recovered.message.content).toEqual([
+        { type: 'text', text: imageHandleText(ref, imagePathOf(ref)) },
+        { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } },
+      ])
+      // The materialized public ring copy keeps the ref.
+      expect(ringOf(info.id).find((m) => m.uuid === queued.uuid)!.message.content).toEqual([refBlock(ref)])
+    })
+
+    it('resolves file blocks and image refs together in one send', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      mkdirSync(join(dir, UPLOAD_SUBDIR), { recursive: true })
+      const filePath = join(dir, UPLOAD_SUBDIR, 'note.txt')
+      const fileBytes = Buffer.from('hello')
+      writeFileSync(filePath, fileBytes)
+      const fileDigest = createHash('sha256').update(fileBytes).digest('hex')
+      ;(sm as unknown as { uploadStore: { record: (entries: unknown[]) => void } }).uploadStore.record([{
+        id: 'file-1', path: filePath, cwd: dir, name: 'note.txt', size: fileBytes.length,
+        uploadedAt: 1, sessionTitle: '', sessionId: info.id, digest: fileDigest,
+      }])
+      const ref = await publishFixtureImage()
+      const sent = await sm.sendContent(info.id, [
+        { type: 'text', text: 'both' },
+        { type: 'file', attachment: { id: 'file-1', name: 'note.txt', size: fileBytes.length } },
+        refBlock(ref),
+      ]) as { uuid: string }
+      const consumed = mockHandles[0].consumed as Array<{ message: { content: unknown[] } }>
+      expect(consumed[0].message.content).toEqual([
+        { type: 'text', text: 'both' },
+        { type: 'text', text: fileHandleText({ id: 'file-1', name: 'note.txt', size: fileBytes.length, digest: fileDigest }, filePath) },
+        { type: 'text', text: imageHandleText(ref, imagePathOf(ref)) },
+        { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } },
+      ])
+      expect(ringOf(info.id).find((m) => m.uuid === sent.uuid)!.message.content).toEqual([
+        { type: 'text', text: 'both' },
+        { type: 'file', attachment: { id: 'file-1', name: 'note.txt', size: fileBytes.length, digest: fileDigest } },
+        refBlock(ref),
+      ])
     })
   })
 
