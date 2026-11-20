@@ -15,7 +15,6 @@ import type {
   TranscriptItem,
 } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
-import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 
 export function SubagentConversationBody({
   sessionId,
@@ -31,7 +30,6 @@ export function SubagentConversationBody({
   toolGroupCards,
   autoExpandRunningGroups,
   showMessageHeaders,
-  streamingMode,
   replayReady = true,
   cwd,
 }: {
@@ -50,7 +48,6 @@ export function SubagentConversationBody({
   toolGroupCards?: boolean
   autoExpandRunningGroups?: boolean
   showMessageHeaders?: boolean
-  streamingMode?: StreamingRenderMode
   /** Gates the empty state until the main history replay lands. */
   replayReady?: boolean
 }) {
@@ -76,7 +73,6 @@ export function SubagentConversationBody({
         toolGroupCards={toolGroupCards}
         autoExpandRunningGroups={autoExpandRunningGroups}
         showMessageHeaders={showMessageHeaders}
-        streamingMode={streamingMode}
         replayReady={replayReady}
         // Subagents are not interactive — you can't type into them. The
         // default ChatEmptyState ("Type a message below…") would mislead, so

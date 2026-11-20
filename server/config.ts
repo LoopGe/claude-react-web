@@ -22,8 +22,6 @@ import type { FontSizePreset } from '../shared/font-size.js'
 import { isFontSizePreset, DEFAULT_FONT_SIZE } from '../shared/font-size.js'
 import type { AnimationSpeedPreset } from '../shared/animation-speed.js'
 import { isAnimationSpeedPreset, DEFAULT_ANIMATION_SPEED } from '../shared/animation-speed.js'
-import type { StreamingRenderMode } from '../shared/streaming-render-mode.js'
-import { isStreamingRenderMode, DEFAULT_STREAMING_RENDER_MODE } from '../shared/streaming-render-mode.js'
 import {
   enableFileLogging, disableFileLogging, setLogConfig,
   LOG_LEVELS, LOG_LEVEL_FROM_ENV, LOG_SCOPES_FROM_ENV, type LogLevel,
@@ -167,10 +165,6 @@ interface ConfigFile {
   /** Global animation-speed preset. A personal UI preference — global only,
    *  never per-session. */
   animationSpeed?: string
-  /** Where the live turn's text renders while a reply streams ('overlay' |
-   *  'inline', see shared/streaming-render-mode.ts). A personal UI
-   *  preference — global only, never per-session. */
-  streamingRenderMode?: string
   /** Global default for per-session CLI debug logging (Options.debug +
    *  debugFile). SessionMeta.cliDebug overrides when set. Default: false. */
   cliDebug?: boolean
@@ -299,10 +293,6 @@ export interface ServerConfig {
    *  Sibling of rowGap/textSpacing/fontSize but controls motion duration, not
    *  rhythm or size. Applied globally. */
   readonly animationSpeed: AnimationSpeedPreset
-  /** Where the live turn's text renders while a reply streams ('overlay' |
-   *  'inline', see shared/streaming-render-mode.ts). Sibling of the display
-   *  presets — global only, never per-session. */
-  readonly streamingRenderMode: StreamingRenderMode
   /** Global default for per-session CLI debug logging (spawn-time only). */
   readonly cliDebug: boolean
   /** Global default for the per-session `git-tools` git MCP server. Sessions
@@ -377,7 +367,6 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   textSpacing: DEFAULT_TEXT_SPACING,
   fontSize: DEFAULT_FONT_SIZE,
   animationSpeed: DEFAULT_ANIMATION_SPEED,
-  streamingRenderMode: DEFAULT_STREAMING_RENDER_MODE,
   cliDebug: false,
   appToolsGit: true,
   firstPartyTools: Object.freeze({ [GIT_TOOLS_SERVER_NAME]: Object.freeze({ enabled: true }) }),
@@ -742,10 +731,6 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { animationSpeed: AnimationSpeedPreset }).animationSpeed = file_.animationSpeed
   }
 
-  if (typeof file_.streamingRenderMode === 'string' && isStreamingRenderMode(file_.streamingRenderMode)) {
-    ;(merged as { streamingRenderMode: StreamingRenderMode }).streamingRenderMode = file_.streamingRenderMode
-  }
-
   if (typeof file_.cliDebug === 'boolean') {
     ;(merged as { cliDebug: boolean }).cliDebug = file_.cliDebug
     log.info(`cliDebug: ${file_.cliDebug}`)
@@ -878,7 +863,6 @@ export const WRITABLE_CONFIG_KEYS = [
   'textSpacing',
   'fontSize',
   'animationSpeed',
-  'streamingRenderMode',
   'cliDebug',
   'appToolsGit',
   'firstPartyTools',

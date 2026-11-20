@@ -20,7 +20,6 @@ import type {
   TranscriptItem,
 } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
-import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import { cx } from '../utils/cx'
 import { useSubagentTaskResult } from '../hooks/useSubagentTaskResult'
 import { TaskResultView } from './TaskResultView'
@@ -76,9 +75,6 @@ interface Props {
   /** Message-card header visibility pref (effective value from the owning
    *  Chat panel) — forwarded for consistency with the main transcript. */
   showMessageHeaders?: boolean
-  /** Global streaming-preview mode (from the owning Chat panel) — forwarded
-   *  so the seam here follows the same setting as the main transcript. */
-  streamingMode?: StreamingRenderMode
   /** Session working directory — relative paths in the conversation resolve
    *  against it (tool-row open buttons / Markdown links). */
   cwd?: string
@@ -104,7 +100,6 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   toolGroupCards,
   autoExpandRunningGroups,
   showMessageHeaders,
-  streamingMode,
   sessionId,
   cwd,
   visible = true,
@@ -289,7 +284,6 @@ export const SubagentOverlay = memo(function SubagentOverlay({
           toolGroupCards={toolGroupCards}
           autoExpandRunningGroups={autoExpandRunningGroups}
           showMessageHeaders={showMessageHeaders}
-          streamingMode={streamingMode}
           cwd={cwd}
         />
       </div>

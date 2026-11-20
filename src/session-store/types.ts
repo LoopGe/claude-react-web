@@ -375,9 +375,10 @@ export interface LiveTurnState {
    *  (see LiveTurnSegment). Drained into `flushedText` by LIVE_TURN_FLUSH. */
   textChunks: LiveTurnSegment[]
   /** Flushed streamed text, coalesced into origin-tagged segments and joined
-   *  by the store into `streamingContent` (the StreamingFooter). Main-thread
-   *  segments are pruned when their finalized assistant message lands — see
-   *  pruneFinalizedLiveTurnText — so this stays bounded to in-flight text. */
+   *  by the store into `streamingContent` (the Side Chat's auto-scroll growth
+   *  signal). Main-thread segments are pruned when their finalized assistant
+   *  message lands — see pruneFinalizedLiveTurnText — so this stays bounded
+   *  to in-flight text. */
   flushedText: LiveTurnSegment[]
   outputTokens?: number
   /** Output token rate in tok/s. A sliding-window rate over the most recent
@@ -797,6 +798,9 @@ export interface SessionSnapshot {
   replayReady: boolean
   items: TranscriptItem[]
   messages: SdkMessage[]
+  /** Joined in-flight streamed text (main + sidechain). Sole consumer: the
+   *  Side Chat's SideChatAutoScroll, which uses its growth as a scroll signal.
+   *  The main transcript's live text renders through `draft` instead. */
   streamingContent: string | null
   /** The in-place draft (growing inline card) and its row-identity state.
    *  `draft` changes identity once per flush — the draft body leaf

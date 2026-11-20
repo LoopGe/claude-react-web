@@ -187,25 +187,6 @@ describe('config routes — full defaults', () => {
     }
   })
 
-  it('maps streamingRenderMode through to the settings surface', async () => {
-    // The settings modal reads this field off /config/full — a dropped
-    // mapping line here would silently pin the UI to the default. The
-    // config.json → merge path is covered by config.test.ts; this pins the
-    // route's mapping. __setConfigForTest (not loadConfig) so the process
-    // global is not left loaded from a deleted temp dir.
-    __setConfigForTest({ streamingRenderMode: 'inline' })
-    const stateDir = mkdtempSync(join(tmpdir(), 'crw-cfgfull-'))
-    try {
-      const res = await buildConfigRouter({} as unknown as SessionManager, stateDir).request('/config/full')
-      expect(res.status).toBe(200)
-      const body = (await res.json()) as { streamingRenderMode?: string }
-      expect(body.streamingRenderMode).toBe('inline')
-    } finally {
-      __setConfigForTest({ streamingRenderMode: 'overlay' })
-      rmSync(stateDir, { recursive: true, force: true })
-    }
-  })
-
   it('returns each profile model context window map', async () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'crw-cfgfull-context-'))
     writeFileSync(join(stateDir, 'config.json'), JSON.stringify({

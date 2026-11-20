@@ -1,5 +1,5 @@
-/** Pure lifecycle helpers for the in-place draft (the growing message card of
- *  the inline streaming mode). The reducer owns the mirror fields; these
+/** Pure lifecycle helpers for the in-place draft (the growing message card
+ *  that renders the live turn). The reducer owns the mirror fields; these
  *  functions compute the next values so the transitions are unit-testable
  *  without a store. See docs/superpowers/specs/2026-10-28-inplace-streaming-card-design.md §5.2/§5.6/§5.7. */
 

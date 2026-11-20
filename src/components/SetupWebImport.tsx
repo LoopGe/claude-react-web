@@ -580,7 +580,7 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
  *  sourceUrl、远程 MCP 的 url / command）、用户选的 `--state-dir` 路径（Windows
  *  反斜杠串没有断点）、以及服务端报的原始错误（里面就是文件路径）。任一处漏掉
  *  都会把卡片顶宽、整页横向滚动。
- *  `overflow-wrap: anywhere` 与 chat.css 的 .streaming-plain 同一处置：它是唯一
+ *  `overflow-wrap: anywhere` 与 messages.css 的 .md 正文同一处置：它是唯一
  *  **同时把 min-content 宽度算小**的写法（`word-break: break-word`，像
  *  messages.css 的 .diff-line 那样，不会），flex 子项因此才会收缩而不是把父级
  *  顶开。 */

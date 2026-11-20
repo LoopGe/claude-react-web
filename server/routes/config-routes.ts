@@ -285,7 +285,6 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       textSpacing: serverConfig.textSpacing,
       fontSize: serverConfig.fontSize,
       animationSpeed: serverConfig.animationSpeed,
-      streamingRenderMode: serverConfig.streamingRenderMode,
       appToolsGit: serverConfig.appToolsGit,
       firstPartyTools: serverConfig.firstPartyTools,
       allowSensitivePathEdits: serverConfig.allowSensitivePathEdits,

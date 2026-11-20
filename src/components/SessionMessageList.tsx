@@ -38,10 +38,9 @@
 // streaming-render-isolation test pins): LIVE_TURN_FLUSH mutates only
 // `mirror.liveTurn` / `mirror.draft` / `mirror.draftSeq` — none of the
 // fields listed above change reference identity on a flush, so this
-// wrapper stays at 0 renders per flush and the OverlayStreamingRegion
-// leaf (mounted by MessageList in overlay mode) owns the per-flush
-// re-render via its own `useOptionalSessionField('streamingContent')`
-// subscription.
+// wrapper stays at 0 renders per flush and the DraftTextBody leaf inside
+// the growing draft card owns the per-flush re-render via its own
+// `useOptionalSessionField('draft')` subscription.
 
 import { memo, type ComponentProps } from 'react'
 import { MessageList } from './MessageList'
@@ -70,8 +69,8 @@ type ForwardedMessageListProps = Omit<
 >
 
 export interface SessionMessageListProps extends ForwardedMessageListProps {
-  /** Owning session. Forwarded to `MessageList` so the OverlayStreamingRegion
-   *  leaf can subscribe to `streamingContent` itself. */
+  /** Owning session. Forwarded to `MessageList` so the draft row and its
+   *  DraftTextBody leaf can subscribe to the store's draft fields. */
   sessionId: string
   /** True while a loadOlder() request is in flight. Forwarded to MessageList;
    *  the caller (Chat / SideChatDrawer) reads this off the paging snapshot
@@ -96,7 +95,7 @@ export const SessionMessageList = memo(function SessionMessageList({
   // previous reference via Object.is when the snapshot rebuilt on an
   // unrelated dispatch leaves the field untouched — so a LIVE_TURN_FLUSH
   // (which only mutates `liveTurn`/`draft`) does not re-render this
-  // wrapper, and the OverlayStreamingRegion leaf owns the per-flush render.
+  // wrapper, and the DraftTextBody leaf owns the per-flush render.
   const items = useSessionField(sessionId, 'items')
   const replayReady = useSessionField(sessionId, 'replayReady')
   const planStatus = useSessionField(sessionId, 'planStatus')

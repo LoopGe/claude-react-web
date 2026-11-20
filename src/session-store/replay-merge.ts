@@ -187,7 +187,7 @@ export function replayReplace(
     // reconnect / panel-switch-back replay. The live turn's partial text lives
     // ONLY in `liveTurn` — stream_event deltas never enter the history ring
     // (the replay cannot carry them), so nulling liveTurn here made the
-    // StreamingFooter vanish even though the turn was still running server-side.
+    // in-progress draft vanish even though the turn was still running server-side.
     // A `result` in the replay's NEWER slice is the one reliable "the turn
     // ended" signal: it always sits chronologically after the cache (a
     // liveTurn can only belong to a turn started after the cache's last item),

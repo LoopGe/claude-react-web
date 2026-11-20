@@ -656,7 +656,7 @@ describe('SetupWebImport', () => {
 
   // ── 任意长的 URL 不能把卡片撑宽 ───────────────────────────────────────────
   // 行上唯一可能带任意 URL 的两处（市场的 sourceUrl、远程 MCP 的 url）用
-  // `overflow-wrap: anywhere` 就地折行 —— 与 chat.css 的 .streaming-plain 同一处置。
+  // `overflow-wrap: anywhere` 就地折行 —— 与 messages.css 的 .md 正文同一处置。
   it('lets an arbitrarily long url wrap instead of widening the card', async () => {
     const longUrl = `https://git.example.com/${'a'.repeat(160)}/repo`
     vi.mocked(api.get).mockResolvedValue({

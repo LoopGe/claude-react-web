@@ -34,7 +34,6 @@ const MODAL_APPEARANCE_FIELDS: ReadonlyArray<keyof AppearancePrefs> = [
   'toolGroupCards',
   'autoExpandRunningGroups',
   'showMessageHeaders',
-  'streamingRenderMode',
 ]
 
 /** Owned by the header Theme popover (immediate-save): the modal must never
@@ -42,8 +41,8 @@ const MODAL_APPEARANCE_FIELDS: ReadonlyArray<keyof AppearancePrefs> = [
 const MOVED_DISPLAY_FIELDS = ['rowGap', 'textSpacing', 'fontSize', 'animationSpeed'] as const
 
 /** A config where EVERY appearance field is a non-default value — explicit
- *  false on every boolean, non-default presets, overlay streaming. A coincidental
- *  default can't hide a dropped mapping or a patch that clobbers neighbours. */
+ *  false on every boolean, non-default presets. A coincidental default can't
+ *  hide a dropped mapping or a patch that clobbers neighbours. */
 const ALL_NON_DEFAULT: Record<string, unknown> = {
   showPinnedUserMessage: false,
   autoRecap: false,
@@ -54,7 +53,6 @@ const ALL_NON_DEFAULT: Record<string, unknown> = {
   textSpacing: 'compact',
   fontSize: 'large',
   animationSpeed: 'fast',
-  streamingRenderMode: 'overlay',
 }
 
 describe('GlobalSettingsModal staged appearance state', () => {
@@ -103,17 +101,15 @@ describe('GlobalSettingsModal staged appearance state', () => {
     expect(screen.getByRole('switch', { name: 'Auto-generate session recap' }).getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('switch', { name: 'Use collapsible transcript cards' }).getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('switch', { name: 'Show message card headers' }).getAttribute('aria-checked')).toBe('false')
-    expect(screen.getByRole('switch', { name: 'Render live text inline in the transcript' }).getAttribute('aria-checked')).toBe('false')
   })
 
   it('falls back to shipped defaults when a field is absent from /config/full', async () => {
     // Empty config — every appearance field must resolve to DEFAULT_GLOBAL_PREFS
-    // (true for booleans, inline for streaming). This is the `?? DEFAULT` path
-    // that appearanceFromFullConfig reuses from globalPrefsFromConfig.
+    // (true for booleans). This is the `?? DEFAULT` path that
+    // appearanceFromFullConfig reuses from globalPrefsFromConfig.
     await openAppearanceTab({})
     expect(screen.getByRole('switch', { name: 'Show pinned “current question” header' }).getAttribute('aria-checked')).toBe('true')
     expect(screen.getByRole('switch', { name: 'Auto-generate session recap' }).getAttribute('aria-checked')).toBe('true')
-    expect(screen.getByRole('switch', { name: 'Render live text inline in the transcript' }).getAttribute('aria-checked')).toBe('true')
   })
 
   // ── Save covers the modal-owned fields and nothing else ─────────────
@@ -141,7 +137,6 @@ describe('GlobalSettingsModal staged appearance state', () => {
     expect(body.toolGroupCards).toBe(false)
     expect(body.autoExpandRunningGroups).toBe(false)
     expect(body.showMessageHeaders).toBe(false)
-    expect(body.streamingRenderMode).toBe('overlay')
   })
 
   // ── Patch isolation: onPatch changes only its target field ──────────
@@ -166,7 +161,6 @@ describe('GlobalSettingsModal staged appearance state', () => {
     // staged value rides along and is saved.
     expect(body.autoExpandRunningGroups).toBe(false)
     expect(body.showMessageHeaders).toBe(false)
-    expect(body.streamingRenderMode).toBe('overlay')
   })
 
   it('successive patches accumulate without clobbering earlier ones', async () => {
@@ -272,17 +266,6 @@ describe('AppearanceTab direct render (values/onPatch contract)', () => {
     expect(onPatch).toHaveBeenCalledTimes(1)
   })
 
-  it('emits the exact patch for the streaming-render mode switch', () => {
-    const onPatch = vi.fn()
-    // Start in inline (default) so the switch flips to overlay.
-    render(<AppearanceTab values={baselineValues} onPatch={onPatch} />)
-
-    fireEvent.click(screen.getByRole('switch', { name: 'Render live text inline in the transcript' }))
-    // The patch carries the mode string, not a boolean — the switch maps
-    // on/off to 'inline'/'overlay' before calling onPatch.
-    expect(onPatch).toHaveBeenCalledWith({ streamingRenderMode: 'overlay' })
-  })
-
   it('emits the exact patch for the auto-expand sub-setting switch', () => {
     const onPatch = vi.fn()
     // toolGroupCards must be on for the sub-row to render.
@@ -303,7 +286,6 @@ describe('AppearanceTab direct render (values/onPatch contract)', () => {
       showMessageHeaders: false,
       fontSize: 'large',
       animationSpeed: 'fast',
-      streamingRenderMode: 'overlay',
     }
     render(<AppearanceTab values={values} onPatch={onPatch} />)
 
@@ -311,7 +293,6 @@ describe('AppearanceTab direct render (values/onPatch contract)', () => {
     expect(screen.getByRole('switch', { name: 'Auto-generate session recap' }).getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('switch', { name: 'Use collapsible transcript cards' }).getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('switch', { name: 'Show message card headers' }).getAttribute('aria-checked')).toBe('false')
-    expect(screen.getByRole('switch', { name: 'Render live text inline in the transcript' }).getAttribute('aria-checked')).toBe('false')
   })
 
   it('passes onPatch through to controls without wrapping (identity pass-through)', () => {

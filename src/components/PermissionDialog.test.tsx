@@ -263,8 +263,8 @@ describe('PermissionDialog overlay scrollbar', () => {
     expect(section).toBeTruthy()
     // The overlay scrollbar hides the native scrollbar on the scroller it
     // attaches to — this is the contract that replaces the native 10px bar
-    // with the project's self-built overlay thumb (matches the StreamingFooter
-    // scrollbar test in transcript-chrome.test.tsx).
+    // with the project's self-built overlay thumb (same contract MessageList
+    // applies to the Virtuoso scroller).
     expect(section!.hasAttribute('data-os-native-hidden')).toBe(true)
     // And it appends an overlay track as a sibling of the scroller inside the
     // .perm-card, floating the thumb over the plan card body.

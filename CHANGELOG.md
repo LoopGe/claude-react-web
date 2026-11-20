@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **Animation speed: Off** — a fourth Theme preset that suppresses decorative motion app-wide (CSS transitions/animations, framer-motion dialogs and popovers, FLIP/reveal/WAAPI) while load-bearing progress indicators keep moving. Honors the OS reduced-motion preference as before; the OS setting still wins.
 
+### Removed
+
+- **Streaming-preview setting** — the `Render live text inline in the transcript` appearance switch (config key `streamingRenderMode`) is gone. Live reply text always grows in place as a message card inside the transcript; the floating-bubble (`overlay`) render path is retired. A `config.json` that still carries the key boots normally — the key is ignored.
+
 ## [0.8.0] — 2026-11-07
 
 A large `0.x` minor release on top of `0.7.3`: daemon auto-start, mid-turn

@@ -49,3 +49,10 @@ honest: a prop-fed transcript (no `sessionId`) resolves to overlay, because the
 inline draft card needs a session store to grow; and the draft rows are gated
 to the root transcript, because the session's draft belongs to the main thread
 and must not appear in a subagent/workflow drill-in.
+
+## Related
+
+[Inline is the only streaming render mode](../simplification/2026-11-20-inline-only-streaming.md)
+supersedes this decision: the setting and the overlay path are removed, so
+inline is no longer a default among options but the only mode. The root-only
+draft gate above survives; the prop-fed overlay fallback does not.

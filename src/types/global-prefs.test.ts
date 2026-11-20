@@ -37,7 +37,6 @@ const NON_DEFAULT_PREFS: GlobalPrefs = {
   textSpacing: 'compact',
   fontSize: 'small',
   animationSpeed: 'slow',
-  streamingRenderMode: 'overlay',
   firstPartyTools: { 'git-tools': { enabled: false } },
 }
 
@@ -69,7 +68,6 @@ describe('DEFAULT_GLOBAL_PREFS', () => {
     expect(DEFAULT_GLOBAL_PREFS.textSpacing).toBe('spacious')
     expect(DEFAULT_GLOBAL_PREFS.fontSize).toBe('standard')
     expect(DEFAULT_GLOBAL_PREFS.animationSpeed).toBe('standard')
-    expect(DEFAULT_GLOBAL_PREFS.streamingRenderMode).toBe('inline')
   })
 
   it('does not carry firstPartyTools (AppearancePrefs has no firstPartyTools)', () => {
@@ -96,7 +94,6 @@ describe('globalPrefsFromConfig', () => {
       textSpacing: undefined,
       fontSize: undefined,
       animationSpeed: undefined,
-      streamingRenderMode: undefined,
       firstPartyTools: undefined,
     })
     expect(prefs).toEqual(ALL_DEFAULT)
@@ -123,13 +120,11 @@ describe('globalPrefsFromConfig', () => {
       textSpacing: 'compact',
       fontSize: 'small',
       animationSpeed: 'slow',
-      streamingRenderMode: 'overlay',
     })
     expect(prefs.rowGap).toBe('compact')
     expect(prefs.textSpacing).toBe('compact')
     expect(prefs.fontSize).toBe('small')
     expect(prefs.animationSpeed).toBe('slow')
-    expect(prefs.streamingRenderMode).toBe('overlay')
   })
 
   it('preserves the off animation-speed preset', () => {
@@ -219,7 +214,6 @@ describe('sameGlobalPrefs', () => {
       ['textSpacing', 'compact'],
       ['fontSize', 'small'],
       ['animationSpeed', 'slow'],
-      ['streamingRenderMode', 'overlay'],
     ] as const) {
       const a: GlobalPrefs = { ...ALL_DEFAULT }
       const b: GlobalPrefs = { ...ALL_DEFAULT, [key]: alt }
@@ -268,7 +262,7 @@ describe('resolveSessionPrefs', () => {
     expect(sp.autoExpandRunningGroups).toBe(false)
   })
 
-  it('returns only the 5 SessionPrefs fields (no presets, no streaming, no firstPartyTools)', () => {
+  it('returns only the 5 SessionPrefs fields (no presets, no firstPartyTools)', () => {
     const sp = resolveSessionPrefs(mkSession(), NON_DEFAULT_PREFS)
     const keys = Object.keys(sp)
     expect(keys).toEqual([
@@ -334,7 +328,6 @@ describe('appearanceFromFullConfig', () => {
       toolGroupCards: false,
       autoExpandRunningGroups: false,
       showMessageHeaders: false,
-      streamingRenderMode: 'overlay',
     })
   })
 

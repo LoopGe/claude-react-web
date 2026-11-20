@@ -424,33 +424,6 @@ describe('GlobalSettingsModal Appearance tab', () => {
     }))
   })
 
-  const STREAMING_SWITCH = 'Render live text inline in the transcript'
-
-  it('renders the streaming-render switch off when configured overlay', async () => {
-    // The configured NON-default must win over the default-on initial value —
-    // a dropped /config/full mapping would show the wrong state here.
-    await openAppearanceTab({ streamingRenderMode: 'overlay' })
-    expect(screen.getByRole('switch', { name: STREAMING_SWITCH }).getAttribute('aria-checked')).toBe('false')
-  })
-
-  it('renders the streaming-render switch on when unconfigured (inline default)', async () => {
-    await openAppearanceTab({})
-    expect(screen.getByRole('switch', { name: STREAMING_SWITCH }).getAttribute('aria-checked')).toBe('true')
-  })
-
-  it('persists the streaming-render mode on Save', async () => {
-    await openAppearanceTab({ streamingRenderMode: 'inline' })
-
-    // Flip back to the floating bubble: the mode string, not a boolean, is
-    // what config.json stores.
-    fireEvent.click(screen.getByRole('switch', { name: STREAMING_SWITCH }))
-    save()
-    await waitFor(() => expect(api.put).toHaveBeenCalled())
-    expect(vi.mocked(api.put)).toHaveBeenCalledWith('/config', expect.objectContaining({
-      streamingRenderMode: 'overlay',
-    }))
-  })
-
   it('no longer renders any moved display default on the Server tab', async () => {
     mockGet({})
     render(

@@ -1470,7 +1470,6 @@ button.tool-group-failed-jump:focus-visible {
    token-driven already snaps to 0.01ms). */
 [data-motion="off"] .handoff-veil-spinner,
 [data-motion="off"] .chat-empty-env-dot[data-status="loading"],
-[data-motion="off"] .streaming-msg,
 [data-motion="off"] .subagent-child-dot-pulse,
 [data-motion="off"] .chat-panel-slot.key-hint,
 [data-motion="off"] .chat-panel-git-badge,

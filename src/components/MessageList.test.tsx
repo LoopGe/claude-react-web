@@ -331,7 +331,7 @@ function scrollGeometryHarness({ drainBaseline = true }: { drainBaseline?: boole
     makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
   ]
   const state = { contentHeight: 200, stackHeight: 80, itemListH: 200, foldBodyH: 0, clientHeight: 100, rawScrollTop: 180, appWrites: 0 }
-  const utils = render(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />)
+  const utils = render(<MessageList items={toItems(msgs as SdkMessage[])} />)
   const { container } = utils
   const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
   const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
@@ -371,7 +371,7 @@ function scrollGeometryHarness({ drainBaseline = true }: { drainBaseline?: boole
   const appendMessage = () => {
     appendSeq++
     currentMsgs = [...currentMsgs, makeMsg('assistant', { uuid: `added-${appendSeq}`, message: { content: [{ type: 'text', text: 'new' }] } })]
-    act(() => { utils.rerender(<MessageList items={toItems(currentMsgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />) })
+    act(() => { utils.rerender(<MessageList items={toItems(currentMsgs as SdkMessage[])} />) })
   }
   return { state, scroller, stack, itemList, fold, startFold, appendMessage }
 }
@@ -1413,7 +1413,7 @@ describe('MessageList', () => {
     expect(container.querySelector('.msg-steered-indicator')).toBeNull()
   })
 
-  it('renders streaming content outside the virtualized transcript', () => {
+  it('static marks the snapshot wrap', () => {
     const msgs = [
       makeMsg('assistant', {
         message: { content: [{ type: 'text', text: 'Settled message' }] },
@@ -1421,68 +1421,21 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" streamingMode="overlay" />,
+      <MessageList static items={toItems(msgs as SdkMessage[])} />,
     )
 
-    const streaming = container.querySelector('.streaming-footer-wrapper')
-    expect(streaming).not.toBeNull()
-    expect(streaming?.textContent).toContain('Live tokens')
-    expect(streaming?.closest('[data-testid="virtuoso-mock"]')).toBeNull()
-    expect(container.querySelector('.chat-streaming-region')?.contains(streaming)).toBe(true)
-    expect(container.querySelector('.chat-messages-stage')?.contains(streaming)).toBe(true)
-  })
-
-  it('static suppresses the streaming bubble and marks the snapshot wrap', () => {
-    const msgs = [
-      makeMsg('assistant', {
-        message: { content: [{ type: 'text', text: 'Settled message' }] },
-      }),
-    ]
-
-    const { container } = render(
-      <MessageList static items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />,
-    )
-
-    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
     expect(container.querySelector('.chat-messages-wrap')?.getAttribute('data-static-transcript')).toBe('true')
     expect(container.querySelector('.chat-messages-wrap')?.getAttribute('data-following')).toBe('false')
   })
 
-  it('does not render the streaming footer before any text has flushed (empty string)', () => {
-    // A live turn exists from its first stream event, but `flushedText`
-    // starts as '' — the pre-text "thinking" phase (or a tool-use turn
-    // that never produces assistant prose). Rendering the bubble then
-    // yields an empty placeholder: the gradient mask on .streaming-plain
-    // fades out the lone cursor, so the bubble reserves layout space but
-    // shows nothing. WorkingBubble already signals the active phase, so
-    // the empty streaming footer should not mount until real text arrives.
-    const msgs = [
-      makeMsg('assistant', {
-        message: { content: [{ type: 'text', text: 'Settled message' }] },
-      }),
-    ]
-
-    const { container, rerender } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="" streamingMode="overlay" />,
-    )
-
-    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
-    expect(container.querySelector('.chat-streaming-region')).toBeNull()
-
-    // Once real text flushes, the footer mounts.
-    rerender(<MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" streamingMode="overlay" />)
-    expect(container.querySelector('.streaming-footer-wrapper')).not.toBeNull()
-    expect(container.querySelector('.streaming-footer-wrapper')?.textContent).toContain('Live tokens')
-  })
-
   it('re-pins to the bottom when the bottom stack height changes (spacer grows)', () => {
     // Regression guard for "the scrollbar sits one line short of the bottom
-    // while the streaming bubble's height is changing". The bottom-stack
+    // while the bottom stack's height is changing". The bottom-stack
     // ResizeObserver calls setBottomStackHeight — an async state update;
     // the Virtuoso Footer spacer that reserves room for the overlay only
     // commits its new height AFTER that update. Re-pinning synchronously
     // inside the observer callback (the old code) read a STALE scrollHeight
-    // (pre-commit spacer) and left the viewport short every time the bubble
+    // (pre-commit spacer) and left the viewport short every time the stack
     // grew, and the content-growth backstop doesn't cover it (the spacer lives
     // in the Footer slot, a SIBLING of the item-list the backstop observes, so
     // an item-list ResizeObserver never fires on spacer growth). The fix
@@ -1506,7 +1459,7 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
@@ -1534,8 +1487,8 @@ describe('MessageList', () => {
       value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
     })
 
-    // Grow the bottom stack 0 -> 40 -> 80 (the live bubble growing inside it;
-    // the observer watches the whole stack now, so this drives the same path).
+    // Grow the bottom stack 0 -> 40 -> 80 (a bottom card growing inside it;
+    // the observer watches the whole stack, so this drives the same path).
     // Each growth commits a taller spacer, so the real bottom moves
     // 200 -> 240 -> 280.
     stackHeight = 40
@@ -1779,29 +1732,29 @@ describe('MessageList', () => {
     expect(followingOf(container)).toBe('true')
   })
 
-  it('re-pins to the bottom when settled content grows AFTER the bottom overlay exits', async () => {
-    // Regression guard for the "当 StreamingFooter 消失，视图向上弹一段" bug.
+  it('re-pins to the bottom when settled content grows AFTER the bottom overlay exits', () => {
+    // Regression guard for the "bottom stack collapses, view bounces up a
+    // bit" bug.
     //
-    // The streaming bubble is height-capped (.streaming-plain max-height:
-    // calc(3lh + 20px)); the Virtuoso Footer spacer reserves that capped
-    // height so settled messages scroll under the overlay. When the turn
-    // ends the footer exits and the spacer is removed.
+    // The Virtuoso Footer spacer reserves the bottom stack's height so
+    // settled messages scroll under the overlay cards. When a card exits and
+    // the stack collapses, the spacer is removed.
     //
     // The settled-content-growth backstop (item-list ResizeObserver) tracks
     // `lastScrollHeight` MONOTONICALLY: it only updates on growth
-    // (`sh > lastScrollHeight`) and skips on shrink. So while streaming, the
-    // spacer inflates `lastScrollHeight` to (content + spacer); when the
-    // spacer then shrinks to 0 at turn end, `lastScrollHeight` is NOT
-    // decremented — it stays inflated by ~the former spacer height.
+    // (`sh > lastScrollHeight`) and skips on shrink. So while a card is
+    // mounted, the spacer inflates `lastScrollHeight` to (content + spacer);
+    // when the spacer then shrinks to 0 at card exit, `lastScrollHeight` is
+    // NOT decremented — it stays inflated by ~the former spacer height.
     //
     // The final assistant message lands only ~15ms before the `result` frame
     // (server logs show assistant→result ≈ 10–16ms), so Virtuoso's async
     // re-measurement of that message at its real Markdown height frequently
     // lands AFTER the spacer is gone. That post-exit growth is compared
     // against the stale inflated `lastScrollHeight` and — being smaller than
-    // the ~110px spacer inflation — is skipped, so the backstop never
-    // re-pins. The viewport is left at the old scrollTop, short of the new
-    // bottom: the visible "bounces up a bit" jolt.
+    // the spacer inflation — is skipped, so the backstop never re-pins. The
+    // viewport is left at the old scrollTop, short of the new bottom: the
+    // visible "bounces up a bit" jolt.
     virtuosoMockState.atBottomReport = true
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.clientHeight = 100
@@ -1812,10 +1765,10 @@ describe('MessageList', () => {
     ]
 
     let contentHeight = 200 // settled items (user + assistant)
-    let stackHeight = 80    // capped streaming bubble sitting in the stack
+    let stackHeight = 80    // a bottom card sitting in the stack
 
-    const { container, rerender } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />,
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
@@ -1859,19 +1812,11 @@ describe('MessageList', () => {
     const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
     act(() => { fireResize(itemList) })
 
-    // Turn ends: streamingContent -> null. AnimatePresence unmounts the
-    // region once motion's exit tweens complete — the height tween's 90ms
-    // delay + 160ms duration = ~250ms of real time (in jsdom the tweened
-    // values are 0→0, but the delay still elapses), so the stack collapses ->
-    // bottomStackHeight -> 0 -> spacer removed. The stub ResizeObserver never
-    // fires on its own, so drive the stack shrink explicitly — a real browser
-    // fires it here. scrollHeight drops to 200 and the browser clamps
-    // scrollTop 180 -> 100 (bottom of the settled content).
-    rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent={null} streamingMode="overlay" />)
-    // Explicit timeout: this is the app's longest presence exit (~250ms of
-    // rAF-driven tweens), and a loaded CI runner can starve happy-dom's rAF
-    // cadence well past the 1s default's comfort.
-    await waitFor(() => expect(container.querySelector('.chat-streaming-region')).toBeNull(), { timeout: 3000 })
+    // The card exits and the stack collapses -> bottomStackHeight -> 0 ->
+    // spacer removed. The stub ResizeObserver never fires on its own, so
+    // drive the stack shrink explicitly — a real browser fires it here.
+    // scrollHeight drops to 200 and the browser clamps scrollTop 180 -> 100
+    // (bottom of the settled content).
     stackHeight = 0
     act(() => { fireResize(stack) })
     expect(scroller.scrollTop).toBe(100) // clamped to the post-exit bottom
@@ -1889,7 +1834,7 @@ describe('MessageList', () => {
   })
 
   it('bottom-stack wobble within the hysteresis band does not re-pin per frame', () => {
-    // The 吸附感 root cause, locked: the streaming bubble's height wobbles
+    // The 吸附感 root cause, locked: the bottom stack's height wobbles
     // 1–3px per frame, and every COMMITTED height re-fires the spacer layout
     // effect's instant scrollTop write — a per-frame hard write that glued
     // the viewport to the bottom. Sub-band wobble must not commit; a real
@@ -1902,7 +1847,7 @@ describe('MessageList', () => {
     let stackHeight = 80
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />,
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
     const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
@@ -1935,7 +1880,7 @@ describe('MessageList', () => {
     expect(readSpacer()).toBe(80)
     expect(scroller.scrollTop).toBe(180)
 
-    // 1–2px wobble — the streaming-bubble flutter shape. No commit, no
+    // 1–2px wobble — a card's sub-pixel flutter shape. No commit, no
     // spacer change, no pin.
     stackHeight = 82
     act(() => { fireResize(stack) })
@@ -2489,8 +2434,6 @@ describe('MessageList', () => {
     const { container, rerender } = render(
       <MessageList
         items={toItems(msgs as SdkMessage[])}
-        streamingContent="Live tokens"
-        streamingMode="overlay"
         transcriptRevealKey="A"
       />,
     )
@@ -2523,8 +2466,6 @@ describe('MessageList', () => {
     rerender(
       <MessageList
         items={toItems(msgs as SdkMessage[])}
-        streamingContent="Live tokens"
-        streamingMode="overlay"
         transcriptRevealKey="B"
       />,
     )
@@ -2533,28 +2474,6 @@ describe('MessageList', () => {
     act(() => { vi.advanceTimersByTime(TRAILING_MICRO_PIN_MS + 100) })
     expect(appWrites).toBe(writesAtBaseline)
     vi.useRealTimers()
-  })
-
-  it('overlay mode: the streaming region stays in the bottom stack, nothing in-list', () => {
-    // Regression fence for the seam: with streamingMode="overlay", NOTHING in-list.
-    const msgs = [makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } })]
-    const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="streaming answer" streamingMode="overlay" />,
-    )
-    expect(container.querySelector('.chat-streaming-clip .streaming-footer-wrapper')).not.toBeNull()
-    const list = container.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
-    expect(list.querySelector('.streaming-footer-wrapper')).toBeNull()
-  })
-
-  it('prop-fed transcript (no sessionId) resolves to overlay so streamingContent still renders', () => {
-    // Inline draft rows need a session store; a prop-fed transcript has none.
-    // The absent mode must fall back to the bubble rather than silently drop
-    // the live text.
-    const msgs = [makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } })]
-    const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="streaming answer" />,
-    )
-    expect(container.querySelector('.chat-streaming-clip .streaming-footer-wrapper')).not.toBeNull()
   })
 
   it('stays following when the scroller cannot scroll down', async () => {
@@ -4188,35 +4107,6 @@ describe('MessageList', () => {
     expect(container.querySelector('[data-message-id="server-1"]')!.classList.contains('msg-enter')).toBe(false)
   })
 
-  it('animates streaming content out before unmounting it', async () => {
-    // AnimatePresence + useStreamingRegionMotion own the exit now: the node
-    // stays mounted on its LAST props through the tweens (content frozen),
-    // flagged non-live via aria-hidden, then unmounts when they complete.
-    // Real timers — motion's tweens run on rAF; the card suite (MonitorBar
-    // etc.) established this waitFor pattern for presence exits.
-    const msgs = [
-      makeMsg('assistant', {
-        message: { content: [{ type: 'text', text: 'Settled message' }] },
-      }),
-    ]
-
-    const { container, rerender } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" streamingMode="overlay" />,
-    )
-
-    rerender(<MessageList items={toItems(msgs as SdkMessage[])}  streamingContent={null} streamingMode="overlay" />)
-
-    const exiting = container.querySelector('.chat-streaming-region')
-    expect(exiting).not.toBeNull()
-    expect(exiting?.getAttribute('aria-hidden')).toBe('true')
-    expect(container.textContent).toContain('Live tokens')
-
-    // Explicit timeout: the exit chain is rAF-driven (90ms delay + 160ms
-    // height tween), the app's longest presence exit — keep margin over the
-    // 1s default for loaded CI runners.
-    await waitFor(() => expect(container.querySelector('.chat-streaming-region')).toBeNull(), { timeout: 3000 })
-  })
-
   it('renders result stats with clean separators', () => {
     // Turn content first \u2014 a lone result is an orphan footer and is
     // suppressed (see the `orphan result rows` block below).
@@ -4616,42 +4506,33 @@ describe('MessageList', () => {
     })
   })
 
-  it('renders a bottom stack containing the streaming region and the bottomOverlay', () => {
+  it('renders a bottom stack containing the bottomOverlay', () => {
     const msgs = [
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'Settled' }] } }),
     ]
     const { container, rerender } = render(
       <MessageList
         items={toItems(msgs as SdkMessage[])}
-        streamingContent="Live tokens"
-        streamingMode="overlay"
         bottomOverlay={<div className="probe-card">card</div>}
       />,
     )
 
     const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
     expect(stack).not.toBeNull()
-    // Streaming region first, cards after — the chosen stacking order. Each
-    // sits in its own wrapper: the region's clips its own exit slide (the stack
-    // no longer clips), the cards' is measured on its own, separate from the
-    // live bubble's churn above them.
+    // The cards sit in their own wrapper, measured separately from the stack
+    // so the reserve tracks the cards' box.
     const kids = Array.from(stack.children)
-    expect(kids[0].className).toContain('chat-streaming-clip')
-    expect(kids[1].className).toContain('chat-bottom-overlay')
-    expect(kids[0].querySelector('.chat-streaming-region')).not.toBeNull()
-    expect(kids[1].querySelector('.probe-card')).not.toBeNull()
+    expect(kids[0].className).toContain('chat-bottom-overlay')
+    expect(kids[0].querySelector('.probe-card')).not.toBeNull()
 
-    // The stack is always mounted, even with no streaming content and no cards.
-    // The region lingers through its AnimatePresence exit tweens, so assert it
-    // is no longer a LIVE region (aria-hidden, the presence-driven flag) rather
-    // than absent.
-    rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent="" streamingMode="overlay" />)
+    // The stack is always mounted, even with no cards.
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])} />)
     const stack2 = container.querySelector('.chat-bottom-stack') as HTMLElement
     expect(stack2).not.toBeNull()
-    expect(stack2.querySelector('.chat-streaming-region:not([aria-hidden="true"])')).toBeNull()
+    expect(stack2.querySelector('.probe-card')).toBeNull()
   })
 
-  it('drives the bottom spacer from the STACK height, not the streaming region', () => {
+  it('drives the bottom spacer from the STACK height', () => {
     virtuosoMockState.scrollHeight = 200
     virtuosoMockState.clientHeight = 100
 
@@ -4661,7 +4542,6 @@ describe('MessageList', () => {
     const { container } = render(
       <MessageList
         items={toItems(msgs as SdkMessage[])}
-        streamingContent=""
         bottomOverlay={<div className="probe-card">card</div>}
       />,
     )
@@ -4669,7 +4549,7 @@ describe('MessageList', () => {
     const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
     expect(stack).not.toBeNull()
 
-    // No streaming content: the stack's height is purely the cards' height.
+    // The stack's height is the cards' height.
     let stackHeight = 0
     Object.defineProperty(stack, 'getBoundingClientRect', {
       configurable: true,
@@ -6268,26 +6148,20 @@ describe('in-place draft rows (store-backed)', () => {
         message: { role: 'assistant', content: [{ type: 'text', text }] },
       } as unknown as SdkMessage,
     })
-  const list = (mode?: 'inline' | 'overlay', replayReady?: boolean) => (
+  const list = (replayReady?: boolean) => (
     <MessageList
       items={getSessionStore(SID).getSnapshot().items}
       sessionId={SID}
-      streamingMode={mode}
       replayReady={replayReady}
     />
   )
-  const renderList = (mode?: 'inline' | 'overlay') => render(list(mode))
+  const renderList = () => render(list())
 
-  it('inline renders the draft row as an assistant card shell; overlay renders none', () => {
+  it('renders the draft row as an assistant card shell', () => {
     streamDelta('hello ')
     flush()
-    const inline = renderList('inline')
-    expect(inline.container.querySelector('[data-message-id="draft:1"]')).toBeTruthy()
-    inline.unmount()
-    // Same store, overlay mode: the transcript shows settled
-    // rows only — the bubble preview owns live text there.
-    const overlay = renderList('overlay')
-    expect(overlay.container.querySelector('[data-message-id^="draft:"]')).toBeNull()
+    const { container } = renderList()
+    expect(container.querySelector('[data-message-id="draft:1"]')).toBeTruthy()
   })
 
   it('static does not append root draft rows', () => {
@@ -6298,21 +6172,10 @@ describe('in-place draft rows (store-backed)', () => {
         static
         items={getSessionStore(SID).getSnapshot().items}
         sessionId={SID}
-        streamingMode="inline"
       />,
     )
 
     expect(container.querySelector('[data-message-id^="draft:"]')).toBeNull()
-  })
-
-  it('defaults to inline when no streamingMode is given (the shipped default)', () => {
-    streamDelta('default mode text')
-    flush()
-    // No mode prop at all: the seam falls back to
-    // DEFAULT_STREAMING_RENDER_MODE, which ships as 'inline'.
-    const { container } = renderList()
-    expect(container.querySelector('[data-message-id="draft:1"]')).toBeTruthy()
-    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
   })
 
   it('does not append the root draft row to a drill-in transcript', () => {
@@ -6322,7 +6185,6 @@ describe('in-place draft rows (store-backed)', () => {
       <MessageList
         items={getSessionStore(SID).getSnapshot().items}
         sessionId={SID}
-        streamingMode="inline"
         parentToolUseIdFilter="agent-1"
       />,
     )
@@ -6334,7 +6196,7 @@ describe('in-place draft rows (store-backed)', () => {
   it('keeps the draft row identity across supersede (settled row adopts the draft key)', () => {
     streamDelta('partial')
     flush()
-    const { container, rerender } = renderList('inline')
+    const { container, rerender } = renderList()
     const before = container.querySelector('[data-message-id="draft:1"]') as HTMLElement
     expect(before).toBeTruthy()
     // The finalized message takes over the row. With the key alias
@@ -6347,7 +6209,7 @@ describe('in-place draft rows (store-backed)', () => {
     // is a remount by the harness's own doing, not the alias's.
     act(() => {
       arriveAssistant('a-final', 'partial')
-      rerender(list('inline'))
+      rerender(list())
     })
     const after = container.querySelector('[data-message-id="a-final"]') as HTMLElement
     expect(after).toBeTruthy()
@@ -6379,7 +6241,7 @@ describe('in-place draft rows (store-backed)', () => {
     })
     flush()
     expect(getSessionStore(SID).getSnapshot().draft).toBeNull()
-    const { container } = renderList('inline')
+    const { container } = renderList()
     expect(container.querySelector('[data-message-id^="draft:"]')).toBeNull()
   })
 
@@ -6391,34 +6253,32 @@ describe('in-place draft rows (store-backed)', () => {
     // a NON-EMPTY list (growth from empty is the bulk-load case and rides
     // the reveal cascade instead).
     arriveAssistant('a-seed', 'seed')
-    const { container, rerender } = render(list('inline', true))
+    const { container, rerender } = render(list(true))
     act(() => {
       arriveAssistant('a-live', 'fresh')
-      rerender(list('inline', true))
+      rerender(list(true))
     })
     expect(container.querySelector('.msg-enter[data-message-id="a-live"]')).toBeTruthy()
     act(() => {
       streamDelta('growing')
       flush()
-      rerender(list('inline', true))
+      rerender(list(true))
     })
     expect(container.querySelector('[data-message-id="draft:1"]')).toBeTruthy()
     expect(container.querySelector('.msg-enter[data-message-id="draft:1"]')).toBeNull()
   })
 
-  it('inline mode: the growing text renders inside the draft card (not a footer row)', () => {
+  it('the growing text renders inside the draft card', () => {
     streamDelta('hello **world**')
     flush()
-    const { container } = renderList('inline')
+    const { container } = renderList()
     expect(container.querySelector('.draft-body .md strong')?.textContent).toBe('world')
-    // The old inline footer row is retired — live text lives in the card only.
-    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
   })
 
   it('interrupt without a salvaged message freezes the half-card in place (stays after result)', () => {
     streamDelta('half of a thought')
     flush()
-    const { container, rerender } = renderList('inline')
+    const { container, rerender } = renderList()
     const draftNode = container.querySelector('[data-message-id="draft:1"]') as HTMLElement
     expect(draftNode?.textContent).toContain('half of a thought')
     // Interrupt: the turn ends with no finalized message salvaging the draft.
@@ -6432,7 +6292,7 @@ describe('in-place draft rows (store-backed)', () => {
           terminal_reason: 'aborted_streaming',
         } as unknown as SdkMessage,
       })
-      rerender(list('inline'))
+      rerender(list())
     })
     // The frozen card keeps the text and its node (no remount, no rollback).
     const frozen = container.querySelector('[data-message-id="draft:1"]') as HTMLElement
@@ -6442,7 +6302,7 @@ describe('in-place draft rows (store-backed)', () => {
     act(() => {
       streamDelta('next response')
       flush()
-      rerender(list('inline'))
+      rerender(list())
     })
     expect(container.querySelector('[data-message-id="draft:2"]')?.textContent).toContain('next response')
     expect(container.querySelector('[data-message-id="draft:1"]')?.textContent).toContain('half of a thought')
@@ -6451,7 +6311,7 @@ describe('in-place draft rows (store-backed)', () => {
   it('interrupt with a salvaged message settles normally (no frozen card, same node)', () => {
     streamDelta('partial answer')
     flush()
-    const { container, rerender } = renderList('inline')
+    const { container, rerender } = renderList()
     const before = container.querySelector('[data-message-id="draft:1"]') as HTMLElement
     expect(before).toBeTruthy()
     // The CLI salvages the partial as a real message, then the turn ends.
@@ -6461,7 +6321,7 @@ describe('in-place draft rows (store-backed)', () => {
         type: 'MESSAGE',
         message: { type: 'result', subtype: 'error_during_execution', uuid: 'r-abort-2', terminal_reason: 'aborted_streaming' } as unknown as SdkMessage,
       })
-      rerender(list('inline'))
+      rerender(list())
     })
     // Exactly one card — the settled one, on the draft's node; no frozen copy.
     const settled = container.querySelector('[data-message-id="a-salvaged"]') as HTMLElement

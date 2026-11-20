@@ -3915,8 +3915,8 @@ describe('reducer: REPLAY_REPLACE on top of a cache', () => {
     // Switching panels mid-stream unmounts the Chat → unsubscribe → resubscribe
     // → REPLAY_REPLACE. The live turn's partial text lives ONLY in liveTurn
     // (stream_event deltas never enter the history ring, so the replay cannot
-    // carry it). Nulling liveTurn on every merge wiped the StreamingFooter even
-    // though the turn was still running server-side. A replay whose newer slice
+    // carry it). Nulling liveTurn on every merge wiped the in-progress draft
+    // even though the turn was still running server-side. A replay whose newer slice
     // has no `result` cannot mean the turn ended — keep the accumulated text.
     const state = seedWithLiveTurn([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
     const after = replay(state, [userMsg('u1-disk', 'hi'), asstMsg('a1', 'hello')])

@@ -7,8 +7,8 @@ import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from 
 type Listener = () => void
 
 /** How often the live (in-progress) assistant turn is flushed to a new
- *  snapshot during streaming. Each flush re-renders the streaming footer,
- *  so this directly bounds the per-second render cost of an active turn.
+ *  snapshot during streaming. Each flush re-renders the draft card's body
+ *  leaf, so this directly bounds the per-second render cost of an active turn.
  *  ~80ms (~12fps) reads as smooth for streaming prose while cutting the
  *  render volume to roughly a third of a per-frame (33ms / 30fps) flush. */
 const LIVE_TURN_FLUSH_MS = 80

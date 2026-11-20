@@ -40,7 +40,7 @@ it mirrors.
 Semantics are deliberately the same as OS reduced motion:
 
 - decorative motion (entrances, exits, transitions, FLIP, reveals, dialogs,
-  popovers, bottom cards, the streaming region) snaps;
+  popovers, bottom cards) snaps;
 - progress indicators follow their reduced-motion counterparts: the
   working-dot bounce, cursor blink and the recap loading shimmer keep moving;
   the handoff spinner, env loading dot, subagent child-dot pulse and skeleton
