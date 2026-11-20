@@ -17,6 +17,8 @@ import { buildElicitationRouter } from './elicitation.js'
 import { buildDialogRouter } from './dialog.js'
 import { buildClientDebugRouter } from './client-debug.js'
 import { buildUploadRouter } from './uploads.js'
+import { buildImageUploadRouter } from './image-uploads.js'
+import { AttachmentObjectStore } from '../attachment-object-store.js'
 import { buildRecapRouter } from './recap.js'
 import { buildConfigRouter } from './config-routes.js'
 import { buildDaemonRouter } from './daemon-routes.js'
@@ -154,6 +156,14 @@ export function buildApiRouter(
   app.route('/', buildSkillsRouter(sm))
   app.route('/', buildDiagnosticsRouter(sm))
   app.route('/', buildUploadRouter(sm, uploadStore))
+  // Durable image references: upload + content routes, mounted beside the
+  // file upload routes so the same request guard + web-access auth gate
+  // covers them. Needs only the state dir (configDir) — image refs are
+  // global, so no UploadStore registry is involved. Other buildApp callers
+  // (tests, standalone tooling) without a state dir skip it cleanly.
+  if (configDir) {
+    app.route('/', buildImageUploadRouter(sm, new AttachmentObjectStore(configDir)))
+  }
   app.route('/', buildPermissionRouter(sm))
   app.route('/', buildElicitationRouter(sm))
   app.route('/', buildDialogRouter(sm))

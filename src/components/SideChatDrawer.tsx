@@ -19,7 +19,6 @@
 
 import { memo, useEffect, useRef, useState, useCallback } from 'react'
 import type { SessionInfo } from '../types'
-import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import { SUPPORTED_IMAGE_MEDIA_TYPES } from '../../shared/image-media'
 import type { TranscriptPaging } from '../session-sync/useSessionSynchronizer'
 import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
@@ -74,13 +73,6 @@ interface Props {
   /** Auto-expand running groups pref (effective value — session override ??
    *  global default, resolved by ChatPanel). */
   autoExpandRunningGroups?: boolean
-  /** Message-card header visibility pref (effective value — session
-   *  override ?? global default, resolved by ChatPanel). */
-  showMessageHeaders?: boolean
-  /** Where the live turn's text renders ('overlay' | 'inline'). Global-only
-   *  pref (no per-session override), resolved by ChatPanel and fed verbatim
-   *  to SessionMessageList's `streamingMode` seam. */
-  streamingMode: StreamingRenderMode
   /** True close — deletes the ephemeral session. */
   onClose: () => void
   /** Collapse — hides the drawer but keeps the session alive. */
@@ -113,8 +105,6 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   permissions,
   toolGroupCards,
   autoExpandRunningGroups,
-  showMessageHeaders,
-  streamingMode,
   onClose,
   onCollapse,
 }: Props) {
@@ -129,7 +119,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const editorRef = useRef<HTMLDivElement>(null)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
-  const pastedImages = usePastedImages()
+  const pastedImages = usePastedImages(session.id)
   const toast = useToast()
   // Collapsed pastes: a long clipboard is replaced in the input by a
   // `[Pasted text #N]` reference whose body lives here and is spliced back in
@@ -315,8 +305,6 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           transcriptRevealKey={session.id}
           toolGroupCards={toolGroupCards}
           autoExpandRunningGroups={autoExpandRunningGroups}
-          showMessageHeaders={showMessageHeaders}
-          streamingMode={streamingMode}
           emptyStateContent={(
             // Side Chat-specific empty state. The drawer is ephemeral —
             // closing it deletes the conversation — and most users only

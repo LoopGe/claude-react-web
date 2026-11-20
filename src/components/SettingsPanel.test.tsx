@@ -442,7 +442,6 @@ describe('SettingsPanel Appearance tab', () => {
     ['Show pinned current question header', 'showPinnedUserMessage'],
     ['Auto-generate session recap', 'autoRecap'],
     ['Use collapsible transcript cards', 'toolGroupCards'],
-    ['Show message card headers', 'showMessageHeaders'],
   ] as const
 
   it('renders every override row and posts each one under its own key', async () => {
@@ -470,7 +469,6 @@ describe('SettingsPanel Appearance tab', () => {
 
     // Moved, not duplicated.
     expect(switchEl(container, 'Auto-generate session recap')).toBeNull()
-    expect(switchEl(container, 'Show message card headers')).toBeNull()
   })
 
   describe('auto-expand-running-groups sub-setting', () => {

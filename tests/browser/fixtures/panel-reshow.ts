@@ -195,7 +195,6 @@ function render(panelVisible: boolean) {
     React.createElement(MessageList, {
       items: ITEMS,
       panelVisible,
-      streamingMode: 'inline',
     }),
   )
 }

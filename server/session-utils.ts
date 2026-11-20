@@ -3,7 +3,7 @@
  */
 
 import type { Session } from './session-types.js'
-import { stripFileHandles } from '../shared/upload-handle.js'
+import { stripHandles } from '../shared/attachment-handle.js'
 
 /** Extract the last N user/assistant messages from the session history
  *  as lightweight role+text pairs for the auto-mode classifier.
@@ -46,13 +46,13 @@ export function getMessagesForClassifier(
 /** Extract plain text from a user message's content field.
  *  Content can be a string or an array of content blocks. */
 function extractText(content: unknown): string {
-  if (typeof content === 'string') return stripFileHandles(content)
+  if (typeof content === 'string') return stripHandles(content)
   if (Array.isArray(content)) {
     const joined = content
       .filter((b): b is { type: 'text'; text: string } => b.type === 'text' && typeof b.text === 'string')
       .map(b => b.text)
       .join('\n')
-    return stripFileHandles(joined)
+    return stripHandles(joined)
   }
   return ''
 }

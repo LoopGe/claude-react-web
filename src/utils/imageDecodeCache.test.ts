@@ -7,9 +7,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPastedImages, clearImageDecodeCache } from './imageDecodeCache'
 import type { PersistedImage } from '../state/inputHistoryImages'
 import type { PastedImage } from '../types'
+import type { ImageAttachmentRef } from '../../shared/image-attachment'
 
 function persisted(data = 'AAAA', mediaType: PersistedImage['mediaType'] = 'image/png'): PersistedImage {
   return { data, mediaType, width: 10, height: 20, size: 3 }
+}
+
+const REF: ImageAttachmentRef = {
+  id: `sha256:${'ab'.repeat(32)}`,
+  mediaType: 'image/webp',
+  bytes: 3,
+  width: 10,
+  height: 20,
+}
+const DIGEST = REF.id.slice('sha256:'.length)
+
+/** A ref-backed persisted record: the draft payload is the ref, not base64. */
+function persistedRef(attachment: ImageAttachmentRef = REF): PersistedImage {
+  return { data: '', mediaType: attachment.mediaType, width: 10, height: 20, size: 3, attachment }
 }
 
 let urlCounter = 0
@@ -18,10 +33,15 @@ const revokeObjectURL = vi.fn()
 
 /** Install a fetch stub that resolves data: URLs to a Blob of the decoded
  *  bytes (mirrors the browser's native data:-URL handling the module relies
- *  on; jsdom's fetch cannot do this). */
+ *  on; jsdom's fetch cannot do this) and content-route URLs to stored bytes. */
 function stubFetch() {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
+    if (url.startsWith('/api/attachments/images/')) {
+      return new Response(new Uint8Array([7, 8, 9]), {
+        headers: { 'Content-Type': 'image/webp' },
+      }) as Response
+    }
     if (!url.startsWith('data:')) throw new Error(`unexpected fetch: ${url}`)
     const comma = url.indexOf(',')
     const b64 = url.slice(comma + 1)
@@ -187,5 +207,91 @@ describe('imageDecodeCache', () => {
     // Type-level contract check (compiled, not runtime).
     const asPasted: PastedImage = out[0]
     expect(asPasted.mediaType).toBe('image/png')
+  })
+})
+
+describe('imageDecodeCache ref-backed records', () => {
+  it('fetches the content route and carries the attachment (no base64 payload)', async () => {
+    const fetchMock = stubFetch()
+    const out = await buildPastedImages([persistedRef()])
+    expect(out).toHaveLength(1)
+    expect(out[0].attachment).toEqual(REF)
+    expect(out[0].data).toBe('')
+    expect(out[0].mediaType).toBe('image/webp')
+    expect(out[0].previewUrl).toBe('blob:mock-1')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`/api/attachments/images/${DIGEST}`)
+  })
+
+  it('a ref cache hit reuses the Blob without refetching (fresh composer-owned URL)', async () => {
+    const fetchMock = stubFetch()
+    const first = await buildPastedImages([persistedRef()])
+    const second = await buildPastedImages([persistedRef()])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(second[0].previewUrl).toBe('blob:mock-2')
+    expect(second[0].previewUrl).not.toBe(first[0].previewUrl)
+    expect(second[0].attachment).toEqual(REF)
+  })
+
+  it('builds a mixed legacy + ref set in one call', async () => {
+    const out = await buildPastedImages([persisted('AAAA'), persistedRef()])
+    expect(out.map((i) => i.data)).toEqual(['AAAA', ''])
+    expect(out[0].attachment).toBeUndefined()
+    expect(out[1].attachment).toEqual(REF)
+  })
+
+  it('a ref whose content fetch fails is skipped, not fatal', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/attachments/images/')) return new Response('gone', { status: 404 }) as Response
+      const binary = atob('AAAA')
+      return new Response(Uint8Array.from(binary, (c) => c.charCodeAt(0))) as Response
+    }))
+    const out = await buildPastedImages([persistedRef(), persisted('AAAA')])
+    expect(out.map((i) => i.data)).toEqual(['AAAA'])
+  })
+
+  it('concurrent builds of the same ref share one fetch', async () => {
+    const fetchMock = stubFetch()
+    const [x, y] = await Promise.all([
+      buildPastedImages([persistedRef()]),
+      buildPastedImages([persistedRef()]),
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(x[0].attachment).toEqual(REF)
+    expect(y[0].attachment).toEqual(REF)
+  })
+
+  it('ref entries evict past the count cap (refetch on next use)', async () => {
+    const { _setCapsForTests } = await import('./imageDecodeCache')
+    _setCapsForTests({ maxEntries: 1, maxTotalBytes: 1 << 30 })
+    try {
+      const fetchMock = stubFetch()
+      const other: ImageAttachmentRef = { ...REF, id: `sha256:${'cd'.repeat(32)}` }
+      await buildPastedImages([persistedRef()])
+      await buildPastedImages([persistedRef(other)]) // evicts REF's Blob
+      await buildPastedImages([persistedRef()]) // refetch (evicted)
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+    } finally {
+      _setCapsForTests(null)
+      clearImageDecodeCache()
+    }
+  })
+
+  it('a ref fetch landing after clear() does not resurrect the memo', async () => {
+    stubFetch()
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      await gate
+      return new Response(new Uint8Array([7, 8, 9])) as Response
+    }))
+    const pending = buildPastedImages([persistedRef()])
+    clearImageDecodeCache()
+    release()
+    await pending
+    const fetch2 = stubFetch()
+    await buildPastedImages([persistedRef()])
+    expect(fetch2).toHaveBeenCalledTimes(1)
   })
 })

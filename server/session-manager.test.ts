@@ -5,8 +5,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, t
 // precedent (30s).
 vi.setConfig({ testTimeout: 30_000 })
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as nodeFs from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -362,7 +362,7 @@ const waitFor = async (cond: () => boolean | Promise<boolean>, timeoutMs = 2_000
 }
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
-import { SessionManager, resolveConfiguredModel, backfillSubagentCompletions, mergeResultFrames } from './session-manager.js'
+import { SessionManager, resolveConfiguredModel, backfillSubagentCompletions, mergeResultFrames, projectSeedImageRefs, sidecarImageContentByUuid } from './session-manager.js'
 import { ensureWorktreeForResume } from './session-worktree.js'
 import type { Session } from './session-types.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
@@ -397,6 +397,13 @@ import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
 import { NativeProvider } from './providers/native/native-provider.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './providers/native/session-log/log.js'
 import type { CanonicalEvent } from './providers/native/canonical.js'
+import { AttachmentObjectStore } from './attachment-object-store.js'
+import { attachmentRoot, imageObjectPathOf } from './attachment-paths.js'
+import { inspectImageBytes } from '../shared/image-inspect.js'
+import { imageRefId, type ImageAttachmentRef } from '../shared/image-attachment.js'
+import { imageHandleText, parseImageHandle } from '../shared/image-handle.js'
+import { fileHandleText } from '../shared/upload-handle.js'
+import { UPLOAD_SUBDIR } from './upload-store.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
@@ -2374,7 +2381,6 @@ describe('SessionManager', () => {
       autoRecap: false,
       toolGroupCards: false,
       autoExpandRunningGroups: false,
-      showMessageHeaders: false,
     })
     await sm.setFirstPartyTool(info.id, 'git-tools', false)
 
@@ -2384,7 +2390,6 @@ describe('SessionManager', () => {
     expect(next.autoRecap).toBe(false)
     expect(next.toolGroupCards).toBe(false)
     expect(next.autoExpandRunningGroups).toBe(false)
-    expect(next.showMessageHeaders).toBe(false)
     expect(next.firstPartyTools?.['git-tools']).toBe(false)
     // Persisted too, so the next resume/fork of Y keeps them.
     const meta = store.get(next.id)
@@ -8924,6 +8929,448 @@ describe('SessionManager', () => {
     })
   })
 
+  describe('durable image references (Task 4)', () => {
+    const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+    const pngBytes = Buffer.from(PNG_1X1, 'base64')
+
+    /** Publish the fixture PNG into the real object store under the fixture
+     *  state dir and return the ref the upload route would hand back. */
+    async function publishFixtureImage(): Promise<ImageAttachmentRef> {
+      const inspected = inspectImageBytes(pngBytes)
+      if (!inspected.ok) throw new Error('fixture PNG must inspect')
+      const objects = new AttachmentObjectStore(dir)
+      const pub = await objects.publishImage(pngBytes, inspected.image)
+      return {
+        id: imageRefId(pub.digest),
+        mediaType: inspected.image.mediaType,
+        bytes: pub.bytes,
+        width: inspected.image.width,
+        height: inspected.image.height,
+      }
+    }
+
+    const refBlock = (ref: ImageAttachmentRef) => ({ type: 'image' as const, attachment: ref })
+    const imagePathOf = (ref: ImageAttachmentRef) =>
+      imageObjectPathOf(attachmentRoot(dir), ref.id.slice('sha256:'.length))
+
+    type RingMessage = { type: string; uuid?: string; message: { content: unknown } }
+    const ringOf = (id: string): RingMessage[] => (sm as unknown as {
+      sessions: Map<string, { history: RingMessage[] }>
+    }).sessions.get(id)!.history
+
+    type InputRow = { state?: string; operationId?: string; payload?: { uuid?: string; message?: { content?: unknown } }; msg?: { uuid?: string; message?: { content?: unknown } } }
+    const sidecarRows = (id: string) => new TranscriptSidecar(dir, id).load() as Promise<InputRow[]>
+
+    it('keeps the ref in ring/seq/sidecar and projects handle text + base64 for the SDK', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      const sent = await sm.sendContent(info.id, [{ type: 'text', text: 'look' }, refBlock(ref)]) as { uuid: string }
+      const publicContent = [{ type: 'text', text: 'look' }, refBlock(ref)]
+
+      // SDK copy: the handle text block followed by the verified base64 block.
+      const consumed = mockHandles[0].consumed as Array<{ message: { content: unknown[] } }>
+      expect(consumed).toHaveLength(1)
+      expect(consumed[0].message.content).toEqual([
+        { type: 'text', text: 'look' },
+        { type: 'text', text: imageHandleText(ref, imagePathOf(ref)) },
+        { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } },
+      ])
+      // The projected handle recovers the exact ref (parser/projection pair).
+      expect(parseImageHandle((consumed[0].message.content[1] as { text: string }).text))
+        .toEqual({ attachment: ref, path: imagePathOf(ref) })
+
+      // Ring keeps the structured ref — no base64 anywhere in the message.
+      const ringMsg = ringOf(info.id).find((m) => m.uuid === sent.uuid)!
+      expect(ringMsg.message.content).toEqual(publicContent)
+      expect(JSON.stringify(ringMsg)).not.toContain(PNG_1X1)
+
+      // Seq store (the /messages read path) keeps the ref.
+      const win = await sm.getTranscriptWindow(info.id)
+      const seqMsg = win.messages.find((m) => (m.msg as { uuid?: string }).uuid === sent.uuid)!.msg as { message: { content: unknown } }
+      expect(seqMsg.message.content).toEqual(publicContent)
+
+      // Sidecar: the live row AND the durable input-state payload keep the ref.
+      expect(await waitFor(async () => {
+        const rows = await sidecarRows(info.id)
+        return rows.some((r) => r.msg?.uuid === sent.uuid)
+          && rows.some((r) => r.operationId === sent.uuid && r.payload !== undefined)
+      })).toBe(true)
+      const rows = await sidecarRows(info.id)
+      const live = rows.find((r) => r.msg?.uuid === sent.uuid)!
+      expect(live.msg!.message!.content).toEqual(publicContent)
+      const input = rows.find((r) => r.operationId === sent.uuid && r.payload !== undefined)!
+      expect(input.payload!.message!.content).toEqual(publicContent)
+      expect(JSON.stringify(rows)).not.toContain(PNG_1X1)
+    })
+
+    it('rejects a dangling ref before the SDK sees it', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const missing: ImageAttachmentRef = {
+        id: imageRefId('f'.repeat(64)), mediaType: 'image/png', bytes: 68, width: 1, height: 1,
+      }
+      const err = await sm.sendContent(info.id, [refBlock(missing)]).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HttpError)
+      expect((err as HttpError).status).toBe(400)
+      expect((err as Error).message).toMatch(/image not found/)
+      expect(mockHandles[0].consumed).toHaveLength(0)
+      expect(ringOf(info.id)).toHaveLength(0)
+    })
+
+    it('rejects tampered stored bytes before the SDK sees them', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      const objectPath = imagePathOf(ref)
+      chmodSync(objectPath, 0o600)
+      const tampered = Uint8Array.from(pngBytes)
+      tampered[0] ^= 0xff
+      writeFileSync(objectPath, tampered)
+      const err = await sm.sendContent(info.id, [refBlock(ref)]).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HttpError)
+      expect((err as HttpError).status).toBe(400)
+      expect((err as Error).message).toMatch(/integrity/)
+      expect(mockHandles[0].consumed).toHaveLength(0)
+      expect(ringOf(info.id)).toHaveLength(0)
+    })
+
+    it('rejects a ref whose declared facts do not match the stored meta', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      await expect(sm.sendContent(info.id, [refBlock({ ...ref, bytes: ref.bytes + 1 })]))
+        .rejects.toThrow(/does not match/)
+      expect(mockHandles[0].consumed).toHaveLength(0)
+      expect(ringOf(info.id)).toHaveLength(0)
+    })
+
+    it('leaves a legacy base64 send unchanged', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const content = [
+        { type: 'text' as const, text: 'old' },
+        { type: 'image' as const, source: { type: 'base64' as const, data: PNG_1X1, media_type: 'image/png' } },
+      ]
+      const sent = await sm.sendContent(info.id, content) as { uuid: string }
+      const consumed = mockHandles[0].consumed as Array<{ message: { content: unknown[] } }>
+      expect(consumed[0].message.content).toEqual(content)
+      expect(ringOf(info.id).find((m) => m.uuid === sent.uuid)!.message.content).toEqual(content)
+    })
+
+    it('keeps one occurrence per duplicate ref (deduped read, distinct blocks)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      await sm.sendContent(info.id, [refBlock(ref), refBlock(ref)])
+      const consumed = mockHandles[0].consumed as Array<{ message: { content: unknown[] } }>
+      const handle = { type: 'text', text: imageHandleText(ref, imagePathOf(ref)) }
+      const image = { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } }
+      expect(consumed[0].message.content).toEqual([handle, image, handle, image])
+      expect(ringOf(info.id)[0].message.content).toEqual([refBlock(ref), refBlock(ref)])
+    })
+
+    it('queues a mid-turn ref send as ref-only durable state and materializes the projection at the turn terminal', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      await sm.send(info.id, 'turn1')
+      const queued = await sm.sendContent(info.id, [refBlock(ref)]) as { uuid: string }
+      // Not dispatched yet: only turn1 reached the SDK.
+      expect(mockHandles[0].consumed).toHaveLength(1)
+      expect(await waitFor(async () =>
+        (await sidecarRows(info.id)).some((r) => r.state === 'queued-not-published' && r.payload?.uuid === queued.uuid),
+      )).toBe(true)
+      const rows = await sidecarRows(info.id)
+      const qrow = rows.find((r) => r.state === 'queued-not-published' && r.payload?.uuid === queued.uuid)!
+      expect(qrow.payload!.message!.content).toEqual([refBlock(ref)])
+      expect(JSON.stringify(qrow)).not.toContain(PNG_1X1)
+
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: info.id })
+      expect(await waitFor(() => mockHandles[0].consumed.length === 2)).toBe(true)
+      const second = mockHandles[0].consumed[1] as { uuid?: string; message: { content: unknown[] } }
+      expect(second.uuid).toBe(queued.uuid)
+      expect(second.message.content).toEqual([
+        { type: 'text', text: imageHandleText(ref, imagePathOf(ref)) },
+        { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } },
+      ])
+      // The materialized ring copy keeps the ref.
+      expect(ringOf(info.id).find((m) => m.uuid === queued.uuid)!.message.content).toEqual([refBlock(ref)])
+    })
+
+    it('crash recovery re-resolves and re-projects a queued image ref before re-dispatch', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      await sm.send(info.id, 'turn1')
+      const queued = await sm.sendContent(info.id, [refBlock(ref)]) as { uuid: string }
+      expect(await waitFor(async () =>
+        (await sidecarRows(info.id)).some((r) => r.state === 'queued-not-published' && r.payload?.uuid === queued.uuid),
+      )).toBe(true)
+      await sm.unload(info.id) // crash: the in-memory writer queue + projection die
+      await sm.resume(info.id)
+      expect(await waitFor(() => (mockHandles[1]?.consumed.length ?? 0) >= 1)).toBe(true)
+      const recovered = (mockHandles[1].consumed as Array<{ uuid?: string; message: { content: unknown[] } }>)
+        .find((m) => m.uuid === queued.uuid)!
+      // The durable row stores only the public ref; recovery must rebuild the
+      // projected SDK form (handle text + verified base64), not enqueue the ref.
+      expect(recovered.message.content).toEqual([
+        { type: 'text', text: imageHandleText(ref, imagePathOf(ref)) },
+        { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } },
+      ])
+      // The materialized public ring copy keeps the ref.
+      expect(ringOf(info.id).find((m) => m.uuid === queued.uuid)!.message.content).toEqual([refBlock(ref)])
+    })
+
+    it('resolves file blocks and image refs together in one send', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      mkdirSync(join(dir, UPLOAD_SUBDIR), { recursive: true })
+      const filePath = join(dir, UPLOAD_SUBDIR, 'note.txt')
+      const fileBytes = Buffer.from('hello')
+      writeFileSync(filePath, fileBytes)
+      const fileDigest = createHash('sha256').update(fileBytes).digest('hex')
+      ;(sm as unknown as { uploadStore: { record: (entries: unknown[]) => void } }).uploadStore.record([{
+        id: 'file-1', path: filePath, cwd: dir, name: 'note.txt', size: fileBytes.length,
+        uploadedAt: 1, sessionTitle: '', sessionId: info.id, digest: fileDigest,
+      }])
+      const ref = await publishFixtureImage()
+      const sent = await sm.sendContent(info.id, [
+        { type: 'text', text: 'both' },
+        { type: 'file', attachment: { id: 'file-1', name: 'note.txt', size: fileBytes.length } },
+        refBlock(ref),
+      ]) as { uuid: string }
+      const consumed = mockHandles[0].consumed as Array<{ message: { content: unknown[] } }>
+      expect(consumed[0].message.content).toEqual([
+        { type: 'text', text: 'both' },
+        { type: 'text', text: fileHandleText({ id: 'file-1', name: 'note.txt', size: fileBytes.length, digest: fileDigest }, filePath) },
+        { type: 'text', text: imageHandleText(ref, imagePathOf(ref)) },
+        { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } },
+      ])
+      expect(ringOf(info.id).find((m) => m.uuid === sent.uuid)!.message.content).toEqual([
+        { type: 'text', text: 'both' },
+        { type: 'file', attachment: { id: 'file-1', name: 'note.txt', size: fileBytes.length, digest: fileDigest } },
+        refBlock(ref),
+      ])
+    })
+  })
+
+  describe('durable image references — history/reconcile recovery (Task 6)', () => {
+    const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+    const pngBytes = Buffer.from(PNG_1X1, 'base64')
+
+    async function publishFixtureImage(): Promise<ImageAttachmentRef> {
+      const inspected = inspectImageBytes(pngBytes)
+      if (!inspected.ok) throw new Error('fixture PNG must inspect')
+      const objects = new AttachmentObjectStore(dir)
+      const pub = await objects.publishImage(pngBytes, inspected.image)
+      return {
+        id: imageRefId(pub.digest),
+        mediaType: inspected.image.mediaType,
+        bytes: pub.bytes,
+        width: inspected.image.width,
+        height: inspected.image.height,
+      }
+    }
+    const refBlock = (ref: ImageAttachmentRef) => ({ type: 'image' as const, attachment: ref })
+    const b64Block = { type: 'image' as const, source: { type: 'base64' as const, data: PNG_1X1, media_type: 'image/png' } }
+    const imagePathOf = (ref: ImageAttachmentRef) =>
+      imageObjectPathOf(attachmentRoot(dir), ref.id.slice('sha256:'.length))
+
+    type RingMessage = { type: string; uuid?: string; message: { content: unknown } }
+    const ringOf = (id: string): RingMessage[] => (sm as unknown as {
+      sessions: Map<string, { history: RingMessage[] }>
+    }).sessions.get(id)!.history
+
+    const readPageSpy = () => vi.spyOn(
+      sm as unknown as { readProviderHistoryPage: (provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => Promise<unknown> },
+      'readProviderHistoryPage',
+    )
+
+    /** Write a real CLI JSONL transcript under the fixture config dir so the
+     *  provider's reconcile/search readers (which go through normalize) see it. */
+    function writeJsonl(id: string, lines: Array<Record<string, unknown>>): void {
+      const proj = join(dir, 'projects', 'D--test')
+      mkdirSync(proj, { recursive: true })
+      writeFileSync(join(proj, `${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
+    }
+    const userLine = (uuid: string, content: unknown) => ({
+      type: 'user', uuid, timestamp: '2026-11-20T00:00:00.000Z', message: { role: 'user', content },
+    })
+    const assistantLine = (uuid: string) => ({
+      type: 'assistant', uuid, timestamp: '2026-11-20T00:00:01.000Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' },
+    })
+
+    /** Run `fn` with CLAUDE_CONFIG_DIR pointed at the fixture dir, restoring
+     *  the prior value afterwards (the provider readers resolve it lazily). */
+    async function withConfigDir<T>(fn: () => Promise<T>): Promise<T> {
+      const prev = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        return await fn()
+      } finally {
+        if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = prev
+      }
+    }
+
+    it('resume ring seed recovers a ref from the handle when the sidecar has none', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: info.id })
+      await tick()
+      await sm.unload(info.id)
+      const handle = imageHandleText(ref, imagePathOf(ref))
+      const readPage = readPageSpy()
+      try {
+        await withConfigDir(async () => {
+          // The disk page carries the SDK projection (handle text + base64).
+          readPage.mockResolvedValue({
+            messages: [userLine('V1', [{ type: 'text', text: handle }, b64Block]), assistantLine('A1')],
+            totalCount: 2, startIndex: 0, hasMore: false,
+          })
+          await sm.resume(info.id)
+        })
+        const ringMsg = ringOf(info.id).find((m) => m.uuid === 'V1')!
+        expect(ringMsg.message.content).toEqual([refBlock(ref)])
+        expect(JSON.stringify(ringMsg)).not.toContain(PNG_1X1)
+      } finally {
+        readPage.mockRestore()
+      }
+    })
+
+    it('resume ring seed prefers the sidecar ref by uuid over an altered disk handle', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      // Populate the durable sidecar with the public ref row (uuid = sent.uuid).
+      const sent = await sm.sendContent(info.id, [{ type: 'text', text: 'look' }, refBlock(ref)]) as { uuid: string }
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: info.id })
+      await tick()
+      await sm.unload(info.id)
+      // The disk handle is altered (digest slots disagree) → normalize would
+      // leave base64; the sidecar ref must win by uuid.
+      const altered = imageHandleText(ref, imagePathOf(ref))
+        .replace(`attachment:${ref.id}`, `attachment:sha256:${'b'.repeat(64)}`)
+      const readPage = readPageSpy()
+      try {
+        await withConfigDir(async () => {
+          readPage.mockResolvedValue({
+            messages: [
+              { type: 'user', uuid: sent.uuid, timestamp: '2026-11-20T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: altered }, b64Block] } },
+              assistantLine('A1'),
+            ],
+            totalCount: 2, startIndex: 0, hasMore: false,
+          })
+          await sm.resume(info.id)
+        })
+        const ringMsg = ringOf(info.id).find((m) => m.uuid === sent.uuid)!
+        expect(ringMsg.message.content).toEqual([{ type: 'text', text: 'look' }, refBlock(ref)])
+        expect(JSON.stringify(ringMsg)).not.toContain(PNG_1X1)
+      } finally {
+        readPage.mockRestore()
+      }
+    })
+
+    it('resume ring seed leaves a legacy base64 row (no handle, no sidecar ref) unchanged', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: info.id })
+      await tick()
+      await sm.unload(info.id)
+      const readPage = readPageSpy()
+      try {
+        await withConfigDir(async () => {
+          readPage.mockResolvedValue({
+            messages: [userLine('V1', [{ type: 'text', text: 'old' }, b64Block]), assistantLine('A1')],
+            totalCount: 2, startIndex: 0, hasMore: false,
+          })
+          await sm.resume(info.id)
+        })
+        const ringMsg = ringOf(info.id).find((m) => m.uuid === 'V1')!
+        expect(ringMsg.message.content).toEqual([{ type: 'text', text: 'old' }, b64Block])
+      } finally {
+        readPage.mockRestore()
+      }
+    })
+
+    it('composeTranscriptEntries recovers refs from the real JSONL into the seq store', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      const handle = imageHandleText(ref, imagePathOf(ref))
+      await withConfigDir(async () => {
+        writeJsonl(info.id, [
+          userLine('V1', [{ type: 'text', text: handle }, b64Block]),
+          assistantLine('A1'),
+        ])
+        const win = await sm.getTranscriptWindow(info.id)
+        const seqMsg = win.messages.find((m) => (m.msg as { uuid?: string }).uuid === 'V1')!.msg as { message: { content: unknown } }
+        expect(seqMsg.message.content).toEqual([refBlock(ref)])
+        expect(JSON.stringify(seqMsg)).not.toContain(PNG_1X1)
+      })
+    })
+
+    it('fork resolves inherited image refs into the fork ring and seq store', async () => {
+      const source = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      const handle = imageHandleText(ref, imagePathOf(ref))
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: source.id })
+      await tick()
+      await withConfigDir(async () => {
+        writeJsonl(source.id, [
+          userLine('V1', [{ type: 'text', text: handle }, b64Block]),
+          assistantLine('A1'),
+        ])
+        const forked = await sm.fork(source.id)
+        const ringMsg = ringOf(forked.id).find((m) => m.uuid === 'V1')!
+        expect(ringMsg.message.content).toEqual([refBlock(ref)])
+        expect(JSON.stringify(ringMsg)).not.toContain(PNG_1X1)
+        const win = await sm.getTranscriptWindow(forked.id)
+        const seqMsg = win.messages.find((m) => (m.msg as { uuid?: string }).uuid === 'V1')!.msg as { message: { content: unknown } }
+        expect(seqMsg.message.content).toEqual([refBlock(ref)])
+      })
+    })
+
+    it('side chat resume recovers refs for its own post-boundary image prompt', async () => {
+      const parent = await sm.create({ cwd: TEST_CWD, title: 'parent' })
+      const ref = await publishFixtureImage()
+      const handle = imageHandleText(ref, imagePathOf(ref))
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: parent.id })
+      await tick()
+      const readPage = readPageSpy()
+      try {
+        await withConfigDir(async () => {
+          writeJsonl(parent.id, [
+            userLine('V1', [{ type: 'text', text: handle }, b64Block]),
+            assistantLine('A1'),
+          ])
+          // createSideChat captures the parent tail uuid ('A1') via a limit-1
+          // page; the inherited parent prefix stays behind that boundary.
+          readPage.mockImplementation(async (_p: unknown, id: string, opts: { limit: number; afterUuid?: string }) => {
+            if (id === parent.id && opts.limit === 1) {
+              return { messages: [assistantLine('A1')], totalCount: 2, startIndex: 1, hasMore: false }
+            }
+            // The Side Chat's own resume seed: only post-boundary rows, whose
+            // image prompt still carries the SDK handle + base64 projection.
+            if (opts.afterUuid === 'A1') {
+              return { messages: [userLine('V2', [{ type: 'text', text: handle }, b64Block]), assistantLine('A2')], totalCount: 2, startIndex: 0, hasMore: false }
+            }
+            return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
+          })
+          const side = await sm.createSideChat(parent.id)
+          // The Side Chat's own log (fork copy of the parent prefix + its own
+          // post-boundary turn). Present so reconcile observes the target log
+          // (spec §11) rather than failing closed as source-lost.
+          writeJsonl(side.id, [
+            userLine('V1', [{ type: 'text', text: handle }, b64Block]),
+            assistantLine('A1'),
+            userLine('V2', [{ type: 'text', text: handle }, b64Block]),
+            assistantLine('A2'),
+          ])
+          await sm.unload(side.id)
+          await sm.resume(side.id)
+          const ringMsg = ringOf(side.id).find((m) => m.uuid === 'V2')!
+          expect(ringMsg.message.content).toEqual([refBlock(ref)])
+          expect(JSON.stringify(ringMsg)).not.toContain(PNG_1X1)
+          // The inherited parent prompt is NOT surfaced in the Side Chat ring.
+          expect(ringOf(side.id).some((m) => m.uuid === 'V1')).toBe(false)
+        })
+      } finally {
+        readPage.mockRestore()
+      }
+    })
+  })
+
   describe('transcript seq store (Task 3 wiring)', () => {
     const emitAssistant = (uuid: string, text: string) => {
       mockHandles[0].emit({
@@ -14077,24 +14524,20 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       autoRecap: false,
       toolGroupCards: false,
       autoExpandRunningGroups: false,
-      showMessageHeaders: false,
     } as Parameters<SessionManager['create']>[0])
     expect(info.showPinnedUserMessage).toBe(false)
     expect(info.autoRecap).toBe(false)
     expect(info.toolGroupCards).toBe(false)
     expect(info.autoExpandRunningGroups).toBe(false)
-    expect(info.showMessageHeaders).toBe(false)
     // Persisted too, so a later resume/fork of Y keeps them.
     const meta = store.get(info.id)
     expect(meta?.autoExpandRunningGroups).toBe(false)
-    expect(meta?.showMessageHeaders).toBe(false)
   })
 
   it('create() with no UI prefs leaves them undefined (inherit global)', async () => {
     const info = await sm.create({ cwd: TEST_CWD } as Parameters<SessionManager['create']>[0])
     expect(info.showPinnedUserMessage).toBeUndefined()
     expect(info.autoExpandRunningGroups).toBeUndefined()
-    expect(info.showMessageHeaders).toBeUndefined()
   })
 
   it('create() strips the app-level UI prefs from the SDK options', async () => {
@@ -14106,13 +14549,11 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       showPinnedUserMessage: false,
       toolGroupCards: false,
       autoExpandRunningGroups: false,
-      showMessageHeaders: false,
     } as Parameters<SessionManager['create']>[0])
     const opts = mockHandles[0].options as Record<string, unknown>
     expect(opts.showPinnedUserMessage).toBeUndefined()
     expect(opts.toolGroupCards).toBeUndefined()
     expect(opts.autoExpandRunningGroups).toBeUndefined()
-    expect(opts.showMessageHeaders).toBeUndefined()
   })
 
   it('omits git-tools from live setMcpServers when the session override disables it', async () => {
@@ -17199,5 +17640,69 @@ describe('mergeResultFrames', () => {
     expect(merged).toHaveLength(3)
     expect((merged[1] as { type: string }).type).toBe('assistant')
     expect((merged[2] as { type: string }).type).toBe('result')
+  })
+})
+
+describe('projectSeedImageRefs / sidecarImageContentByUuid (Task 6 pure projection)', () => {
+  const REF: ImageAttachmentRef = {
+    id: imageRefId('c'.repeat(64)), mediaType: 'image/webp', bytes: 100, width: 4, height: 3,
+  }
+  const refBlock = { type: 'image' as const, attachment: REF }
+  const b64 = { type: 'image' as const, source: { type: 'base64' as const, data: 'BBBB', media_type: 'image/webp' } }
+  const handle = imageHandleText(REF, '/store/img')
+  const handleBlock = { type: 'text', text: handle }
+  const user = (uuid: string, content: unknown): SDKMessage =>
+    ({ type: 'user', uuid, message: { role: 'user', content } }) as unknown as SDKMessage
+  const contentOf = (m: SDKMessage): unknown => (m as { message: { content: unknown } }).message.content
+
+  it('sidecarImageContentByUuid maps uuid → public ref content, skipping evicted/non-user/no-ref rows', () => {
+    const entries = [
+      { seq: 0, uuid: 'u1', msg: user('u1', [{ type: 'text', text: 'hi' }, refBlock]) },
+      { seq: 1, uuid: 'u2', evicted: true, msg: user('u2', [refBlock]) }, // withdrawn
+      { seq: 2, uuid: 'a1', msg: { type: 'assistant', message: { content: [refBlock] } } }, // not user
+      { seq: 3, uuid: 'u3', msg: user('u3', [b64]) }, // no ref
+      { seq: 4, uuid: null, msg: user('x', [refBlock]) }, // no uuid
+    ]
+    const map = sidecarImageContentByUuid(entries as never)
+    expect([...map.keys()]).toEqual(['u1'])
+    expect(map.get('u1')).toEqual([{ type: 'text', text: 'hi' }, refBlock])
+  })
+
+  it('prefers the sidecar public content wholesale by uuid (over an altered handle)', () => {
+    const altered = handle.replace(`attachment:${REF.id}`, `attachment:sha256:${'d'.repeat(64)}`)
+    const seed = [user('u1', [{ type: 'text', text: altered }, b64])]
+    const map = new Map<string, unknown[]>([['u1', [{ type: 'text', text: 'hi' }, refBlock]]])
+    const out = projectSeedImageRefs(seed, map)
+    expect(contentOf(out[0])).toEqual([{ type: 'text', text: 'hi' }, refBlock])
+  })
+
+  it('falls back to handle parsing when the sidecar has no ref for the uuid', () => {
+    const seed = [user('v1', [handleBlock, b64])]
+    const out = projectSeedImageRefs(seed, new Map())
+    expect(contentOf(out[0])).toEqual([refBlock])
+  })
+
+  it('leaves legacy base64 (no handle, no sidecar ref) unchanged by identity', () => {
+    const content = [{ type: 'text', text: 'old' }, b64]
+    const seed = [user('v1', content)]
+    const out = projectSeedImageRefs(seed, new Map())
+    expect(out).toBe(seed) // nothing changed → original array
+    expect(contentOf(out[0])).toBe(content)
+  })
+
+  it('passes non-user frames and string content through untouched', () => {
+    const assistant = { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [handleBlock, b64] } } as unknown as SDKMessage
+    const stringUser = { type: 'user', uuid: 'u2', message: { role: 'user', content: 'plain' } } as unknown as SDKMessage
+    const seed = [assistant, stringUser]
+    const out = projectSeedImageRefs(seed, new Map())
+    expect(out).toBe(seed)
+  })
+
+  it('does not mutate the input seed messages', () => {
+    const content = [handleBlock, b64]
+    const seed = [user('v1', content)]
+    projectSeedImageRefs(seed, new Map())
+    expect(contentOf(seed[0])).toBe(content) // original untouched
+    expect(content).toEqual([handleBlock, b64])
   })
 })

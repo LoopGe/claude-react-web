@@ -1,7 +1,7 @@
 // Floating checklist that surfaces the current task list from the message
 // stream. Rendered as the bottom member of the transcript's overlay stack
-// (.chat-bottom-stack, alongside the live streaming bubble), so settled
-// messages scroll behind it and show through its frosted background.
+// (.chat-bottom-stack), so settled messages scroll behind it and show
+// through its frosted background.
 // MessageList measures the stack and reserves its height, so the newest
 // message can always be scrolled clear of the card.
 //

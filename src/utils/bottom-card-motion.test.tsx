@@ -13,14 +13,13 @@ afterEach(() => setAppMotionOff(false))
 // empties at a user turn and a TaskCreate repopulates it right after) leaves
 // the wrapper's inline height frozen at whatever mid-collapse value motion
 // had reached. `animate` must therefore restore `height: 'auto'` — the same
-// aborted-exit recovery useTopCardMotion (top-card-motion.test.tsx) and
-// useStreamingRegionMotion already carry; without it the stuck wrapper is
-// TALLER than the card inside it and the difference paints as a blank band
-// between the card and the composer (the "空白 between TaskList and input"
-// report). `initial` carries it too so the mount is a height no-op (motion
-// skips a target equal to the latest value; a null-origin mount target would
-// make motion measure the box and tween inline height on every mount) —
-// the same reasoning documented on useStreamingRegionMotion.
+// aborted-exit recovery useTopCardMotion (top-card-motion.test.tsx) carries;
+// without it the stuck wrapper is TALLER than the card inside it and the
+// difference paints as a blank band between the card and the composer (the
+// "空白 between TaskList and input" report). `initial` carries it too so the
+// mount is a height no-op (motion skips a target equal to the latest value;
+// a null-origin mount target would make motion measure the box and tween
+// inline height on every mount).
 
 const STAGGERED_EXIT = {
   opacity: { duration: 0.11, ease: [0.4, 0, 1, 1] },

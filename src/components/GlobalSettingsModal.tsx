@@ -286,7 +286,7 @@ export function GlobalSettingsModal({
         skillLoadMode,
         enabledSkills: enabledSkills.length > 0 ? enabledSkills : null,
         // The staged appearance slice — exhaustive by construction: its type
-        // (ModalAppearancePrefs) and loader only ever contain the six fields
+        // (ModalAppearancePrefs) and loader only ever contain the five fields
         // this modal owns. The four display presets live in the header Theme
         // popover and are deliberately absent, so echoing a mount-time copy
         // cannot undo a parallel change. Literal `false` is sent explicitly
@@ -800,26 +800,6 @@ export function AppearanceTab({
             />
           </SettingsRow>
         )}
-        <SettingsRow
-          title="Show message card headers"
-          hint="Shows the assistant/you label, timestamp, and sending status row on each message card. When off, message cards render as bare content."
-        >
-          <Switch
-            label="Show message card headers"
-            checked={values.showMessageHeaders}
-            onChange={(on) => onPatch({ showMessageHeaders: on })}
-          />
-        </SettingsRow>
-        <SettingsRow
-          title="Render live text inline in the transcript"
-          hint="Where the reply's text streams while it renders. On (default): a growing row inside the transcript that scrolls with the conversation (the card-era feel). Off: the capped floating bubble above the composer. Applies globally to every session; flipping mid-turn is safe."
-        >
-          <Switch
-            label="Render live text inline in the transcript"
-            checked={values.streamingRenderMode === 'inline'}
-            onChange={(on) => onPatch({ streamingRenderMode: on ? 'inline' : 'overlay' })}
-          />
-        </SettingsRow>
               </section>
     </div>
   )

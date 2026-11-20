@@ -28,7 +28,9 @@ import { isEmptyResultFrame } from '../shared/results.js'
 import { COMPACT_SUMMARY_TIMEOUT_MS } from '../shared/compact-deadline.js'
 import type { FileAttachmentRef } from '../shared/attachments.js'
 import { fileHandleText } from '../shared/upload-handle.js'
-import { publicAttachmentContent, resolveAttachmentContent } from './attachment-resolver.js'
+import { imageHandleText } from '../shared/image-handle.js'
+import { isImageRefBlock, type ImageRefBlock } from '../shared/image-attachment.js'
+import { isResolvedImageBlock, publicAttachmentContent, resolveAttachmentContent, resolveImageBlocks, type ResolvedImageBlock } from './attachment-resolver.js'
 import type { AgentUserMessage, AnyAgentUserMessage, ProviderContentBlock, ProviderInputContentBlock, PublicAgentUserMessage } from './agent-message.js'
 import { UploadStore } from './upload-store.js'
 import { randomUUID } from 'node:crypto'
@@ -145,7 +147,7 @@ import {
 } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, stampInjectedAt, stampRequeuedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId, trimLargeToolResults } from './history-utils.js'
-import { TranscriptStore, type SeqMessage, type TranscriptWindow } from './transcript-store.js'
+import { TranscriptStore, type HydrateRow, type SeqMessage, type TranscriptWindow } from './transcript-store.js'
 import {
   TranscriptSidecar,
   backfillFromEntries,
@@ -173,7 +175,7 @@ import { ForkSeedStore } from './fork-seed-store.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
-import { deleteTranscriptFile, deleteTranscriptFiles, findTranscriptFile, isSafeSessionId } from './history-reader.js'
+import { deleteTranscriptFile, deleteTranscriptFiles, findTranscriptFile, isSafeSessionId, recoverImageRefBlocks } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createDefaultProviders } from './providers/default-providers.js'
@@ -836,6 +838,87 @@ export function projectFileBlocksForSdk(
     ...message,
     message: { ...message.message, content: projected } as SDKUserMessage['message'],
   }
+}
+
+/** Project resolved image occurrences to the SDK copy: a deterministic handle
+ *  text block immediately followed by the base64 image block (the verified
+ *  stored bytes). The ring/broadcast/seq/sidecar keep the structured ref; only
+ *  this provider-bound copy carries bytes. Never mutates the input blocks.
+ *  The single projection point for the live dispatch path — crash recovery
+ *  re-resolves and projects through the same function (recoveredProviderPayload)
+ *  because the writer's dispatchUser enqueues providerPayload verbatim. */
+export function projectImageBlocksForSdk(
+  content: readonly (ProviderContentBlock | ResolvedImageBlock)[],
+): ProviderContentBlock[] {
+  if (!content.some((block) => isResolvedImageBlock(block))) return [...content]
+  const projected: ProviderContentBlock[] = []
+  for (const block of content) {
+    if (isResolvedImageBlock(block)) {
+      projected.push({ type: 'text', text: imageHandleText(block.attachment, block.path) })
+      projected.push({ type: 'image', source: { ...block.source } })
+    } else {
+      projected.push(block)
+    }
+  }
+  return projected
+}
+
+/** Collect, by server uuid, the public content of every sidecar user prompt
+ *  that carries image refs. The sidecar stores the PUBLIC ring form (text +
+ *  ImageRefBlock, no handle text, no base64 — Task 4), keyed by the same `u`
+ *  uuid the resume/fork seed carries after rewriteSeedPromptUuids. This is the
+ *  authoritative ref source for the disk-history seed projection: a prompt
+ *  whose SDK handle was lost or altered still recovers its exact live form.
+ *  Evicted (withdrawn) rows are skipped — they must not seed refs. Pure. */
+export function sidecarImageContentByUuid(entries: readonly HydrateRow[]): Map<string, unknown[]> {
+  const byUuid = new Map<string, unknown[]>()
+  for (const entry of entries) {
+    if (entry.evicted === true || typeof entry.uuid !== 'string') continue
+    const msg = entry.msg as { type?: unknown; message?: { content?: unknown } } | undefined
+    if (!msg || msg.type !== 'user') continue
+    const content = msg.message?.content
+    if (!Array.isArray(content)) continue
+    if (!content.some((block) => isImageRefBlock(block))) continue
+    byUuid.set(entry.uuid, content)
+  }
+  return byUuid
+}
+
+/** Project a disk-read history seed (resume ring seed / composed transcript)
+ *  back to durable image refs, the inverse of projectImageBlocksForSdk.
+ *
+ *  Two recovery sources, in preference order:
+ *   1. SIDECAR by uuid — when the sidecar holds the prompt's public ref form,
+ *      use that content wholesale (the exact live ring shape). This wins even
+ *      when the SDK JSONL's handle was reordered/altered/lost, because the
+ *      sidecar is ours and never carried base64.
+ *   2. HANDLE parse — otherwise recover the ref from the handle text + adjacent
+ *      base64 image (recoverImageRefBlocks, the same logic normalize applies).
+ *
+ *  Fail-safe: a row with neither a sidecar ref nor a parseable handle keeps its
+ *  legacy base64 content verbatim (no crash, no dangling ref). Non-user frames
+ *  and string content pass through untouched. Pure — never mutates the seed;
+ *  returns the original array when nothing changed. */
+export function projectSeedImageRefs(
+  seed: SDKMessage[],
+  sidecarContentByUuid: ReadonlyMap<string, unknown[]>,
+): SDKMessage[] {
+  let changed = false
+  const out = seed.map((msg) => {
+    if ((msg as { type?: unknown }).type !== 'user') return msg
+    const message = (msg as { message?: { content?: unknown } }).message
+    const content = message?.content
+    if (!Array.isArray(content)) return msg
+    const uuid = (msg as { uuid?: unknown }).uuid
+    const sidecarContent = typeof uuid === 'string' ? sidecarContentByUuid.get(uuid) : undefined
+    const nextContent = sidecarContent !== undefined
+      ? sidecarContent
+      : recoverImageRefBlocks(content)
+    if (nextContent === content) return msg
+    changed = true
+    return { ...msg, message: { ...message, content: nextContent } } as SDKMessage
+  })
+  return changed ? out : seed
 }
 
 /** The SDK's camelCase model-info shape (translated to the snake_case wire
@@ -1710,7 +1793,6 @@ export class SessionManager {
       autoRecap: s.autoRecap,
       toolGroupCards: s.toolGroupCards,
       autoExpandRunningGroups: s.autoExpandRunningGroups,
-      showMessageHeaders: s.showMessageHeaders,
       cliDebug: s.cliDebug,
       appToolsGit: s.appToolsGit,
       firstPartyTools: s.firstPartyTools,
@@ -1946,19 +2028,16 @@ export class SessionManager {
       autoRecap?: boolean
       toolGroupCards?: boolean
       autoExpandRunningGroups?: boolean
-      showMessageHeaders?: boolean
     }
     const createPrefs = firstParty || uiPrefs.showPinnedUserMessage !== undefined
       || uiPrefs.autoRecap !== undefined
       || uiPrefs.toolGroupCards !== undefined
       || uiPrefs.autoExpandRunningGroups !== undefined
-      || uiPrefs.showMessageHeaders !== undefined
       ? {
           showPinnedUserMessage: uiPrefs.showPinnedUserMessage,
           autoRecap: uiPrefs.autoRecap,
           toolGroupCards: uiPrefs.toolGroupCards,
           autoExpandRunningGroups: uiPrefs.autoExpandRunningGroups,
-          showMessageHeaders: uiPrefs.showMessageHeaders,
           appToolsGit: firstParty?.[APP_TOOLS_SERVER_NAME],
           firstPartyTools: firstParty,
         }
@@ -2314,6 +2393,11 @@ export class SessionManager {
       const resultFrames = await this.resultFrameStore.load(id)
       historySeed = mergeResultFrames(historySeed, resultFrames)
       historySeed = rewriteSeedPromptUuids(historySeed, promptUuids)
+      // Resume ring seed carries refs, not base64: prefer the sidecar's public
+      // ref form by uuid (wins even over a lost/altered SDK handle), else the
+      // handle parse (spec §5). Applied after the uuid bridge so the sidecar
+      // lookup keys on the same server `u` uuids the seed rows now carry.
+      historySeed = projectSeedImageRefs(historySeed, await this.loadSidecarImageContent(id))
       // Backfill background-subagent completions the seed lacks — the CLI
       // doesn't persist task_notification frames either, and a completion no
       // client consumed live is otherwise unrecoverable (the WorkingBubble
@@ -2769,7 +2853,7 @@ export class SessionManager {
       // message-header / running-group override survives forking. No-op when
       // the source inherits global (all undefined) — the fork then inherits
       // global too.
-      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, toolGroupCards: meta.toolGroupCards, autoExpandRunningGroups: meta.autoExpandRunningGroups, showMessageHeaders: meta.showMessageHeaders, appToolsGit: meta.appToolsGit, firstPartyTools: meta.firstPartyTools },
+      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, toolGroupCards: meta.toolGroupCards, autoExpandRunningGroups: meta.autoExpandRunningGroups, appToolsGit: meta.appToolsGit, firstPartyTools: meta.firstPartyTools },
       // joinGroupOf: the source id — Y joins X's group (append semantics;
       // X stays, since fork doesn't remove the source). The crash-recovery
       // "Fork from last completed turn" button sets `replacesSource` so the
@@ -3366,7 +3450,7 @@ export class SessionManager {
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
-    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; toolGroupCards?: boolean; autoExpandRunningGroups?: boolean; showMessageHeaders?: boolean; appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> },
+    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; toolGroupCards?: boolean; autoExpandRunningGroups?: boolean; appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> },
     /** When this spawn is a fresh Y that should land in an existing session
      *  X's sidebar group, pass X's id here so the `created` broadcast carries
      *  `joinGroupOf: X`. Set by `/clear`, restart, and fork. Append
@@ -3608,7 +3692,6 @@ export class SessionManager {
       toolGroupCards: prefs?.toolGroupCards ?? existingMeta?.toolGroupCards,
       autoExpandRunningGroups:
         prefs?.autoExpandRunningGroups ?? existingMeta?.autoExpandRunningGroups,
-      showMessageHeaders: prefs?.showMessageHeaders ?? existingMeta?.showMessageHeaders,
       cliDebug: existingMeta?.cliDebug ?? metaSnapshot.cliDebug,
       appToolsGit: prefs?.appToolsGit ?? existingMeta?.appToolsGit,
       firstPartyTools: prefs?.firstPartyTools ?? existingMeta?.firstPartyTools,
@@ -3746,7 +3829,7 @@ export class SessionManager {
     // Strip the create-time per-session UI prefs (the client restart flow
     // sends them on the body). They are pure app-level state mirrored into
     // SessionInfo — the SDK has no such Options keys.
-    for (const key of ['showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups', 'showMessageHeaders']) {
+    for (const key of ['showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups']) {
       delete (sdkOptions as Record<string, unknown>)[key]
     }
     // The create body's `settings` rides the flag-settings layer, which
@@ -3986,7 +4069,7 @@ export class SessionManager {
     })
   }
 
-  private acquireAttachmentLeases(content: readonly ProviderInputContentBlock[]): Set<string> {
+  private acquireAttachmentLeases(content: readonly (ProviderInputContentBlock | ImageRefBlock)[]): Set<string> {
     const ids = new Set<string>()
     for (const block of content) {
       if (block.type !== 'file') continue
@@ -4052,7 +4135,7 @@ export class SessionManager {
    *  `clientOperationId` makes the send idempotent (spec §8.3, see send()). */
   async sendContent(
     id: string,
-    content: ProviderInputContentBlock[],
+    content: (ProviderInputContentBlock | ImageRefBlock)[],
     clientOperationId?: string,
   ): Promise<SentUserMessage> {
     const s = this.requireSendable(id)
@@ -4076,18 +4159,32 @@ export class SessionManager {
           this.assertSendCurrent(s, lifecycle)
         }
         leaseIds = this.acquireAttachmentLeases(content)
-        const providerContent = content.some((block) => block.type === 'file')
-          ? await resolveAttachmentContent(content, {
+        // Two verification steps, each passing the other's blocks through:
+        // file registry resolution (streamed hash), then image ref resolution
+        // (object-store verified read). Both reject BEFORE any dispatch, so a
+        // dangling/tampered attachment never reaches the SDK or the ring.
+        const providerContent: ProviderContentBlock[] = content.some((block) => block.type === 'file')
+          ? await resolveAttachmentContent(content as ProviderInputContentBlock[], {
               sessionId: id,
               signal: lifecycle.controller.signal,
               uploadStore: this.uploadStore,
               stateDir: this.store!.getDir(),
             })
           : content as ProviderContentBlock[]
+        const resolvedContent: readonly (ProviderContentBlock | ResolvedImageBlock)[] =
+          content.some((block) => isImageRefBlock(block))
+            ? await resolveImageBlocks(providerContent, {
+                signal: lifecycle.controller.signal,
+                stateDir: this.store!.getDir(),
+              })
+            : providerContent
         this.assertSendCurrent(s, lifecycle)
         const userMsg: PublicAgentUserMessage = {
           type: 'user',
-          message: { role: 'user', content: publicAttachmentContent(providerContent) },
+          // The public ring/seq/sidecar form keeps ImageRefBlocks. The neutral
+          // input union (agent-message.ts) predates them, so the public form is
+          // asserted at this single boundary.
+          message: { role: 'user', content: publicAttachmentContent(resolvedContent) as ProviderInputContentBlock[] },
           parent_tool_use_id: null,
           uuid: randomUUID(),
           session_id: s.id,
@@ -4107,7 +4204,7 @@ export class SessionManager {
           `[session ${id}] sendContent PRE-PUSH — blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
           `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
         )
-        const sent = this.dispatchNewUserMessage(s, userMsg, providerContent, clientOperationId)
+        const sent = this.dispatchNewUserMessage(s, userMsg, resolvedContent, clientOperationId)
         if (clientOperationId) {
           // Best-effort: the dispatch already succeeded. A record failure must
           // not unwind it — the outer catch would release the live attachment
@@ -4238,13 +4335,13 @@ export class SessionManager {
   private dispatchNewUserMessage(
     s: Session,
     userMsg: PublicAgentUserMessage,
-    providerContent: ProviderContentBlock[],
+    providerContent: readonly (ProviderContentBlock | ResolvedImageBlock)[],
     clientOperationId?: string,
   ): SentUserMessage
   private dispatchNewUserMessage(
     s: Session,
     userMsg: AnyAgentUserMessage,
-    providerContent?: readonly ProviderContentBlock[],
+    providerContent?: readonly (ProviderContentBlock | ResolvedImageBlock)[],
     clientOperationId?: string,
   ): SentUserMessage {
     const rollbackAnchor = this.captureAnchor(s.id, s, userMsg.uuid!)
@@ -4382,7 +4479,7 @@ export class SessionManager {
   private dispatchUserMessage(
     s: Session,
     userMsg: AnyAgentUserMessage,
-    providerContent?: readonly ProviderContentBlock[],
+    providerContent?: readonly (ProviderContentBlock | ResolvedImageBlock)[],
     clientOperationId?: string,
   ): void {
     // A new top-level user turn invalidates the previous turn's predicted
@@ -4402,12 +4499,16 @@ export class SessionManager {
     // undelivered back through the normal path.
     if (this.trySteerMessage(s, userMsg)) return
     // Providers receive resolved neutral blocks; the ring/broadcast keeps the
-    // public structured content. Each provider owns its legacy projection.
+    // public structured content. File blocks stay neutral here (each provider
+    // owns its file projection); resolved image blocks are projected to the
+    // SDK shape — handle text + base64 image — at this single dispatch point,
+    // so the queued-not-published providerPayload (enqueued verbatim at
+    // materialization) carries the same projected form.
     const forSdk = (providerContent === undefined
       ? { ...userMsg }
       : {
           ...userMsg,
-          message: { ...userMsg.message, content: [...providerContent] },
+          message: { ...userMsg.message, content: projectImageBlocksForSdk(providerContent) },
         }) as AgentUserMessage
     // T7b Task 2 (spec §8.1): a mid-turn root prompt that did NOT take the
     // steering route is queued-not-published — durably committed, but NO seq,
@@ -5385,7 +5486,6 @@ export class SessionManager {
         || s.autoRecap !== undefined
         || s.toolGroupCards !== undefined
         || s.autoExpandRunningGroups !== undefined
-        || s.showMessageHeaders !== undefined
         || s.appToolsGit !== undefined
         || s.firstPartyTools !== undefined
         ? {
@@ -5393,7 +5493,6 @@ export class SessionManager {
             autoRecap: s.autoRecap,
             toolGroupCards: s.toolGroupCards,
             autoExpandRunningGroups: s.autoExpandRunningGroups,
-            showMessageHeaders: s.showMessageHeaders,
             appToolsGit: s.appToolsGit,
             firstPartyTools: s.firstPartyTools,
           }
@@ -6749,7 +6848,6 @@ export class SessionManager {
       autoRecap?: boolean | undefined
       toolGroupCards?: boolean | undefined
       autoExpandRunningGroups?: boolean | undefined
-      showMessageHeaders?: boolean | undefined
     },
   ): Promise<SessionInfo> {
     return this.opLock.run(id, () => {
@@ -6765,9 +6863,6 @@ export class SessionManager {
       }
       if ('autoExpandRunningGroups' in partial) {
         s.autoExpandRunningGroups = partial.autoExpandRunningGroups
-      }
-      if ('showMessageHeaders' in partial) {
-        s.showMessageHeaders = partial.showMessageHeaders
       }
       s.lastActivityAt = Date.now()
       this.persist(s)
@@ -7217,11 +7312,15 @@ export class SessionManager {
    *
    *  Why: on aggregate-reporting backends (SDK 0.3.278 + e.g. mify proxies)
    *  a result's top-level `usage` is the turn's BILLING SUM across all API
-   *  calls, and the pump's mid-turn assistant correction path is inert there
-   *  (stream assistant messages carry no `message.usage`) — deriving from
-   *  the result would put an inflated reading on the bar (99.5% vs the
-   *  CLI's 16% on a real session), so the derivation refuses the wire and
-   *  this probe feeds it instead.
+   *  calls, and the pump's mid-turn assistant correction path cannot be
+   *  trusted there — depending on the proxy the stream assistant messages
+   *  carry no `message.usage` at all, or only the partial message_start usage
+   *  (a non-zero input_tokens with no cache buckets) that under-reports the
+   *  prompt. Deriving from the result would put an inflated reading on the bar
+   *  (99.5% vs the CLI's 16% on a real session), so the derivation refuses the
+   *  wire and this probe feeds it instead. The pump also latches
+   *  Session.aggregateUsageWire from the first real such result to disable the
+   *  partial assistant derivation mid-turn (see session-pump.ts).
    *
    *  Unlike probeAutoCompactFacts this deliberately does NOT skip while
    *  pendingTurns > 0: queued-input sessions flow from turn to turn without
@@ -8747,6 +8846,30 @@ export class SessionManager {
     }
   }
 
+  /** Load the sidecar's public image-ref content by uuid for the seed
+   *  projection (see projectSeedImageRefs). A corrupt sidecar that the fold
+   *  rejects degrades to an empty map — handle recovery in normalize still
+   *  applies — rather than crashing the resume/reconcile that reads it. This
+   *  mirrors reconcile's own degraded posture for the same fold failure. */
+  private async loadSidecarImageContent(id: string): Promise<Map<string, unknown[]>> {
+    try {
+      const sidecar = new TranscriptSidecar(this.store?.getDir(), id)
+      const rawRows = await sidecar.load()
+      const folded = foldSidecarRowsV2(rawRows)
+      // Mirror ensureTranscriptReconciled's fold selection: a gen-0 mixed
+      // v1/v2 file (pump-ingest rows + writer input batches, no committed
+      // generation) folds to empty under v2 — the intact v1 projection carries
+      // the public user-prompt rows there.
+      const entries = folded.hasCommittedGeneration
+        ? folded.entries
+        : foldSidecarRows(rawRows.filter((r) => r.v !== 2))
+      return sidecarImageContentByUuid(entries)
+    } catch (err) {
+      log.warn(`[session ${id}] sidecar image-ref load failed (handle recovery still applies): ${(err as Error).message ?? err}`)
+      return new Map()
+    }
+  }
+
   /** Compose the authoritative "what should be in the seq store" list from
    *  disk for one session: every renderable JSONL line (history-reader's
    *  gate — the SAME isRenderableSdkMessage the live ingest uses), with the
@@ -8806,6 +8929,10 @@ export class SessionManager {
     const resultFrames = await this.resultFrameStore.load(id)
     let composed = mergeResultFrames(messages, resultFrames)
     composed = rewriteSeedPromptUuids(composed, await this.promptUuidStore.load(id))
+    // Recover durable image refs: prefer the sidecar's public ref form by uuid,
+    // else the handle parse normalize already applied (idempotent). Keeps a
+    // rebuilt seq space ref-based, never re-holding base64 (spec §5).
+    composed = projectSeedImageRefs(composed, await this.loadSidecarImageContent(id))
     // Background-subagent completions the JSONL lacks (same backfill the
     // resume seed gets) — without it those turns' completion cards would
     // vanish from the seq window after a restart.
@@ -9542,21 +9669,37 @@ export class SessionManager {
 
   /** Rebuild the resolved provider payload for a crash-recovered prompt. The
    *  durable input row stores only the public wire payload (file blocks stripped
-   *  of path/modelForm by publicAttachmentContent), so recovery re-runs the
-   *  send-path resolver before dispatch (spec §10). Returns undefined when the
-   *  payload carries no file blocks — text/image sends dispatch the public form
-   *  unchanged, exactly as sendContent does. */
+   *  of path/modelForm, image blocks kept as refs by publicAttachmentContent),
+   *  so recovery re-runs the send-path resolvers before dispatch (spec §10).
+   *  Returns undefined when the payload carries no file blocks or image refs —
+   *  text/legacy-base64 sends dispatch the public form unchanged, exactly as
+   *  sendContent does. */
   private async recoveredProviderPayload(id: string, payload: unknown): Promise<unknown> {
     const msg = payload as { message?: { content?: unknown } }
     const content = msg?.message?.content
-    if (!Array.isArray(content) || !content.some((b) => (b as { type?: unknown }).type === 'file')) return undefined
-    const resolved = await resolveAttachmentContent(content as ProviderInputContentBlock[], {
-      sessionId: id,
-      signal: new AbortController().signal,
-      uploadStore: this.uploadStore,
-      stateDir: this.store!.getDir(),
-    })
-    return { ...(payload as object), message: { ...(msg.message as object), content: resolved } }
+    if (!Array.isArray(content)) return undefined
+    const hasFiles = content.some((b) => (b as { type?: unknown }).type === 'file')
+    const hasImageRefs = content.some((b) => isImageRefBlock(b))
+    if (!hasFiles && !hasImageRefs) return undefined
+    const fileResolved: ProviderContentBlock[] = hasFiles
+      ? await resolveAttachmentContent(content as ProviderInputContentBlock[], {
+          sessionId: id,
+          signal: new AbortController().signal,
+          uploadStore: this.uploadStore,
+          stateDir: this.store!.getDir(),
+        })
+      : content as ProviderContentBlock[]
+    const resolved = hasImageRefs
+      ? await resolveImageBlocks(fileResolved, {
+          signal: new AbortController().signal,
+          stateDir: this.store!.getDir(),
+        })
+      : fileResolved
+    // The live path projects images in dispatchUserMessage; recovery enqueues
+    // providerPayload verbatim (writer dispatchUser), so project here too.
+    // File blocks pass through — each provider owns its file projection.
+    const projected = projectImageBlocksForSdk(resolved)
+    return { ...(payload as object), message: { ...(msg.message as object), content: projected } }
   }
 
   /** Re-materialize + re-dispatch crash-recovered prompts (spec §7.2, T7b Task 6).
@@ -11421,7 +11564,6 @@ export class SessionManager {
     autoRecap?: boolean
     toolGroupCards?: boolean
     autoExpandRunningGroups?: boolean
-    showMessageHeaders?: boolean
     appToolsGit?: boolean
     firstPartyTools?: Record<string, boolean | null>
     firstPartyRevision?: string
@@ -11464,7 +11606,6 @@ export class SessionManager {
       autoRecap: x.autoRecap,
       toolGroupCards: x.toolGroupCards,
       autoExpandRunningGroups: x.autoExpandRunningGroups,
-      showMessageHeaders: x.showMessageHeaders,
       appToolsGit: x.appToolsGit,
       firstPartyTools: x.firstPartyTools,
       firstPartyRevision: x.firstPartyRevision,
@@ -12309,6 +12450,11 @@ export class SessionManager {
     session.error = undefined
     session.terminatedReason = undefined
     session.autoInterruptedAt = undefined
+    // The respawn re-resolves the profile/backend, so the usage-wire shape may
+    // differ from the crashed handle's. Drop the latch so the first real result
+    // on the new handle re-classifies it (the field doc's "re-detected after
+    // resume" holds for this in-place path too, not just fresh spawn()).
+    session.aggregateUsageWire = undefined
     // Mirror spawn()'s revive: a relocation during the recovery window
     // tombstoned the snapshot sidecar (snapshotStore.remove), and an
     // in-place respawn is this session's "next spawn" — un-tombstone so the

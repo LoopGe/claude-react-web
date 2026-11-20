@@ -3,6 +3,14 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { detectLanguage, generateRecap, invalidateRecapCache, RecapManager } from './recap.js'
 import type { SessionRecap } from '../shared/session-info.js'
 import { __setConfigForTest, config } from './config.js'
+import { fileHandleText } from '../shared/upload-handle.js'
+import { imageHandleText } from '../shared/image-handle.js'
+
+const FILE_HANDLE = fileHandleText({ id: 'u1', name: 'report.pdf', size: 42 }, '/private/report.pdf')
+const IMAGE_HANDLE = imageHandleText(
+  { id: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png', bytes: 68, width: 1, height: 1 },
+  `/store/images/aa/${'a'.repeat(64)}`,
+)
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -144,6 +152,32 @@ describe('recap', () => {
       const r = await generateRecap(messages, 'ext-toolresult')
       // tool_result-only should be skipped, so only 1 user turn
       expect(r.stats.userTurns).toBe(1)
+    })
+
+    it('strips attachment-handle plumbing from user text (string and block content)', async () => {
+      const fetchMock = mockFetchSuccess('summary')
+      const messages = [
+        userMsg(`look ${FILE_HANDLE} ${IMAGE_HANDLE}`, 'u-img'),
+        {
+          type: 'user',
+          uuid: 'u-img2',
+          message: {
+            role: 'user',
+            content: [
+              { type: 'text', text: `see ${IMAGE_HANDLE}` },
+              { type: 'image', source: { type: 'base64', data: 'AAAA', media_type: 'image/png' } },
+            ],
+          },
+        } as unknown as SDKMessage,
+        assistantMsg('ok', 'a1'),
+      ]
+      await generateRecap(messages, 'ext-image-handle')
+      const body = JSON.parse((fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1].body)
+      const transcript = body.messages[0].content as string
+      expect(transcript).toContain('[1] User: look')
+      expect(transcript).toContain('[2] User: see')
+      expect(transcript).not.toContain('[Image ')
+      expect(transcript).not.toContain('[File ')
     })
 
     it('keeps compact summaries as neutral context without counting them as user turns', async () => {

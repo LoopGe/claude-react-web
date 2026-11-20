@@ -187,7 +187,7 @@ export function replayReplace(
     // reconnect / panel-switch-back replay. The live turn's partial text lives
     // ONLY in `liveTurn` — stream_event deltas never enter the history ring
     // (the replay cannot carry them), so nulling liveTurn here made the
-    // StreamingFooter vanish even though the turn was still running server-side.
+    // in-progress draft vanish even though the turn was still running server-side.
     // A `result` in the replay's NEWER slice is the one reliable "the turn
     // ended" signal: it always sits chronologically after the cache (a
     // liveTurn can only belong to a turn started after the cache's last item),
@@ -308,6 +308,10 @@ function blockShape(b: unknown): string {
     return `${t === 'text' ? 't' : 'k'}:${strShape(s)}`
   }
   if (t === 'image') {
+    // A ref block's identity is its attachment id (exact, O(1)); legacy
+    // base64 keeps the length+anchor shape digest.
+    const refId = (b as { attachment?: { id?: unknown } }).attachment?.id
+    if (typeof refId === 'string') return `i:${refId}`
     const d = (b as { source?: { data?: unknown } }).source?.data
     return typeof d === 'string' ? `i:${strShape(d)}` : 'i'
   }

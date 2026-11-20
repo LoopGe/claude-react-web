@@ -367,7 +367,6 @@ describe('GlobalSettingsModal Appearance tab', () => {
     'Show pinned “current question” header',
     'Auto-generate session recap',
     'Use collapsible transcript cards',
-    'Show message card headers',
   ] as const
   /** The four preset groups moved out of the modal into the header Theme
    *  popover — they must not linger on either tab. */
@@ -391,12 +390,11 @@ describe('GlobalSettingsModal Appearance tab', () => {
   it('renders every display default switch from config', async () => {
     // Every value is deliberately the NON-default so a dropped /config/full
     // mapping can't pass by coinciding with the useState initial value.
-    // (useState defaults: all four switches true.)
+    // (useState defaults: all three switches true.)
     await openAppearanceTab({
       showPinnedUserMessage: false,
       autoRecap: false,
       toolGroupCards: false,
-      showMessageHeaders: false,
     })
 
     for (const name of MOVED_SWITCHES) {
@@ -421,33 +419,6 @@ describe('GlobalSettingsModal Appearance tab', () => {
     await waitFor(() => expect(api.put).toHaveBeenCalled())
     expect(vi.mocked(api.put)).toHaveBeenCalledWith('/config', expect.objectContaining({
       showPinnedUserMessage: true,
-    }))
-  })
-
-  const STREAMING_SWITCH = 'Render live text inline in the transcript'
-
-  it('renders the streaming-render switch off when configured overlay', async () => {
-    // The configured NON-default must win over the default-on initial value —
-    // a dropped /config/full mapping would show the wrong state here.
-    await openAppearanceTab({ streamingRenderMode: 'overlay' })
-    expect(screen.getByRole('switch', { name: STREAMING_SWITCH }).getAttribute('aria-checked')).toBe('false')
-  })
-
-  it('renders the streaming-render switch on when unconfigured (inline default)', async () => {
-    await openAppearanceTab({})
-    expect(screen.getByRole('switch', { name: STREAMING_SWITCH }).getAttribute('aria-checked')).toBe('true')
-  })
-
-  it('persists the streaming-render mode on Save', async () => {
-    await openAppearanceTab({ streamingRenderMode: 'inline' })
-
-    // Flip back to the floating bubble: the mode string, not a boolean, is
-    // what config.json stores.
-    fireEvent.click(screen.getByRole('switch', { name: STREAMING_SWITCH }))
-    save()
-    await waitFor(() => expect(api.put).toHaveBeenCalled())
-    expect(vi.mocked(api.put)).toHaveBeenCalledWith('/config', expect.objectContaining({
-      streamingRenderMode: 'overlay',
     }))
   })
 

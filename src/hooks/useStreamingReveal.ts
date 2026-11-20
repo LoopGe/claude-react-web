@@ -119,7 +119,7 @@ export function lineBoxTop(caretTop: number, caretHeight: number, lineHeight: nu
  * the horizontal span it measures, so block-level content that renders after
  * the caret (fences, tables, images, rules, display math) would be clipped;
  * such tails appear whole instead. Kept here (not at the call sites) so the
- * inline draft card and the overlay bubble cannot drift.
+ * predicate lives with the measurement contract it protects.
  */
 export function isRevealableTail(segment: StreamSegment | null | undefined): boolean {
   if (!segment || segment.type === 'code') return false

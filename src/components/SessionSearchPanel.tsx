@@ -17,7 +17,6 @@ interface Props {
   initialTarget?: MessagePreviewTarget
   /** Transcript display prefs, resolved by Chat. */
   toolGroupCards?: boolean
-  showMessageHeaders?: boolean
   autoExpandRunningGroups?: boolean
   /** Session cwd for resource/file links in the preview. */
   cwd?: string
@@ -45,7 +44,6 @@ export function SessionSearchPanel({
   initialQuery,
   initialTarget,
   toolGroupCards,
-  showMessageHeaders,
   autoExpandRunningGroups,
   cwd,
   onClose,
@@ -143,7 +141,6 @@ export function SessionSearchPanel({
           sessionId={sessionId}
           target={preview}
           toolGroupCards={toolGroupCards}
-          showMessageHeaders={showMessageHeaders}
           autoExpandRunningGroups={autoExpandRunningGroups}
           cwd={cwd}
           onBack={() => setPreview(null)}

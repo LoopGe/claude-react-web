@@ -28,8 +28,6 @@ import { consumesSubagentRootResult } from '../session-store/sidechain-index'
 import { useOptionalSessionField } from '../session-store/selectors'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { DEFAULT_STREAMING_RENDER_MODE, type StreamingRenderMode } from '../../shared/streaming-render-mode'
-import { OverlayStreamingRegion } from './message-list/OverlayStreamingRegion'
 import { ChatEmptyState } from './ChatEmptyState'
 import { ErrorBoundary } from './ErrorBoundary'
 import { ResultConsumedCtx } from './message-list/result-consumed-context'
@@ -121,9 +119,9 @@ export interface ScrollNavigator {
 
 interface Props {
   items: TranscriptItem[]
-  /** Whether the session is currently processing a turn. Gates the
-   *  "processing" indicator on consumed user messages so it doesn't
-   *  reappear on historical messages after a reconnect. */
+  /** Whether the session is currently processing a turn. Forwarded to
+   *  ToolGroupCard so a group holding a running tool stays expanded through
+   *  the turn (autoExpandRunningGroups). */
   working?: boolean
   /** Whether consecutive tool-only rows fold into collapsible group cards
    *  (the transcript's `toolGroupCards` UI pref, resolved by the caller as
@@ -137,12 +135,6 @@ interface Props {
    *  every fold path is unchanged. Defaults to true. Only meaningful while
    *  `toolGroupCards` is on. */
   autoExpandRunningGroups?: boolean
-  /** Whether user bubbles and assistant cards render their `.msg-header`
-   *  row (label + timestamp + sending/queued/processing indicators) — the
-   *  `showMessageHeaders` UI pref, resolved by the caller as session
-   *  override ?? global default. False renders those cards as bare
-   *  content. Defaults to true. */
-  showMessageHeaders?: boolean
   /** True while a /clear is in flight (trigger → session-cleared frame).
    *  Adds a blur-fade-out to the transcript and a "Clearing…" veil so the
    *  ~1.7s server teardown+respawn reads as an intentional transition
@@ -184,34 +176,18 @@ interface Props {
   /** App-owned show sequence for this mounted panel. Optional so standalone
    *  overlays keep the legacy false→true detection. */
   showEpoch?: number
-  /** Owning session id. When provided, the live streaming text is subscribed
-   *  from the store (useOptionalSessionField) instead of flowing down as a
-   *  prop — by the OverlayStreamingRegion leaf in overlay mode, so the
-   *  12.5 Hz LIVE_TURN_FLUSH re-renders only that leaf (not this component,
-   *  not the Chat body above it); by this component in inline mode, where
-   *  the text is row data. When omitted (tests, static transcripts) the
-   *  `streamingContent` prop below is used directly. */
+  /** Owning session id. When provided, the live draft is subscribed from the
+   *  store (useOptionalSessionField): this component reads the stable
+   *  `draftKey`/`frozenDrafts` projections to append the draft row, while the
+   *  12.5 Hz LIVE_TURN_FLUSH text growth re-renders only the DraftTextBody
+   *  leaf inside the draft card (not this component, not the Chat body above
+   *  it). When omitted (static transcripts) there is no live layer. */
   sessionId?: string
-  /** Accumulated text from streaming deltas. Only read when `sessionId` is
-   *  NOT provided (prop-fed mode). A transcript without a session store has no
-   *  draft card to grow, so its absent `streamingMode` resolves to overlay and
-   *  this text renders in the bottom bubble. */
-  streamingContent?: string | null
-  /** Which streaming render mode this transcript uses: 'inline' (the
-   *  in-place growing message card, the default) or 'overlay' (the capped
-   *  floating bubble in `.chat-bottom-stack`). The global `streamingRenderMode`
-   *  setting threads through here (Chat / SideChatDrawer / the drill-ins);
-   *  omitted → DEFAULT_STREAMING_RENDER_MODE. One union with the config
-   *  field, both aliasing shared/streaming-render-mode.ts — the renderer's
-   *  StreamingFooterVariant alias retired with the inline footer — so a
-   *  third value (e.g. an 'off' mode) flows everywhere in one edit.
-   *  See docs/superpowers/specs/2026-09-29-dual-mode-streaming-render-design.md. */
-  streamingMode?: StreamingRenderMode
   /** Static snapshot transcript (search preview, embedded read-only views).
-   * Disables ONLY the live layer: no draft rows, no overlay streaming bubble,
-   * and the initial view is top-aligned so a caller can seek to a target
-   * without a bottom-pin flash. Row model, tool groups, contexts, prefs,
-   * search marks and seek stay on the live path. */
+   * Disables ONLY the live layer: no draft rows, and the initial view is
+   * top-aligned so a caller can seek to a target without a bottom-pin flash.
+   * Row model, tool groups, contexts, prefs, search marks and seek stay on
+   * the live path. */
   static?: boolean
   /** Precomputed plan status keyed by toolUseId. */
   planStatus?: ReadonlyMap<string, PlanStatus>
@@ -408,7 +384,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, panelVisible, showEpoch, sessionId, streamingContent, streamingMode, static: isStatic = false, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, panelVisible, showEpoch, sessionId, static: isStatic = false, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -432,9 +408,8 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // contains are resized by the SAME ResizeObserver burst (a fold moves both
   // in lockstep), so separate `useState`s meant two state writes per frame for
   // the length of every tween. One atomic write halves the RO-driven commits.
-  // (`stack` covers the live streaming bubble above the overlay too. The
-  // overlay itself is still observed, but only as a TRIGGER for the stack
-  // re-read — its height value has no consumer since the jump-to-bottom
+  // (The overlay itself is still observed, but only as a TRIGGER for the
+  // stack re-read — its height value has no consumer since the jump-to-bottom
   // button was removed.)
   //
   // Measured: a 14-frame composer fold produces 28 commits — one for this
@@ -485,18 +460,8 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     setPrevRevealKey(transcriptRevealKey)
     if (expandedBodies.size > 0) setExpandedBodies(new Set())
   }
-  // Which streaming render mode this transcript uses. The global
-  // `streamingRenderMode` setting threads through the `streamingMode` prop
-  // (Chat / SideChatDrawer / the drill-in overlays); tests force either mode
-  // through the same prop. Without a session store there is no draft card to
-  // grow, so a prop-fed transcript (no `sessionId`) falls back to overlay —
-  // the only mode that can render its `streamingContent` prop.
-  const resolvedMode =
-    streamingMode ?? (sessionId != null ? DEFAULT_STREAMING_RENDER_MODE : 'overlay')
-  // Live-turn text never flows through this component's render: in OVERLAY
-  // mode the capped bubble (OverlayStreamingRegion) owns the 12.5 Hz
-  // `streamingContent` subscription as a leaf; in INLINE mode the growing
-  // draft card owns `draft.text` as a leaf (DraftTextBody). Both keep
+  // Live-turn text never flows through this component's render: the growing
+  // draft card owns `draft.text` as a leaf (DraftTextBody), keeping
   // LIVE_TURN_FLUSH re-renders off this layer entirely.
 
   // EnterPlanMode has no lifecycle map (it renders as a stateless marker and
@@ -622,21 +587,16 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, toolGroupCards],
   )
 
-  // In-place draft rows (the growing inline card + frozen interrupted
-  // half-cards) — inline mode only; the overlay transcript shows settled
-  // rows and lets the bubble preview own live text. `draftKey` is the
-  // STABLE string projection of the draft: the draft object's identity
-  // changes every flush as its text grows, so subscribing the object here
-  // would re-render the whole list at flush rate (the body leaf owns those
-  // flushes). frozenDrafts / draftRowKeys change only on freeze/supersede.
-  // Gated on inline mode (the old streamingContent subscription used the same
-  // `resolvedMode === 'inline' ? sessionId : undefined` trick): in overlay
-  // mode the draft fields must stay unsubscribed, or a draftKey flip would
-  // re-render MessageList and break the leaf-isolation pin.
-  // Also gated on the ROOT transcript: the session's draft belongs to the
-  // main thread, so appending it to a drill-in (parentToolUseIdFilter set)
-  // would inject unrelated text into the subagent/workflow conversation.
-  const showsRootDrafts = !isStatic && resolvedMode === 'inline' && parentToolUseIdFilter == null
+  // In-place draft rows (the growing card + frozen interrupted half-cards).
+  // `draftKey` is the STABLE string projection of the draft: the draft
+  // object's identity changes every flush as its text grows, so subscribing
+  // the object here would re-render the whole list at flush rate (the body
+  // leaf owns those flushes). frozenDrafts / draftRowKeys change only on
+  // freeze/supersede.
+  // Gated on the ROOT transcript: the session's draft belongs to the main
+  // thread, so appending it to a drill-in (parentToolUseIdFilter set) would
+  // inject unrelated text into the subagent/workflow conversation.
+  const showsRootDrafts = !isStatic && parentToolUseIdFilter == null
   const draftSessionId = showsRootDrafts ? sessionId : undefined
   const draftKey = useOptionalSessionField(draftSessionId, 'draftKey')
   const frozenDrafts = useOptionalSessionField(draftSessionId, 'frozenDrafts')
@@ -925,10 +885,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     if (virtIdx != null) seekToIndex(virtIdx, 'center')
   }, [searchActiveMsgIdx, itemToVirtIdx, seekToIndex])
 
-  // Measure the bottom overlay stack (live streaming bubble + task cards) and
-  // publish its committed height. The stack is ALWAYS mounted, so the observer
-  // attaches once and any child resize — a task appears, the card expands, the
-  // bubble grows — re-fires it, with no dependency on what is inside.
+  // Measure the bottom overlay stack (the task cards) and publish its
+  // committed height. The stack is ALWAYS mounted, so the observer attaches
+  // once and any child resize — a task appears, the card expands — re-fires
+  // it, with no dependency on what is inside.
   // useLayoutEffect, not useEffect: the Footer spacer is gated on the height
   // being > 0, so measuring after paint would leave the first frame with no
   // reserved room — the newest settled message would sit behind the cards for
@@ -945,7 +905,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   //
   // Hysteresis on the commit: every committed height re-fires the spacer
   // layout effect in useTranscriptScroll, whose re-pin is an INSTANT
-  // scrollTop write. The streaming bubble's height wobbles by 1–3px per
+  // scrollTop write. The stack's height wobbles by 1–3px per
   // frame (line rounding, row re-measures), so without a band those frames
   // each hard-wrote scrollTop — the viewport was glued to the bottom with
   // native momentum and rubber-band killed (the 吸附感 report; measured in
@@ -1474,10 +1434,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
             activeResultIdxByBlock={activeResultIdxByBlock}
             sending={item.sending}
             deliveryStatus={item.deliveryStatus}
-            working={working}
-            nextItemType={nextItemTypeMap.get(item.id)}
             sessionId={sessionId}
-            showMessageHeaders={showMessageHeaders}
             onSwitchModel={onSwitchModel}
             onAbortBash={onAbortBash}
             foldExpanded={expandedBodies.has(foldKey)}
@@ -1529,7 +1486,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // flip-time snapshot; identity-stable between reveals.
     // resultConsumedCtx: identity-stable (useCallback []), listed because
     // itemContent reads it for `consumedKey` — a no-op for invalidation.
-  }, [isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, toolResults, revealSnapshot, resultConsumedCtx])
+  }, [isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, toolResults, revealSnapshot, resultConsumedCtx])
 
   // Key rows by their stable message id instead of Virtuoso's default
   // (offset-space index).
@@ -1585,13 +1542,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     .filter(Boolean)
     .join(' ')
 
-  // Inline mode appends the live turn as a TAIL data row. Overlay mode returns
-  // `renderableItems` ITSELF, so Virtuoso's `data` identity stays per-items
-  // stable there — the per-flush rebuild is inline-only (spec §Risks). The
-  // memo keeps that guarantee exact: a rebuild happens ONLY when the stream
-  // text (or the rows, or the mode) actually changes — unrelated re-renders
-  // during a turn (task-card ResizeObserver commits, toolStatus map updates,
-  // fold toggles) reuse the same array identity. toolResults is a dep because
+  // The live turn appends as a TAIL draft row. The memo keeps the rebuild
+  // exact: a new array is built ONLY when the rows or the draft projections
+  // actually change — unrelated re-renders during a turn (task-card
+  // ResizeObserver commits, toolStatus map updates, fold toggles) reuse the
+  // same array identity. toolResults is a dep because
   // a merged result can carry a row's only match: an update re-probes the
   // rows under an active query and copies EVERY matching row (not just rows
   // whose match status flipped), so any probe-input change yields a new array
@@ -1629,9 +1584,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   }, [renderableItems, searchTick, toolResults])
 
   // Virtuoso Footer is reserved for transcript metadata and invisible bottom
-  // breathing room. The bottom overlay stack (live streaming bubble + task
-  // cards) is an overlay, so the spacer lets settled messages scroll underneath
-  // it instead of being obscured.
+  // breathing room. The bottom overlay stack (the task cards) is an overlay,
+  // so the spacer lets settled messages scroll underneath it instead of being
+  // obscured.
   // Per-row height estimates feeding Virtuoso's `heightEstimates` — the
   // measured-height cache (see row-height-cache.ts for the consumption
   // semantics). DATA-space indexed (the library applies the firstItemIndex
@@ -1750,10 +1705,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           // mounts at an estimated height, so totalHeight is wrong for one
           // frame; the ResizeObserver then corrects it and `followOutput`
           // re-pins to bottom, yanking scrollTop by (actual — estimated).
-          // That one-frame scroll correction shifts the streaming footer
-          // bubble as a block — the "streaming footer" jitter. Pre-rendering
-          // tail items offscreen means they're already measured before
-          // becoming the anchor, so no post-insert correction happens.
+          // That one-frame scroll correction shifts the growing draft card
+          // as a block — visible tail jitter. Pre-rendering tail items
+          // offscreen means they're already measured before becoming the
+          // anchor, so no post-insert correction happens.
           //
           // top: with zero upward overscan a scroll-up had to mount AND
           // measure the incoming rows inside the scroll frame. Transcript
@@ -1809,12 +1764,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         )}
       </div>
       <div className="chat-bottom-stack" ref={bottomStackRef}>
-        {/* Overlay-mode live bubble: a leaf that owns the streamingContent
-            subscription + AnimatePresence exit (renders nothing until text
-            arrives). */}
-        {!isStatic && resolvedMode === 'overlay' && (
-          <OverlayStreamingRegion sessionId={sessionId} streamingContent={streamingContent} />
-        )}
         <div className="chat-bottom-overlay">
           {bottomOverlay}
         </div>

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { validateSendBody, MAX_MESSAGE_BASE64 } from './send-body.js'
 import { MAX_PASTED_IMAGE_BYTES } from './config.js'
+import { MAX_IMAGE_BYTES } from '../shared/upload-limits.js'
+import type { ImageAttachmentRef } from '../shared/image-attachment.js'
 
 const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
@@ -167,5 +169,86 @@ describe('validateSendBody clientOperationId (spec §8.3)', () => {
       expect(v.ok).toBe(true)
       if (v.ok) expect(v.clientOperationId).toBeUndefined()
     }
+  })
+})
+
+describe('validateSendBody image reference blocks (Task 4)', () => {
+  const REF: ImageAttachmentRef = {
+    id: `sha256:${'0123456789abcdef'.repeat(4)}`,
+    mediaType: 'image/png',
+    bytes: 68,
+    width: 1,
+    height: 1,
+  }
+  const refBlock = { type: 'image', attachment: REF }
+
+  it('admits text + image ref blocks', () => {
+    const content = [{ type: 'text', text: 'look' }, refBlock]
+    expect(validateSendBody({ content })).toEqual({ ok: true, body: { content } })
+  })
+
+  it('admits an image-ref-only body', () => {
+    const content = [refBlock]
+    expect(validateSendBody({ content })).toEqual({ ok: true, body: { content } })
+  })
+
+  it('admits a mixed legacy base64 + ref batch', () => {
+    const content = [
+      refBlock,
+      { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } },
+    ]
+    expect(validateSendBody({ content })).toEqual({ ok: true, body: { content } })
+  })
+
+  it.each([
+    { ...REF, id: 'sha256:xyz' },
+    { ...REF, id: '0123456789abcdef'.repeat(4) },
+    { ...REF, id: `sha256:${'0'.repeat(63)}` },
+    { ...REF, id: `sha256:${'A'.repeat(64)}` },
+    { ...REF, mediaType: 'image/tiff' },
+    { ...REF, bytes: -1 },
+    { ...REF, bytes: Number.NaN },
+    { ...REF, width: 0 },
+    { ...REF, height: 1.5 },
+  ])('rejects a malformed ref %j', (attachment) => {
+    expect(validateSendBody({ content: [{ type: 'image', attachment }] }))
+      .toEqual({ ok: false, status: 400, error: 'invalid image reference block' })
+  })
+
+  it('rejects a non-object attachment', () => {
+    for (const attachment of [null, 'x', 5, []]) {
+      expect(validateSendBody({ content: [{ type: 'image', attachment }] }))
+        .toEqual({ ok: false, status: 400, error: 'invalid image reference block' })
+    }
+  })
+
+  it('counts refs and legacy images toward one shared image cap', () => {
+    const legacy = { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } }
+    const content = [...Array.from({ length: 20 }, () => refBlock), legacy]
+    expect(validateSendBody({ content }))
+      .toEqual({ ok: false, status: 400, error: 'at most 20 images per message' })
+    expect(validateSendBody({ content: Array.from({ length: 21 }, () => refBlock) }))
+      .toEqual({ ok: false, status: 400, error: 'at most 20 images per message' })
+  })
+
+  it('rejects a ref whose declared bytes exceed the per-image limit', () => {
+    const content = [{ type: 'image', attachment: { ...REF, bytes: MAX_IMAGE_BYTES + 1 } }]
+    expect(validateSendBody({ content }))
+      .toEqual({ ok: false, status: 413, error: 'image #1 exceeds 10485760 bytes' })
+  })
+
+  it('does not count ref bytes toward the base64 transport cap', () => {
+    // 20 refs × 2 MB of stored bytes = 40 MB > MAX_MESSAGE_BASE64, but the
+    // body carries no base64 at all — the cap only bounds inline payloads.
+    const content = Array.from({ length: 20 }, () => ({
+      type: 'image',
+      attachment: { ...REF, bytes: 2_000_000 },
+    }))
+    expect(validateSendBody({ content })).toEqual({ ok: true, body: { content } })
+  })
+
+  it('keeps the legacy missing-source rejection for blocks without an attachment', () => {
+    expect(validateSendBody({ content: [{ type: 'image' }] }))
+      .toEqual({ ok: false, status: 400, error: 'invalid image block: missing base64 source' })
   })
 })

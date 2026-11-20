@@ -762,7 +762,6 @@ export const ChatPanel = memo(function ChatPanel({
 
   // Side Chat effective prefs — resolved once via the shared resolver so the
   // three props forwarded to <SideChatDrawer> share one computation.
-  // `streamingRenderMode` is global-only and read directly off globalPrefs.
   const sideChatPrefs = sideChatSession ? resolveSessionPrefs(sideChatSession, globalPrefs) : null
 
   // Session-level generation and permission controls live in the composer's
@@ -1402,8 +1401,6 @@ export const ChatPanel = memo(function ChatPanel({
           permissions={sideChatPermissions}
           toolGroupCards={sideChatPrefs!.toolGroupCards}
           autoExpandRunningGroups={sideChatPrefs!.autoExpandRunningGroups}
-          showMessageHeaders={sideChatPrefs!.showMessageHeaders}
-          streamingMode={globalPrefs.streamingRenderMode}
           onClose={onCloseSideChat}
           onCollapse={onToggleCollapseSideChat}
         />

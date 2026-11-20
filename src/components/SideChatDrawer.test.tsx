@@ -147,8 +147,6 @@ function makeProps(opts: {
     permissions: opts.permissions ?? noopPermissions,
     toolGroupCards: true,
     autoExpandRunningGroups: true,
-    showMessageHeaders: true,
-    streamingMode: 'overlay' as const,
     onClose: vi.fn(),
     onCollapse: vi.fn(),
   }

@@ -339,9 +339,7 @@ interface Props {
   /** Global UI-pref defaults (server-backed). Effective values are
    *  `session.<field> ?? globalPrefs.<field>` — a per-session override
    *  wins, otherwise the global default applies. Forwarded to
-   *  <SettingsPanel> for the override UI. `streamingRenderMode` is
-   *  global-only (no per-session override) and feeds MessageList's
-   *  `streamingMode` seam verbatim. */
+   *  <SettingsPanel> for the override UI. */
   globalPrefs: GlobalPrefs
   /** True while App is playing the /clear fade-in on this panel. Combined
    *  with the local `clearing` state (which serves the SDK in-band cleared
@@ -505,16 +503,14 @@ export const Chat = memo(function Chat({
   // otherwise the global default (globalPrefs.<field>, server-backed) applies.
   // Computed via the shared resolver so a SettingsPanel override or a
   // global-settings save re-renders this panel with the new effective value
-  // immediately. `streamingRenderMode` is global-only and read directly off
-  // `globalPrefs` (no per-session override). `firstPartyTools` is forwarded
-  // to <SettingsPanel>; the server-stamped injection revision below refreshes
-  // the empty state's built-in chips after every injection.
+  // immediately. `firstPartyTools` is forwarded to <SettingsPanel>; the
+  // server-stamped injection revision below refreshes the empty state's
+  // built-in chips after every injection.
   const sessionPrefs = resolveSessionPrefs(session, globalPrefs)
   const effectiveShowPinned = sessionPrefs.showPinnedUserMessage
   const effectiveAutoRecap = sessionPrefs.autoRecap
   const effectiveToolGroupCards = sessionPrefs.toolGroupCards
   const effectiveAutoExpandRunningGroups = sessionPrefs.autoExpandRunningGroups
-  const effectiveShowMessageHeaders = sessionPrefs.showMessageHeaders
   // Pinned "current question" header — the user message of the turn in view,
   // shown when it has scrolled above the viewport. The pinned value lives in a
   // per-panel store, NOT Chat state: a scroll that crosses a user-message
@@ -866,7 +862,7 @@ export const Chat = memo(function Chat({
   const history = useInputHistory(session.id, historyFilter)
 
   const [dragOver, setDragOver] = useState(false)
-  const pastedImages = usePastedImages()
+  const pastedImages = usePastedImages(session.id)
   // Stable callback (usePastedImages memoises it), so intake handlers do not
   // change identity when only the images list or error string does.
   const addPastedImages = pastedImages.addImages
@@ -2235,8 +2231,6 @@ export const Chat = memo(function Chat({
           tasklist={taskList}
           toolGroupCards={effectiveToolGroupCards}
           autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
-          showMessageHeaders={effectiveShowMessageHeaders}
-          streamingMode={globalPrefs.streamingRenderMode}
           // The task checklist + monitor bar are bottom OVERLAYS of the
           // transcript, not siblings of it: rendering them here puts them in
           // `.chat-bottom-stack`, so settled messages scroll behind their
@@ -2704,7 +2698,6 @@ export const Chat = memo(function Chat({
             key={session.id}
             sessionId={session.id}
             cwd={session.cwd}
-            streamingMode={globalPrefs.streamingRenderMode}
             panelVisible={panelVisible !== false}
             onClose={() => onCloseTasksPanel?.()}
           />
@@ -2727,7 +2720,6 @@ export const Chat = memo(function Chat({
           initialQuery={searchSeed}
           initialTarget={initialSearchTarget}
           toolGroupCards={effectiveToolGroupCards}
-          showMessageHeaders={effectiveShowMessageHeaders}
           autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
           cwd={session.cwd}
           onClose={() => onCloseSearch()}
@@ -2856,8 +2848,6 @@ export const Chat = memo(function Chat({
             onBackgroundTool={backgroundToolAction}
             toolGroupCards={effectiveToolGroupCards}
             autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
-            showMessageHeaders={effectiveShowMessageHeaders}
-            streamingMode={globalPrefs.streamingRenderMode}
           />
         </SkillProvider>
         </SubagentProvider>
@@ -2884,8 +2874,6 @@ export const Chat = memo(function Chat({
               questionAnswers={questionAnswers}
               toolGroupCards={effectiveToolGroupCards}
               autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
-              showMessageHeaders={effectiveShowMessageHeaders}
-              streamingMode={globalPrefs.streamingRenderMode}
             />
           </SkillProvider>
           </WorkflowProvider>

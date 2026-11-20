@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { paginateJsonl, turnAnchorsFromJsonl, sliceWindow, paginateRenderable, parseLastUserPrompt, readLastUserPrompt, deleteTranscriptFiles, normalize, historyEntriesFromJsonl, historySnapshotFromJsonl, readHistorySnapshot } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
 import { fileHandleText } from '../shared/upload-handle.js'
+import { imageHandleText } from '../shared/image-handle.js'
+import { imageRefId, type ImageAttachmentRef } from '../shared/image-attachment.js'
 
 // Creating a symlink needs no privileges on POSIX but does on Windows unless a
 // junction is used. Probe once so the symlink test is skipped only where the
@@ -934,6 +936,39 @@ describe('parseLastUserPrompt — tail text → last prompt preview', () => {
     expect(parseLastUserPrompt(jsonl([{ type: 'last-prompt', lastPrompt: handle }]))).toBe('quarterly read it.] report.pdf')
   })
 
+  describe('image-handle previews (ref-image sends)', () => {
+    const DIGEST = 'a'.repeat(64)
+    const REF: ImageAttachmentRef = { id: imageRefId(DIGEST), mediaType: 'image/png', bytes: 68, width: 1, height: 1 }
+    const HANDLE = imageHandleText(REF, `/store/images/${DIGEST.slice(0, 2)}/${DIGEST}`)
+    const handleBlock = { type: 'text', text: HANDLE }
+    const b64 = { type: 'image', source: { type: 'base64', data: 'AAAA', media_type: 'image/png' } }
+
+    it('strips an image handle from the last-prompt preview', () => {
+      // Image-only: no preview noise (images have no name, so no attachment
+      // fallback either — the row simply has no prompt preview).
+      expect(parseLastUserPrompt(jsonl([{ type: 'last-prompt', lastPrompt: HANDLE }]))).toBeUndefined()
+      expect(parseLastUserPrompt(jsonl([{ type: 'last-prompt', lastPrompt: `before ${HANDLE}` }]))).toBe('before')
+    })
+
+    it('strips image handles from a raw [handle text, base64 image] user row', () => {
+      const row = (content: unknown[]) => ({ type: 'user', uuid: 'u-img', message: { role: 'user', content } })
+      // Image-only prompt condenses to empty — the handle text must not
+      // surface as the preview.
+      expect(parseLastUserPrompt(jsonl([row([handleBlock, b64])]))).toBeUndefined()
+      // Text + image: the user's own text only.
+      expect(parseLastUserPrompt(jsonl([row([{ type: 'text', text: 'look' }, handleBlock, b64])]))).toBe('look')
+    })
+
+    it('strips an image handle from a string-content user row (file-handle parity)', () => {
+      expect(parseLastUserPrompt(jsonl([
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: HANDLE } },
+      ]))).toBeUndefined()
+      expect(parseLastUserPrompt(jsonl([
+        { type: 'user', uuid: 'u2', message: { role: 'user', content: `before ${HANDLE}` } },
+      ]))).toBe('before')
+    })
+  })
+
   it('falls back to a structured FileBlock name for an attachment-only prompt', () => {
     expect(parseLastUserPrompt(jsonl([{
       type: 'user',
@@ -1119,5 +1154,111 @@ describe('deleteTranscriptFiles', () => {
       else process.env.CLAUDE_CONFIG_DIR = prev
       await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     }
+  })
+})
+
+describe('normalize — image handle ref recovery (Task 6)', () => {
+  const DIGEST = 'a'.repeat(64)
+  const REF: ImageAttachmentRef = {
+    id: imageRefId(DIGEST), mediaType: 'image/png', bytes: 68, width: 1, height: 1,
+  }
+  const PATH = `/store/images/${DIGEST.slice(0, 2)}/${DIGEST}`
+  const HANDLE = imageHandleText(REF, PATH)
+  const handleBlock = { type: 'text', text: HANDLE }
+  const b64 = { type: 'image', source: { type: 'base64', data: 'AAAA', media_type: 'image/png' } }
+  const refBlock = { type: 'image', attachment: REF }
+
+  const userRow = (content: unknown, uuid = 'u-img') => ({
+    type: 'user', uuid, message: { role: 'user', content },
+  })
+  const contentOf = (o: unknown): unknown =>
+    (o as { message: { content: unknown } }).message.content
+
+  it('replaces the base64 image adjacent to a parseable handle with the recovered ref', () => {
+    const out = normalize(userRow([{ type: 'text', text: 'look' }, handleBlock, b64]) as never, SID, true)
+    expect(contentOf(out)).toEqual([{ type: 'text', text: 'look' }, refBlock])
+    // No base64 survives the recovery.
+    expect(JSON.stringify(out)).not.toContain('AAAA')
+  })
+
+  it('recovers a handle-only prompt (no surrounding text)', () => {
+    const out = normalize(userRow([handleBlock, b64]) as never, SID, true)
+    expect(contentOf(out)).toEqual([refBlock])
+  })
+
+  it('leaves a legacy base64 row with no handle unchanged', () => {
+    const content = [{ type: 'text', text: 'old' }, b64]
+    const out = normalize(userRow(content) as never, SID, true)
+    expect(contentOf(out)).toEqual(content)
+  })
+
+  it('falls back to base64 when the handle digests disagree (altered handle)', () => {
+    const altered = HANDLE.replace(`attachment:${REF.id}`, `attachment:sha256:${'b'.repeat(64)}`)
+    const content = [{ type: 'text', text: altered }, b64]
+    const out = normalize(userRow(content) as never, SID, true)
+    // No ref recovered; the raw (altered) handle text + base64 image stay.
+    expect(contentOf(out)).toEqual(content)
+  })
+
+  it('falls back to base64 when the handle is truncated (unparseable)', () => {
+    const truncated = HANDLE.slice(0, HANDLE.indexOf('. Read that path'))
+    const content = [{ type: 'text', text: truncated }, b64]
+    const out = normalize(userRow(content) as never, SID, true)
+    expect(contentOf(out)).toEqual(content)
+  })
+
+  it('does not recover when the image precedes the handle (reordered)', () => {
+    const content = [b64, handleBlock]
+    const out = normalize(userRow(content) as never, SID, true)
+    expect(contentOf(out)).toEqual(content)
+  })
+
+  it('does not recover when a non-image block sits between handle and image (non-adjacent)', () => {
+    const content = [handleBlock, { type: 'text', text: 'gap' }, b64]
+    const out = normalize(userRow(content) as never, SID, true)
+    expect(contentOf(out)).toEqual(content)
+  })
+
+  it('keeps a handle with no following image as raw text (no dangling ref)', () => {
+    const content = [{ type: 'text', text: 'caption' }, handleBlock]
+    const out = normalize(userRow(content) as never, SID, true)
+    expect(contentOf(out)).toEqual(content)
+  })
+
+  it('recovers multiple handle+image pairs in one prompt', () => {
+    const out = normalize(userRow([handleBlock, b64, handleBlock, b64]) as never, SID, true)
+    expect(contentOf(out)).toEqual([refBlock, refBlock])
+  })
+
+  it('recovers a ref pair while leaving an unrelated legacy base64 image intact', () => {
+    const out = normalize(userRow([handleBlock, b64, b64]) as never, SID, true)
+    expect(contentOf(out)).toEqual([refBlock, b64])
+  })
+
+  it('leaves string content untouched', () => {
+    const out = normalize(userRow('plain text') as never, SID, true)
+    expect(contentOf(out)).toBe('plain text')
+  })
+
+  it('does not touch assistant frames (recovery is user-prompt only)', () => {
+    const row = { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [handleBlock, b64] } }
+    const out = normalize(row as never, SID, true)
+    expect(contentOf(out)).toEqual([handleBlock, b64])
+  })
+
+  it('recovers refs through the trimmed page path (paginateJsonl)', () => {
+    const page = paginateJsonl(jsonl([userRow([handleBlock, b64])]), SID, { limit: 10 })
+    expect(contentOf(page.messages[0])).toEqual([refBlock])
+  })
+
+  it('recovers refs through the untrimmed search path (historyEntriesFromJsonl)', () => {
+    const entries = historyEntriesFromJsonl(jsonl([userRow([handleBlock, b64])]), SID)
+    expect(contentOf(entries[0].message)).toEqual([refBlock])
+  })
+
+  it('recovers refs through the strict reconcile snapshot (historySnapshotFromJsonl)', () => {
+    const snap = historySnapshotFromJsonl(jsonl([userRow([handleBlock, b64])]), SID)
+    expect(snap.status).toBe('ok')
+    if (snap.status === 'ok') expect(contentOf(snap.entries[0].message)).toEqual([refBlock])
   })
 })

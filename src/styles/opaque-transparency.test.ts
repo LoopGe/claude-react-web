@@ -54,8 +54,6 @@ describe('opaque transparency mode', () => {
     ['.app-empty-state', '--bg-elev-solid'],
     ['.app-loading-card', '--bg-elev-solid'],
     ['.composer-card', '--bg-elev-solid'],
-    ['.streaming-msg', '--bg-solid'],
-    ['.streaming-msg.liquid-glass', '--bg-elev-solid'],
     ['.handoff-veil::before', '--bg-elev-solid'],
     ['.working-bar::before', '--bg-elev-solid'],
     ['.pinned-user-message', '--bg-solid'],
@@ -93,9 +91,4 @@ describe('opaque transparency mode', () => {
     }
   })
 
-  it('disables inline SVG refraction filtering', () => {
-    const rule = ruleFor('.streaming-refraction')
-    expect(rule.decls['backdrop-filter']).toBe('none !important')
-    expect(rule.decls['-webkit-backdrop-filter']).toBe('none !important')
-  })
 })

@@ -8,7 +8,6 @@
   border-left: 3px dashed color-mix(in srgb, var(--fg-muted) 55%, transparent);
   padding-left: var(--space-2);
 }
-.msg.assistant.subagent .msg-header > span:first-child::before { content: '↳ '; }
 /* model_not_found error card — the CLI's "Run /model" text doesn't apply to
    a web UI, so we style the card as an actionable error and surface a
    "Switch model" button (see MessageList assistant branch). */
@@ -1977,11 +1976,8 @@
        - it re-enables pointer-events (the stack turns it off so clicks fall
          through its empty area);
        - `--chat-reading-inset` keeps its edges on the transcript's reading
-         column, and the --chat-row-gap bottom margin matches
-         .streaming-footer-wrapper's bottom padding — that wrapper carried the
-         "room off the composer" gap when the live bubble was bottom-most in
-         this slot, so the cards inherit the same shared rhythm now that they
-         are;
+         column, and the --chat-row-gap bottom margin gives the card the same
+         "room off the composer" rhythm the message rows use;
        - it is a column flex box with `min-height: 0` so it can SHRINK when the
          stack hits its height cap (see .chat-bottom-stack). The clamp lands on
          .animated-collapse's body, which scrolls — the list inside it keeps

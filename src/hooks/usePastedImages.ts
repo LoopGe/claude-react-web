@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { formatBytes } from '../utils/format'
 import { ImageNormalizeError, preparePastedImage, type NormalizedImage } from '../utils/image-normalize'
+import { uploadImage } from '../utils/upload-image'
 import { isSupportedImageMediaType } from '../../shared/image-media'
 import { randomId } from '../utils/uuid'
 import { getMaxPastedImageBytes } from './config-store'
@@ -10,6 +11,9 @@ import type { PastedImage } from '../types'
 /** Concurrent decodes inside one intake batch. */
 const DECODE_CONCURRENCY = 2
 
+/** Concurrent normalized-blob uploads (mirrors useFileDrafts' queue). */
+const MAX_CONCURRENT_UPLOADS = 2
+
 type ProcessedImage =
   | { file: File; url: string; normalized: NormalizedImage }
   | { file: File; error: string }
@@ -17,14 +21,16 @@ type ProcessedImage =
 export interface UsePastedImages {
   images: PastedImage[]
   error: string | null
-  /** True while at least one accepted image is still being decoded. The
-   *  composer blocks sending so a send cannot race past an in-flight batch. */
+  /** True while at least one accepted image is still being decoded OR its
+   *  normalized blob is still uploading. The composer blocks sending so a
+   *  send cannot race past an in-flight batch — every landed image already
+   *  carries its durable attachment ref. */
   pending: boolean
   /** Add one intake batch (drag/picker multi-select) with the limit checks
-   *  counted across the whole batch. Landed images are appended as they
-   *  decode. Returns the first refusal message (or null), so a caller can
-   *  surface it even when the committed error string is unchanged between two
-   *  attempts. */
+   *  counted across the whole batch. Each image is appended once its
+   *  normalized blob has uploaded and carries its durable ref. Returns the
+   *  first refusal message (or null), so a caller can surface it even when
+   *  the committed error string is unchanged between two attempts. */
   addImages: (files: readonly File[]) => Promise<string | null>
   removeImage: (id: string) => void
   clear: () => void
@@ -56,12 +62,18 @@ export interface ImageMutations {
   kind: ImageMutationKind
 }
 
-export function usePastedImages(): UsePastedImages {
+/** The composer's image half. `sessionId` binds the intake uploads to a
+ *  session (the upload route validates it); omitted in tests/host surfaces
+ *  without a session — the route then stores into the common pool. */
+export function usePastedImages(sessionId?: string): UsePastedImages {
   const [images, setImages] = useState<PastedImage[]>([])
   const [error, setError] = useState<string | null>(null)
-  // Counts intake batches still decoding, so overlapping batches cannot clear
-  // the pending state early.
+  // Counts intake batches still decoding/uploading, so overlapping batches
+  // cannot clear the pending state early.
   const [pendingBatches, setPendingBatches] = useState(0)
+  // In-flight upload aborts — clear() and unmount stop transfers whose image
+  // the user already discarded (mirrors useFileDrafts' controller map).
+  const uploadControllersRef = useRef<Set<AbortController>>(new Set())
   const imagesRef = useRef(images)
   // Bytes accepted by batches that have not committed yet. imagesRef only
   // catches up after a render, so overlapping intake calls (two drops, a drop
@@ -122,6 +134,8 @@ export function usePastedImages(): UsePastedImages {
   const clear = useCallback(() => {
     clearGenerationRef.current++
     bumpMutations('clear')
+    for (const controller of uploadControllersRef.current) controller.abort()
+    uploadControllersRef.current.clear()
     for (const img of imagesRef.current) revokeUrl(img.previewUrl)
     setImages([])
     setError(null)
@@ -194,14 +208,85 @@ export function usePastedImages(): UsePastedImages {
     reservedCountRef.current += accepted.length
     setPendingBatches((count) => count + 1)
     const generation = clearGenerationRef.current
-    // Normalize at most two images at a time: one drop can carry many
-    // screenshots, and N concurrent decodes/encodes is a needless main-thread
-    // burst. Each chunk's images still land as soon as it finishes, so a send
-    // during a long batch sees what already made it. Their source bytes move
-    // from the reservation to `pendingReleaseRef` at commit; the imagesRef
-    // sync effect drains them once the commit is visible.
     let committedBytes = 0
     let committedCount = 0
+
+    // ── Upload queue (mirrors useFileDrafts): normalized blobs upload at most
+    // two at a time, and each image LANDS only once its own upload resolves
+    // with a durable ref — a failed upload is a per-image refusal, never a
+    // batch abort. The whole pipeline (decode + upload) keeps `pending` true,
+    // so a send cannot race past an in-flight image. ──
+    interface UploadTask { file: File; url: string; normalized: NormalizedImage }
+    const uploadQueue: UploadTask[] = []
+    let activeUploads = 0
+    let intakeDone = false
+    let uploadsSettled!: () => void
+    const uploadsDone = new Promise<void>((resolve) => { uploadsSettled = resolve })
+    const maybeSettled = () => {
+      if (intakeDone && uploadQueue.length === 0 && activeUploads === 0) uploadsSettled()
+    }
+    const pumpUploads = () => {
+      while (activeUploads < MAX_CONCURRENT_UPLOADS) {
+        const task = uploadQueue.shift()
+        if (task === undefined) break
+        // A queued task whose draft was cleared never starts — its preview
+        // URL is revoked here (clear() only revokes LANDED images' URLs).
+        if (clearGenerationRef.current !== generation) {
+          revokeUrl(task.url)
+          continue
+        }
+        activeUploads += 1
+        const controller = new AbortController()
+        uploadControllersRef.current.add(controller)
+        void uploadImage(task.normalized.blob, { sessionId, signal: controller.signal })
+          .then((attachment) => {
+            if (clearGenerationRef.current !== generation) {
+              revokeUrl(task.url)
+              return
+            }
+            // Source bytes move from the reservation to `pendingReleaseRef`
+            // at commit; the imagesRef sync effect drains them once visible.
+            pendingReleaseRef.current += task.file.size
+            pendingReleaseCountRef.current += 1
+            committedBytes += task.file.size
+            committedCount += 1
+            bumpMutations('add')
+            setImages((prev) => [...prev, {
+              id: randomId(),
+              // The durable payload is the ref — no base64 is kept.
+              data: '',
+              mediaType: task.normalized.mediaType,
+              width: task.normalized.width,
+              height: task.normalized.height,
+              size: task.normalized.size,
+              original: task.normalized.original,
+              previewUrl: task.url,
+              attachment,
+            }])
+          })
+          .catch((err: unknown) => {
+            // The image never lands (or was discarded) — its preview URL
+            // dies here. AbortError is a deliberate discard, not a refusal.
+            revokeUrl(task.url)
+            if (err instanceof DOMException && err.name === 'AbortError') return
+            if (clearGenerationRef.current === generation) {
+              refuse(`Could not upload image: ${err instanceof Error ? err.message : String(err)}`)
+            }
+          })
+          .finally(() => {
+            uploadControllersRef.current.delete(controller)
+            activeUploads -= 1
+            pumpUploads()
+            maybeSettled()
+          })
+      }
+      maybeSettled()
+    }
+
+    // Normalize at most two images at a time: one drop can carry many
+    // screenshots, and N concurrent decodes/encodes is a needless main-thread
+    // burst. Each normalized image feeds the upload queue as soon as it is
+    // ready, so uploads overlap the remaining decodes.
     try {
       for (let index = 0; index < accepted.length; index += DECODE_CONCURRENCY) {
         if (clearGenerationRef.current !== generation) break
@@ -236,23 +321,13 @@ export function usePastedImages(): UsePastedImages {
             revokeUrl(entry.url)
             continue
           }
-          pendingReleaseRef.current += entry.file.size
-          pendingReleaseCountRef.current += 1
-          committedBytes += entry.file.size
-          committedCount += 1
-          bumpMutations('add')
-          setImages((prev) => [...prev, {
-            id: randomId(),
-            data: entry.normalized.data,
-            mediaType: entry.normalized.mediaType,
-            width: entry.normalized.width,
-            height: entry.normalized.height,
-            size: entry.normalized.size,
-            original: entry.normalized.original,
-            previewUrl: entry.url,
-          }])
+          uploadQueue.push({ file: entry.file, url: entry.url, normalized: entry.normalized })
+          pumpUploads()
         }
       }
+      intakeDone = true
+      maybeSettled()
+      await uploadsDone
     } finally {
       // Release the bytes/count that never reached a commit; committed ones
       // are released by the imagesRef sync effect.
@@ -261,15 +336,19 @@ export function usePastedImages(): UsePastedImages {
       setPendingBatches((count) => count - 1)
     }
     return failure
-  }, [revokeUrl, bumpMutations])
+  }, [sessionId, revokeUrl, bumpMutations])
 
-  // Cleanup on unmount: revoke every URL we created, including any that
-  // are still mid-decode (not yet in `images`). The Set instance is stable
-  // for the ref's lifetime (we only mutate it, never reassign), so capturing
-  // it here and iterating in the cleanup sees every URL added before unmount.
+  // Cleanup on unmount: abort in-flight uploads and revoke every URL we
+  // created, including any that are still mid-decode/mid-upload (not yet in
+  // `images`). The Set instances are stable for the ref's lifetime (we only
+  // mutate them, never reassign), so capturing them here and iterating in the
+  // cleanup sees every entry added before unmount.
   useEffect(() => {
     const all = allUrlsRef.current
+    const controllers = uploadControllersRef.current
     return () => {
+      for (const controller of controllers) controller.abort()
+      controllers.clear()
       for (const url of all) URL.revokeObjectURL(url)
       all.clear()
     }

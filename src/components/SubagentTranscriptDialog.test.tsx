@@ -310,21 +310,17 @@ describe('SubagentTranscriptDialog', () => {
     expect(screen.queryByText(/Failed to load transcript/)).toBeNull()
   })
 
-  it('follows the streaming mode: inline grows the text in a draft card (no floating bubble)', async () => {
-    // The global streamingRenderMode setting must reach this mount too — the
-    // hub feeds a running subagent's transcript live, so the seam is
-    // observable here. Inline mode now renders the in-place draft card (the
-    // old inline footer row retired); the floating bubble must stay absent.
-    //
-    // The live text goes into the store MessageList reads — its `sessionId`
-    // prop is the PARENT session id (the dialog renders scratch-store
-    // `items` but passes the parent id through), which is where sidechain
-    // live text accumulates during a run (docs/streaming-footer-research.md
-    // §4.3).
+  it('subscribes to the parent session live draft while the transcript is open', async () => {
+    // This mount passes the PARENT session id to MessageList without a
+    // parentToolUseIdFilter (the scratch-store rows are already the
+    // subagent's own conversation), so the root draft layer is active here
+    // and the parent's live draft card renders below the disk rows. The test
+    // pins that subscription wiring with main-thread deltas — a running
+    // subagent's OWN deltas are sidechain and never enter the draft.
     seedStore('s1', 'live')
     const liveStore = sessionStoreRegistry.getOrCreate('s1')
     render(
-      <SubagentTranscriptDialog sessionId="s1" agentId="live" label="live" onClose={() => {}} streamingMode="inline" />,
+      <SubagentTranscriptDialog sessionId="s1" agentId="live" label="live" onClose={() => {}} />,
     )
     await act(async () => {
       liveStore.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 'i0', parent_tool_use_id: null, event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } } as never })
@@ -334,8 +330,5 @@ describe('SubagentTranscriptDialog', () => {
     // Overlay portals to document.body — query there, not in `container`.
     const body = document.body.querySelector('.draft-body')
     expect(body?.textContent).toContain('live subagent text')
-    // No floating bubble and no footer row in inline mode.
-    expect(document.body.querySelector('.chat-streaming-region')).toBeNull()
-    expect(document.body.querySelector('.streaming-footer-wrapper')).toBeNull()
   })
 })

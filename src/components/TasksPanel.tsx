@@ -27,7 +27,6 @@ import { HoverHint } from './HoverHint'
 import { formatElapsed } from '../utils/format'
 import type { TaskRecordUi } from '../types'
 import { isSubagentTask, isTerminalTaskStatus } from '../../shared/tasks.js'
-import type { StreamingRenderMode } from '../../shared/streaming-render-mode.js'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
 import { IconEye, IconFileText, IconLoader, IconX } from './icons/ToolIcons'
 import { taskResource } from '../../shared/resource-address'
@@ -59,15 +58,11 @@ const RowTimer = memo(function RowTimer({ startedAt, endedAt }: { startedAt?: nu
 
 export const TasksPanel = memo(function TasksPanel({
   sessionId,
-  streamingMode,
   cwd,
   panelVisible = true,
   onClose,
 }: {
   sessionId: string
-  /** Global streaming-preview mode, forwarded to the disk-transcript dialog
-   *  so it follows the same setting as the main transcript. */
-  streamingMode?: StreamingRenderMode
   /** Session working directory — forwarded to the transcript dialog so its
    *  tool rows can resolve relative paths. */
   cwd?: string
@@ -178,7 +173,6 @@ export const TasksPanel = memo(function TasksPanel({
           sessionId={sessionId}
           agentId={transcript.agentId}
           label={transcript.label}
-          streamingMode={streamingMode}
           visible={panelVisible}
           cwd={cwd}
           onClose={() => setTranscript(null)}

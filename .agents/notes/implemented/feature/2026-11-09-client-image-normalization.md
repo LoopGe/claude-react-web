@@ -36,9 +36,12 @@ Normalize on composer intake, in the browser, with DSH's policy:
 - `PastedImage.size` is the normalized encoded length. `PastedImage.original`
   keeps the source media type, oriented dimensions, and source byte length for
   the “Compressed” badge and for the existing source-size aggregate limit.
-- The normalizer is called once per accepted file in `usePastedImages`; the
-  draft and transcript carry the normalized base64. The composer preview stays
-  the original blob URL until the image is sent.
+- The normalizer is called once per accepted file in `usePastedImages`,
+  producing a normalized `Blob` (`NormalizedImage.blob`). Since [durable image
+  references](../architecture/2026-11-09-image-attachment-references.md) shipped,
+  that blob is uploaded to the content-addressed image store and the draft,
+  transcript, and ring carry an `ImageAttachmentRef` — base64 survives only in
+  the SDK JSONL, projected at dispatch. The composer preview is a blob URL.
 
 ## Alternatives considered
 
@@ -61,8 +64,10 @@ send. Lowering them would reject ordinary screenshots and phone photos.
 
 ## Consequences
 
-- The normalized bytes are what the draft, the transcript, and the ring carry;
-  the original is still what the composer thumbnail shows.
+- The normalized bytes live in the content-addressed image store; the draft,
+  the transcript, and the ring carry the `ImageAttachmentRef` (base64 only in
+  the SDK JSONL). The composer thumbnail shows a blob URL of the normalized
+  bytes.
 - Canvas encoders differ by browser/version, so normalized bytes are not
   cross-browser deterministic. Within one draft they are computed once and
   reused. DSH pins sharp, which we cannot do without the native dependency.

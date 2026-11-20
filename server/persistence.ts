@@ -143,10 +143,6 @@ export interface SessionMeta {
    *  override survives reload. Only meaningful while the effective
    *  `toolGroupCards` is on. */
   autoExpandRunningGroups?: boolean
-  /** Per-session override for message-card header rows. Undefined =
-   *  inherit the global config default. Persisted so the override
-   *  survives reload. */
-  showMessageHeaders?: boolean
   /** User intent: per-session CLI debug logging. undefined = inherit the
    *  global config default. Persisted so resume/fork/restart keep the intent.
    *  Spawn-time only — takes effect on the next spawn. */
@@ -302,7 +298,6 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     toolGroupCards: typeof r.toolGroupCards === 'boolean' ? r.toolGroupCards : undefined,
     autoExpandRunningGroups:
       typeof r.autoExpandRunningGroups === 'boolean' ? r.autoExpandRunningGroups : undefined,
-    showMessageHeaders: typeof r.showMessageHeaders === 'boolean' ? r.showMessageHeaders : undefined,
     cliDebug: typeof r.cliDebug === 'boolean' ? r.cliDebug : undefined,
     appToolsGit: typeof r.appToolsGit === 'boolean' ? r.appToolsGit : undefined,
     firstPartyTools: (() => {

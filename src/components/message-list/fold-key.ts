@@ -29,17 +29,22 @@ export const FOLD_MAX_PX = 240
  *  is stamped/overwritten by the ack itself. Cosmetic coupling on
  *  byte-identical text beats state loss on every message.
  *
- *  Images contribute length + a head slice of their base64 payload: the
- *  full payload would make per-render keying O(payload) on a 28 MB paste,
- *  while length+head distinguishes image-only messages that share empty
- *  text without ever materialising the whole string. */
+ *  Images contribute their identity: a ref block its attachment id (the
+ *  digest is the identity, cheap and exact); a legacy base64 block length +
+ *  a head slice of its payload — the full payload would make per-render
+ *  keying O(payload) on a 28 MB paste, while length+head distinguishes
+ *  image-only messages that share empty text without ever materialising the
+ *  whole string. */
 export function userBodyFoldKey(msg: SdkMessage): string {
   const text = extractUserText(msg) ?? ''
   let images = ''
   for (const b of getBlocks(msg)) {
     if (b.type !== 'image') continue
+    const refId = (b as { attachment?: { id?: unknown } }).attachment?.id
     const data = (b as { source?: { data?: unknown } }).source?.data
-    const part = typeof data === 'string' ? `${data.length}:${data.slice(0, 64)}` : '0:'
+    const part = typeof refId === 'string'
+      ? refId
+      : typeof data === 'string' ? `${data.length}:${data.slice(0, 64)}` : '0:'
     images += images ? `,${part}` : part
   }
   return images ? `${text} ${images}` : text

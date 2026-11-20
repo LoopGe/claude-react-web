@@ -7,11 +7,8 @@
 // <Profiler> around the tree counts commits. During a window of live text deltas — i.e. N
 // LIVE_TURN_FLUSH cycles plus char-estimated token-rate samples — the panel
 // body (Chat) and the transcript (MessageList) must not render at all, while
-// the overlay bubble (StreamingFooter) renders once per flush and the
+// the draft card's body leaf (DraftTextBody) renders once per flush and the
 // WorkingBubble leaf picks up the token rate on its own.
-//
-// Baseline before the leaf subscriptions (same harness shape, 2s window,
-// 200 deltas): Chat 3, MessageList ~41 (2× per flush), StreamingFooter ~22.
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Profiler, memo, type ComponentType } from 'react'
 import { act, render } from '@testing-library/react'
@@ -22,8 +19,6 @@ const counts = vi.hoisted(() => ({
   SessionMessageList: 0,
   SessionBottomCards: 0,
   SessionWorkingBubble: 0,
-  OverlayStreamingRegion: 0,
-  StreamingFooter: 0,
   LiveWorkingBubble: 0,
   DraftTextBody: 0,
 }))
@@ -65,14 +60,6 @@ vi.mock('./SessionBottomCards', async (orig) => {
 vi.mock('./message-list/SessionWorkingBubble', async (orig) => {
   const mod = await orig<typeof import('./message-list/SessionWorkingBubble')>()
   return { ...mod, SessionWorkingBubble: counted('SessionWorkingBubble', mod.SessionWorkingBubble) }
-})
-vi.mock('./message-list/OverlayStreamingRegion', async (orig) => {
-  const mod = await orig<typeof import('./message-list/OverlayStreamingRegion')>()
-  return { ...mod, OverlayStreamingRegion: counted('OverlayStreamingRegion', mod.OverlayStreamingRegion) }
-})
-vi.mock('./message-list/transcript-chrome', async (orig) => {
-  const mod = await orig<typeof import('./message-list/transcript-chrome')>()
-  return { ...mod, StreamingFooter: counted('StreamingFooter', mod.StreamingFooter) }
 })
 vi.mock('./message-list/WorkingBubble', async (orig) => {
   const mod = await orig<typeof import('./message-list/WorkingBubble')>()
@@ -178,7 +165,7 @@ const callsFor = (sub: string) =>
   apiGet.mock.calls.filter((c) => String(c[0]).includes(sub))
 
 const noop = () => {}
-const globalPrefs = { ...DEFAULT_GLOBAL_PREFS, autoRecap: false, streamingRenderMode: 'overlay' as const }
+const globalPrefs = { ...DEFAULT_GLOBAL_PREFS, autoRecap: false }
 const snippets = { snippets: [], add: noop, update: noop, remove: noop, reorder: noop } as never
 
 afterEach(async () => {
@@ -186,7 +173,7 @@ afterEach(async () => {
 })
 
 describe('live-turn streaming re-renders only the leaves', () => {
-  it('Chat and MessageList stay at 0 renders across N flushes while the bubble re-renders each flush', async () => {
+  it('Chat and MessageList stay at 0 renders across N flushes while the draft body leaf re-renders each flush', async () => {
     const SID = 'stream-iso'
     const emit = (frame: Record<string, unknown>) => {
       for (const fn of sessionListeners.get(SID) ?? []) fn({ sessionId: SID, ...frame })
@@ -237,17 +224,30 @@ describe('live-turn streaming re-renders only the leaves', () => {
     const store = getSessionStore(SID)
     expect(store.getSnapshot().activePhase).toBe('writing')
 
-    // Track every distinct streamingContent the store publishes = one flush each.
+    // Seed the first text delta BEFORE the count window: it appends the draft
+    // row (one legitimate row-layer render), and the window below must show
+    // zero MessageList renders while the draft's text grows.
+    await act(async () => {
+      emit(streamEvent('d-seed', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'word0 ' } }))
+      await sleep(150)
+    })
+    expect(container.querySelector('.draft-body')).toBeTruthy()
+
+    // Track every distinct streamingContent the store publishes = one flush
+    // each. The seed's text is already published when the window opens (delta
+    // emits re-notify with the unchanged value), so exclude it — only NEW
+    // values count as window flushes.
     const seen = new Set<string>()
+    const seedContent = store.getSnapshot().streamingContent
     const unsub = store.subscribe(() => {
       const c = store.getSnapshot().streamingContent
-      if (c) seen.add(c)
+      if (c && c !== seedContent) seen.add(c)
     })
     for (const k of Object.keys(counts) as CountKey[]) counts[k] = 0
     commits.n = 0
 
     const DELTAS = 36
-    for (let i = 0; i < DELTAS; i++) {
+    for (let i = 1; i <= DELTAS; i++) {
       await act(async () => {
         emit(streamEvent(`d-${i}`, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `word${i} ` } }))
         // ~25ms apart: several deltas coalesce into each 80ms flush, and the
@@ -265,19 +265,19 @@ describe('live-turn streaming re-renders only the leaves', () => {
     // The heavy parents never rendered…
     expect(counts.Chat).toBe(0)
     expect(counts.MessageList).toBe(0)
-    // …while the bubble re-rendered once per published flush (memo bail-outs
-    // aside, never fewer), and the WorkingBubble leaf followed the rate.
-    expect(counts.StreamingFooter).toBeGreaterThanOrEqual(flushes)
-    expect(counts.OverlayStreamingRegion).toBeGreaterThanOrEqual(flushes)
+    // …while the draft body leaf re-rendered once per published flush (memo
+    // bail-outs aside, never fewer), and the WorkingBubble leaf followed the
+    // rate.
+    expect(counts.DraftTextBody).toBeGreaterThanOrEqual(flushes)
     expect(counts.LiveWorkingBubble).toBeGreaterThan(0)
     expect(commits.n).toBeGreaterThanOrEqual(flushes)
-    // And the bubble shows the whole streamed text. (No trailing-space
-    // assertion on the last word: the streaming card renders markdown now,
-    // and markdown whitespace normalization drops end-of-paragraph trailing
-    // spaces — exactly like the settled card will.)
-    const bubble = container.querySelector('.chat-streaming-region .streaming-plain')
-    expect(bubble?.textContent).toContain(`word0 `)
-    expect(bubble?.textContent).toContain(`word${DELTAS - 1}`)
+    // And the draft card shows the whole streamed text. (No trailing-space
+    // assertion on the last word: the draft renders markdown, and markdown
+    // whitespace normalization drops end-of-paragraph trailing spaces —
+    // exactly like the settled card will.)
+    const draft = container.querySelector('.draft-body .md')
+    expect(draft?.textContent).toContain(`word0 `)
+    expect(draft?.textContent).toContain(`word${DELTAS}`)
     // The working bar shows the leaf-subscribed phase label.
     expect(container.querySelector('.working-bar-label')?.textContent).toBe('Writing...')
     // Catalog initial GETs are the only ones: the token-rate / items / cache
@@ -287,14 +287,14 @@ describe('live-turn streaming re-renders only the leaves', () => {
     expect(callsFor('/agents')).toHaveLength(1)
   }, 30_000)
 
-  it('inline mode keeps MessageList at 0 renders per flush (the draft body leaf owns the subscription)', async () => {
+  it('MessageList stays at 0 renders per flush (the draft body leaf owns the subscription)', async () => {
     const SID = 'stream-inline'
     const store = getSessionStore(SID)
     await act(async () => {
       store.dispatch({ type: 'REPLAY_REPLACE', messages: history(4) as never, permissions: [] })
     })
     const { container } = render(
-      <MessageList items={store.getSnapshot().items} sessionId={SID} streamingMode="inline" />,
+      <MessageList items={store.getSnapshot().items} sessionId={SID} />,
     )
     // Start the draft (the row appears — one legitimate row-layer render)…
     await act(async () => {
@@ -304,8 +304,7 @@ describe('live-turn streaming re-renders only the leaves', () => {
     expect(container.querySelector('.draft-body')).toBeTruthy()
     for (const k of Object.keys(counts) as (keyof typeof counts)[]) counts[k] = 0
     // …then grow it through several flushes: only the draft body leaf may
-    // render (MessageList must stay at 0 — the same leaf-isolation contract
-    // the overlay bubble honours).
+    // render (MessageList must stay at 0 — the leaf-isolation contract).
     const FLUSHES = 5
     for (let i = 1; i <= FLUSHES; i++) {
       store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: `i${i}`, parent_tool_use_id: null, event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `word${i} ` } } } as never })
@@ -314,14 +313,11 @@ describe('live-turn streaming re-renders only the leaves', () => {
     await act(() => sleep(150))
     expect(counts.MessageList).toBe(0)
     expect(counts.DraftTextBody).toBeGreaterThanOrEqual(FLUSHES)
-    // The growing text lives in the draft card; no footer row exists.
+    // The growing text lives in the draft card.
     expect(container.querySelector('.draft-body .md')?.textContent).toContain(`word${FLUSHES}`)
-    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
-    // The overlay leaf is not mounted in inline mode.
-    expect(container.querySelector('.chat-streaming-region')).toBeNull()
   }, 30_000)
 
-  it('overlay mode: SessionMessageList wrapper stays at 0 renders per flush (the overlay leaf owns the subscription)', async () => {
+  it('SessionMessageList wrapper stays at 0 renders per flush (the draft body leaf owns the subscription)', async () => {
     const SID = 'session-msglist-iso'
     // Seed a settled transcript (items / replayReady are stable across
     // LIVE_TURN_FLUSH), then mount SessionMessageList with stable
@@ -329,38 +325,45 @@ describe('live-turn streaming re-renders only the leaves', () => {
     // replayReady / planStatus / planContent / questionAnswers / toolStatus
     // / toolResults / oldestSeq / hasOlder — none of those change identity
     // during a streaming flush, so the wrapper (and the controlled
-    // MessageList inside it) must not re-render while the
-    // OverlayStreamingRegion leaf re-renders once per published flush.
+    // MessageList inside it) must not re-render while the DraftTextBody leaf
+    // re-renders once per published flush.
     const store = getSessionStore(SID)
     await act(async () => {
       store.dispatch({ type: 'REPLAY_REPLACE', messages: history(4) as never, permissions: [] })
     })
     const stableLoadOlder = async () => 0
     const { container } = render(
-      <SessionMessageList sessionId={SID} loadingOlder={false} loadOlder={stableLoadOlder} streamingMode="overlay" />,
+      <SessionMessageList sessionId={SID} loadingOlder={false} loadOlder={stableLoadOlder} />,
     )
-    // Start the assistant message + a text block so the live turn exists
-    // and `streamingContent` becomes non-empty after the first flush.
+    // Start the assistant message + a text block so the live turn exists,
+    // then seed the first text delta: the draft row appears (one legitimate
+    // row-layer render) BEFORE the count window.
     await act(async () => {
       store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 's-0', parent_tool_use_id: null, event: { type: 'message_start', message: { id: 'm1' } } } as never })
       store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 's-1', parent_tool_use_id: null, event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } } as never })
+      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 's-seed', parent_tool_use_id: null, event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'word0 ' } } } as never })
       await sleep(150)
     })
     // The store's activePhase is 'writing' (the content_block_start landed),
     // but SessionMessageList does NOT subscribe to activePhase — it must
     // not have rendered for that transition either.
     expect(store.getSnapshot().activePhase).toBe('writing')
+    expect(container.querySelector('.draft-body')).toBeTruthy()
 
     // Track every distinct streamingContent the store publishes = one flush.
+    // The seed's text is already published when the window opens (delta
+    // emits re-notify with the unchanged value), so exclude it — only NEW
+    // values count as window flushes.
     const seen = new Set<string>()
+    const seedContent = store.getSnapshot().streamingContent
     const unsub = store.subscribe(() => {
       const c = store.getSnapshot().streamingContent
-      if (c) seen.add(c)
+      if (c && c !== seedContent) seen.add(c)
     })
     for (const k of Object.keys(counts) as CountKey[]) counts[k] = 0
 
     const DELTAS = 24
-    for (let i = 0; i < DELTAS; i++) {
+    for (let i = 1; i <= DELTAS; i++) {
       await act(async () => {
         store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: `d-${i}`, parent_tool_use_id: null, event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `word${i} ` } } } as never })
         await sleep(25)
@@ -374,12 +377,11 @@ describe('live-turn streaming re-renders only the leaves', () => {
     // The wrapper never rendered across the whole streaming window…
     expect(counts.SessionMessageList).toBe(0)
     expect(counts.MessageList).toBe(0)
-    // …while the overlay leaf re-rendered at least once per published flush.
-    expect(counts.OverlayStreamingRegion).toBeGreaterThanOrEqual(flushes)
-    expect(counts.StreamingFooter).toBeGreaterThanOrEqual(flushes)
-    // And the streamed text reached the overlay bubble.
-    expect(container.querySelector('.chat-streaming-region .streaming-plain')?.textContent).toContain(`word0 `)
-    expect(container.querySelector('.chat-streaming-region .streaming-plain')?.textContent).toContain(`word${DELTAS - 1}`)
+    // …while the draft body leaf re-rendered at least once per published flush.
+    expect(counts.DraftTextBody).toBeGreaterThanOrEqual(flushes)
+    // And the streamed text reached the draft card.
+    expect(container.querySelector('.draft-body .md')?.textContent).toContain(`word0 `)
+    expect(container.querySelector('.draft-body .md')?.textContent).toContain(`word${DELTAS}`)
   }, 30_000)
 
   it('main Chat renders the session-bound transcript children (SessionMessageList, SessionBottomCards, SessionWorkingBubble)', async () => {

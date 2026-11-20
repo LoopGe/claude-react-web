@@ -266,7 +266,6 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   const effAutoRecap = sessionPrefs.autoRecap
   const effToolGroupCards = sessionPrefs.toolGroupCards
   const effAutoExpandRunningGroups = sessionPrefs.autoExpandRunningGroups
-  const effShowMessageHeaders = sessionPrefs.showMessageHeaders
   /** POST a per-session pref override. A boolean pins it; `null` clears the
    *  override so the session re-inherits the global default. No success toast
    *  — checkbox toggles are too frequent to toast on every change; only
@@ -279,7 +278,6 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       autoRecap?: boolean | null
       toolGroupCards?: boolean | null
       autoExpandRunningGroups?: boolean | null
-      showMessageHeaders?: boolean | null
     },
   ) => {
     try {
@@ -1610,31 +1608,6 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           </SettingsRow>
         )}
 
-        <SettingsRow
-          title="Show message card headers"
-          hint={<>Shows the assistant/you label, timestamp, and sending status row on
-            each message card. When off, message cards render as bare content.{' '}
-            {session.showMessageHeaders === undefined
-              ? `Inheriting global (${globalPrefs.showMessageHeaders ? 'ON' : 'OFF'}).`
-              : 'Session override.'}
-            {session.showMessageHeaders !== undefined && (
-              <button
-                type="button"
-                className="settings-reset-link"
-                disabled={busy || session.terminated}
-                onClick={() => void changePref({ showMessageHeaders: null })}
-              >
-                Reset (inherit global)
-              </button>
-            )}</>}
-        >
-          <Switch
-            label="Show message card headers"
-            checked={effShowMessageHeaders}
-            disabled={busy || session.terminated}
-            onChange={(next) => void changePref({ showMessageHeaders: next })}
-          />
-        </SettingsRow>
       </section>
       </div>
       )}

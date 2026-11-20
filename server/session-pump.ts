@@ -1671,13 +1671,47 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // failure.
         let resultUsage: LiteContextUsage | null = null
         const emptyResult = msg.type === 'result' ? isEmptyResultFrame(msg) : false
+        const zeroUsage = msg.type === 'result' ? isZeroUsageResult(msg) : false
         if (msg.type === 'result') {
+          const canProbe = typeof session.handle?.getContextUsage === 'function'
+          // Latch the aggregate-reporting wire: a REAL turn result whose
+          // top-level usage is unverifiable (empty/null iterations) on a handle
+          // that CAN probe getContextUsage. This is the same condition the
+          // derivation below refuses and the reconcile probe corrects for;
+          // recording it lets the mid-turn assistant derivation stand down on
+          // this wire (the assistant frame's message_start usage under-reports
+          // the prompt here). The probe becomes the sole authority, so the bar
+          // stops oscillating between the partial assistant reading and the
+          // probe's correction.
+          //
+          // Guarded like the cold-start anchor: the spawn/restart warm-up and
+          // other zero-usage placeholders ALSO carry iterations=[], so without
+          // !emptyResult && !isZeroUsageResult every session (including normal
+          // wires) would latch at spawn and lose mid-turn refresh for life.
+          // Error results are skipped too — a failed turn does not establish the
+          // wire's reporting shape (mirrors the reconcile fire gate).
+          if (
+            canProbe
+            && resultUsageUnverifiable(msg)
+            && !emptyResult
+            && !zeroUsage
+            && (msg as { is_error?: boolean }).is_error !== true
+          ) {
+            if (!session.aggregateUsageWire) {
+              log.debug(
+                `[session ${session.id}] aggregate-reporting usage wire confirmed ` +
+                `(iterations empty/null on a real result) — mid-turn assistant context ` +
+                `derivation disabled; the reconcile probe is authoritative`,
+              )
+            }
+            session.aggregateUsageWire = true
+          }
           // Pass any authoritative threshold the CLI already told us, which
           // wins over our local replica. When the provider's handle cannot be
           // probed (no getContextUsage), the unverifiable fallback stays
           // available — see the gate inside.
           const usage = liteContextUsageFromResult(msg, session.lastSdkAutoCompact, {
-            allowUnverifiableFallback: typeof session.handle?.getContextUsage !== 'function',
+            allowUnverifiableFallback: !canProbe,
             windowOverride: session.autoCompactWindow,
             cached: session.lastContextUsage,
           })
@@ -1692,7 +1726,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // (ttft_ms = time to first token, request_sent_wall_ms = wall time
           // from send to response, time_to_request_from_spawn_ms). Read
           // defensively.
-          if (!emptyResult && !isZeroUsageResult(msg) && session.firstTurnAtMs === undefined) {
+          if (!emptyResult && !zeroUsage && session.firstTurnAtMs === undefined) {
             session.firstTurnAtMs = Date.now()
             const bootMs = session.bootStartedAt !== undefined ? session.firstTurnAtMs - session.bootStartedAt : undefined
             const initMs = session.initAtMs !== undefined ? session.firstTurnAtMs - session.initAtMs : undefined
@@ -1716,7 +1750,14 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // last `result`; until the first `result` lands there is no window
         // to divide against, so liteContextUsageFromAssistant returns null
         // and we skip. Subagent frames are filtered out inside the helper.
-        if (msg.type === 'assistant') {
+        //
+        // Disabled on the aggregate-reporting wire (Session.aggregateUsageWire):
+        // there the assistant frame carries the message_start usage, which
+        // under-reports the prompt, so deriving from it drags the bar down
+        // mid-turn only for the turn-end probe to correct it — an oscillation.
+        // The probe is the sole authority on that wire; the bar holds its
+        // last-good value between turns instead.
+        if (msg.type === 'assistant' && !session.aggregateUsageWire) {
           const usage = liteContextUsageFromAssistant(msg, session.lastContextUsage)
           if (usage) {
             applyContextUsage(session, usage)
@@ -2821,6 +2862,13 @@ export function liteContextUsageFromResult(
  *  before any `result` has landed), when the assistant message lacks a
  *  usable usage payload, or when it is a subagent frame (parent_tool_use_id
  *  set) whose own context window would misrepresent the main thread.
+ *
+ *  NOT valid on the aggregate-reporting wire: there the live assistant frame
+ *  carries the message_start usage, which under-reports the prompt (a non-zero
+ *  input_tokens with no cache buckets). The pump gates this helper off on that
+ *  wire (see Session.aggregateUsageWire) and lets the turn-end reconcile probe
+ *  — the CLI's own accounting — be the sole authority, so the bar holds its
+ *  last-good value mid-turn instead of oscillating down to the partial reading.
  *  @internal — exported only for unit tests; not part of the module's
  *              public API. */
 export function liteContextUsageFromAssistant(

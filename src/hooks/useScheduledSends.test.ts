@@ -124,4 +124,35 @@ describe('useScheduledSends', () => {
     expect(result.current.schedules).toHaveLength(0)
     expect(mockGet).toHaveBeenCalledTimes(2)
   })
+
+  it('schedule POSTs a ref-block body verbatim (transparent pipe, no base64 expansion)', async () => {
+    const { result } = renderHook(() => useScheduledSends('s1'))
+    await settle()
+    const ref = { id: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png' as const, bytes: 68, width: 1, height: 1 }
+    const body = { content: [{ type: 'text' as const, text: 'look' }, { type: 'image' as const, attachment: ref }] }
+    await act(async () => { await result.current.schedule(1_060_000, body) })
+    expect(mockPost).toHaveBeenCalledWith('/sessions/s1/schedules', { fireAt: 1_060_000, ...body })
+  })
+
+  it('passes ref-body schedules and failed image errors through unchanged', async () => {
+    const ref = { id: `sha256:${'b'.repeat(64)}`, mediaType: 'image/png' as const, bytes: 68, width: 1, height: 1 }
+    const pendingRef = {
+      id: 'a', sessionId: 's1', fireAt: 1_060_000,
+      body: { content: [{ type: 'image' as const, attachment: ref }] },
+      status: 'pending' as const, createdAt: 1,
+    }
+    const failedRef = {
+      id: 'b', sessionId: 's1', fireAt: 1_060_000,
+      body: { content: [{ type: 'image' as const, attachment: ref }] },
+      status: 'failed' as const, createdAt: 1,
+      error: `image not found: sha256:${'b'.repeat(64)}`,
+    }
+    mockGet.mockResolvedValue({ schedules: [pendingRef, failedRef] })
+    const { result } = renderHook(() => useScheduledSends('s1'))
+    await settle()
+    // The hook neither inspects nor rewrites block shapes; the failed record's
+    // error rides through for the Composer chip to display.
+    expect(result.current.schedules).toEqual([pendingRef, failedRef])
+    expect(result.current.hasPending).toBe(true)
+  })
 })

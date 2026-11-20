@@ -205,21 +205,21 @@ export function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage):
  *  main-thread segment streamed so far this turn belongs to an already-
  *  finalized response — including the ≤80ms unflushed tail, which is
  *  contained in the finalized text. Dropping all main-thread segments is
- *  therefore an exact operation, not a text-match heuristic, and it bounds
- *  the StreamingFooter to in-flight text only.
+ *  therefore an exact operation, not a text-match heuristic. The drop is
+ *  load-bearing for the in-place draft: without it, the next LIVE_TURN_FLUSH
+ *  would fold the already-finalized tail into a fresh draft, duplicating
+ *  text the settled row already shows.
  *
- *  Sidechain segments (subagent streams, parent_tool_use_id set) never land
- *  in the main transcript (MessageList filters on parent_tool_use_id) — the
- *  footer is their only in-progress surface, so they are kept. liveTurn
- *  itself stays: phase / tokenRate / samples still drive the WorkingBubble
- *  and the tok/s readout, and an all-sidechain (or empty) result projects to
- *  '' — the same pre-text path a tool-use-only response takes today
- *  (MessageList treats "" as null, running the existing exit-fade).
+ *  Sidechain segments (subagent streams, parent_tool_use_id set) belong to
+ *  still-running subagents — a main-thread finalize says nothing about them,
+ *  so they are kept (they still feed `streamingContent`). liveTurn itself
+ *  stays: phase / tokenRate / samples still drive the WorkingBubble and the
+ *  tok/s readout.
  *
  *  applyMessage is also the path for REPLAY_REPLACE's newer slice, so a
  *  reconnect replay that carries finalized assistants prunes identically.
- *  The full-overlap drop path (older=newer=[]) never reaches here — same as
- *  today, no pruning, no regression. */
+ *  The full-overlap drop path (older=newer=[]) never reaches here — no
+ *  pruning, no regression. */
 export function pruneFinalizedLiveTurnText(mirror: ServerMirror, message: SdkMessage): ServerMirror {
   if (message.type !== 'assistant' || message.parent_tool_use_id != null) return mirror
   const liveTurn = mirror.liveTurn

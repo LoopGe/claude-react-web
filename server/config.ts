@@ -22,8 +22,6 @@ import type { FontSizePreset } from '../shared/font-size.js'
 import { isFontSizePreset, DEFAULT_FONT_SIZE } from '../shared/font-size.js'
 import type { AnimationSpeedPreset } from '../shared/animation-speed.js'
 import { isAnimationSpeedPreset, DEFAULT_ANIMATION_SPEED } from '../shared/animation-speed.js'
-import type { StreamingRenderMode } from '../shared/streaming-render-mode.js'
-import { isStreamingRenderMode, DEFAULT_STREAMING_RENDER_MODE } from '../shared/streaming-render-mode.js'
 import {
   enableFileLogging, disableFileLogging, setLogConfig,
   LOG_LEVELS, LOG_LEVEL_FROM_ENV, LOG_SCOPES_FROM_ENV, type LogLevel,
@@ -149,12 +147,6 @@ interface ConfigFile {
    *  the running badge and clicking still opens it); every fold path is
    *  unchanged. Only meaningful while `toolGroupCards` is on. */
   autoExpandRunningGroups: boolean
-  /** Global default for message-card header rows (assistant/you label +
-   *  timestamp + sending status). Per-session overrides
-   *  (SessionMeta.showMessageHeaders) take priority; sessions without an
-   *  override inherit this value. When false, user bubbles and assistant
-   *  cards render as bare content with no header row. */
-  showMessageHeaders: boolean
   /** Global transcript spacing (`--chat-row-gap`) density preset. A personal
    *  UI preference — global only, never per-session. */
   rowGap?: string
@@ -167,10 +159,6 @@ interface ConfigFile {
   /** Global animation-speed preset. A personal UI preference — global only,
    *  never per-session. */
   animationSpeed?: string
-  /** Where the live turn's text renders while a reply streams ('overlay' |
-   *  'inline', see shared/streaming-render-mode.ts). A personal UI
-   *  preference — global only, never per-session. */
-  streamingRenderMode?: string
   /** Global default for per-session CLI debug logging (Options.debug +
    *  debugFile). SessionMeta.cliDebug overrides when set. Default: false. */
   cliDebug?: boolean
@@ -283,9 +271,6 @@ export interface ServerConfig {
    *  Sessions without an explicit override inherit this. Only meaningful
    *  while `toolGroupCards` is on. */
   readonly autoExpandRunningGroups: boolean
-  /** Global default for message-card header rows. Sessions without an
-   *  explicit override inherit this. */
-  readonly showMessageHeaders: boolean
   /** Global transcript spacing (`--chat-row-gap`) density preset. Not a
    *  per-session thing — a personal UI preference applied globally. */
   readonly rowGap: RowGapPreset
@@ -299,10 +284,6 @@ export interface ServerConfig {
    *  Sibling of rowGap/textSpacing/fontSize but controls motion duration, not
    *  rhythm or size. Applied globally. */
   readonly animationSpeed: AnimationSpeedPreset
-  /** Where the live turn's text renders while a reply streams ('overlay' |
-   *  'inline', see shared/streaming-render-mode.ts). Sibling of the display
-   *  presets — global only, never per-session. */
-  readonly streamingRenderMode: StreamingRenderMode
   /** Global default for per-session CLI debug logging (spawn-time only). */
   readonly cliDebug: boolean
   /** Global default for the per-session `git-tools` git MCP server. Sessions
@@ -372,12 +353,10 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   autoRecap: true,
   toolGroupCards: true,
   autoExpandRunningGroups: true,
-  showMessageHeaders: true,
   rowGap: DEFAULT_ROW_GAP,
   textSpacing: DEFAULT_TEXT_SPACING,
   fontSize: DEFAULT_FONT_SIZE,
   animationSpeed: DEFAULT_ANIMATION_SPEED,
-  streamingRenderMode: DEFAULT_STREAMING_RENDER_MODE,
   cliDebug: false,
   appToolsGit: true,
   firstPartyTools: Object.freeze({ [GIT_TOOLS_SERVER_NAME]: Object.freeze({ enabled: true }) }),
@@ -722,10 +701,6 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { autoExpandRunningGroups: boolean }).autoExpandRunningGroups = file_.autoExpandRunningGroups
   }
 
-  if (typeof file_.showMessageHeaders === 'boolean') {
-    ;(merged as { showMessageHeaders: boolean }).showMessageHeaders = file_.showMessageHeaders
-  }
-
   if (typeof file_.rowGap === 'string' && isRowGapPreset(file_.rowGap)) {
     ;(merged as { rowGap: RowGapPreset }).rowGap = file_.rowGap
   }
@@ -740,10 +715,6 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
 
   if (typeof file_.animationSpeed === 'string' && isAnimationSpeedPreset(file_.animationSpeed)) {
     ;(merged as { animationSpeed: AnimationSpeedPreset }).animationSpeed = file_.animationSpeed
-  }
-
-  if (typeof file_.streamingRenderMode === 'string' && isStreamingRenderMode(file_.streamingRenderMode)) {
-    ;(merged as { streamingRenderMode: StreamingRenderMode }).streamingRenderMode = file_.streamingRenderMode
   }
 
   if (typeof file_.cliDebug === 'boolean') {
@@ -873,12 +844,10 @@ export const WRITABLE_CONFIG_KEYS = [
   'autoRecap',
   'toolGroupCards',
   'autoExpandRunningGroups',
-  'showMessageHeaders',
   'rowGap',
   'textSpacing',
   'fontSize',
   'animationSpeed',
-  'streamingRenderMode',
   'cliDebug',
   'appToolsGit',
   'firstPartyTools',

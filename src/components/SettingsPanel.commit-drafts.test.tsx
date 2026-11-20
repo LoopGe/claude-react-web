@@ -23,8 +23,6 @@ const globalPrefs = {
   autoRecap: true,
   toolGroupCards: true,
   autoExpandRunningGroups: true,
-  showMessageHeaders: true,
-  streamingRenderMode: 'overlay',
 } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
 
 function mkSession(overrides: Partial<SessionInfo> = {}): SessionInfo {

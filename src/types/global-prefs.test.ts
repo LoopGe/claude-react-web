@@ -32,12 +32,10 @@ const NON_DEFAULT_PREFS: GlobalPrefs = {
   autoRecap: false,
   toolGroupCards: false,
   autoExpandRunningGroups: false,
-  showMessageHeaders: false,
   rowGap: 'compact',
   textSpacing: 'compact',
   fontSize: 'small',
   animationSpeed: 'slow',
-  streamingRenderMode: 'overlay',
   firstPartyTools: { 'git-tools': { enabled: false } },
 }
 
@@ -49,7 +47,7 @@ const ALL_DEFAULT: GlobalPrefs = {
 /** Minimal SessionInfo carrying only the optional pref-override fields. */
 function mkSession(overrides: Partial<Pick<SessionInfo,
   'showPinnedUserMessage' | 'autoRecap' | 'toolGroupCards' |
-  'autoExpandRunningGroups' | 'showMessageHeaders'>> = {}): SessionInfo {
+  'autoExpandRunningGroups'>> = {}): SessionInfo {
   return { id: 's1', running: true, terminated: false, ...overrides } as unknown as SessionInfo
 }
 
@@ -61,7 +59,6 @@ describe('DEFAULT_GLOBAL_PREFS', () => {
     expect(DEFAULT_GLOBAL_PREFS.autoRecap).toBe(true)
     expect(DEFAULT_GLOBAL_PREFS.toolGroupCards).toBe(true)
     expect(DEFAULT_GLOBAL_PREFS.autoExpandRunningGroups).toBe(true)
-    expect(DEFAULT_GLOBAL_PREFS.showMessageHeaders).toBe(true)
   })
 
   it('uses the shipped preset defaults', () => {
@@ -69,7 +66,6 @@ describe('DEFAULT_GLOBAL_PREFS', () => {
     expect(DEFAULT_GLOBAL_PREFS.textSpacing).toBe('spacious')
     expect(DEFAULT_GLOBAL_PREFS.fontSize).toBe('standard')
     expect(DEFAULT_GLOBAL_PREFS.animationSpeed).toBe('standard')
-    expect(DEFAULT_GLOBAL_PREFS.streamingRenderMode).toBe('inline')
   })
 
   it('does not carry firstPartyTools (AppearancePrefs has no firstPartyTools)', () => {
@@ -91,12 +87,10 @@ describe('globalPrefsFromConfig', () => {
       autoRecap: undefined,
       toolGroupCards: undefined,
       autoExpandRunningGroups: undefined,
-      showMessageHeaders: undefined,
       rowGap: undefined,
       textSpacing: undefined,
       fontSize: undefined,
       animationSpeed: undefined,
-      streamingRenderMode: undefined,
       firstPartyTools: undefined,
     })
     expect(prefs).toEqual(ALL_DEFAULT)
@@ -108,13 +102,11 @@ describe('globalPrefsFromConfig', () => {
       autoRecap: false,
       toolGroupCards: false,
       autoExpandRunningGroups: false,
-      showMessageHeaders: false,
     })
     expect(prefs.showPinnedUserMessage).toBe(false)
     expect(prefs.autoRecap).toBe(false)
     expect(prefs.toolGroupCards).toBe(false)
     expect(prefs.autoExpandRunningGroups).toBe(false)
-    expect(prefs.showMessageHeaders).toBe(false)
   })
 
   it('preserves every explicit non-default preset value', () => {
@@ -123,13 +115,11 @@ describe('globalPrefsFromConfig', () => {
       textSpacing: 'compact',
       fontSize: 'small',
       animationSpeed: 'slow',
-      streamingRenderMode: 'overlay',
     })
     expect(prefs.rowGap).toBe('compact')
     expect(prefs.textSpacing).toBe('compact')
     expect(prefs.fontSize).toBe('small')
     expect(prefs.animationSpeed).toBe('slow')
-    expect(prefs.streamingRenderMode).toBe('overlay')
   })
 
   it('preserves the off animation-speed preset', () => {
@@ -205,7 +195,6 @@ describe('sameGlobalPrefs', () => {
       'autoRecap',
       'toolGroupCards',
       'autoExpandRunningGroups',
-      'showMessageHeaders',
     ] as const) {
       const a: GlobalPrefs = { ...ALL_DEFAULT }
       const b: GlobalPrefs = { ...ALL_DEFAULT, [key]: !ALL_DEFAULT[key] }
@@ -219,7 +208,6 @@ describe('sameGlobalPrefs', () => {
       ['textSpacing', 'compact'],
       ['fontSize', 'small'],
       ['animationSpeed', 'slow'],
-      ['streamingRenderMode', 'overlay'],
     ] as const) {
       const a: GlobalPrefs = { ...ALL_DEFAULT }
       const b: GlobalPrefs = { ...ALL_DEFAULT, [key]: alt }
@@ -238,7 +226,6 @@ describe('resolveSessionPrefs', () => {
       autoRecap: true,
       toolGroupCards: true,
       autoExpandRunningGroups: true,
-      showMessageHeaders: true,
     })
   })
 
@@ -252,13 +239,13 @@ describe('resolveSessionPrefs', () => {
   })
 
   it('preserves an explicit true session override over a global false', () => {
-    const globals: GlobalPrefs = { ...ALL_DEFAULT, toolGroupCards: false, showMessageHeaders: false }
+    const globals: GlobalPrefs = { ...ALL_DEFAULT, toolGroupCards: false, autoExpandRunningGroups: false }
     const sp = resolveSessionPrefs(
-      mkSession({ toolGroupCards: true, showMessageHeaders: true }),
+      mkSession({ toolGroupCards: true, autoExpandRunningGroups: true }),
       globals,
     )
     expect(sp.toolGroupCards).toBe(true)
-    expect(sp.showMessageHeaders).toBe(true)
+    expect(sp.autoExpandRunningGroups).toBe(true)
   })
 
   it('inherits the global value when the session override is undefined', () => {
@@ -268,7 +255,7 @@ describe('resolveSessionPrefs', () => {
     expect(sp.autoExpandRunningGroups).toBe(false)
   })
 
-  it('returns only the 5 SessionPrefs fields (no presets, no streaming, no firstPartyTools)', () => {
+  it('returns only the 4 SessionPrefs fields (no presets, no firstPartyTools)', () => {
     const sp = resolveSessionPrefs(mkSession(), NON_DEFAULT_PREFS)
     const keys = Object.keys(sp)
     expect(keys).toEqual([
@@ -276,7 +263,6 @@ describe('resolveSessionPrefs', () => {
       'autoRecap',
       'toolGroupCards',
       'autoExpandRunningGroups',
-      'showMessageHeaders',
     ])
   })
 
@@ -285,18 +271,18 @@ describe('resolveSessionPrefs', () => {
       ...ALL_DEFAULT,
       autoRecap: false,
       toolGroupCards: true,
-      showMessageHeaders: false,
+      autoExpandRunningGroups: false,
     }
     const sp = resolveSessionPrefs(
-      mkSession({ autoRecap: true, showMessageHeaders: undefined }),
+      mkSession({ autoRecap: true, autoExpandRunningGroups: undefined }),
       globals,
     )
     // autoRecap: session true overrides global false
     expect(sp.autoRecap).toBe(true)
     // toolGroupCards: session undefined inherits global true
     expect(sp.toolGroupCards).toBe(true)
-    // showMessageHeaders: session undefined inherits global false
-    expect(sp.showMessageHeaders).toBe(false)
+    // autoExpandRunningGroups: session undefined inherits global false
+    expect(sp.autoExpandRunningGroups).toBe(false)
   })
 })
 
@@ -333,8 +319,6 @@ describe('appearanceFromFullConfig', () => {
       autoRecap: false,
       toolGroupCards: false,
       autoExpandRunningGroups: false,
-      showMessageHeaders: false,
-      streamingRenderMode: 'overlay',
     })
   })
 
@@ -409,13 +393,12 @@ describe('type compatibility', () => {
     expectTypeOf<FullServerConfig>().toMatchTypeOf<GlobalPrefs>()
   })
 
-  it('SessionPrefs has exactly the 5 session-override keys', () => {
+  it('SessionPrefs has exactly the 4 session-override keys', () => {
     expectTypeOf<SessionPrefs>().toEqualTypeOf<{
       showPinnedUserMessage: boolean
       autoRecap: boolean
       toolGroupCards: boolean
       autoExpandRunningGroups: boolean
-      showMessageHeaders: boolean
     }>()
   })
 

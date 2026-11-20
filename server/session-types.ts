@@ -626,6 +626,24 @@ export interface Session {
    *  round-trip per reconnect / panel remount forever — the in-flight flag
    *  only dedups CONCURRENT attempts. Not persisted. */
   lastContextUsageSeedAt?: number
+  /** True once a REAL turn `result` has confirmed this session's backend reports
+   *  AGGREGATE usage (top-level usage is the turn's billing sum atop an
+   *  empty/null `iterations` — see resultUsageUnverifiable) AND the handle can
+   *  probe getContextUsage. Warm-up/zero-usage/error results are excluded (they
+   *  also carry iterations=[] but do not establish the wire). On that wire the
+   *  live `assistant` frame carries the message_start usage, which under-reports
+   *  the prompt (a non-zero input_tokens with no cache buckets), so the pump's
+   *  mid-turn assistant derivation is disabled and the turn-end reconcile probe
+   *  — the CLI's own accounting — is the sole authority. Without this gate the
+   *  bar oscillates: the partial assistant reading drags it down mid-turn, the
+   *  probe corrects it at turn end (live-reproduced on the Mify proxy: 142k
+   *  painted as 57k). Latched for the session's life (the wire shape is a
+   *  backend property, not a per-turn fluctuation); not persisted — re-detected
+   *  from the first real result after resume. Known gap: the FIRST turn after a
+   *  spawn/resume still derives from the partial assistant frame before its
+   *  result latches the wire, so the bar can dip once until that turn's probe
+   *  lands; every later turn is stable. */
+  aggregateUsageWire?: boolean
   /** Per-subscriber pushables for prompt_suggestion events — separate from
    *  message history (suggestions are ephemeral, not conversation content).
    *  Same shape as contextUsageSubscribers. */
@@ -783,11 +801,6 @@ export interface Session {
    *  UI pref — no SDK call. Only meaningful while the effective
    *  `toolGroupCards` is on. */
   autoExpandRunningGroups?: boolean
-  /** Per-session override for message-card header rows (assistant/you
-   *  label + timestamp + sending status). Undefined = inherit the global
-   *  config default; a boolean pins it. Persisted via SessionMeta and
-   *  mirrored into SessionInfo. Pure UI pref — no SDK call. */
-  showMessageHeaders?: boolean
   /** User intent: per-session CLI debug logging. undefined = inherit the
    *  global config default. Persisted so resume/fork/restart keep the intent. */
   cliDebug?: boolean

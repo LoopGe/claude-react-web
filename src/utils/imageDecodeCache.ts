@@ -1,4 +1,4 @@
-// Decode cache for persisted history images.
+// Decode/content cache for persisted history + draft images.
 //
 // Recall used to decode base64 → Blob synchronously on the main thread
 // (atob + per-byte loop): a ~10 MB entry froze the UI for ~100-200 ms on
@@ -9,6 +9,11 @@
 //   - an LRU keyed by the base64 payload, so walking back and forth over
 //     the same entries is a cache hit (no re-decode)
 //
+// Ref-backed records (the durable draft/history shape) take the same memo
+// keyed by the ref id instead: the Blob is fetched from the content route
+// (`/api/attachments/images/<digest>`) once and reused the same way. Legacy
+// base64 records keep the data-URL decode path unchanged.
+//
 // OWNERSHIP: this cache is a pure decode MEMO. It stores Blobs — never blob
 // URLs — and every buildPastedImages() call mints a FRESH blob URL from the
 // cached Blob. That makes each returned URL composer-owned (revoked by the
@@ -17,9 +22,11 @@
 // ownership special-casing. Eviction just drops the Blob reference; the GC
 // reclaims it. `reset-config`'s "input history" item calls
 // clearImageDecodeCache() alongside the IDB wipe (a clear-generation guard
-// keeps in-flight decodes from resurrecting the memo).
+// keeps in-flight decodes from resurrecting the memo). The render-side
+// counterpart (useImageContent) is a SEPARATE cache that owns its URLs.
 
 import { randomId } from './uuid'
+import { fetchImageContentBlob } from './image-content'
 import type { PersistedImage } from '../state/inputHistoryImages'
 import type { PastedImage } from '../types'
 
@@ -29,14 +36,19 @@ const DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024
 interface MemoEntry {
   blob: Blob
   mediaType: PersistedImage['mediaType']
+  /** LRU byte weight: the base64 payload length for legacy entries (the
+   *  historical accounting), the stored blob size for ref entries. */
+  bytes: number
 }
 
-// key = the base64 payload itself (map compare is memcmp-fast); the value's
-// mediaType guards against the (pathological) same-payload-different-type hit.
+// key = the base64 payload itself (legacy records) or the ref id (ref
+// records — `sha256:` never appears in base64, so the key spaces are
+// disjoint). The value's mediaType guards against the (pathological)
+// same-payload-different-type hit on the legacy path.
 const memo = new Map<string, MemoEntry>()
-// In-flight decodes, so two rapid steps onto the same entry share one decode.
+// In-flight loads, so two rapid steps onto the same entry share one decode.
 const inflight = new Map<string, Promise<MemoEntry>>()
-// Bumped by clearImageDecodeCache(); decodes started before the clear must
+// Bumped by clearImageDecodeCache(); loads started before the clear must
 // not re-insert their memo entry.
 let clearGeneration = 0
 
@@ -60,73 +72,91 @@ function touchAndEvict(key: string, entry: MemoEntry): void {
   memo.delete(key)
   memo.set(key, entry)
   let totalBytes = 0
-  for (const k of memo.keys()) {
-    // The key IS the base64 payload — its length is the payload's size.
-    totalBytes += k.length
-  }
+  for (const e of memo.values()) totalBytes += e.bytes
   while (memo.size > maxEntries || totalBytes > maxTotalBytes) {
-    const oldest = memo.keys().next()
+    const oldest = memo.entries().next()
     if (oldest.done) break
-    totalBytes -= oldest.value.length
-    memo.delete(oldest.value)
+    totalBytes -= oldest.value[1].bytes
+    memo.delete(oldest.value[0])
   }
 }
 
-async function decode(key: string, p: PersistedImage, generation: number): Promise<MemoEntry> {
-  const res = await fetch(`data:${p.mediaType};base64,${p.data}`)
-  const blob = await res.blob()
-  const entry: MemoEntry = { blob, mediaType: p.mediaType }
-  // A decode that started before a clearImageDecodeCache() must not
-  // resurrect the memo the clear just dropped.
-  if (generation === clearGeneration) touchAndEvict(key, entry)
-  return entry
+/** The shared memo machinery: a valid cache hit touches + returns; otherwise
+ *  join the in-flight load or start one (generation-guarded insert). */
+async function cachedBlob(
+  key: string,
+  generation: number,
+  load: () => Promise<MemoEntry>,
+  accept: (entry: MemoEntry) => boolean = () => true,
+): Promise<MemoEntry> {
+  const cached = memo.get(key)
+  if (cached && accept(cached)) {
+    touchAndEvict(key, cached)
+    return cached
+  }
+  const pending = inflight.get(key)
+  if (pending) return pending
+  const d = (async () => {
+    const entry = await load()
+    // A load that started before a clearImageDecodeCache() must not
+    // resurrect the memo the clear just dropped.
+    if (generation === clearGeneration) touchAndEvict(key, entry)
+    return entry
+  })()
+  inflight.set(key, d)
+  try {
+    return await d
+  } finally {
+    inflight.delete(key)
+  }
 }
 
 /** Build live PastedImage objects for a persisted set. Cache hits reuse the
- *  decoded Blob (no re-decode) but always mint a FRESH composer-owned URL;
- *  misses decode asynchronously. Images whose decode fails are skipped
- *  (logged) rather than failing the whole recall. */
+ *  decoded/fetched Blob (no re-decode, no refetch) but always mint a FRESH
+ *  composer-owned URL; misses load asynchronously. Images whose load fails
+ *  are skipped (logged) rather than failing the whole recall. */
 export async function buildPastedImages(
   images: readonly PersistedImage[],
 ): Promise<PastedImage[]> {
   const generation = clearGeneration
   const out = await Promise.all(
     images.map(async (p): Promise<PastedImage | null> => {
-      const key = p.data
-      const cached = memo.get(key)
+      const attachment = p.attachment
       let entry: MemoEntry
-      if (cached && cached.mediaType === p.mediaType) {
-        touchAndEvict(key, cached)
-        entry = cached
-      } else {
-        try {
-          const pending = inflight.get(key)
-          if (pending) {
-            entry = await pending
-          } else {
-            const d = decode(key, p, generation)
-            inflight.set(key, d)
-            try {
-              entry = await d
-            } finally {
-              inflight.delete(key)
-            }
-          }
-        } catch (err) {
-          // One un-decodable image must not fail the whole recall — skip it
-          // (the rest still apply).
-          console.warn('[imageDecodeCache] decode failed, skipping image:', err)
-          return null
+      try {
+        if (attachment !== undefined) {
+          const refId = attachment.id
+          entry = await cachedBlob(refId, generation, async () => {
+            const blob = await fetchImageContentBlob(refId)
+            return { blob, mediaType: p.mediaType, bytes: blob.size }
+          })
+        } else {
+          entry = await cachedBlob(
+            p.data,
+            generation,
+            async () => {
+              const res = await fetch(`data:${p.mediaType};base64,${p.data}`)
+              const blob = await res.blob()
+              return { blob, mediaType: p.mediaType, bytes: p.data.length }
+            },
+            (e) => e.mediaType === p.mediaType,
+          )
         }
+      } catch (err) {
+        // One un-decodable / unreachable image must not fail the whole
+        // recall — skip it (the rest still apply).
+        console.warn('[imageDecodeCache] image load failed, skipping image:', err)
+        return null
       }
       return {
         id: randomId(),
-        data: p.data,
+        data: attachment !== undefined ? '' : p.data,
         mediaType: p.mediaType,
         width: p.width,
         height: p.height,
         size: p.size,
         ...(p.original === undefined ? {} : { original: p.original }),
+        ...(attachment === undefined ? {} : { attachment }),
         // Composer-owned URL, minted fresh from the cached Blob.
         previewUrl: URL.createObjectURL(entry.blob),
       }
@@ -135,8 +165,8 @@ export async function buildPastedImages(
   return out.filter((i): i is PastedImage => i !== null)
 }
 
-/** Drop every decoded Blob (reset-config). Composer-owned URLs are unaffected
- *  — the cache never owns URLs. In-flight decodes are generation-guarded so
+/** Drop every cached Blob (reset-config). Composer-owned URLs are unaffected
+ *  — the cache never owns URLs. In-flight loads are generation-guarded so
  *  they cannot resurrect the memo. */
 export function clearImageDecodeCache(): void {
   clearGeneration++

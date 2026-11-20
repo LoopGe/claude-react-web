@@ -120,7 +120,6 @@ const basePanelProps = {
   globalPrefs: {
     ...DEFAULT_GLOBAL_PREFS,
     autoRecap: false,
-    streamingRenderMode: 'overlay' as const,
   },
   onFocus: noop,
   onClose: noop,

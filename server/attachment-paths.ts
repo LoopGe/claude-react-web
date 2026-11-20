@@ -31,6 +31,19 @@ export function aliasPathOf(root: string, digest: string, name: string): string 
   return join(root, 'files', digest, name)
 }
 
+/** Image object path for a hex sha256 digest, sharded by its first two hex
+ *  chars. Images live in a separate `images/` tree with NO filename alias —
+ *  the digest is the identity, so the object leaf is the digest itself. */
+export function imageObjectPathOf(root: string, digest: string): string {
+  return join(root, 'images', digest.slice(0, 2), digest)
+}
+
+/** Meta sidecar path for one stored image (`<digest>.json` beside the object
+ *  in the same shard), recording mediaType/bytes/width/height. */
+export function imageMetaPathOf(root: string, digest: string): string {
+  return join(root, 'images', digest.slice(0, 2), `${digest}.json`)
+}
+
 /** Windows treats these stems as device names in every directory, with or
  *  without an extension (`CON`, `CON.txt`); a file published under one is
  *  unreachable through ordinary path I/O. */

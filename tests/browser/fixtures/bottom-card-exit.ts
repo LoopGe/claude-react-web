@@ -181,7 +181,6 @@ function render(kind: BottomCardKind, visible: boolean) {
       items: TRANSCRIPT_ITEMS,
       bottomOverlay,
       panelVisible: true,
-      streamingMode: 'inline',
     }),
   )
 }

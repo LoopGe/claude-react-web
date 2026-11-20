@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { fileHandleText } from '../../shared/upload-handle'
+import { imageHandleText } from '../../shared/image-handle'
 import { splitUserBlocks, splitUserContentSegments } from './file-blocks'
 import type { Block } from '../types'
 
 const ref = { id: '8f1c2d34-0000-4000-8000-000000000003', name: 'a.pdf', size: 3, digest: 'a'.repeat(64) }
 const handle = fileHandleText(ref, '/tmp/a.pdf')
+const imageHandle = imageHandleText(
+  { id: `sha256:${'b'.repeat(64)}`, mediaType: 'image/png', bytes: 68, width: 1, height: 1 },
+  `/store/images/bb/${'b'.repeat(64)}`,
+)
 
 describe('splitUserContentSegments', () => {
   it('preserves text, file, and image order including repeated upload ids', () => {
@@ -72,5 +77,11 @@ describe('splitUserBlocks', () => {
     const parts = splitUserBlocks([{ type: 'text', text: '[File "x" is not a handle]' }])
     expect(parts.text).toBe('[File "x" is not a handle]')
     expect(parts.files).toEqual([])
+  })
+
+  it('drops image-handle plumbing text (the image block renders instead)', () => {
+    const image = { type: 'image', source: { type: 'base64', data: 'A', media_type: 'image/png' } } as Block
+    const parts = splitUserBlocks([{ type: 'text', text: imageHandle }, image])
+    expect(parts).toEqual({ text: null, images: [image], files: [] })
   })
 })

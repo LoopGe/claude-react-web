@@ -34,7 +34,6 @@ import type {
   TranscriptItem,
 } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
-import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 
 interface Props {
   /** The Workflow record this overlay is showing. */
@@ -61,12 +60,6 @@ interface Props {
   /** Auto-expand running groups pref (effective value from the owning Chat
    *  panel) — forwarded for consistency with the main transcript. */
   autoExpandRunningGroups?: boolean
-  /** Message-card header visibility pref (effective value from the owning
-   *  Chat panel) — forwarded for consistency with the main transcript. */
-  showMessageHeaders?: boolean
-  /** Global streaming-preview mode (from the owning Chat panel) — forwarded
-   *  so the seam here follows the same setting as the main transcript. */
-  streamingMode?: StreamingRenderMode
 }
 
 const UNGROUPED = '(ungrouped)'
@@ -84,8 +77,6 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
   questionAnswers,
   toolGroupCards,
   autoExpandRunningGroups,
-  showMessageHeaders,
-  streamingMode,
 }: Props) {
   // Focused child: null = show the Workflow's direct children (phase tree
   // level). A child's toolUseId = drill into THAT child's inner conversation.
@@ -236,8 +227,6 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
             questionAnswers={questionAnswers}
             toolGroupCards={toolGroupCards}
             autoExpandRunningGroups={autoExpandRunningGroups}
-            showMessageHeaders={showMessageHeaders}
-            streamingMode={streamingMode}
             replayReady
             // Like SubagentOverlay: the default ChatEmptyState ("Start a
             // conversation") is for a NEW CHAT, and `items` here is the FULL

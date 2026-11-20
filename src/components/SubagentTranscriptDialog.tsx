@@ -5,7 +5,6 @@
 // pushes snapshot + incremental frames so a running background task's
 // transcript fills in live.
 
-import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import { SubagentTranscriptBody } from './SubagentTranscriptBody'
 import { Overlay } from './Overlay'
 import { IconX } from './icons/ToolIcons'
@@ -14,7 +13,6 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
   sessionId,
   agentId,
   label,
-  streamingMode,
   visible = true,
   cwd,
   onClose,
@@ -22,9 +20,6 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
   sessionId: string
   agentId: string
   label: string
-  /** Global streaming-preview mode, threaded from the panel prefs so the
-   *  dialog follows the same setting as the main transcript. */
-  streamingMode?: StreamingRenderMode
   visible?: boolean
   /** Session working directory — relative paths in the transcript resolve
    *  against it. */
@@ -57,7 +52,6 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
         <SubagentTranscriptBody
           sessionId={sessionId}
           agentId={agentId}
-          streamingMode={streamingMode}
           cwd={cwd}
           visible={visible}
           variant="dialog"

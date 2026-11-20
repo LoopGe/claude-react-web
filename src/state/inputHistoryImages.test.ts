@@ -14,8 +14,19 @@ import {
   deleteDraftImages,
   deleteDraftImagesForRemovedSession,
   resumeDraftWrites,
+  toPersistedImage,
 } from './inputHistoryImages'
 import { resetInputHistoryIdb, makeImg as img } from '../test-utils/inputHistoryIdb'
+import type { ImageAttachmentRef } from '../../shared/image-attachment'
+import type { PastedImage } from '../types'
+
+const REF: ImageAttachmentRef = {
+  id: `sha256:${'ab'.repeat(32)}`,
+  mediaType: 'image/webp',
+  bytes: 3,
+  width: 10,
+  height: 20,
+}
 
 beforeEach(() => {
   resetInputHistoryIdb()
@@ -175,5 +186,42 @@ describe('draft images', () => {
     resumeDraftWrites('s1')
     await putDraftImages('s1', [img('AGAIN')])
     expect(await getDraftImages('s1')).toEqual([img('AGAIN')])
+  })
+
+  it('round-trips a ref-backed draft (the ref is the payload, not base64)', async () => {
+    const record = { data: '', mediaType: 'image/webp' as const, width: 10, height: 20, size: 3, attachment: REF }
+    await putDraftImages('s1', [record])
+    expect(await getDraftImages('s1')).toEqual([record])
+  })
+})
+
+describe('toPersistedImage', () => {
+  const live: PastedImage = {
+    id: 'live-1',
+    data: 'AAAA',
+    mediaType: 'image/png',
+    width: 10,
+    height: 20,
+    size: 3,
+    previewUrl: 'blob:live-1',
+  }
+
+  it('strips runtime fields from a legacy image (unchanged shape)', () => {
+    expect(toPersistedImage(live)).toEqual({
+      data: 'AAAA', mediaType: 'image/png', width: 10, height: 20, size: 3,
+    })
+  })
+
+  it('persists a ref-backed image as its attachment with an empty base64 payload', () => {
+    expect(toPersistedImage({ ...live, data: '', mediaType: 'image/webp', attachment: REF })).toEqual({
+      data: '', mediaType: 'image/webp', width: 10, height: 20, size: 3, attachment: REF,
+    })
+  })
+
+  it('keeps the original-image facts alongside the attachment', () => {
+    const original = { mediaType: 'image/png' as const, width: 4000, height: 3000, size: 9_000_000 }
+    expect(toPersistedImage({ ...live, data: '', attachment: REF, original })).toEqual({
+      data: '', mediaType: 'image/png', width: 10, height: 20, size: 3, attachment: REF, original,
+    })
   })
 })

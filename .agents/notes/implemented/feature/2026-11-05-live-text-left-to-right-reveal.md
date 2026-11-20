@@ -49,8 +49,8 @@ no mask behind.
 Tails that render block-level content after the caret (fenced code, tables,
 images, thematic breaks, display math) opt out via `isRevealableTail` and
 appear whole: the mask cannot reveal a region it did not measure. The predicate
-takes the whole `StreamSegment` (including the code type) and is shared by both
-renderers, so the inline draft card and the overlay bubble cannot drift.
+takes the whole `StreamSegment` (including the code type); the draft card body
+(`draft-body.tsx`) is its consumer.
 
 ## Alternatives considered
 
@@ -95,6 +95,5 @@ A window resize during the ~240 ms sweep is not handled specially; the mask is
 dropped when the animation finishes, so any stale geometry lives at most one
 sweep.
 
-The `black` stops in the mask are alpha-channel values, not theme colours (the
-same convention as the `.streaming-plain` edge fade); they are deliberately not
-theme variables.
+The `black` stops in the mask are alpha-channel values, not theme colours;
+they are deliberately not theme variables.

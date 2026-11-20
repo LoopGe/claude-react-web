@@ -15,6 +15,7 @@
 import { openDB, type IDBPDatabase } from 'idb'
 import type { PastedImage, PastedImageOriginal } from '../types'
 import type { SupportedImageMediaType } from '../../shared/image-media'
+import type { ImageAttachmentRef } from '../../shared/image-attachment'
 
 const DB_NAME = 'claude-web-history'
 const DB_VERSION = 1
@@ -23,7 +24,8 @@ const IMAGES_STORE = 'images'
 /** The persistable subset of `PastedImage` (runtime-only fields dropped:
  *  `id` is re-minted on restore, `previewUrl` is a live blob URL). */
 export interface PersistedImage {
-  /** base64 payload, no data-URL prefix (same shape as PastedImage.data). */
+  /** base64 payload, no data-URL prefix (same shape as PastedImage.data).
+   *  EMPTY on ref-backed records — the durable payload is `attachment`. */
   data: string
   mediaType: SupportedImageMediaType
   width: number
@@ -31,6 +33,9 @@ export interface PersistedImage {
   size: number
   /** Source facts for a normalized image; absent on pre-normalization records. */
   original?: PastedImageOriginal
+  /** Durable store reference (new records). Absent on legacy base64 records,
+   *  which restore through the data-URL decode path unchanged. */
+  attachment?: ImageAttachmentRef
 }
 
 interface ImageRecord {
@@ -214,14 +219,17 @@ export function resumeDraftWrites(sessionId: string): void {
 
 /** Strip a live PastedImage down to its persistable shape (drops the runtime
  *  `id` and blob `previewUrl`). Used at both write sites: send() recording
- *  history and the composer stashing draft images on browse entry. */
+ *  history and the composer stashing draft images on browse entry. A
+ *  ref-backed image persists its attachment with an EMPTY base64 payload —
+ *  the ref is the draft; restore fetches the content from the store. */
 export function toPersistedImage(img: PastedImage): PersistedImage {
   return {
-    data: img.data,
+    data: img.attachment !== undefined ? '' : img.data,
     mediaType: img.mediaType,
     width: img.width,
     height: img.height,
     size: img.size,
     ...(img.original === undefined ? {} : { original: img.original }),
+    ...(img.attachment === undefined ? {} : { attachment: img.attachment }),
   }
 }

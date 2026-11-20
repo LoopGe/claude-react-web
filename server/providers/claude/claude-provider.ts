@@ -28,7 +28,7 @@ import {
 } from '../../model-groups.js'
 import { readHistoryEntries, readHistorySnapshot, readLastUserPrompt } from '../../history-reader.js'
 import { condensePromptPreview } from '../../../shared/prompt-preview.js'
-import { stripFileHandles } from '../../../shared/upload-handle.js'
+import { stripHandles } from '../../../shared/attachment-handle.js'
 import { jsonlPageCache } from '../../jsonl-cache.js'
 import { claudeConfigDir } from '../../claude-config-dir.js'
 import { filterClientEnv } from '../../session-env.js'
@@ -875,7 +875,7 @@ export class ClaudeProvider implements AgentProvider {
   private toResumable(info: SDKSessionInfo): ResumableSession {
     const firstPrompt = info.firstPrompt === undefined
       ? undefined
-      : stripFileHandles(info.firstPrompt) || undefined
+      : stripHandles(info.firstPrompt) || undefined
     return {
       provider: this.name,
       sessionId: info.sessionId,

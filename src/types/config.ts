@@ -3,7 +3,6 @@ import { DEFAULT_ROW_GAP, type RowGapPreset } from '../../shared/row-gap'
 import { DEFAULT_TEXT_SPACING, type TextSpacingPreset } from '../../shared/text-spacing'
 import { DEFAULT_FONT_SIZE, type FontSizePreset } from '../../shared/font-size'
 import { DEFAULT_ANIMATION_SPEED, type AnimationSpeedPreset } from '../../shared/animation-speed'
-import { DEFAULT_STREAMING_RENDER_MODE, type StreamingRenderMode } from '../../shared/streaming-render-mode'
 import type { SessionInfo } from '../types'
 
 // ---------------------------------------------------------------------------
@@ -27,22 +26,20 @@ export interface GlobalPrefs {
   autoRecap: boolean
   toolGroupCards: boolean
   autoExpandRunningGroups: boolean
-  showMessageHeaders: boolean
   rowGap: RowGapPreset
   textSpacing: TextSpacingPreset
   fontSize: FontSizePreset
   animationSpeed: AnimationSpeedPreset
-  streamingRenderMode: StreamingRenderMode
   firstPartyTools?: Record<string, { enabled: boolean }>
 }
 
 /** The subset of GlobalPrefs that a session can override. Presets
- *  (rowGap/textSpacing/fontSize/animationSpeed) and streamingRenderMode are
- *  global-only — they never enter SessionPrefs. */
+ *  (rowGap/textSpacing/fontSize/animationSpeed) are global-only — they never
+ *  enter SessionPrefs. */
 export type SessionPrefs = Pick<
   GlobalPrefs,
   'showPinnedUserMessage' | 'autoRecap' | 'toolGroupCards' |
-  'autoExpandRunningGroups' | 'showMessageHeaders'
+  'autoExpandRunningGroups'
 >
 
 /** The appearance slice of GlobalPrefs — everything except `firstPartyTools`
@@ -75,12 +72,10 @@ export const DEFAULT_GLOBAL_PREFS: AppearancePrefs = {
   autoRecap: true,
   toolGroupCards: true,
   autoExpandRunningGroups: true,
-  showMessageHeaders: true,
   rowGap: DEFAULT_ROW_GAP,
   textSpacing: DEFAULT_TEXT_SPACING,
   fontSize: DEFAULT_FONT_SIZE,
   animationSpeed: DEFAULT_ANIMATION_SPEED,
-  streamingRenderMode: DEFAULT_STREAMING_RENDER_MODE,
 }
 
 /** Resolve a full `GlobalPrefs` from a partial config body. Each field uses
@@ -94,12 +89,10 @@ export function globalPrefsFromConfig(config: Partial<GlobalPrefs>): GlobalPrefs
     autoRecap: config.autoRecap ?? DEFAULT_GLOBAL_PREFS.autoRecap,
     toolGroupCards: config.toolGroupCards ?? DEFAULT_GLOBAL_PREFS.toolGroupCards,
     autoExpandRunningGroups: config.autoExpandRunningGroups ?? DEFAULT_GLOBAL_PREFS.autoExpandRunningGroups,
-    showMessageHeaders: config.showMessageHeaders ?? DEFAULT_GLOBAL_PREFS.showMessageHeaders,
     rowGap: config.rowGap ?? DEFAULT_GLOBAL_PREFS.rowGap,
     textSpacing: config.textSpacing ?? DEFAULT_GLOBAL_PREFS.textSpacing,
     fontSize: config.fontSize ?? DEFAULT_GLOBAL_PREFS.fontSize,
     animationSpeed: config.animationSpeed ?? DEFAULT_GLOBAL_PREFS.animationSpeed,
-    streamingRenderMode: config.streamingRenderMode ?? DEFAULT_GLOBAL_PREFS.streamingRenderMode,
     firstPartyTools: config.firstPartyTools,
   }
 }
@@ -115,19 +108,15 @@ export function appearanceFromFullConfig(config: FullServerConfig): ModalAppeara
     autoRecap: g.autoRecap,
     toolGroupCards: g.toolGroupCards,
     autoExpandRunningGroups: g.autoExpandRunningGroups,
-    showMessageHeaders: g.showMessageHeaders,
-    streamingRenderMode: g.streamingRenderMode,
   }
 }
 
-/** Initial staged state for the settings modal — the six fields it owns. */
+/** Initial staged state for the settings modal — the four fields it owns. */
 export const DEFAULT_MODAL_APPEARANCE: ModalAppearancePrefs = {
   showPinnedUserMessage: DEFAULT_GLOBAL_PREFS.showPinnedUserMessage,
   autoRecap: DEFAULT_GLOBAL_PREFS.autoRecap,
   toolGroupCards: DEFAULT_GLOBAL_PREFS.toolGroupCards,
   autoExpandRunningGroups: DEFAULT_GLOBAL_PREFS.autoExpandRunningGroups,
-  showMessageHeaders: DEFAULT_GLOBAL_PREFS.showMessageHeaders,
-  streamingRenderMode: DEFAULT_GLOBAL_PREFS.streamingRenderMode,
 }
 
 /** Shallow scalar equality plus reference identity for `firstPartyTools`.
@@ -139,21 +128,18 @@ export function sameGlobalPrefs(a: GlobalPrefs, b: GlobalPrefs): boolean {
     a.autoRecap === b.autoRecap &&
     a.toolGroupCards === b.toolGroupCards &&
     a.autoExpandRunningGroups === b.autoExpandRunningGroups &&
-    a.showMessageHeaders === b.showMessageHeaders &&
     a.rowGap === b.rowGap &&
     a.textSpacing === b.textSpacing &&
     a.fontSize === b.fontSize &&
     a.animationSpeed === b.animationSpeed &&
-    a.streamingRenderMode === b.streamingRenderMode &&
     a.firstPartyTools === b.firstPartyTools
   )
 }
 
 /** Resolve the effective per-session preferences. A session-level boolean
  *  override (including explicit `false`) wins; `undefined` inherits the
- *  global value. Only the 5 `SessionPrefs` fields are resolved — presets and
- *  `streamingRenderMode` are global-only and read directly off `GlobalPrefs`
- *  where needed. */
+ *  global value. Only the 4 `SessionPrefs` fields are resolved — presets are
+ *  global-only and read directly off `GlobalPrefs` where needed. */
 export function resolveSessionPrefs(
   session: SessionInfo,
   globalPrefs: GlobalPrefs,
@@ -163,7 +149,6 @@ export function resolveSessionPrefs(
     autoRecap: session.autoRecap ?? globalPrefs.autoRecap,
     toolGroupCards: session.toolGroupCards ?? globalPrefs.toolGroupCards,
     autoExpandRunningGroups: session.autoExpandRunningGroups ?? globalPrefs.autoExpandRunningGroups,
-    showMessageHeaders: session.showMessageHeaders ?? globalPrefs.showMessageHeaders,
   }
 }
 

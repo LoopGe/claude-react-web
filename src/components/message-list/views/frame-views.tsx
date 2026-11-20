@@ -12,24 +12,10 @@ import { Markdown } from '../../Markdown'
 import { AnsiText } from '../../AnsiText'
 import { HoverHint } from '../../HoverHint'
 import type { SdkMessage } from '../../../types'
-import { formatClockTime, formatFullTimestamp, formatTokens } from '../../../utils/format'
+import { formatClockTime, formatTokens } from '../../../utils/format'
 import { IconSquare } from '../../icons/ToolIcons'
 import { countMatches } from '../../../search'
 import { extractTag } from '../rendering'
-/** Inline message timestamp shown in the header. Renders the clock time
- *  (HH:MM:SS) with the full date+time on hover. Returns null when the
- *  message has no server-stamped time (e.g. history restored from disk
- *  after a server restart) so we never show a misleading value. */
-export function MessageTimestamp({ ms }: { ms: number | undefined }) {
-  if (ms == null) return null
-  return (
-    <HoverHint label={formatFullTimestamp(ms)} side="top">
-      <time className="msg-timestamp" dateTime={new Date(ms).toISOString()}>
-        {formatClockTime(ms)}
-      </time>
-    </HoverHint>
-  )
-}
 
 /** Render a `!` bash-mode synthetic message. Parses <bash-input>,
  *  <bash-exit code="...">, <bash-stdout>, <bash-stderr> tags and shows the

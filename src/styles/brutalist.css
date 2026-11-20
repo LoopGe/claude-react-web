@@ -292,8 +292,6 @@
 [data-skin="brutalist"] .effort-slider-range::-moz-range-thumb {
   background: var(--bt-orange);
 }
-[data-skin="brutalist"] .msg-queued-dot,
-[data-skin="brutalist"] .msg-processing-dot,
 [data-skin="brutalist"] .working-dots > span,
 [data-skin="brutalist"] .subagent-swarm-dots > span,
 [data-skin="brutalist"] .subagent-swarm-row-dot,
@@ -405,13 +403,3 @@
   -webkit-backdrop-filter: none;
 }
 
-/* ── 8. Liquid-glass inline blur kill ────────────────────────────────
-   transcript-chrome.tsx sets `backdrop-filter: blur(2px) url(#…)` (and
-   the -webkit- twin) INLINE on .streaming-refraction, the overlay
-   streaming bubble's refraction layer. An inline style beats any plain
-   stylesheet rule, so the zero-blur contract (spec §5 背景模糊) needs
-   author !important here — the only CSS-side way to flatten it. */
-[data-skin="brutalist"] .streaming-refraction {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-}

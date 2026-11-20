@@ -22,7 +22,6 @@ interface Props {
   onBack: () => void
   /** Session prefs, resolved by Chat like the main transcript. */
   toolGroupCards?: boolean
-  showMessageHeaders?: boolean
   autoExpandRunningGroups?: boolean
   /** Session cwd, used by resource/file links inside messages. */
   cwd?: string
@@ -50,7 +49,6 @@ export function SessionSearchPreview({
   target,
   onBack,
   toolGroupCards = true,
-  showMessageHeaders = true,
   autoExpandRunningGroups = true,
   cwd,
 }: Props) {
@@ -224,7 +222,6 @@ export function SessionSearchPreview({
       questionAnswers={lifecycle.questionAnswers}
       toolGroupCards={toolGroupCards}
       autoExpandRunningGroups={autoExpandRunningGroups}
-      showMessageHeaders={showMessageHeaders}
       searchQuery={target.query}
       searchActiveMsgIdx={targetItemIndex >= 0 ? targetItemIndex : undefined}
       searchActiveMatchInItem={targetItemIndex >= 0 ? mainActiveOrdinal : undefined}
@@ -285,7 +282,6 @@ export function SessionSearchPreview({
       questionAnswers={lifecycle.questionAnswers}
       toolGroupCards={toolGroupCards}
       autoExpandRunningGroups={autoExpandRunningGroups}
-      showMessageHeaders={showMessageHeaders}
       searchQuery={target.query}
       searchActiveMsgIdx={sidechainTargetItemIndex}
       searchActiveMatchInItem={sidechainTargetItemIndex >= 0 || sidechainTargetItemIndex === -1000 ? sidechainActiveOrdinal : undefined}

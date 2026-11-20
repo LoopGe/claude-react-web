@@ -18,9 +18,9 @@ interface ImageSource {
 }
 
 /**
- * Convert an image content block (SDK shape `{ type: 'image', source:
- * { type: 'base64', media_type, data } }`) into a `data:` URL safe for an
- * `<img>` src.
+ * Convert a LEGACY base64 image content block (SDK shape `{ type: 'image',
+ * source: { type: 'base64', media_type, data } }`) into a `data:` URL safe
+ * for an `<img>` src.
  *
  * Returns null when the block is not an image, the source is missing /
  * malformed, the data is not a non-empty string, or the media type is not
@@ -28,9 +28,15 @@ interface ImageSource {
  * base64 payload itself (the SDK emits valid base64; an invalid payload
  * degrades to a broken img exactly as it does today).
  *
- * Single source of truth for the image-source shape, shared by
- * ToolResultDetails (tool-result screenshots) and BlockView (pasted /
- * streamed image blocks).
+ * The durable ref shape (`{ type: 'image', attachment }`, shared/image-
+ * attachment.ts) deliberately returns null here: its bytes live in the
+ * object store and resolve ASYNC through the content route on the client
+ * (useImageContent → BlockView). This reader stays synchronous because the
+ * server search index and the tool-result text walk consume it — ref blocks
+ * only occur in user-message content, never in tool_result payloads.
+ *
+ * Single source of truth for the legacy image-source shape, shared by
+ * ToolResultDetails (tool-result screenshots) and BlockView's base64 branch.
  */
 export function imageBlockToDataUrl(block: BlockLike | undefined | null): string | null {
   if (!block || block.type !== 'image') return null

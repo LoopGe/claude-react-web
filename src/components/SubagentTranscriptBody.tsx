@@ -13,7 +13,6 @@ import { useSessionField } from '../session-store/selectors'
 import type { ActiveSubagent } from '../session-store/types'
 import type { TaskRecordUi } from '../types'
 import { isTerminalTaskStatus } from '../../shared/tasks'
-import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import { MessageList } from './MessageList'
 import { useSubagentSyntheticRows } from './message-list/useSubagentSyntheticRows'
 import { useTaskResult } from '../hooks/useTaskResult'
@@ -47,7 +46,6 @@ function taskAsSubagent(task: TaskRecordUi, resultPreview = task.result): Active
 export function SubagentTranscriptBody({
   sessionId,
   agentId,
-  streamingMode,
   subagent,
   resultState: externalResultState,
   resultPreview: externalResultPreview,
@@ -58,7 +56,6 @@ export function SubagentTranscriptBody({
 }: {
   sessionId: string
   agentId: string
-  streamingMode?: StreamingRenderMode
   /** Live lifecycle record used to restore a result absent from the disk rows. */
   subagent?: ActiveSubagent
   /** A resource host may share its already-fetched result page so details and
@@ -221,8 +218,6 @@ export function SubagentTranscriptBody({
             // Fixed defaults: the TasksPanel context has no panel prefs.
             toolGroupCards
             autoExpandRunningGroups
-            showMessageHeaders
-            streamingMode={streamingMode}
             emptyStateContent={
               <div className="chat-messages-empty-side">
                 <div className="chat-messages-empty-title">

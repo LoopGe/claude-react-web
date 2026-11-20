@@ -51,12 +51,20 @@ export function promptContentFingerprint(msg: PromptFingerprintInput): string | 
         const attachment = block.attachment as { id?: unknown } | undefined
         nonText.push(`file:${typeof attachment?.id === 'string' ? attachment.id : 'unknown'}`)
       } else if (t === 'image') {
-        const src = block.source as { media_type?: string; data?: string } | undefined
-        const media = typeof src?.media_type === 'string' ? src.media_type : ''
-        const data = typeof src?.data === 'string' ? src.data : ''
-        // media_type + length + head/tail: cheap yet discriminates different
-        // images without hashing megabytes of base64 on every comparison.
-        nonText.push(`img:${media}:${data.length}:${data.slice(0, 32)}:${data.length > 32 ? data.slice(-32) : ''}`)
+        const attachment = block.attachment as { id?: unknown } | undefined
+        if (typeof attachment?.id === 'string') {
+          // Durable ref: the digest IS the image identity — the live ring
+          // copy and the handle-recovered disk copy carry the same ref, and
+          // two different images never share one.
+          nonText.push(`img:${attachment.id}`)
+        } else {
+          const src = block.source as { media_type?: string; data?: string } | undefined
+          const media = typeof src?.media_type === 'string' ? src.media_type : ''
+          const data = typeof src?.data === 'string' ? src.data : ''
+          // media_type + length + head/tail: cheap yet discriminates different
+          // images without hashing megabytes of base64 on every comparison.
+          nonText.push(`img:${media}:${data.length}:${data.slice(0, 32)}:${data.length > 32 ? data.slice(-32) : ''}`)
+        }
       } else {
         nonText.push(String(t ?? 'block'))
       }

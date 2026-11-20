@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { HttpError } from './errors.js'
 import { createPushable } from './pushable.js'
 import {
@@ -9,6 +13,12 @@ import {
 } from './scheduled-send-manager.js'
 import type { ScheduledSendBody } from '../shared/scheduled-send.js'
 import { REBUILD_REQUIRED } from '../shared/ws-protocol.js'
+import { AttachmentObjectStore } from './attachment-object-store.js'
+import { isResolvedImageBlock, resolveImageBlocks, type ResolvedImageBlock } from './attachment-resolver.js'
+import type { ProviderContentBlock } from './agent-message.js'
+import { attachmentRoot, imageObjectPathOf } from './attachment-paths.js'
+import { imageRefId, type ImageAttachmentRef, type ImageRefBlock } from '../shared/image-attachment.js'
+import { inspectImageBytes } from '../shared/image-inspect.js'
 
 /** Build a manager with a controllable clock + fake send. Does NOT start
  *  timers (tickMs keeps the interval inert at 24 h); tests drive tick()
@@ -326,5 +336,166 @@ describe('ScheduledSendManager', () => {
       await m.tick()
       expect(m.list('s1').map((r) => r.status)).toEqual(['failed'])
     })
+  })
+})
+
+/** Fire-time image-ref semantics. The send delegate mirrors the production
+ *  wiring (routes/index.ts → sm.sendContent): it runs the SINGLE-SOURCE
+ *  resolver (resolveImageBlocks) over the content body, so these tests prove
+ *  the manager's fire path composes with real verification — the manager
+ *  itself adds no verification layer. A rejecting resolver must surface as a
+ *  `failed` schedule (the existing tick catch), never a dangling send. */
+describe('ScheduledSendManager — image ref schedules (Task 7)', () => {
+  const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+  const pngBytes = Buffer.from(PNG_1X1, 'base64')
+
+  let dir: string
+  let store: AttachmentObjectStore
+  let resolvedPayloads: (ProviderContentBlock | ResolvedImageBlock)[][]
+  let send: ReturnType<typeof vi.fn>
+  let now: number
+  let m: ScheduledSendManager
+
+  /** Published objects are 0o400; Windows refuses to delete a read-only file,
+   *  so clear the attribute before removing the tree (same as the store tests). */
+  function cleanup(root: string): void {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      const path = join(root, entry.name)
+      if (entry.isDirectory()) cleanup(path)
+      else chmodSync(path, 0o600)
+    }
+    rmSync(root, { recursive: true, force: true })
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'crw-sched-'))
+    store = new AttachmentObjectStore(dir)
+    resolvedPayloads = []
+    now = 1_000_000
+    send = vi.fn(async (_sessionId: string, body: ScheduledSendBody) => {
+      if ('content' in body) {
+        // The schedule route rejects FileBlocks, so content is text/image-only
+        // — the same boundary cast sendContent's no-file path uses.
+        const resolved = await resolveImageBlocks(
+          body.content as (ProviderContentBlock | ImageRefBlock)[],
+          { signal: new AbortController().signal, stateDir: dir },
+        )
+        resolvedPayloads.push(resolved)
+      }
+      return { uuid: 'sent-uuid' }
+    })
+    m = new ScheduledSendManager({ send, now: () => now, tickMs: 86_400_000 })
+  })
+
+  afterEach(() => {
+    m.shutdown()
+    cleanup(dir)
+  })
+
+  const refBlock = (ref: ImageAttachmentRef): ImageRefBlock => ({ type: 'image', attachment: ref })
+
+  async function publishFixture(): Promise<ImageAttachmentRef> {
+    const inspected = inspectImageBytes(pngBytes)
+    if (!inspected.ok) throw new Error('fixture PNG must inspect')
+    const pub = await store.publishImage(pngBytes, inspected.image)
+    return {
+      id: imageRefId(pub.digest),
+      mediaType: inspected.image.mediaType,
+      bytes: pub.bytes,
+      width: inspected.image.width,
+      height: inspected.image.height,
+    }
+  }
+
+  it('fires a ref schedule resolved and verified at fire time', async () => {
+    const ref = await publishFixture()
+    const body: ScheduledSendBody = { content: [{ type: 'text', text: 'look' }, refBlock(ref)] }
+    const rec = m.create('s1', body, 2_000_000)
+    now = 2_000_001
+    await m.tick()
+    // The manager hands the delegate the ref body verbatim — no base64 inlining.
+    expect(send).toHaveBeenCalledWith('s1', body)
+    const fired = m.list('s1').find((r) => r.id === rec.id)!
+    expect(fired.status).toBe('sent')
+    expect(fired.sentUuid).toBe('sent-uuid')
+    // The stored body stays ref-only after the fire.
+    expect(fired.body).toEqual(body)
+    // The delegate's resolver verified the stored bytes at fire time.
+    expect(resolvedPayloads).toHaveLength(1)
+    const resolved = resolvedPayloads[0]
+    expect(resolved[0]).toEqual({ type: 'text', text: 'look' })
+    expect(isResolvedImageBlock(resolved[1])).toBe(true)
+    const img = resolved[1] as ResolvedImageBlock
+    expect(img.attachment).toEqual(ref)
+    expect(img.source).toEqual({ type: 'base64', data: PNG_1X1, media_type: 'image/png' })
+  })
+
+  it('marks a schedule failed when its image is missing at fire time (no retry)', async () => {
+    const missing: ImageAttachmentRef = {
+      id: imageRefId('f'.repeat(64)), mediaType: 'image/png', bytes: 68, width: 1, height: 1,
+    }
+    const rec = m.create('s1', { content: [refBlock(missing)] }, 2_000_000)
+    // create() does not verify — the dangling ref is accepted as pending.
+    expect(m.list('s1')[0].status).toBe('pending')
+    now = 2_000_001
+    await m.tick()
+    const fired = m.list('s1').find((r) => r.id === rec.id)!
+    expect(fired.status).toBe('failed')
+    expect(fired.error).toMatch(/image not found/)
+    expect(fired.sentUuid).toBeUndefined()
+    // A second tick must not re-fire the failed schedule.
+    await m.tick()
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks a schedule failed when its stored bytes are corrupt at fire time', async () => {
+    const ref = await publishFixture()
+    const objectPath = imageObjectPathOf(attachmentRoot(dir), ref.id.slice('sha256:'.length))
+    chmodSync(objectPath, 0o600)
+    const tampered = Uint8Array.from(pngBytes)
+    tampered[0] ^= 0xff
+    writeFileSync(objectPath, tampered)
+    const rec = m.create('s1', { content: [refBlock(ref)] }, 2_000_000)
+    now = 2_000_001
+    await m.tick()
+    const fired = m.list('s1').find((r) => r.id === rec.id)!
+    expect(fired.status).toBe('failed')
+    expect(fired.error).toMatch(/integrity/)
+    expect(fired.sentUuid).toBeUndefined()
+  })
+
+  it('fires a legacy base64 schedule unchanged', async () => {
+    const body: ScheduledSendBody = {
+      content: [
+        { type: 'text', text: 'old' },
+        { type: 'image', source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' } },
+      ],
+    }
+    const rec = m.create('s1', body, 2_000_000)
+    now = 2_000_001
+    await m.tick()
+    expect(send).toHaveBeenCalledWith('s1', body)
+    expect(m.list('s1').find((r) => r.id === rec.id)!.status).toBe('sent')
+    // The resolver passes non-ref blocks through untouched.
+    expect(resolvedPayloads[0]).toEqual(body.content)
+  })
+
+  it('verifies at fire time, not create time (image published after create still fires)', async () => {
+    const inspected = inspectImageBytes(pngBytes)
+    if (!inspected.ok) throw new Error('fixture PNG must inspect')
+    const digest = createHash('sha256').update(pngBytes).digest('hex')
+    const ref: ImageAttachmentRef = {
+      id: imageRefId(digest),
+      mediaType: inspected.image.mediaType,
+      bytes: pngBytes.byteLength,
+      width: inspected.image.width,
+      height: inspected.image.height,
+    }
+    const rec = m.create('s1', { content: [refBlock(ref)] }, 2_000_000)
+    // The object does not exist yet at create time; publish it before the fire.
+    await store.publishImage(pngBytes, inspected.image)
+    now = 2_000_001
+    await m.tick()
+    expect(m.list('s1').find((r) => r.id === rec.id)!.status).toBe('sent')
   })
 })

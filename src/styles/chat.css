@@ -44,9 +44,9 @@
    messages. Each .virtuoso-item-wrapper carries half of it (top + bottom),
    so two neighbours sum to the full gap; the first/last outside edge uses
    the whole token. The folded tool-group body derives its internal padding
-   and inter-card gaps, and the bottom overlay cards (todo/monitor + the
-   streaming footer) derive their leave-off-the-composer gap from the same
-   token, so rows + group + floating cards read as one uniform beat. Change
+   and inter-card gaps, and the bottom overlay cards (todo/monitor) derive
+   their leave-off-the-composer gap from the same token, so rows + group +
+   floating cards read as one uniform beat. Change
    this single value and everything tightens/loosens together.
 
    The shipped default (12px) deliberately replaces the prior split values —
@@ -69,7 +69,7 @@
   .subagent-transcript {
     /* round() to a whole CSS pixel: the centered column is rendered through two
        different boxes — message rows live inside .chat-virtuoso-scroller while
-       .chat-bottom-stack (which holds .chat-streaming-region) is an
+       .chat-bottom-stack is an
        absolutely-positioned full-width overlay — and a fractional inset like
        137.5px snaps differently on the two paths on non-integer-DPR displays,
        landing them ~1px apart. Quantizing to an integer px makes both paths
@@ -175,7 +175,7 @@
    scrollbar (useOverlayScrollbar in MessageList), so scrollbar-gutter is no
    longer needed. Reading-column alignment (see --chat-reading-inset math
    above) previously relied on the gutter to shift row content; with the
-   gutter gone both the row path and the streaming-footer path resolve
+   gutter gone both the row path and the bottom-stack path resolve
    --chat-reading-inset against the full width, so they align naturally. */
 /* Session-level transcript reveal. This is intentionally separate from
    `.msg-enter`: switching sessions is a whole-transcript transition, not a
@@ -421,10 +421,10 @@
   padding-top: calc(var(--chat-row-gap) / 2);
   padding-bottom: var(--chat-row-gap);
 }
-/* Bottom overlay stack — the live streaming bubble and the task cards (passed
-   into MessageList as `bottomOverlay`) share one bottom-anchored layer, so
-   settled messages scroll behind both and are visible through the cards'
-   frosted background. MessageList measures this element and reserves its
+/* Bottom overlay stack — the task cards (passed into MessageList as
+   `bottomOverlay`) sit in one bottom-anchored layer, so settled messages
+   scroll behind them and are visible through the cards' frosted background.
+   MessageList measures this element and reserves its
    height via the Virtuoso Footer spacer (.virtuoso-bottom-spacer), so nothing
    stays permanently hidden behind it. `pointer-events: none` lets clicks fall
    through the stack's empty area; the cards re-enable it for themselves (see
@@ -442,25 +442,14 @@
      spill UP over the transcript instead — the direction the spacer
      (max(rect, scrollHeight)) already reserves room for. */
   justify-content: flex-end;
-  /* THE height constraint for everything below the live-streaming text. The
-     stack can never eat the transcript: past 45% the cards shrink (column
-     flex + min-height:0 all the way to their scrolling lists) instead of the
-     spacer pushing every message out of view. Mirrors .chat-top-stack's cap. */
+  /* THE height constraint for the bottom stack. The stack can never eat the
+     transcript: past 45% the cards shrink (column flex + min-height:0 all the
+     way to their scrolling lists) instead of the spacer pushing every message
+     out of view. Mirrors .chat-top-stack's cap. */
   max-height: 45%;
 }
-/* Clips the streaming region's own entrance/exit translate. The old layout got
-   this for free — the region was absolutely positioned inside .chat-messages,
-   whose overflow:hidden cut the 14px slide — but as a flex child of the stack
-   the fading bubble would otherwise slide across the cards underneath it. */
-.chat-streaming-clip {
-  flex: 0 0 auto;
-  min-height: 0;
-  overflow: hidden;
-}
-/* The cards. Wrapped (and measured separately from the stack) so the
-   measured reserve can distinguish the cards from the transient live
-   bubble stacked above them. A flex column of its own so the cards' bottom
-   margins count toward the measured height instead of collapsing out.
+/* The cards. A flex column of their own so the cards' bottom margins count
+   toward the measured height instead of collapsing out.
 
    overflow stays `visible` (NOT auto/hidden): a scroll container here makes
    Chromium treat the region as a backdrop root, so the frosted cards inside
@@ -473,64 +462,10 @@
   flex-direction: column;
   background: transparent;
 }
-/* The streaming region itself is a plain block inside .chat-streaming-clip. It
-   keeps pointer-events: none so the live bubble never blocks clicks on the
-   messages behind it. The CSS animation below is the mount-only HEIGHT GROW
-   (max-height 0 → cap): opacity/transform and the whole exit belong to the
-   motion.div wrapper (StreamingRegion + useStreamingRegionMotion) — CSS must
-   not animate those, or the filled keyframes would override motion's inline
-   styles. The exit used to live here as `streaming-region-out` on an
-   `.exiting` class + a 180ms delayed-unmount timer; that design had three
-   measured defects (max-height dead zone, accelerating ease-exit tail, timer
-   racing the animation start) that snapped the transcript at the end of the
-   exit — see useStreamingRegionMotion's comment for the harness numbers. */
-.chat-streaming-region {
-  overflow: hidden;
-  pointer-events: none;
-  animation: streaming-region-in var(--motion-duration-base) var(--motion-ease-enter) both;
-}
-.streaming-footer-wrapper {
-  display: flex;
-  flex-direction: column;
-  padding-left: var(--chat-reading-inset);
-  padding-right: var(--chat-reading-inset);
-  /* Top padding is 0 so the streaming bubble's visible top edge sits at the
-     same --chat-row-gap rhythm below the previous message as any two settled
-     messages (the last settled item carries padding-bottom:var(--chat-row-gap)).
-     Adding top padding here pushed the live bubble ~30px down, reading as a
-     visual "step" the moment streaming began. The breathing glow is inset-only
-     (contained inside the border), so there is no outer halo to clip or reserve
-     room for — padding-bottom is now purely bottom rhythm, sharing the same
-     --chat-row-gap as the overlay cards that replace this slot. */
-  padding-top: 0;
-  padding-bottom: var(--chat-row-gap);
-  pointer-events: none;
-}
-.streaming-footer-wrapper > .streaming-msg {
-  pointer-events: auto;
-}
 .virtuoso-bottom-spacer {
   flex: 0 0 auto;
   pointer-events: none;
   background: transparent;
-}
-@keyframes streaming-region-in {
-  /* Only the height grow lives in CSS (see the .chat-streaming-region note);
-     opacity + the 14px rise are motion's mount tween. The cap is a generous
-     ceiling above any bubble height — held by `both` fill it is what lets the
-     region size to its (already internally capped, .streaming-plain) content
-     while the grow plays. */
-  from {
-    max-height: 0;
-  }
-  to {
-    max-height: calc(3lh + 72px);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-streaming-region {
-    animation: none;
-  }
 }
 /* Empty state ?shown when there are zero messages. Needs explicit
    centering since .chat-messages is no longer a flex container. */
@@ -640,10 +575,10 @@
    popping to full size, so the flex-centered empty-state stack re-centers
    CONTINUOUSLY while the row appears — both on first mount and when the
    Plugins row lands late (enabledPlugins === undefined defers it to the
-   /mp/enabled-plugins round trip). Chosen over .chat-streaming-region's
-   max-height keyframes because fill-mode `both` would pin that cap on the
-   element forever, and wrapped chip rows have no predictable ceiling — 0fr→1fr
-   animates to the content's own height with nothing left behind. The flex
+   /mp/enabled-plugins round trip). A max-height keyframe with fill-mode
+   `both` would pin its cap on the element forever, and wrapped chip rows
+   have no predictable ceiling — 0fr→1fr animates to the content's own height
+   with nothing left behind. The flex
    layout the shell animates lives on .chat-empty-env-row-inner (grid would
    stack the label and chips as separate tracks). The delay mirrors the
    section's content-enter stagger below, so the grow plays while the row is
@@ -2121,56 +2056,14 @@ button.chat-empty-env-chip:hover {
   align-items: center;
   gap: var(--space-2);
 }
-/* Inline message timestamp ?pushed to the right edge of the header.
-   Tabular figures so the seconds digit doesn't shift the layout as it
-   ticks. Lowercase (the header is uppercased) and de-emphasised so the
-   time reads as metadata, not content. */
-.msg-timestamp {
-  flex-shrink: 0;
-  font-size: var(--fs-2xs);
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--fg-muted);
-  opacity: 0.75;
-  font-variant-numeric: tabular-nums;
-  cursor: default;
-}
-/* Raw CLI error surfaced in the assistant header (msg.error). The header
-   uppercases and mutes everything, but these strings are diagnostic — undo the
-   transform and colour it as an error so it doesn't read as ordinary chrome. */
-.msg-header-error {
-  color: var(--danger-text);
-  text-transform: none;
-  letter-spacing: 0;
-  /* A raw CLI error can be one long unbreakable token (a quoted absolute path,
-     a URL, a hash). The header is a non-wrapping flex row inside an
-     overflow-x:hidden transcript, so clip + ellipsis here (the span carries a
-     title attribute with the full text) instead of overflowing the header. */
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Push the role label hard left so the timestamp (wrapped in a Tooltip's
-   .tt-wrap) and any sending indicator settle on the right edge. The header
-   was previously justify-content: space-between with exactly two children;
-   now there are up to three, so an explicit auto margin is clearer. */
+/* Push the frame card's role label hard left so any right-side header
+   metadata settles on the right edge (an explicit auto margin is clearer
+   than relying on space-between with a variable child count). */
 .msg-header > span:first-child {
   margin-right: auto;
 }
-/* "Sending? indicator on the user bubble while the server hasn't
-   acknowledged yet. Replaced with no indicator (this entire row is
-   removed) the moment the broadcast lands. */
-.msg-sending-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--fs-2xs);
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--fg-muted);
-  flex-shrink: 0;
-}
+/* Pending bash card's spinner (BashMessage). The shared zero-specificity
+   :where group owns the spin animation and round shape. */
 .msg-sending-spinner {
   display: inline-block;
   width: var(--size-10px);
@@ -2180,71 +2073,15 @@ button.chat-empty-env-chip:hover {
      shared rule's accent top arc (zero-specificity :where group). */
   border-top-color: var(--accent);
 }
-.msg-sending-label {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-}
-/* Subtly soften the bubble while in-flight so it visibly differs from
-   the acknowledged state. Restored when the spinner is removed. */
+/* Subtly soften the bubble while in-flight (pre-ack optimistic state) so it
+   visibly differs from the acknowledged state. */
 .msg.user.msg-sending {
   opacity: 0.75;
-}
-/* Queued state: the server has the message but the SDK is still finishing
-   the current turn, so it sits in the input queue. Mirrors the sending
-   indicator shape (small chip in the header) but uses a pulsing dot rather
-   than a spinner ?it's a passive "waiting" state, not active work. */
-.msg-queued-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--fs-2xs);
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--fg-muted);
-  flex-shrink: 0;
-}
-.msg-queued-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-circle);
-  background: var(--accent);
-  animation: status-pulse 1.4s ease-in-out infinite;
-}
-.msg-queued-label {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
 }
 /* Slightly dim a queued bubble so it reads as "not yet being worked on",
    distinct from both the in-flight (sending) and acknowledged states. */
 .msg.user.msg-queued {
   opacity: 0.85;
-}
-/* Processing state: the SDK has consumed the message and the model is
-   actively working on it. Uses a pulsing dot similar to the queued
-   indicator but with a slightly faster animation to convey active work
-   rather than passive waiting. Only shown while the session is working. */
-.msg-processing-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--fs-2xs);
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--accent-text);
-  flex-shrink: 0;
-}
-.msg-processing-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-circle);
-  background: var(--accent);
-  animation: status-pulse 1s ease-in-out infinite;
-}
-.msg-processing-label {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
 }
 /* User message ?right-aligned chat bubble. We shrink the bubble below
    the column width and pin it to the right edge with align-self, which
@@ -2258,15 +2095,6 @@ button.chat-empty-env-chip:hover {
   border-color: var(--msg-user-border);
   color: var(--msg-user-fg);
   border-bottom-right-radius: var(--radius-3xs);
-}
-.msg.user .msg-header {
-  color: var(--msg-user-header-fg);
-  font-weight: 600;
-}
-.msg.user .msg-header > span:first-child {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
 }
 .msg.user .md a {
   color: var(--msg-user-link-fg);
@@ -2398,91 +2226,7 @@ button.chat-empty-env-chip:hover {
 .msg.assistant:has(> .msg-body > .tool-card) {
   width: 100%;
 }
-.msg.assistant .msg-header {
-  color: var(--assistant-header-fg);
-  font-weight: 600;
-}
 
-/* Live streaming bubble ?rendered outside Virtuoso while a turn is
-   in progress. Matches assistant card styling but without the header.
-
-   Visually aligned with the Recap floating window (overlays.css): a neutral
-   1px border and frosted --bg surface, no accent glow. The previous design
-   pulsed an accent border to flag the in-progress turn; that loud
-   affordance is dropped in favour of the calmer Recap card aesthetic — the
-   blinking .streaming-cursor is enough to signal liveness. Radius and tail
-   match .msg.assistant so the bubble doesn't morph when streaming ends and
-   it re-renders as a settled Markdown message. All colours are theme
-   variables (--bg / --border), so light and dark themes adapt
-   automatically. */
-.streaming-msg {
-  align-self: stretch;
-  /* Always render at the full reading width rather than shrink-wrapping the
-     text, so the bubble (and its liquid-glass rim) stays a stable size as
-     content streams in instead of jittering wider with each flush. */
-  width: 100%;
-  max-width: min(var(--chat-reading-max-width), 100%);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--bg) 75%, transparent);
-  backdrop-filter: var(--glass-blur);
-  margin: 0 0 var(--space-1);
-  /* Dynamic breathing glow: a slow accent inset rim that pulses to signal
-     the live turn. Only inset box-shadow is animated — the glow is fully
-     contained inside the border, so it never overflows the bubble or gets
-     clipped by .chat-streaming-region's overflow:hidden. box-shadow is
-     animated (not layout), so this is cheap on the streaming hot path — no
-     reflow, just a composited shadow repaint. Disabled under reduced-motion
-     and HC skin below. */
-  animation: streaming-breathe 2.6s var(--motion-ease-standard) infinite;
-  /* The bubble sizes to its content directly — no max-height grow
-     animation. Animating max-height (a layout property) on every
-     streaming flush (many times per second) triggered a reflow of the
-     bubble and re-clipped overflow on the hottest render path in the
-     app. The text already streams in token-by-token, so the perceived
-     growth is gradual without an additional height transition; the
-     per-tick reflow was pure cost. overflow:hidden stays for clean
-     border-radius/liquid-glass edges. */
-  overflow: hidden;
-}
-/* Dynamic breathing glow for the live streaming bubble. Only an inset rim
-   swells toward --accent and back — fully contained inside the border, so
-   there is no outer halo to clip or overflow. The border itself stays at
-   its neutral --border so the effect reads as a diffuse inner glow
-   "breathing" within the bubble, not a hard accent-coloured edge (animating
-   border-color made the border feel too loud). Peak alpha is bumped so the
-   breath is clearly visible against both dark and light themes. */
-@keyframes streaming-breathe {
-  0%,
-  100% {
-    box-shadow: inset 0 0 10px color-mix(in srgb, var(--accent) 5%, transparent);
-  }
-  50% {
-    box-shadow: inset 0 0 22px color-mix(in srgb, var(--accent) 18%, transparent);
-  }
-}
-/* High Contrast skin: the streaming bubble must be fully opaque (HC
-   forbids alpha translucency on content surfaces) with no backdrop blur.
-   The breathing halo is also disabled here — its accent-tinted alpha
-   shadows would violate HC's opacity rule, and HC prioritises legibility
-   over flourish. The .liquid-glass variant below has equal specificity and
-   later source order, so it is listed explicitly to win the background
-   override. [data-skin="hc"] covers both the dark and light HC variants. */
-[data-skin='hc'] .streaming-msg,
-[data-skin='hc'] .streaming-msg.liquid-glass {
-  background: var(--bg-elev);
-  backdrop-filter: none;
-  animation: none;
-  box-shadow: none;
-}
-/* Respect reduced-motion: stop the breathing halo so the bubble stays
-   statically styled (no infinite animation) for users who opt out of
-   motion. The cursor blink is left to its own reduced-motion handling. */
-@media (prefers-reduced-motion: reduce) {
-  .streaming-msg {
-    animation: none;
-  }
-}
 /* New-message entrance animation ("rise"). Applied for one play to
    the item wrapper of a genuinely-new live arrival (see MessageList's gate),
    then stripped on animationend so scroll re-mounts don't replay it. The
@@ -2531,66 +2275,6 @@ button.chat-empty-env-chip:hover {
   }
 }
 
-.streaming-msg .assistant-body {
-  position: relative;
-}
-/* The scroll container is .streaming-plain (below), not the .msg bubble, so
-   the bubble's own padding lives OUTSIDE the scroll viewport and can't keep
-   the first/last lines off the clipped edges. Drop the bubble's vertical
-   padding here and re-apply it inside the scroller instead, so internally-
-   scrolled text (and the pinned cursor) always has breathing room rather
-   than being sliced flush against the border. Horizontal padding stays so
-   the bubble keeps its left/right inset. */
-.streaming-msg {
-  padding-top: 0;
-  padding-bottom: 0;
-  /* Drop the bubble's right inset (it ate a lot of horizontal space); the
-     right breathing room is re-applied inside .streaming-plain so text and
-     the internal scrollbar still clear the border. */
-  padding-right: 0;
-}
-/* The in-progress turn renders as a growing markdown card (the same cached
-   <Markdown> pipeline as settled messages), so whitespace semantics are
-   markdown's — NOT pre-wrap, which would turn every source newline into a
-   hard break and diverge from the settled render. Long-word breaking stays. */
-.streaming-plain {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  /* Vertical padding lives on the scroll container (not the .msg bubble) so
-     scrolled-away content fades against internal padding instead of being
-     clipped flush at the viewport edge. */
-  padding-top: var(--space-2-5);
-  padding-bottom: var(--space-2-5);
-  /* The bubble drops its right padding (.streaming-msg padding-right: 0) to
-     reclaim horizontal space, so re-apply a small right inset here ?inside
-     the scroll viewport ?to keep text and the scrollbar off the border. */
-  padding-right: var(--space-2);
-  /* Cap the live bubble's height so a long in-progress turn doesn't push
-     the whole transcript off-screen. Past the cap the body scrolls
-     internally; StreamingFooter pins it to the latest line as text flows
-     in. The cap lifts the instant streaming ends and the text re-renders
-     as a normal (unbounded) Markdown message. */
-  max-height: calc(3lh + 20px);
-  overflow-y: auto;
-  /* Keep the pinned last line clear of the bottom edge even at scrollTop
-     extremes (scroll-padding reserves space inside the scroll viewport). */
-  scroll-padding-bottom: 10px;
-  /* Edge fade: streaming text dissolves into the top/bottom padding instead
-     of hard-clipping at the overflow edge. The fade band matches the
-     vertical padding (10px) exactly, so stationary text — which begins at
-     the padding inner edge — is never dimmed; only lines that scroll under
-     the edge fade out. #000 = fully visible, transparent = masked out. */
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent 0,
-    #000 10px,
-    #000 calc(100% - 10px),
-    transparent 100%
-  );
-  mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-}
 .streaming-cursor {
   display: inline-block;
   width: 2px;
@@ -2599,48 +2283,6 @@ button.chat-empty-env-chip:hover {
   margin-left: var(--space-0-5);
   vertical-align: text-bottom;
   animation: cursor-blink 0.8s step-end infinite;
-}
-/* Per-block .md wrappers (one cached compile per streaming block) trigger
-   messages.css's `.md > *:first-child/:last-child` margin resets on EVERY
-   block, zeroing each block's end margins and butting blocks together at
-   0px where the settled single-document render has 6-8px collapsed margins.
-   Restore the end margin on non-final streaming blocks: a universal 6px
-   (p/head/list all default to 6px there today) with an 8px override for the
-   block-class elements. Universal `*` on purpose — a block type added to
-   messages.css later still gets a seam gap instead of silently butting.
-   (Interior heading TOP margins still cannot collapse through wrappers — a
-   heading's gap grows slightly at settle.) */
-.streaming-plain > .streaming-block:not(:last-child) > .md > *:last-child {
-  margin-bottom: var(--md-p-mb, 6px);
-}
-.streaming-plain > .streaming-block:not(:last-child) > .md > :is(pre, .code-block, blockquote, table, hr, .katex-display):last-child {
-  margin-bottom: var(--md-block-mb, 8px);
-}
-/* The tail blinking bar rides the tail block's last leaf as ::after so it
-   hugs the end of the text (a sibling span after a block-level wrapper
-   would drop onto its own line). Universal on `> *:last-child` so no leaf
-   type (hr, katex-display, tables, …) can strand the liveness signal —
-   lists route through the last <li> instead. The code path keeps its real
-   <span> inside <code> (also hugging), so .code-block is excluded here. */
-.streaming-plain .streaming-tail > .md > *:last-child:not(ul, ol, .code-block)::after,
-.streaming-plain .streaming-tail > .md > :is(ul, ol):last-child > li:last-child::after {
-  content: '';
-  display: inline-block;
-  width: 2px;
-  height: 1.1em;
-  background: var(--fg);
-  margin-left: var(--space-0-5);
-  vertical-align: text-bottom;
-  animation: cursor-blink 0.8s step-end infinite;
-}
-/* Fallback bar for tail blocks whose compile has no leaf to hug (empty /
-   whitespace-only .md). Hidden whenever the ::after is engaged — :has() on
-   "the .md has any children" is the switch. */
-.streaming-plain .streaming-cursor-fallback {
-  display: none;
-}
-.streaming-plain .streaming-tail > .md:not(:has(> *)) + .streaming-cursor-fallback {
-  display: inline-block;
 }
 /* In-place draft card body: the typing cursor rides the tail's last leaf as
    ::after — DOM-free, so the mid-stream DOM stays byte-identical to the
@@ -2677,8 +2319,8 @@ button.chat-empty-env-chip:hover {
         hidden by the sweep.
    The hook writes --stream-reveal-to / -line-top for layers 1 and 3. The mask
    is purely spatial, so markdown structure, inline formatting and link
-   colours are untouched. The `black` stops are alpha-channel values, not theme
-   colours — same convention as .streaming-plain's edge fade. */
+   colours are untouched. The `black` stops are alpha-channel values, not
+   theme colours. */
 .stream-reveal {
   --stream-reveal-to: 0px;
   --stream-reveal-line-top: 0px;
@@ -2724,49 +2366,6 @@ button.chat-empty-env-chip:hover {
     mask-image: none;
   }
 }
-
-/* ============================================================
-   Liquid Glass refraction (Chromium only)
-   ============================================================
-   When useLiquidGlass detects SVG-in-backdrop-filter support it adds
-   the `.liquid-glass` class and renders a `.streaming-refraction`
-   layer. That layer carries `backdrop-filter: url(#<filterId>)` (set
-   inline by the component), bending the transcript behind the bubble's
-   bezel. The center stays optically clear — the displacement map ramps
-   to zero away from the edges.
-
-   Off-Chromium (Safari/Firefox) and in tests the class is absent, so
-   the bubble keeps its plain `--glass-blur` frosted styling above. */
-.streaming-msg.liquid-glass {
-  /* The frosted backdrop-filter on the bubble itself would compound with
-     the refraction layer and wash it out; drop it and let the refraction
-     layer own the glass look. A faint tint keeps the bubble legible over
-     busy backgrounds. */
-  background: color-mix(in srgb, var(--bg-elev) 40%, transparent);
-  backdrop-filter: none;
-  /* Establish a stacking/positioning context for the absolute layer.
-     overflow:hidden (from .streaming-msg) clips it to the rounded rect. */
-  position: relative;
-  isolation: isolate;
-}
-.streaming-refraction {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  border-radius: inherit;
-  /* backdrop-filter is set inline by the component as `blur(2px) url(#…)`
-     — the blur (frosted look) and the displacement-map refraction compose
-     into one filter. Setting it here would be overridden by that inline
-     value, so the frosted blur is owned by the component, not this rule. */
-  pointer-events: none;
-}
-/* Keep the text above the refraction layer. */
-.streaming-msg.liquid-glass .streaming-plain {
-  position: relative;
-  z-index: 1;
-}
-/* Reduced-motion already freezes the border pulse above; the refraction
-   itself is static (only rebuilds on resize), so nothing extra needed. */
 
 /* Image preview thumbnails in the composer */
 .image-previews {
@@ -2945,6 +2544,17 @@ button.chat-empty-env-chip:hover {
   border-radius: var(--radius-xs);
   margin: var(--space-1) 0;
   object-fit: contain;
+}
+/* Placeholder for a ref-backed image while its content fetch lands. The
+   inline aspect-ratio/width come from the ref's recorded dimensions, so the
+   bubble holds its layout without decoding; the caps mirror .msg-image. */
+.msg-image-loading {
+  display: block;
+  max-width: min(100%, 600px);
+  max-height: 400px;
+  border-radius: var(--radius-xs);
+  margin: var(--space-1) 0;
+  background: var(--code-bg);
 }
 .msg-image-row {
   display: flex;

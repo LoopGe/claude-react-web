@@ -83,10 +83,9 @@ const SCROLL_DOWN_KEYS = new Set(['PageDown', 'ArrowDown', 'End'])
  * slot, or 0 when there is none.
  *
  * Excluded from every "how far from the bottom are we" calculation: the spacer
- * reserves room for the absolutely-positioned live typing bubble AND the task
- * cards stacked beneath it, so counting it would make a viewport that is
- * visually pinned to the last settled message read as ~110px short of the
- * bottom.
+ * reserves room for the absolutely-positioned bottom-stack task cards, so
+ * counting it would make a viewport that is visually pinned to the last
+ * settled message read as ~110px short of the bottom.
  */
 const getBottomSpacerHeight = (el: HTMLElement) => {
   const spacer = el.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
@@ -110,8 +109,8 @@ const getDistanceFromBottom = (el: HTMLElement) => (
  * spacer subtraction.
  *
  * Why a second metric? The spacer-aware `getDistanceFromBottom` above is right
- * for the "at bottom" STATE (a viewport resting above the task
- * list / live bubble should read as at-bottom), but it is WRONG for the
+ * for the "at bottom" STATE (a viewport resting above the task list should
+ * read as at-bottom), but it is WRONG for the
  * user-leave gate: because the spacer height is subtracted, an up-scroll that
  * stays inside the spacer reads as `0`, so follow intent never turns off
  * and the re-pin backstops keep snapping the viewport back down ("wheel-up gets
@@ -128,8 +127,8 @@ const getDistanceFromTrueBottom = (el: HTMLElement) => (
 )
 
 /** The spacer-aware at-bottom check: right for the at-bottom STATE (a viewport
- *  resting above the task list / live bubble should read as at-bottom), wrong
- *  for the user-leave gate (see getDistanceFromTrueBottom). */
+ *  resting above the task list should read as at-bottom), wrong for the
+ *  user-leave gate (see getDistanceFromTrueBottom). */
 const isAtSpacerAwareBottom = (el: HTMLElement) =>
   getDistanceFromBottom(el) <= BOTTOM_EPSILON_PX
 
@@ -738,7 +737,7 @@ export function useTranscriptScroll({
   //
   // Root cause of "the scrollbar sits one line short of the bottom while the
   // bottom stack's height is changing": the caller's ResizeObserver measures
-  // the stack (live bubble + task cards) and sets `bottomStackHeight`, which
+  // the stack (the task cards) and sets `bottomStackHeight`, which
   // resizes the Virtuoso Footer spacer that reserves room for it. That state
   // update is asynchronous — the spacer's new height only lands once React
   // commits, which is AFTER the ResizeObserver callback returns. Reading
@@ -778,7 +777,7 @@ export function useTranscriptScroll({
   // disarms follow before anything re-pins. A burst stacks the same race.
   //
   // The viewport observer above watches clientHeight for shrink; the spacer
-  // effect watches the live typing bubble. Neither catches settled-content
+  // effect watches the bottom stack. Neither catches settled-content
   // growth. This observer fills that gap by watching Virtuoso's ITEM-LIST,
   // whose border-box height tracks the rendered items.
   //
@@ -973,7 +972,7 @@ export function useTranscriptScroll({
       if (userDriven && isScrollingUp && scrollStateRef.current.owner.kind !== 'seek') userScrollIntentRef.current = Date.now()
       // A genuine user push-away measures against the TRUE bottom
       // (scrollHeight). The spacer-aware `getDistanceFromBottom` subtracts the
-      // task-list / live-bubble reserve, so an up-scroll that stays inside it
+      // task-list reserve, so an up-scroll that stays inside it
       // reads as 0 and follow never turns off — and the re-pin backstops then
       // keep snapping the viewport back ("wheel-up gets absorbed"). An animated
       // group FOLD clamps scrollTop down in lockstep with the shrinking content
@@ -1347,9 +1346,9 @@ export function useTranscriptScroll({
   //     append isn't followed. The ANIMATING guard short-circuits both for the
   //     whole animation.
   //
-  // (The live typing bubble is pinned separately by the spacer layout effect,
-  // so this only affects settled-message appends — the standard chat-UI
-  // snap-to-new-message.)
+  // (The bottom stack's reserve is pinned separately by the spacer layout
+  // effect, so this only affects settled-message appends — the standard
+  // chat-UI snap-to-new-message.)
   const followOutput = useCallback((_atBottom: boolean) => {
     if (!followEnabled) return false as const
     if (scrollStateRef.current.intent !== 'follow') return false as const

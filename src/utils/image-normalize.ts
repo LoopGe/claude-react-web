@@ -3,8 +3,9 @@
 // The composer decodes the source through an <img> element (modern browsers
 // apply EXIF orientation and report oriented natural dimensions), draws it to
 // a canvas, scans the alpha channel, and re-encodes through the shared quality
-// ladder. The encoded output is verified with the header inspector before it
-// becomes a PastedImage payload.
+// ladder. The encoded output is verified with the header inspector and handed
+// back as the BLOB the intake queue uploads — no base64 string is produced on
+// this path (the durable payload is the store ref the upload returns).
 
 import { inspectImageBytes } from '../../shared/image-inspect'
 import { isSupportedImageMediaType, type SupportedImageMediaType } from '../../shared/image-media'
@@ -15,7 +16,6 @@ import {
 } from '../../shared/image-normalize'
 import { MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS } from '../../shared/upload-limits'
 import type { PastedImageOriginal } from '../types'
-import { fileToBase64 } from './file-to-base64'
 import { formatBytes } from './format'
 
 export class ImageNormalizeError extends Error {
@@ -49,11 +49,11 @@ export interface ImageNormalizeDeps {
   readFile?: (file: Blob) => Promise<ArrayBuffer>
   loadImage?: (file: Blob) => Promise<LoadedImage>
   createCanvas?: (width: number, height: number) => CanvasLike
-  toBase64?: (blob: Blob) => Promise<string>
 }
 
 export interface NormalizedImage {
-  data: string
+  /** The verified normalized encoding — the exact bytes the upload publishes. */
+  blob: Blob
   mediaType: SupportedImageMediaType
   width: number
   height: number
@@ -138,7 +138,6 @@ export async function preparePastedImage(
   const readFile = deps.readFile ?? ((value: Blob) => value.arrayBuffer())
   const loadImage = deps.loadImage ?? defaultLoadImage
   const createCanvas = deps.createCanvas ?? defaultCreateCanvas
-  const toBase64 = deps.toBase64 ?? fileToBase64
 
   const bytes = new Uint8Array(await readFile(file))
   const inspected = inspectImageBytes(bytes)
@@ -192,7 +191,7 @@ export async function preparePastedImage(
     }
 
     return {
-      data: await toBase64(smallest),
+      blob: smallest,
       mediaType: verified.image.mediaType,
       width: verified.image.width,
       height: verified.image.height,

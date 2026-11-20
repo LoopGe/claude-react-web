@@ -1,11 +1,14 @@
 import type { FileAttachmentRef } from '../../shared/attachments'
+import type { ImageAttachmentRef } from '../../shared/image-attachment'
 import type { PastedImage } from '../types'
 
-/** One content block of a POST /sessions/:id/messages body — text, a base64
- *  image, or an app-level FileBlock (the server resolves it to a handle). */
+/** One content block of a POST /sessions/:id/messages body — text, a durable
+ *  image ref (or the legacy base64 image), or an app-level FileBlock (the
+ *  server resolves both attachment kinds before the SDK sees them). */
 export type OutgoingContentBlock =
   | { type: 'text'; text: string }
   | { type: 'image'; source: { type: 'base64'; data: string; media_type: string } }
+  | { type: 'image'; attachment: ImageAttachmentRef }
   | { type: 'file'; attachment: FileAttachmentRef }
 
 /** Body accepted by POST /sessions/:id/messages: legacy `{ text }` string, or
@@ -26,7 +29,14 @@ export function buildOutgoingBody(
   const content: OutgoingContentBlock[] = []
   if (text.trim()) content.push({ type: 'text', text })
   for (const img of images) {
-    content.push({ type: 'image', source: { type: 'base64', data: img.data, media_type: img.mediaType } })
+    // A published image rides as its durable ref; the bytes stay in the object
+    // store and the server verifies them at dispatch. The legacy base64 shape
+    // stays for restored pre-ref drafts (no attachment).
+    if (img.attachment !== undefined) {
+      content.push({ type: 'image', attachment: img.attachment })
+    } else {
+      content.push({ type: 'image', source: { type: 'base64', data: img.data, media_type: img.mediaType } })
+    }
   }
   for (const file of files) content.push({ type: 'file', attachment: file })
   return { content }

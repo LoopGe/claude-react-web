@@ -49,7 +49,9 @@ import type { HistoryEntry, HistoryPage, HistoryReadResult, RawLine } from '../s
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createLogger } from './log.js'
 import { condensePromptPreview } from '../shared/prompt-preview.js'
-import { stripFileHandles } from '../shared/upload-handle.js'
+import { stripHandles } from '../shared/attachment-handle.js'
+import { parseImageHandle } from '../shared/image-handle.js'
+import type { ImageRefBlock } from '../shared/image-attachment.js'
 import { extractMessageSearchSegments } from '../shared/search/extract.js'
 
 const log = createLogger('history')
@@ -261,7 +263,7 @@ export function parseLastUserPrompt(tail: string): string | undefined {
       // recency-by-file-position rule honest. text may be undefined here.
       const raw = typeof o.lastPrompt === 'string'
         ? (() => {
-            const cleaned = stripFileHandles(o.lastPrompt as string)
+            const cleaned = stripHandles(o.lastPrompt as string)
             return cleaned ? condensePromptPreview(cleaned) : attachmentNameFallback(o.lastPrompt)
           })()
         : undefined
@@ -271,7 +273,7 @@ export function parseLastUserPrompt(tail: string): string | undefined {
     if (!userHit && o.type === 'user' && !o.isMeta && !o.isSidechain && !o.isCompactSummary) {
       const content = o.message?.content
       if (typeof content === 'string') {
-        const cleaned = stripFileHandles(content)
+        const cleaned = stripHandles(content)
         if (!isInterruptPlaceholder(cleaned) && !SYNTHETIC_FRAME_PREFIX_RE.test(cleaned)) {
           const text = condensePromptPreview(cleaned)
           if (text) userHit = { index: i, text }
@@ -295,7 +297,7 @@ export function parseLastUserPrompt(tail: string): string | undefined {
           if (b.type === 'tool_result') hasToolResult = true
           else if (b.type === 'text' && typeof b.text === 'string') texts.push(b.text)
         }
-        const joined = stripFileHandles(texts.join(' '))
+        const joined = stripHandles(texts.join(' '))
         if (!hasToolResult && joined && !SYNTHETIC_FRAME_PREFIX_RE.test(joined)) {
           const text = condensePromptPreview(joined)
           if (text) userHit = { index: i, text }
@@ -499,6 +501,74 @@ function pickCompactMetadata(meta: unknown): Record<string, unknown> {
   return Object.keys(picked).length > 0 ? { compact_metadata: picked } : {}
 }
 
+/** Structural check for the legacy inline base64 image block (the SDK shape
+ *  the image handle describes). Shape-only: the recovered ref carries the
+ *  authoritative mediaType/dimensions from the handle, so the adjacent block
+ *  need only BE a base64 image — its payload is discarded, not validated. */
+function isBase64ImageBlock(block: unknown): boolean {
+  if (!block || typeof block !== 'object') return false
+  const b = block as { type?: unknown; source?: unknown }
+  if (b.type !== 'image') return false
+  const src = b.source
+  if (!src || typeof src !== 'object') return false
+  const s = src as { type?: unknown; data?: unknown }
+  return s.type === 'base64' && typeof s.data === 'string'
+}
+
+/** Recover durable image refs from a user prompt's SDK content blocks.
+ *
+ *  The SDK projection (projectImageBlocksForSdk) writes, per ref image, a
+ *  standalone handle TEXT block immediately followed by the base64 IMAGE
+ *  block. This reconstructs the public ref form from that pair: the handle
+ *  text is dropped and the adjacent base64 image is replaced with the
+ *  recovered ImageRefBlock — the same shape the live ring/sidecar carry.
+ *
+ *  Fail-safe by construction: a replacement happens ONLY when a text block
+ *  parses as a well-formed handle (parseImageHandle, never throws) AND the
+ *  very next block is a base64 image. A reordered, altered, truncated, or
+ *  non-adjacent handle recovers nothing — the raw text and the legacy base64
+ *  image stay verbatim (no crash, no dangling ref). Rows with no handle (old
+ *  transcripts, direct-API base64) are returned unchanged, by identity.
+ *
+ *  Pure: never mutates the input array or its blocks. Returns the ORIGINAL
+ *  array reference when nothing was recovered, so the common legacy case
+ *  allocates nothing and keeps message identity. */
+export function recoverImageRefBlocks(content: unknown): unknown {
+  if (!Array.isArray(content)) return content
+  let changed = false
+  const out: unknown[] = []
+  for (let i = 0; i < content.length; i++) {
+    const block = content[i]
+    const next = content[i + 1]
+    if (
+      block && typeof block === 'object' &&
+      (block as { type?: unknown }).type === 'text' &&
+      typeof (block as { text?: unknown }).text === 'string' &&
+      isBase64ImageBlock(next)
+    ) {
+      const parsed = parseImageHandle((block as { text: string }).text)
+      if (parsed !== null) {
+        const refBlock: ImageRefBlock = { type: 'image', attachment: parsed.attachment }
+        out.push(refBlock)
+        i += 1 // consume the adjacent base64 image too
+        changed = true
+        continue
+      }
+    }
+    out.push(block)
+  }
+  return changed ? out : content
+}
+
+/** Apply image-handle recovery to a user message, returning a new message
+ *  object only when its content actually changed (legacy rows keep identity). */
+function recoverUserMessageImages(message: RawLine['message']): RawLine['message'] {
+  if (!message || !Array.isArray(message.content)) return message
+  const recovered = recoverImageRefBlocks(message.content)
+  if (recovered === message.content) return message
+  return { ...message, content: recovered }
+}
+
 /** Normalize a raw JSONL line into the live SDKMessage wire shape.
  *  `trim` applies the same oversized tool_result cap the live pump does
  *  (see trimLargeToolResults). The render/replay paths (paginateJsonl —
@@ -531,7 +601,9 @@ export function normalize(o: RawLine, sessionId: string, trim: boolean): unknown
     ...(typeof o.subtype === 'string' ? { subtype: o.subtype } : {}),
     uuid: o.uuid,
     session_id: o.session_id ?? sessionId,
-    message: o.message,
+    // User prompts recover durable image refs from the SDK handle projection
+    // (handle text + adjacent base64 → ref block); other frames pass through.
+    message: o.type === 'user' ? recoverUserMessageImages(o.message) : o.message,
     ...(o.isCompactSummary === true ? { isCompactSummary: true } : {}),
     parent_tool_use_id: parent,
     // Explicit provenance for the client replay reducer. A resumed session's
