@@ -147,7 +147,7 @@ import {
 } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, stampInjectedAt, stampRequeuedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId, trimLargeToolResults } from './history-utils.js'
-import { TranscriptStore, type SeqMessage, type TranscriptWindow } from './transcript-store.js'
+import { TranscriptStore, type HydrateRow, type SeqMessage, type TranscriptWindow } from './transcript-store.js'
 import {
   TranscriptSidecar,
   backfillFromEntries,
@@ -170,7 +170,7 @@ import { ForkSeedStore } from './fork-seed-store.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
-import { deleteTranscriptFile, deleteTranscriptFiles, findTranscriptFile, isSafeSessionId } from './history-reader.js'
+import { deleteTranscriptFile, deleteTranscriptFiles, findTranscriptFile, isSafeSessionId, recoverImageRefBlocks } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createDefaultProviders } from './providers/default-providers.js'
@@ -828,6 +828,64 @@ export function projectImageBlocksForSdk(
     }
   }
   return projected
+}
+
+/** Collect, by server uuid, the public content of every sidecar user prompt
+ *  that carries image refs. The sidecar stores the PUBLIC ring form (text +
+ *  ImageRefBlock, no handle text, no base64 — Task 4), keyed by the same `u`
+ *  uuid the resume/fork seed carries after rewriteSeedPromptUuids. This is the
+ *  authoritative ref source for the disk-history seed projection: a prompt
+ *  whose SDK handle was lost or altered still recovers its exact live form.
+ *  Evicted (withdrawn) rows are skipped — they must not seed refs. Pure. */
+export function sidecarImageContentByUuid(entries: readonly HydrateRow[]): Map<string, unknown[]> {
+  const byUuid = new Map<string, unknown[]>()
+  for (const entry of entries) {
+    if (entry.evicted === true || typeof entry.uuid !== 'string') continue
+    const msg = entry.msg as { type?: unknown; message?: { content?: unknown } } | undefined
+    if (!msg || msg.type !== 'user') continue
+    const content = msg.message?.content
+    if (!Array.isArray(content)) continue
+    if (!content.some((block) => isImageRefBlock(block))) continue
+    byUuid.set(entry.uuid, content)
+  }
+  return byUuid
+}
+
+/** Project a disk-read history seed (resume ring seed / composed transcript)
+ *  back to durable image refs, the inverse of projectImageBlocksForSdk.
+ *
+ *  Two recovery sources, in preference order:
+ *   1. SIDECAR by uuid — when the sidecar holds the prompt's public ref form,
+ *      use that content wholesale (the exact live ring shape). This wins even
+ *      when the SDK JSONL's handle was reordered/altered/lost, because the
+ *      sidecar is ours and never carried base64.
+ *   2. HANDLE parse — otherwise recover the ref from the handle text + adjacent
+ *      base64 image (recoverImageRefBlocks, the same logic normalize applies).
+ *
+ *  Fail-safe: a row with neither a sidecar ref nor a parseable handle keeps its
+ *  legacy base64 content verbatim (no crash, no dangling ref). Non-user frames
+ *  and string content pass through untouched. Pure — never mutates the seed;
+ *  returns the original array when nothing changed. */
+export function projectSeedImageRefs(
+  seed: SDKMessage[],
+  sidecarContentByUuid: ReadonlyMap<string, unknown[]>,
+): SDKMessage[] {
+  let changed = false
+  const out = seed.map((msg) => {
+    if ((msg as { type?: unknown }).type !== 'user') return msg
+    const message = (msg as { message?: { content?: unknown } }).message
+    const content = message?.content
+    if (!Array.isArray(content)) return msg
+    const uuid = (msg as { uuid?: unknown }).uuid
+    const sidecarContent = typeof uuid === 'string' ? sidecarContentByUuid.get(uuid) : undefined
+    const nextContent = sidecarContent !== undefined
+      ? sidecarContent
+      : recoverImageRefBlocks(content)
+    if (nextContent === content) return msg
+    changed = true
+    return { ...msg, message: { ...message, content: nextContent } } as SDKMessage
+  })
+  return changed ? out : seed
 }
 
 /** The SDK's camelCase model-info shape (translated to the snake_case wire
@@ -2273,6 +2331,11 @@ export class SessionManager {
       const resultFrames = await this.resultFrameStore.load(id)
       historySeed = mergeResultFrames(historySeed, resultFrames)
       historySeed = rewriteSeedPromptUuids(historySeed, promptUuids)
+      // Resume ring seed carries refs, not base64: prefer the sidecar's public
+      // ref form by uuid (wins even over a lost/altered SDK handle), else the
+      // handle parse (spec §5). Applied after the uuid bridge so the sidecar
+      // lookup keys on the same server `u` uuids the seed rows now carry.
+      historySeed = projectSeedImageRefs(historySeed, await this.loadSidecarImageContent(id))
       // Backfill background-subagent completions the seed lacks — the CLI
       // doesn't persist task_notification frames either, and a completion no
       // client consumed live is otherwise unrecoverable (the WorkingBubble
@@ -8520,6 +8583,30 @@ export class SessionManager {
     if (seq !== null) this.seqByMessage.set(msg, { seq, generation: t.store.generation })
   }
 
+  /** Load the sidecar's public image-ref content by uuid for the seed
+   *  projection (see projectSeedImageRefs). A corrupt sidecar that the fold
+   *  rejects degrades to an empty map — handle recovery in normalize still
+   *  applies — rather than crashing the resume/reconcile that reads it. This
+   *  mirrors reconcile's own degraded posture for the same fold failure. */
+  private async loadSidecarImageContent(id: string): Promise<Map<string, unknown[]>> {
+    try {
+      const sidecar = new TranscriptSidecar(this.store?.getDir(), id)
+      const rawRows = await sidecar.load()
+      const folded = foldSidecarRowsV2(rawRows)
+      // Mirror ensureTranscriptReconciled's fold selection: a gen-0 mixed
+      // v1/v2 file (pump-ingest rows + writer input batches, no committed
+      // generation) folds to empty under v2 — the intact v1 projection carries
+      // the public user-prompt rows there.
+      const entries = folded.hasCommittedGeneration
+        ? folded.entries
+        : foldSidecarRows(rawRows.filter((r) => r.v !== 2))
+      return sidecarImageContentByUuid(entries)
+    } catch (err) {
+      log.warn(`[session ${id}] sidecar image-ref load failed (handle recovery still applies): ${(err as Error).message ?? err}`)
+      return new Map()
+    }
+  }
+
   /** Compose the authoritative "what should be in the seq store" list from
    *  disk for one session: every renderable JSONL line (history-reader's
    *  gate — the SAME isRenderableSdkMessage the live ingest uses), with the
@@ -8579,6 +8666,10 @@ export class SessionManager {
     const resultFrames = await this.resultFrameStore.load(id)
     let composed = mergeResultFrames(messages, resultFrames)
     composed = rewriteSeedPromptUuids(composed, await this.promptUuidStore.load(id))
+    // Recover durable image refs: prefer the sidecar's public ref form by uuid,
+    // else the handle parse normalize already applied (idempotent). Keeps a
+    // rebuilt seq space ref-based, never re-holding base64 (spec §5).
+    composed = projectSeedImageRefs(composed, await this.loadSidecarImageContent(id))
     // Background-subagent completions the JSONL lacks (same backfill the
     // resume seed gets) — without it those turns' completion cards would
     // vanish from the seq window after a restart.

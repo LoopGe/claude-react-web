@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { putImages, type PersistedImage } from '../state/inputHistoryImages'
 import type { PastedImage } from '../types'
+import { imageRefId, type ImageAttachmentRef } from '../../shared/image-attachment'
 import { useHistoryImageRecall } from './useHistoryImageRecall'
 import { resetInputHistoryIdb, makeImg as img } from '../test-utils/inputHistoryIdb'
 
@@ -151,5 +152,45 @@ describe('useHistoryImageRecall', () => {
     await flushPipeline()
     expect(apply).toHaveBeenCalledTimes(1)
     expect(apply).toHaveBeenLastCalledWith([])
+  })
+
+  // Task 6 contract: recall is a transparent pipe over the persisted records —
+  // it forwards a record's durable image ref to `build` and applies whatever
+  // ref-carrying images build returns, never stripping the ref. Producing the
+  // ref-carrying live image from a ref record is the decode cache's job
+  // (buildPastedImages, Task 5); the hook must not obstruct it. Legacy base64
+  // records (no ref) flow through unchanged.
+  it('forwards a persisted image ref to build and applies the ref-carrying result', async () => {
+    const ref: ImageAttachmentRef = {
+      id: imageRefId('e'.repeat(64)), mediaType: 'image/png', bytes: 3, width: 10, height: 20,
+    }
+    const record = { ...img('REFDATA'), attachment: ref } as PersistedImage
+    await putImages('e-ref', [record])
+    const apply = vi.fn()
+    // build preserves the ref onto the live image (as the ref-aware decode
+    // cache will); the hook must pass the record through and apply the result.
+    const build = vi.fn(async (imgs: readonly PersistedImage[]) =>
+      imgs.map((p) => ({ ...built(p.data), attachment: (p as { attachment?: ImageAttachmentRef }).attachment })),
+    )
+    const { result } = renderHook(() => useHistoryImageRecall(apply, build))
+    act(() => result.current.recallEntry('e-ref'))
+    await flushPipeline()
+    expect(build).toHaveBeenCalledWith([record])
+    const applied = apply.mock.calls.at(-1)![0] as Array<PastedImage & { attachment?: ImageAttachmentRef }>
+    expect(applied).toHaveLength(1)
+    expect(applied[0].attachment).toEqual(ref)
+  })
+
+  it('recalls a legacy base64 record without introducing a ref', async () => {
+    await putImages('e-legacy', [img('LEGACY')])
+    const apply = vi.fn()
+    const build = vi.fn(async (imgs: readonly PersistedImage[]) => imgs.map((p) => built(p.data)))
+    const { result } = renderHook(() => useHistoryImageRecall(apply, build))
+    act(() => result.current.recallEntry('e-legacy'))
+    await flushPipeline()
+    const applied = apply.mock.calls.at(-1)![0] as Array<PastedImage & { attachment?: ImageAttachmentRef }>
+    expect(applied).toHaveLength(1)
+    expect(applied[0].data).toBe('LEGACY')
+    expect(applied[0].attachment).toBeUndefined()
   })
 })

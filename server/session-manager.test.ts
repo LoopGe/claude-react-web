@@ -362,7 +362,7 @@ const waitFor = async (cond: () => boolean | Promise<boolean>, timeoutMs = 2_000
 }
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
-import { SessionManager, resolveConfiguredModel, backfillSubagentCompletions, mergeResultFrames } from './session-manager.js'
+import { SessionManager, resolveConfiguredModel, backfillSubagentCompletions, mergeResultFrames, projectSeedImageRefs, sidecarImageContentByUuid } from './session-manager.js'
 import { ensureWorktreeForResume } from './session-worktree.js'
 import type { Session } from './session-types.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
@@ -9106,6 +9106,231 @@ describe('SessionManager', () => {
     })
   })
 
+  describe('durable image references — history/reconcile recovery (Task 6)', () => {
+    const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+    const pngBytes = Buffer.from(PNG_1X1, 'base64')
+
+    async function publishFixtureImage(): Promise<ImageAttachmentRef> {
+      const inspected = inspectImageBytes(pngBytes)
+      if (!inspected.ok) throw new Error('fixture PNG must inspect')
+      const objects = new AttachmentObjectStore(dir)
+      const pub = await objects.publishImage(pngBytes, inspected.image)
+      return {
+        id: imageRefId(pub.digest),
+        mediaType: inspected.image.mediaType,
+        bytes: pub.bytes,
+        width: inspected.image.width,
+        height: inspected.image.height,
+      }
+    }
+    const refBlock = (ref: ImageAttachmentRef) => ({ type: 'image' as const, attachment: ref })
+    const b64Block = { type: 'image' as const, source: { type: 'base64' as const, data: PNG_1X1, media_type: 'image/png' } }
+    const imagePathOf = (ref: ImageAttachmentRef) =>
+      imageObjectPathOf(attachmentRoot(dir), ref.id.slice('sha256:'.length))
+
+    type RingMessage = { type: string; uuid?: string; message: { content: unknown } }
+    const ringOf = (id: string): RingMessage[] => (sm as unknown as {
+      sessions: Map<string, { history: RingMessage[] }>
+    }).sessions.get(id)!.history
+
+    const readPageSpy = () => vi.spyOn(
+      sm as unknown as { readProviderHistoryPage: (provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => Promise<unknown> },
+      'readProviderHistoryPage',
+    )
+
+    /** Write a real CLI JSONL transcript under the fixture config dir so the
+     *  provider's reconcile/search readers (which go through normalize) see it. */
+    function writeJsonl(id: string, lines: Array<Record<string, unknown>>): void {
+      const proj = join(dir, 'projects', 'D--test')
+      mkdirSync(proj, { recursive: true })
+      writeFileSync(join(proj, `${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
+    }
+    const userLine = (uuid: string, content: unknown) => ({
+      type: 'user', uuid, timestamp: '2026-11-20T00:00:00.000Z', message: { role: 'user', content },
+    })
+    const assistantLine = (uuid: string) => ({
+      type: 'assistant', uuid, timestamp: '2026-11-20T00:00:01.000Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' },
+    })
+
+    /** Run `fn` with CLAUDE_CONFIG_DIR pointed at the fixture dir, restoring
+     *  the prior value afterwards (the provider readers resolve it lazily). */
+    async function withConfigDir<T>(fn: () => Promise<T>): Promise<T> {
+      const prev = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        return await fn()
+      } finally {
+        if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = prev
+      }
+    }
+
+    it('resume ring seed recovers a ref from the handle when the sidecar has none', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: info.id })
+      await tick()
+      await sm.unload(info.id)
+      const handle = imageHandleText(ref, imagePathOf(ref))
+      const readPage = readPageSpy()
+      try {
+        await withConfigDir(async () => {
+          // The disk page carries the SDK projection (handle text + base64).
+          readPage.mockResolvedValue({
+            messages: [userLine('V1', [{ type: 'text', text: handle }, b64Block]), assistantLine('A1')],
+            totalCount: 2, startIndex: 0, hasMore: false,
+          })
+          await sm.resume(info.id)
+        })
+        const ringMsg = ringOf(info.id).find((m) => m.uuid === 'V1')!
+        expect(ringMsg.message.content).toEqual([refBlock(ref)])
+        expect(JSON.stringify(ringMsg)).not.toContain(PNG_1X1)
+      } finally {
+        readPage.mockRestore()
+      }
+    })
+
+    it('resume ring seed prefers the sidecar ref by uuid over an altered disk handle', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      // Populate the durable sidecar with the public ref row (uuid = sent.uuid).
+      const sent = await sm.sendContent(info.id, [{ type: 'text', text: 'look' }, refBlock(ref)]) as { uuid: string }
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: info.id })
+      await tick()
+      await sm.unload(info.id)
+      // The disk handle is altered (digest slots disagree) → normalize would
+      // leave base64; the sidecar ref must win by uuid.
+      const altered = imageHandleText(ref, imagePathOf(ref))
+        .replace(`attachment:${ref.id}`, `attachment:sha256:${'b'.repeat(64)}`)
+      const readPage = readPageSpy()
+      try {
+        await withConfigDir(async () => {
+          readPage.mockResolvedValue({
+            messages: [
+              { type: 'user', uuid: sent.uuid, timestamp: '2026-11-20T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: altered }, b64Block] } },
+              assistantLine('A1'),
+            ],
+            totalCount: 2, startIndex: 0, hasMore: false,
+          })
+          await sm.resume(info.id)
+        })
+        const ringMsg = ringOf(info.id).find((m) => m.uuid === sent.uuid)!
+        expect(ringMsg.message.content).toEqual([{ type: 'text', text: 'look' }, refBlock(ref)])
+        expect(JSON.stringify(ringMsg)).not.toContain(PNG_1X1)
+      } finally {
+        readPage.mockRestore()
+      }
+    })
+
+    it('resume ring seed leaves a legacy base64 row (no handle, no sidecar ref) unchanged', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: info.id })
+      await tick()
+      await sm.unload(info.id)
+      const readPage = readPageSpy()
+      try {
+        await withConfigDir(async () => {
+          readPage.mockResolvedValue({
+            messages: [userLine('V1', [{ type: 'text', text: 'old' }, b64Block]), assistantLine('A1')],
+            totalCount: 2, startIndex: 0, hasMore: false,
+          })
+          await sm.resume(info.id)
+        })
+        const ringMsg = ringOf(info.id).find((m) => m.uuid === 'V1')!
+        expect(ringMsg.message.content).toEqual([{ type: 'text', text: 'old' }, b64Block])
+      } finally {
+        readPage.mockRestore()
+      }
+    })
+
+    it('composeTranscriptEntries recovers refs from the real JSONL into the seq store', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      const handle = imageHandleText(ref, imagePathOf(ref))
+      await withConfigDir(async () => {
+        writeJsonl(info.id, [
+          userLine('V1', [{ type: 'text', text: handle }, b64Block]),
+          assistantLine('A1'),
+        ])
+        const win = await sm.getTranscriptWindow(info.id)
+        const seqMsg = win.messages.find((m) => (m.msg as { uuid?: string }).uuid === 'V1')!.msg as { message: { content: unknown } }
+        expect(seqMsg.message.content).toEqual([refBlock(ref)])
+        expect(JSON.stringify(seqMsg)).not.toContain(PNG_1X1)
+      })
+    })
+
+    it('fork resolves inherited image refs into the fork ring and seq store', async () => {
+      const source = await sm.create({ cwd: TEST_CWD })
+      const ref = await publishFixtureImage()
+      const handle = imageHandleText(ref, imagePathOf(ref))
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: source.id })
+      await tick()
+      await withConfigDir(async () => {
+        writeJsonl(source.id, [
+          userLine('V1', [{ type: 'text', text: handle }, b64Block]),
+          assistantLine('A1'),
+        ])
+        const forked = await sm.fork(source.id)
+        const ringMsg = ringOf(forked.id).find((m) => m.uuid === 'V1')!
+        expect(ringMsg.message.content).toEqual([refBlock(ref)])
+        expect(JSON.stringify(ringMsg)).not.toContain(PNG_1X1)
+        const win = await sm.getTranscriptWindow(forked.id)
+        const seqMsg = win.messages.find((m) => (m.msg as { uuid?: string }).uuid === 'V1')!.msg as { message: { content: unknown } }
+        expect(seqMsg.message.content).toEqual([refBlock(ref)])
+      })
+    })
+
+    it('side chat resume recovers refs for its own post-boundary image prompt', async () => {
+      const parent = await sm.create({ cwd: TEST_CWD, title: 'parent' })
+      const ref = await publishFixtureImage()
+      const handle = imageHandleText(ref, imagePathOf(ref))
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'R', session_id: parent.id })
+      await tick()
+      const readPage = readPageSpy()
+      try {
+        await withConfigDir(async () => {
+          writeJsonl(parent.id, [
+            userLine('V1', [{ type: 'text', text: handle }, b64Block]),
+            assistantLine('A1'),
+          ])
+          // createSideChat captures the parent tail uuid ('A1') via a limit-1
+          // page; the inherited parent prefix stays behind that boundary.
+          readPage.mockImplementation(async (_p: unknown, id: string, opts: { limit: number; afterUuid?: string }) => {
+            if (id === parent.id && opts.limit === 1) {
+              return { messages: [assistantLine('A1')], totalCount: 2, startIndex: 1, hasMore: false }
+            }
+            // The Side Chat's own resume seed: only post-boundary rows, whose
+            // image prompt still carries the SDK handle + base64 projection.
+            if (opts.afterUuid === 'A1') {
+              return { messages: [userLine('V2', [{ type: 'text', text: handle }, b64Block]), assistantLine('A2')], totalCount: 2, startIndex: 0, hasMore: false }
+            }
+            return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
+          })
+          const side = await sm.createSideChat(parent.id)
+          // The Side Chat's own log (fork copy of the parent prefix + its own
+          // post-boundary turn). Present so reconcile observes the target log
+          // (spec §11) rather than failing closed as source-lost.
+          writeJsonl(side.id, [
+            userLine('V1', [{ type: 'text', text: handle }, b64Block]),
+            assistantLine('A1'),
+            userLine('V2', [{ type: 'text', text: handle }, b64Block]),
+            assistantLine('A2'),
+          ])
+          await sm.unload(side.id)
+          await sm.resume(side.id)
+          const ringMsg = ringOf(side.id).find((m) => m.uuid === 'V2')!
+          expect(ringMsg.message.content).toEqual([refBlock(ref)])
+          expect(JSON.stringify(ringMsg)).not.toContain(PNG_1X1)
+          // The inherited parent prompt is NOT surfaced in the Side Chat ring.
+          expect(ringOf(side.id).some((m) => m.uuid === 'V1')).toBe(false)
+        })
+      } finally {
+        readPage.mockRestore()
+      }
+    })
+  })
+
   describe('transcript seq store (Task 3 wiring)', () => {
     const emitAssistant = (uuid: string, text: string) => {
       mockHandles[0].emit({
@@ -15407,5 +15632,69 @@ describe('mergeResultFrames', () => {
     expect(merged).toHaveLength(3)
     expect((merged[1] as { type: string }).type).toBe('assistant')
     expect((merged[2] as { type: string }).type).toBe('result')
+  })
+})
+
+describe('projectSeedImageRefs / sidecarImageContentByUuid (Task 6 pure projection)', () => {
+  const REF: ImageAttachmentRef = {
+    id: imageRefId('c'.repeat(64)), mediaType: 'image/webp', bytes: 100, width: 4, height: 3,
+  }
+  const refBlock = { type: 'image' as const, attachment: REF }
+  const b64 = { type: 'image' as const, source: { type: 'base64' as const, data: 'BBBB', media_type: 'image/webp' } }
+  const handle = imageHandleText(REF, '/store/img')
+  const handleBlock = { type: 'text', text: handle }
+  const user = (uuid: string, content: unknown): SDKMessage =>
+    ({ type: 'user', uuid, message: { role: 'user', content } }) as unknown as SDKMessage
+  const contentOf = (m: SDKMessage): unknown => (m as { message: { content: unknown } }).message.content
+
+  it('sidecarImageContentByUuid maps uuid → public ref content, skipping evicted/non-user/no-ref rows', () => {
+    const entries = [
+      { seq: 0, uuid: 'u1', msg: user('u1', [{ type: 'text', text: 'hi' }, refBlock]) },
+      { seq: 1, uuid: 'u2', evicted: true, msg: user('u2', [refBlock]) }, // withdrawn
+      { seq: 2, uuid: 'a1', msg: { type: 'assistant', message: { content: [refBlock] } } }, // not user
+      { seq: 3, uuid: 'u3', msg: user('u3', [b64]) }, // no ref
+      { seq: 4, uuid: null, msg: user('x', [refBlock]) }, // no uuid
+    ]
+    const map = sidecarImageContentByUuid(entries as never)
+    expect([...map.keys()]).toEqual(['u1'])
+    expect(map.get('u1')).toEqual([{ type: 'text', text: 'hi' }, refBlock])
+  })
+
+  it('prefers the sidecar public content wholesale by uuid (over an altered handle)', () => {
+    const altered = handle.replace(`attachment:${REF.id}`, `attachment:sha256:${'d'.repeat(64)}`)
+    const seed = [user('u1', [{ type: 'text', text: altered }, b64])]
+    const map = new Map<string, unknown[]>([['u1', [{ type: 'text', text: 'hi' }, refBlock]]])
+    const out = projectSeedImageRefs(seed, map)
+    expect(contentOf(out[0])).toEqual([{ type: 'text', text: 'hi' }, refBlock])
+  })
+
+  it('falls back to handle parsing when the sidecar has no ref for the uuid', () => {
+    const seed = [user('v1', [handleBlock, b64])]
+    const out = projectSeedImageRefs(seed, new Map())
+    expect(contentOf(out[0])).toEqual([refBlock])
+  })
+
+  it('leaves legacy base64 (no handle, no sidecar ref) unchanged by identity', () => {
+    const content = [{ type: 'text', text: 'old' }, b64]
+    const seed = [user('v1', content)]
+    const out = projectSeedImageRefs(seed, new Map())
+    expect(out).toBe(seed) // nothing changed → original array
+    expect(contentOf(out[0])).toBe(content)
+  })
+
+  it('passes non-user frames and string content through untouched', () => {
+    const assistant = { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [handleBlock, b64] } } as unknown as SDKMessage
+    const stringUser = { type: 'user', uuid: 'u2', message: { role: 'user', content: 'plain' } } as unknown as SDKMessage
+    const seed = [assistant, stringUser]
+    const out = projectSeedImageRefs(seed, new Map())
+    expect(out).toBe(seed)
+  })
+
+  it('does not mutate the input seed messages', () => {
+    const content = [handleBlock, b64]
+    const seed = [user('v1', content)]
+    projectSeedImageRefs(seed, new Map())
+    expect(contentOf(seed[0])).toBe(content) // original untouched
+    expect(content).toEqual([handleBlock, b64])
   })
 })
