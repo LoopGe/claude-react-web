@@ -21,6 +21,7 @@
 
 import { join } from 'node:path'
 import { PerSessionSidecar } from './per-session-sidecar.js'
+import { isHumanUserMessage, type UserFrameClassifierShape } from '../shared/user-frames.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 
 /** One entry per top-level user prompt, in send order:
@@ -130,11 +131,17 @@ export function rewriteSeedPromptUuids(
   if (vToU.size === 0) return seed
   for (let k = 0; k < seed.length; k++) {
     const msg = seed[k]
-    // Only top-level user prompts (the SDK's echo of our sent prompts) are
-    // candidates. Other frames (assistant/system/tool_result-bearing user)
-    // keep their own uuids.
-    if (msg.type !== 'user') continue
-    if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id != null) continue
+    // Only genuine human-typed top-level prompts (the SDK's echo of our sent
+    // prompts) are candidates. The full synthetic ladder (tool_result carriers,
+    // task-notification injections, isSynthetic, compact summaries, and the
+    // NON-isMeta local-command log markup) lives in isHumanUserMessage — a
+    // stale ledger mapping whose v names any synthetic frame (the historical
+    // FIFO pairing mispaired them onto unrelated sends) must not rewrite that
+    // frame onto the prompt's uuid: the collision put one uuid on two
+    // transcript rows (the resume-duplicate incident). isMeta is the disk-only
+    // synthetic marker the ladder does not read.
+    if (!isHumanUserMessage(msg as unknown as UserFrameClassifierShape)) continue
+    if ((msg as { isMeta?: boolean }).isMeta === true) continue
     const v = typeof msg.uuid === 'string' ? msg.uuid : undefined
     if (!v) continue
     const u = vToU.get(v)

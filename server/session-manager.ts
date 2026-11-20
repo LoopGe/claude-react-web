@@ -160,7 +160,7 @@ import {
 } from './transcript-sidecar.js'
 import { occurrenceIdOf, semanticMessageProjection, type ProjectionEntry } from './transcript-projection.js'
 import { createHash } from 'node:crypto'
-import { buildOrderedProjection, TranscriptRebuildBlockedError } from './transcript-reconcile.js'
+import { alignOldByUuid, buildOrderedProjection, TranscriptRebuildBlockedError } from './transcript-reconcile.js'
 import { SessionSubscriptionHub } from './session-subscription-hub.js'
 import { ResetJournal, type ResetJournalEntry } from './reset-journal.js'
 import { TranscriptWriter } from './transcript-writer.js'
@@ -8689,7 +8689,13 @@ export class SessionManager {
         evicted: t.store.isEvicted(seq),
       })
     }
-    const input = { old, canonical, pending: [], oldTombstones: [] }
+    // Wire/disk twin alignment (spec §5.2 base identity): the content-hash
+    // disambiguator above splits a live pre-finalization frame from its disk
+    // final frame into two occurrenceIds; a unique uuid+frameKind match folds
+    // the old wire copy back onto its canonical occurrence before the builder
+    // can insert it as a duplicate app-only row.
+    const aligned = alignOldByUuid(old, canonical)
+    const input = { old: aligned.old, canonical: aligned.canonical, pending: [], oldTombstones: [] }
     // Rebuild only on a genuine chronology inversion among UUID-matched records
     // (the incident: a disk-only record persisted at the tail that belongs in the
     // middle). Coverage dedup and pure tail append stay on backfillFromEntries,

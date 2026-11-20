@@ -14,7 +14,7 @@
 
 import { isDeepStrictEqual } from 'node:util'
 import { assistantMessageShapeOf } from '../shared/assistant-message.js'
-import { semanticEquivalent, type ProjectionEntry, type TombstoneKind } from './transcript-projection.js'
+import { frameKindOf, LIFECYCLE_KEYS, semanticEquivalent, type ProjectionEntry, type TombstoneKind } from './transcript-projection.js'
 
 export type { ProjectionEntry } from './transcript-projection.js'
 
@@ -168,6 +168,119 @@ function appInsertIndex(
     }
   }
   return out.length
+}
+
+/** Align unmatched old (app-classified) occurrences to canonical by the spec
+ *  §5.2 base identity `uuid+frameKind` BEFORE the ordered rebuild.
+ *
+ *  The composition layer disambiguates occurrence identity with a semantic
+ *  content hash. A live wire frame and the CLI's persisted final frame of the
+ *  SAME logical message legitimately differ in usage/stop_reason (streaming
+ *  pre-finalization vs final), which §5.3 keeps semantic — so the twins hash
+ *  differently, the old copy classifies as app-only, and the rebuild would
+ *  insert it beside its canonical twin (one uuid, two seqs: the resume-
+ *  duplicate incident). A UNIQUE uuid+frameKind match proves the old entry is
+ *  that canonical occurrence's wire twin, not a distinct occurrence:
+ *
+ *    - the old entry adopts the canonical occurrenceId/msg/source, so the
+ *      builder's identity-conflict check sees equivalent content and the
+ *      app-only insertion loop skips it;
+ *    - lifecycle metadata merges onto the canonical copy (canonical values
+ *      win — §5.3);
+ *    - eviction OR-merges onto the canonical copy (§5.4: a retraction covers
+ *      every copy of the occurrence).
+ *
+ *  Zero or multiple canonical candidates leave the old entry untouched —
+ *  multiple same-key canonical entries are §5.2's legitimate multi-occurrence
+ *  case (or an ambiguity the hash identity/bridge machinery must resolve);
+ *  guessing a merge there would drop data. Pure: inputs are never mutated. */
+export function alignOldByUuid(
+  old: ProjectionEntry[],
+  canonical: ProjectionEntry[],
+): { old: ProjectionEntry[]; canonical: ProjectionEntry[] } {
+  // No blanket "no app entries" early return here: a corrupt store can hold
+  // two identical hash-matched rows for one retracted occurrence with no app
+  // twin at all, and the eviction OR below must still reach the builder. The
+  // clone cost is marginal next to the per-message semantic hashing the
+  // composition layer already runs; the untouched-inputs return is below.
+  const canonOut = canonical.map((c) => ({ ...c, aliases: [...c.aliases] }))
+  const byKey = new Map<string, ProjectionEntry[]>()
+  const byOcc = new Map<string, ProjectionEntry>()
+  for (const c of canonOut) {
+    byOcc.set(c.occurrenceId, c)
+    const u = uuidOf(c.msg)
+    if (u === null) continue
+    const key = u + ':' + frameKindOf(c.msg)
+    const list = byKey.get(key)
+    if (list) list.push(c)
+    else byKey.set(key, [c])
+  }
+  // Phase 1: resolve alignment targets and accumulate evicted/lifecycle state.
+  // Eviction OR-merges from EVERY old copy that names the occurrence — including
+  // hash-matched provider copies — because the builder's oldByOcc is last-wins:
+  // an aligned entry reporting only its own flag could shadow an evicted twin
+  // and resurrect a retracted message (§5.4).
+  const targets = new Map<ProjectionEntry, ProjectionEntry>()
+  const lifecycle = new Map<ProjectionEntry, Loose>()
+  let evictedTouched = false
+  for (const e of old) {
+    const matched = byOcc.get(e.occurrenceId)
+    if (matched && e.evicted && !matched.evicted) {
+      matched.evicted = true
+      evictedTouched = true
+    }
+    if (e.source !== 'app') continue
+    const u = uuidOf(e.msg)
+    if (u === null) continue
+    const candidates = byKey.get(u + ':' + frameKindOf(e.msg))
+    if (!candidates || candidates.length !== 1) continue
+    const c = candidates[0]
+    c.evicted = c.evicted || e.evicted
+    targets.set(e, c)
+    // Among multiple wire twins the NEWEST delivery stamp wins (max): a
+    // positional first-merge would let an older copy's consumedAt block a
+    // newer one's. Canonical values still win over all of them (phase 2).
+    const em = obj(e.msg)
+    if (!em) continue
+    for (const k of LIFECYCLE_KEYS) {
+      const v = em[k]
+      if (v == null) continue
+      let add = lifecycle.get(c)
+      if (!add) {
+        add = {}
+        lifecycle.set(c, add)
+      }
+      const prev = add[k]
+      if (prev == null || (typeof v === 'number' && typeof prev === 'number' && v > prev)) add[k] = v
+    }
+  }
+  // Nothing aligned AND no eviction merged: return the originals untouched.
+  // When an eviction OR landed on a canonical clone (a hash-matched retracted
+  // copy with no alignable app twin), the merged canonical must still ship —
+  // dropping it would let the builder's last-wins oldByOcc resurrect the
+  // retracted occurrence from a visible identical copy.
+  if (targets.size === 0 && !evictedTouched) return { old, canonical }
+  // Phase 2: apply the accumulated lifecycle onto the canonical clones (only
+  // where canonical lacks a value), then rewrite the aligned old entries to
+  // the canonical identity/content/evicted state.
+  for (const [c, add] of lifecycle) {
+    const cm = obj(c.msg)
+    const missing: Loose = {}
+    let any = false
+    for (const k of LIFECYCLE_KEYS) {
+      if (add[k] != null && cm?.[k] == null) {
+        missing[k] = add[k]
+        any = true
+      }
+    }
+    if (any) c.msg = { ...(c.msg as Loose), ...missing }
+  }
+  const oldOut = old.map((e) => {
+    const c = targets.get(e)
+    if (!c) return e
+    return { ...e, occurrenceId: c.occurrenceId, msg: c.msg, source: c.source, evicted: c.evicted }
+  })
+  return { old: oldOut, canonical: canonOut }
 }
 
 /** Build the ordered projection (spec §7). Throws a ReconcileError on any

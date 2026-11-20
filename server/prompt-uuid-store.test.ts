@@ -84,6 +84,58 @@ describe('rewriteSeedPromptUuids (exact v→u lookup)', () => {
     expect(rewriteSeedPromptUuids(seed, undefined)).toBe(seed)
   })
 
+  it('never rewrites synthetic user frames (compact summary / meta) even under a stale mispaired mapping', () => {
+    // The resume-duplicate incident: a historical FIFO-pairing ledger entry
+    // mapped a host prompt's u onto a COMPACT SUMMARY's disk uuid v. The
+    // summary is CLI-synthesized, never a host-prompt echo — rewriting it to
+    // u collided its uuid with the real prompt's (one uuid, two transcript
+    // rows, duplicate React keys). Synthetic frames keep their own uuids.
+    const summary = {
+      type: 'user',
+      uuid: 'V1',
+      parent_tool_use_id: null,
+      isCompactSummary: true,
+      message: { role: 'user', content: 'This session is being continued...' },
+    } as unknown as SDKMessage
+    const meta = {
+      type: 'user',
+      uuid: 'V2',
+      parent_tool_use_id: null,
+      isMeta: true,
+      message: { role: 'user', content: '<local-command-stdout>...' },
+    } as unknown as SDKMessage
+    const seed = [userPrompt('U1', '用subagent-driven，开始吧'), summary, meta]
+    const out = rewriteSeedPromptUuids(seed, [entry('U1', 'V1'), entry('U2', 'V2')])
+    expect(out[0].uuid).toBe('U1') // the real prompt (already bridged) unchanged
+    expect(out[1].uuid).toBe('V1') // summary NOT rewritten onto the prompt's uuid
+    expect(out[2].uuid).toBe('V2') // meta frame NOT rewritten
+  })
+
+  it('never rewrites NON-isMeta synthetic frames: local-command logs and task-notification injections', () => {
+    // The CLI marks <command-name>/<local-command-stdout> frames NON-isMeta
+    // (the model may reference them), so the marker checks alone would let a
+    // stale mispaired mapping rewrite them onto a host prompt's uuid — the
+    // same one-uuid-two-rows collision. The full synthetic ladder
+    // (isHumanUserMessage) sniffs the markup.
+    const stdout = {
+      type: 'user',
+      uuid: 'V1',
+      parent_tool_use_id: null,
+      message: { role: 'user', content: '<local-command-stdout>model set to ...</local-command-stdout>' },
+    } as unknown as SDKMessage
+    const taskNotif = {
+      type: 'user',
+      uuid: 'V2',
+      parent_tool_use_id: null,
+      message: { role: 'user', content: '<task-notification><tool-use-id>tu1</tool-use-id><result>done</result></task-notification>' },
+    } as unknown as SDKMessage
+    const seed = [userPrompt('U1', 'real prompt'), stdout, taskNotif]
+    const out = rewriteSeedPromptUuids(seed, [entry('U1', 'V1'), entry('U2', 'V2')])
+    expect(out[0].uuid).toBe('U1')
+    expect(out[1].uuid).toBe('V1') // stdout log keeps its uuid
+    expect(out[2].uuid).toBe('V2') // task-notification keeps its uuid
+  })
+
   it('bails when no entry is paired (all v undefined)', () => {
     const seed = [userPrompt('V1', 'hi')]
     const out = rewriteSeedPromptUuids(seed, [{ u: 'U1' }])

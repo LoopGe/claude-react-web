@@ -42,16 +42,21 @@ export interface LegacyProof {
   taskNotification?: 'watcher' | 'provider-live' | null
 }
 
+/** Delivery-state lifecycle keys (spec §5.3 lifecycle merge): the old server
+ *  copy supplies these onto the canonical content when a matched occurrence
+ *  merges. Exported so the reconcile's merge set and the semantic projection's
+ *  exclusion set cannot drift — every lifecycle key MUST stay provenance, or a
+ *  merged row's hash would diverge from its disk twin and re-classify app-only
+ *  on every future reconcile. */
+export const LIFECYCLE_KEYS = ['consumedAt', 'injectedAt', 'requeuedAt', 'steeredAt'] as const
+
 /** Transport/persistence provenance excluded from semantic comparison (spec §5.3).
  *  uuid itself is excluded: identity is occurrenceId, not the display uuid. */
-const PROVENANCE_KEYS = new Set([
+const PROVENANCE_KEYS = new Set<string>([
+  ...LIFECYCLE_KEYS,
   'uuid',
   'restoredFromDisk',
   'receivedAt',
-  'consumedAt',
-  'injectedAt',
-  'requeuedAt',
-  'steeredAt',
   'isReplay',
   'timestamp',
   'session_id',

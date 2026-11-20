@@ -76,7 +76,7 @@ async function setup(sidecarMsgs: object[], jsonlMsgs: object[]) {
     await sm.shutdown()
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
-  return { id, sm }
+  return { id, sm, dir }
 }
 
 const uuids = (win: { messages: Array<{ msg: unknown }> }) =>
@@ -145,5 +145,78 @@ describe('incident regression: displaced disk-only records rebuild to provider o
     }
     const msKey = Object.keys(snap.histograms).find((k) => k.startsWith('transcript_rebuild_ms'))
     expect(msKey).toBeDefined()
+  })
+})
+
+// ─── wire/disk finalization divergence (the resume-duplicate incident) ──────
+//
+// Every fixture above seeds IDENTICAL content on the sidecar and JSONL sides,
+// so the composition layer's content-hash occurrenceIds always match. Real
+// live wire frames are pre-finalization (stop_reason null, streaming usage)
+// while the CLI persists the final frame — the hashes then differ and the
+// rebuild must still recognize the twins as ONE occurrence (spec §5.2 base
+// identity uuid+frameKind, §5.3 canonical content wins).
+
+const wireAssistant = (uuid: string, id: string, text: string) => ({
+  type: 'assistant',
+  uuid,
+  parent_tool_use_id: null,
+  timestamp: '2026-11-19T12:04:35.259Z',
+  message: {
+    id,
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+    stop_reason: null,
+    usage: { input_tokens: 110477, output_tokens: 0 },
+  },
+})
+const diskAssistant = (uuid: string, id: string, text: string) => ({
+  type: 'assistant',
+  uuid,
+  parent_tool_use_id: null,
+  message: {
+    id,
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 7, cache_read_input_tokens: 320400, output_tokens: 1080 },
+  },
+})
+
+describe('incident regression: wire/disk twins of one uuid rebuild to a single canonical copy', () => {
+  it('inverted live order + finalization divergence: no duplicate uuids, disk content wins, idempotent', async () => {
+    // Live arrival order [A, N, B] inverts the provider order [A, B, N] →
+    // forces the ordered-rebuild branch (a pure tail append would uuid-dedup
+    // in backfillFromEntries and never exercise the bug). S is a wire-only
+    // system frame the JSONL lacks — a genuine app-only occurrence.
+    const S = monitor('S', 'tu-monitor')
+    const { id, sm, dir } = await setup(
+      [wireAssistant('A', 'mA', 'turn one'), wireAssistant('N', 'mN', 'turn two prompt reply'), wireAssistant('B', 'mB', 'turn two'), S],
+      [diskAssistant('A', 'mA', 'turn one'), diskAssistant('B', 'mB', 'turn two'), diskAssistant('N', 'mN', 'turn two prompt reply')],
+    )
+
+    const win = await sm.getTranscriptWindow(id)
+    expect(win.generation).toBeGreaterThan(0)
+    // One copy per uuid; canonical order with the app-only S anchored after B.
+    expect(uuids(win)).toEqual(['A', 'B', 'S', 'N'])
+    expect(new Set(uuids(win)).size).toBe(4)
+    // The disk final frame wins over the wire pre-finalization copy.
+    const a = win.messages.find((m) => (m.msg as { uuid?: string }).uuid === 'A')!
+    expect((a.msg as { message: { stop_reason: string } }).message.stop_reason).toBe('end_turn')
+    expect((a.msg as { message: { usage: { output_tokens: number } } }).message.usage.output_tokens).toBe(1080)
+
+    // Idempotent: a GENUINE second reconcile (fresh manager over the same
+    // state dir — the same holder short-circuits on `reconciled`, so a second
+    // getTranscriptWindow on `sm` would only re-read the cache) is an empty
+    // append: no generation bump, no duplicate resurrection.
+    const gen = win.generation
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    const sm2 = new SessionManager({ store: store2 })
+    cleanups.push(() => sm2.shutdown())
+    const again = await sm2.getTranscriptWindow(id)
+    expect(again.generation).toBe(gen)
+    expect(uuids(again)).toEqual(['A', 'B', 'S', 'N'])
+    expect(new Set(uuids(again)).size).toBe(4)
   })
 })
