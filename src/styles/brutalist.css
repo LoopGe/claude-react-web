@@ -292,8 +292,6 @@
 [data-skin="brutalist"] .effort-slider-range::-moz-range-thumb {
   background: var(--bt-orange);
 }
-[data-skin="brutalist"] .msg-queued-dot,
-[data-skin="brutalist"] .msg-processing-dot,
 [data-skin="brutalist"] .working-dots > span,
 [data-skin="brutalist"] .subagent-swarm-dots > span,
 [data-skin="brutalist"] .subagent-swarm-row-dot,

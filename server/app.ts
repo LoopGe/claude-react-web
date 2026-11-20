@@ -269,7 +269,6 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       autoRecap: serverConfig.autoRecap,
       toolGroupCards: serverConfig.toolGroupCards,
       autoExpandRunningGroups: serverConfig.autoExpandRunningGroups,
-      showMessageHeaders: serverConfig.showMessageHeaders,
       appToolsGit: serverConfig.appToolsGit,
       firstPartyTools: serverConfig.firstPartyTools,
       rowGap: serverConfig.rowGap,

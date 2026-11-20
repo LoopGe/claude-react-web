@@ -147,12 +147,6 @@ interface ConfigFile {
    *  the running badge and clicking still opens it); every fold path is
    *  unchanged. Only meaningful while `toolGroupCards` is on. */
   autoExpandRunningGroups: boolean
-  /** Global default for message-card header rows (assistant/you label +
-   *  timestamp + sending status). Per-session overrides
-   *  (SessionMeta.showMessageHeaders) take priority; sessions without an
-   *  override inherit this value. When false, user bubbles and assistant
-   *  cards render as bare content with no header row. */
-  showMessageHeaders: boolean
   /** Global transcript spacing (`--chat-row-gap`) density preset. A personal
    *  UI preference — global only, never per-session. */
   rowGap?: string
@@ -277,9 +271,6 @@ export interface ServerConfig {
    *  Sessions without an explicit override inherit this. Only meaningful
    *  while `toolGroupCards` is on. */
   readonly autoExpandRunningGroups: boolean
-  /** Global default for message-card header rows. Sessions without an
-   *  explicit override inherit this. */
-  readonly showMessageHeaders: boolean
   /** Global transcript spacing (`--chat-row-gap`) density preset. Not a
    *  per-session thing — a personal UI preference applied globally. */
   readonly rowGap: RowGapPreset
@@ -362,7 +353,6 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   autoRecap: true,
   toolGroupCards: true,
   autoExpandRunningGroups: true,
-  showMessageHeaders: true,
   rowGap: DEFAULT_ROW_GAP,
   textSpacing: DEFAULT_TEXT_SPACING,
   fontSize: DEFAULT_FONT_SIZE,
@@ -711,10 +701,6 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { autoExpandRunningGroups: boolean }).autoExpandRunningGroups = file_.autoExpandRunningGroups
   }
 
-  if (typeof file_.showMessageHeaders === 'boolean') {
-    ;(merged as { showMessageHeaders: boolean }).showMessageHeaders = file_.showMessageHeaders
-  }
-
   if (typeof file_.rowGap === 'string' && isRowGapPreset(file_.rowGap)) {
     ;(merged as { rowGap: RowGapPreset }).rowGap = file_.rowGap
   }
@@ -858,7 +844,6 @@ export const WRITABLE_CONFIG_KEYS = [
   'autoRecap',
   'toolGroupCards',
   'autoExpandRunningGroups',
-  'showMessageHeaders',
   'rowGap',
   'textSpacing',
   'fontSize',

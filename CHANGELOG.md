@@ -10,10 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **Animation speed: Off** — a fourth Theme preset that suppresses decorative motion app-wide (CSS transitions/animations, framer-motion dialogs and popovers, FLIP/reveal/WAAPI) while load-bearing progress indicators keep moving. Honors the OS reduced-motion preference as before; the OS setting still wins.
+- **Hover a message for its timestamp** — hovering a user or assistant card reveals its full date and time in a tooltip. Works on live and disk-restored messages alike; cards without a stamped time (streaming drafts, sending bubbles) show nothing.
 
 ### Removed
 
 - **Streaming-preview setting** — the `Render live text inline in the transcript` appearance switch (config key `streamingRenderMode`) is gone. Live reply text always grows in place as a message card inside the transcript; the floating-bubble (`overlay`) render path is retired. A `config.json` that still carries the key boots normally — the key is ignored.
+- **Message-card headers** — the `Show message card headers` switch (config key `showMessageHeaders`, global and per-session) and the header row it gated are gone. User/assistant cards no longer render the role label, inline timestamp, delivery-status chips (sending/queued/injecting/injected/processing), or assistant error badge; the timestamp moved to card hover. The sending/queued card dimming and the delivery-status data model are unchanged. A stale `showMessageHeaders` key in `config.json` or a persisted session is ignored.
 
 ## [0.8.0] — 2026-11-07
 

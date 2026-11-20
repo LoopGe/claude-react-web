@@ -283,9 +283,12 @@ export interface SdkMessage {
   session_id?: string
   /** Wall-clock ms when the server first observed this message (stamped in
    *  session-pump / pushToSession before it enters the history ring). Travels
-   *  with the message over both replay and live WS frames. Absent for
-   *  messages restored from the CLI's on-disk log after a server restart —
-   *  the UI hides the timestamp when undefined rather than guessing. */
+   *  with the message over both replay and live WS frames. Disk-restored
+   *  history carries the CLI JSONL's ISO timestamp normalized to epoch ms
+   *  (history-reader), so it survives restarts; `restoredFromDisk` marks that
+   *  provenance. Absent only for drafts / pre-ack optimistic bubbles and old
+   *  disk lines without a parseable timestamp — the UI disables the
+   *  card-hover timestamp when undefined rather than guessing. */
   receivedAt?: number
   /** Wall-clock ms when the SDK actually read this user message off its input
    *  queue (i.e. started processing the turn), as opposed to `receivedAt`

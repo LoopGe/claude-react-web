@@ -1205,28 +1205,6 @@ describe('MessageList', () => {
     expect(container.textContent).toContain('Hello world')
   })
 
-  it('hides user/assistant message headers when showMessageHeaders is false', () => {
-    const msgs = [
-      makeMsg('user', { message: { content: [{ type: 'text', text: 'hi there' }] } }),
-      makeMsg('assistant', {
-        message: { content: [{ type: 'text', text: 'Hello world' }] },
-      }),
-    ]
-    // Default: both bubble kinds render their .msg-header row.
-    const shown = render(<MessageList items={toItems(msgs as SdkMessage[])} />)
-    expect(shown.container.querySelectorAll('.msg.user .msg-header').length).toBe(1)
-    expect(shown.container.querySelectorAll('.msg.assistant .msg-header').length).toBe(1)
-    shown.unmount()
-    // Opt-out: headers gone, body content untouched.
-    const hidden = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} showMessageHeaders={false} />,
-    )
-    expect(hidden.container.querySelector('.msg.user .msg-header')).toBeNull()
-    expect(hidden.container.querySelector('.msg.assistant .msg-header')).toBeNull()
-    expect(hidden.container.textContent).toContain('hi there')
-    expect(hidden.container.textContent).toContain('Hello world')
-  })
-
   it('renders system/permission_denied with tool + reason (not the raw-type fallback)', () => {
     const msgs = [
       makeMsg('system', {
@@ -1325,92 +1303,6 @@ describe('MessageList', () => {
     expect(rows[1].classList.contains('transcript-last-item')).toBe(false)
     expect(rows[2].classList.contains('transcript-first-item')).toBe(false)
     expect(rows[2].classList.contains('transcript-last-item')).toBe(true)
-  })
-
-  it('uses renderable positions for next item checks under offset firstItemIndex', () => {
-    const msgs = [
-      makeMsg('system', { subtype: 'status' }),
-      makeMsg('user', { message: { content: [{ type: 'text', text: 'question' }] } }),
-      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'answer' }] } }),
-    ]
-    const items = toItems(msgs as SdkMessage[])
-    items[1].deliveryStatus = 'consumed'
-
-    const { container } = render(
-      <MessageList items={items}  working />,
-    )
-
-    expect(container.querySelector('.msg-processing-indicator')).toBeNull()
-  })
-
-  it('keeps the injected chip while the injected turn is still running', () => {
-    // Steered message delivered into the live turn: the assistant hasn't
-    // visibly responded yet (nothing follows), so "injected into the current
-    // turn" is still the accurate claim.
-    const msgs = [
-      makeMsg('user', { message: { content: [{ type: 'text', text: 'steer: also run lint' }] } }),
-    ]
-    const items = toItems(msgs as SdkMessage[])
-    items[0].deliveryStatus = 'injected'
-
-    const { container } = render(
-      <MessageList items={items} working />,
-    )
-
-    const chip = container.querySelector('.msg-steered-indicator')
-    expect(chip).not.toBeNull()
-    expect(chip?.textContent).toContain('injected')
-  })
-
-  it('fades the injected chip once the injected turn has visibly ended', () => {
-    // An assistant response follows the steered message — the turn it was
-    // injected into has ended, and the durable injectedAt stamp stays in the
-    // data model (replay) while the live chip spends its promise.
-    const msgs = [
-      makeMsg('user', { message: { content: [{ type: 'text', text: 'steer: also run lint' }] } }),
-      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'done' }] } }),
-    ]
-    const items = toItems(msgs as SdkMessage[])
-    items[0].deliveryStatus = 'injected'
-
-    const { container } = render(
-      <MessageList items={items} working />,
-    )
-
-    expect(container.querySelector('.msg-steered-indicator')).toBeNull()
-  })
-
-  it('fades the injected chip on the turn-result row (the common turn-end path)', () => {
-    // Every settled turn ends with a result row — the most common fade path.
-    const msgs = [
-      makeMsg('user', { message: { content: [{ type: 'text', text: 'steer: also run lint' }] } }),
-      makeMsg('result', {}),
-    ]
-    const items = toItems(msgs as SdkMessage[])
-    items[0].deliveryStatus = 'injected'
-
-    const { container } = render(
-      <MessageList items={items} working />,
-    )
-
-    expect(container.querySelector('.msg-steered-indicator')).toBeNull()
-  })
-
-  it('hides the injected chip on an idle session (replayed orphan)', () => {
-    // Delivery happened but the subprocess died before any output: the last
-    // row is the injected message with nothing after. An idle session must
-    // not render a promise — same rule as the 'injecting' orphan (spec §8.3).
-    const msgs = [
-      makeMsg('user', { message: { content: [{ type: 'text', text: 'steer: also run lint' }] } }),
-    ]
-    const items = toItems(msgs as SdkMessage[])
-    items[0].deliveryStatus = 'injected'
-
-    const { container } = render(
-      <MessageList items={items} />,
-    )
-
-    expect(container.querySelector('.msg-steered-indicator')).toBeNull()
   })
 
   it('static marks the snapshot wrap', () => {
@@ -2873,7 +2765,7 @@ describe('MessageList', () => {
 
   it('reattaches restore and reveal listeners when the scroller element is replaced under the same transcript key', async () => {
     const items = toItems([makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } })])
-    const { container, rerender } = render(<MessageList items={items} transcriptRevealKey="same" showMessageHeaders />)
+    const { container, rerender } = render(<MessageList items={items} transcriptRevealKey="same" toolGroupCards />)
     const first = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
     const firstRemove = vi.fn()
     first.removeEventListener = firstRemove
@@ -2881,7 +2773,7 @@ describe('MessageList', () => {
       const secondAdd = vi.fn()
       virtuosoMockState.listenerAddSpy = secondAdd
       virtuosoMockState.scrollerEpoch += 1
-      rerender(<MessageList items={items} transcriptRevealKey="same" showMessageHeaders={false} />)
+      rerender(<MessageList items={items} transcriptRevealKey="same" toolGroupCards={false} />)
       const second = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
       expect(second).not.toBe(first)
       await waitFor(() => {
@@ -4450,7 +4342,7 @@ describe('MessageList', () => {
   })
 
   describe('synthetic user-message rendering (task notifications)', () => {
-    it('renders a genuine human user message as a "you" bubble', () => {
+    it('renders a genuine human user message as a user bubble', () => {
       const { container } = render(
         <MessageList items={toItems([
           makeMsg('user', { message: { content: [{ type: 'text', text: 'hello world' }] } }),
@@ -4458,7 +4350,6 @@ describe('MessageList', () => {
       )
       const youBubble = container.querySelector('.msg.user')
       expect(youBubble).toBeTruthy()
-      expect(container.textContent).toContain('you')
       expect(container.textContent).toContain('hello world')
     })
 
@@ -4916,7 +4807,7 @@ describe('system error divider', () => {
     const divider = container.querySelector('.msg.result.interrupted')
     expect(divider).toBeTruthy()
     expect(container.querySelector('.msg.assistant')).toBeNull()
-    // The server_error header label must NOT leak through.
+    // The raw server_error code must NOT leak into the divider text.
     expect(container.textContent).not.toContain('server_error')
     expect(divider?.getAttribute('title')).toBeNull()
     expect(hoverText(divider!)).toContain('Connection closed mid-response')
@@ -4996,8 +4887,8 @@ describe('system error divider', () => {
 
     const divider = container.querySelector('.msg.result.error')
     expect(divider).toBeTruthy()
-    // NOT a normal assistant bubble, and the bare `rate_limit` header chip
-    // must not leak through.
+    // NOT a normal assistant bubble, and the bare `rate_limit` code must not
+    // leak into the rendered text.
     expect(container.querySelector('.msg.assistant')).toBeNull()
     expect(container.textContent).not.toContain('rate_limit')
 

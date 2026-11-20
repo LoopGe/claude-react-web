@@ -800,16 +800,6 @@ export function AppearanceTab({
             />
           </SettingsRow>
         )}
-        <SettingsRow
-          title="Show message card headers"
-          hint="Shows the assistant/you label, timestamp, and sending status row on each message card. When off, message cards render as bare content."
-        >
-          <Switch
-            label="Show message card headers"
-            checked={values.showMessageHeaders}
-            onChange={(on) => onPatch({ showMessageHeaders: on })}
-          />
-        </SettingsRow>
               </section>
     </div>
   )

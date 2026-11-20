@@ -237,12 +237,11 @@ describe('session create body validation (narrowCreateBody)', () => {
       enabledPlugins: ['p@m'],
       firstPartyTools: { 'git-tools': false },
       mcpServers: { inline: { type: 'stdio', command: 'y' } },
-      // restart flow (App.tsx handleRestart) — the five UI prefs
+      // restart flow (App.tsx handleRestart) — the four UI prefs
       showPinnedUserMessage: false,
       autoRecap: false,
       toolGroupCards: false,
       autoExpandRunningGroups: false,
-      showMessageHeaders: false,
       // other whitelisted create-time fields
       profileId: 'default',
       effortLevel: 'medium',
@@ -337,7 +336,6 @@ describe('session create body validation (narrowCreateBody)', () => {
       autoRecap: false,
       toolGroupCards: false,
       autoExpandRunningGroups: false,
-      showMessageHeaders: false,
     })
     expect(res.status).toBe(201)
     expect(sm.create).toHaveBeenCalledWith(
@@ -346,7 +344,6 @@ describe('session create body validation (narrowCreateBody)', () => {
         autoRecap: false,
         toolGroupCards: false,
         autoExpandRunningGroups: false,
-        showMessageHeaders: false,
       }),
       undefined,
       undefined,

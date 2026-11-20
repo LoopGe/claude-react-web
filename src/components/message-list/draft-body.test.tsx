@@ -93,7 +93,7 @@ describe('DraftTextBody', () => {
 })
 
 describe('MessageView draft branch', () => {
-  it('renders isDraft messages through the draft body (static text, timestamp-less header)', () => {
+  it('renders isDraft messages through the draft body (static frozen text)', () => {
     const { container } = render(
       <MessageView
         msg={{
@@ -110,7 +110,5 @@ describe('MessageView draft branch', () => {
     )
     expect(container.querySelector('.msg-body.draft-body')).toBeTruthy()
     expect(container.querySelector('.draft-body .md strong')?.textContent).toBe('body')
-    // The absent timestamp hides the slot entirely (settled-parity header).
-    expect(container.querySelector('.msg-timestamp')).toBeNull()
   })
 })

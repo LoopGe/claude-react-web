@@ -33,7 +33,6 @@ const MODAL_APPEARANCE_FIELDS: ReadonlyArray<keyof AppearancePrefs> = [
   'autoRecap',
   'toolGroupCards',
   'autoExpandRunningGroups',
-  'showMessageHeaders',
 ]
 
 /** Owned by the header Theme popover (immediate-save): the modal must never
@@ -48,7 +47,6 @@ const ALL_NON_DEFAULT: Record<string, unknown> = {
   autoRecap: false,
   toolGroupCards: false,
   autoExpandRunningGroups: false,
-  showMessageHeaders: false,
   rowGap: 'comfortable',
   textSpacing: 'compact',
   fontSize: 'large',
@@ -100,7 +98,6 @@ describe('GlobalSettingsModal staged appearance state', () => {
     expect(screen.getByRole('switch', { name: 'Show pinned “current question” header' }).getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('switch', { name: 'Auto-generate session recap' }).getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('switch', { name: 'Use collapsible transcript cards' }).getAttribute('aria-checked')).toBe('false')
-    expect(screen.getByRole('switch', { name: 'Show message card headers' }).getAttribute('aria-checked')).toBe('false')
   })
 
   it('falls back to shipped defaults when a field is absent from /config/full', async () => {
@@ -136,7 +133,6 @@ describe('GlobalSettingsModal staged appearance state', () => {
     expect(body.autoRecap).toBe(false)
     expect(body.toolGroupCards).toBe(false)
     expect(body.autoExpandRunningGroups).toBe(false)
-    expect(body.showMessageHeaders).toBe(false)
   })
 
   // ── Patch isolation: onPatch changes only its target field ──────────
@@ -160,7 +156,6 @@ describe('GlobalSettingsModal staged appearance state', () => {
     // autoExpandRunningGroups is hidden while toolGroupCards is off, but its
     // staged value rides along and is saved.
     expect(body.autoExpandRunningGroups).toBe(false)
-    expect(body.showMessageHeaders).toBe(false)
   })
 
   it('successive patches accumulate without clobbering earlier ones', async () => {
@@ -283,7 +278,6 @@ describe('AppearanceTab direct render (values/onPatch contract)', () => {
       showPinnedUserMessage: false,
       autoRecap: false,
       toolGroupCards: false,
-      showMessageHeaders: false,
       fontSize: 'large',
       animationSpeed: 'fast',
     }
@@ -292,7 +286,6 @@ describe('AppearanceTab direct render (values/onPatch contract)', () => {
     expect(screen.getByRole('switch', { name: 'Show pinned “current question” header' }).getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('switch', { name: 'Auto-generate session recap' }).getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('switch', { name: 'Use collapsible transcript cards' }).getAttribute('aria-checked')).toBe('false')
-    expect(screen.getByRole('switch', { name: 'Show message card headers' }).getAttribute('aria-checked')).toBe('false')
   })
 
   it('passes onPatch through to controls without wrapping (identity pass-through)', () => {

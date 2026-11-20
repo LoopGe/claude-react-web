@@ -95,7 +95,6 @@ createRoot(document.getElementById('root')!).render(
                 parent_tool_use_id: 'Skill_layout',
                 message: { role: 'assistant', content: [block] },
               }}
-              showMessageHeaders={false}
               foldExpanded={false}
               foldSearchHit={false}
               onToggleFold={() => {}}

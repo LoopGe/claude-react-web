@@ -2056,56 +2056,14 @@ button.chat-empty-env-chip:hover {
   align-items: center;
   gap: var(--space-2);
 }
-/* Inline message timestamp ?pushed to the right edge of the header.
-   Tabular figures so the seconds digit doesn't shift the layout as it
-   ticks. Lowercase (the header is uppercased) and de-emphasised so the
-   time reads as metadata, not content. */
-.msg-timestamp {
-  flex-shrink: 0;
-  font-size: var(--fs-2xs);
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--fg-muted);
-  opacity: 0.75;
-  font-variant-numeric: tabular-nums;
-  cursor: default;
-}
-/* Raw CLI error surfaced in the assistant header (msg.error). The header
-   uppercases and mutes everything, but these strings are diagnostic — undo the
-   transform and colour it as an error so it doesn't read as ordinary chrome. */
-.msg-header-error {
-  color: var(--danger-text);
-  text-transform: none;
-  letter-spacing: 0;
-  /* A raw CLI error can be one long unbreakable token (a quoted absolute path,
-     a URL, a hash). The header is a non-wrapping flex row inside an
-     overflow-x:hidden transcript, so clip + ellipsis here (the span carries a
-     title attribute with the full text) instead of overflowing the header. */
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Push the role label hard left so the timestamp (wrapped in a Tooltip's
-   .tt-wrap) and any sending indicator settle on the right edge. The header
-   was previously justify-content: space-between with exactly two children;
-   now there are up to three, so an explicit auto margin is clearer. */
+/* Push the frame card's role label hard left so any right-side header
+   metadata settles on the right edge (an explicit auto margin is clearer
+   than relying on space-between with a variable child count). */
 .msg-header > span:first-child {
   margin-right: auto;
 }
-/* "Sending? indicator on the user bubble while the server hasn't
-   acknowledged yet. Replaced with no indicator (this entire row is
-   removed) the moment the broadcast lands. */
-.msg-sending-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--fs-2xs);
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--fg-muted);
-  flex-shrink: 0;
-}
+/* Pending bash card's spinner (BashMessage). The shared zero-specificity
+   :where group owns the spin animation and round shape. */
 .msg-sending-spinner {
   display: inline-block;
   width: var(--size-10px);
@@ -2115,71 +2073,15 @@ button.chat-empty-env-chip:hover {
      shared rule's accent top arc (zero-specificity :where group). */
   border-top-color: var(--accent);
 }
-.msg-sending-label {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-}
-/* Subtly soften the bubble while in-flight so it visibly differs from
-   the acknowledged state. Restored when the spinner is removed. */
+/* Subtly soften the bubble while in-flight (pre-ack optimistic state) so it
+   visibly differs from the acknowledged state. */
 .msg.user.msg-sending {
   opacity: 0.75;
-}
-/* Queued state: the server has the message but the SDK is still finishing
-   the current turn, so it sits in the input queue. Mirrors the sending
-   indicator shape (small chip in the header) but uses a pulsing dot rather
-   than a spinner ?it's a passive "waiting" state, not active work. */
-.msg-queued-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--fs-2xs);
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--fg-muted);
-  flex-shrink: 0;
-}
-.msg-queued-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-circle);
-  background: var(--accent);
-  animation: status-pulse 1.4s ease-in-out infinite;
-}
-.msg-queued-label {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
 }
 /* Slightly dim a queued bubble so it reads as "not yet being worked on",
    distinct from both the in-flight (sending) and acknowledged states. */
 .msg.user.msg-queued {
   opacity: 0.85;
-}
-/* Processing state: the SDK has consumed the message and the model is
-   actively working on it. Uses a pulsing dot similar to the queued
-   indicator but with a slightly faster animation to convey active work
-   rather than passive waiting. Only shown while the session is working. */
-.msg-processing-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--fs-2xs);
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--accent-text);
-  flex-shrink: 0;
-}
-.msg-processing-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-circle);
-  background: var(--accent);
-  animation: status-pulse 1s ease-in-out infinite;
-}
-.msg-processing-label {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
 }
 /* User message ?right-aligned chat bubble. We shrink the bubble below
    the column width and pin it to the right edge with align-self, which
@@ -2193,15 +2095,6 @@ button.chat-empty-env-chip:hover {
   border-color: var(--msg-user-border);
   color: var(--msg-user-fg);
   border-bottom-right-radius: var(--radius-3xs);
-}
-.msg.user .msg-header {
-  color: var(--msg-user-header-fg);
-  font-weight: 600;
-}
-.msg.user .msg-header > span:first-child {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
 }
 .msg.user .md a {
   color: var(--msg-user-link-fg);
@@ -2332,10 +2225,6 @@ button.chat-empty-env-chip:hover {
    bubble needs a definite inline size. Text-only bubbles stay shrink-wrapped. */
 .msg.assistant:has(> .msg-body > .tool-card) {
   width: 100%;
-}
-.msg.assistant .msg-header {
-  color: var(--assistant-header-fg);
-  font-weight: 600;
 }
 
 /* New-message entrance animation ("rise"). Applied for one play to

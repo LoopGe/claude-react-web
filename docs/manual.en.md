@@ -442,7 +442,7 @@ Session settings → `Hooks`: pick events from `Available Events` (grouped Tool 
 Tabs in order: `General` · `Appearance` · `Context` · `Hooks` · `Plugins` · `MCP Servers` · `Agents` · `Tools` · `Usage` · `Performance` · `Diagnostics`.
 
 - **General**: read-only `Session ID` / `CWD` / `Created`; editable `Title`, `Profile`, `Model`, `Permission mode`, `Apply settings` (FlagSettings, see 5.4); the `Memory` group (`Auto-memory`, `Memory directory`, `Background memory consolidation`); and the `Sandbox` group.
-- **Appearance**: per-session overrides of four switches (`Show pinned "current question" header`, `Auto-generate session recap`, `Use collapsible tool-group cards`, `Show message card headers`), each with `Reset (inherit global)`.
+- **Appearance**: per-session overrides of three switches (`Show pinned "current question" header`, `Auto-generate session recap`, `Use collapsible tool-group cards`), each with `Reset (inherit global)`.
 - **Context**: the `Context usage` bar, `Auto-compact window`, and skill/agent token breakdowns.
 - **Plugins**: plugins loaded for this session — `Reload plugins`, per-plugin `Disable`/`Enable`, and `Browse plugins` for the marketplace.
 - **MCP Servers**: see [8.1](#81-mcp-servers).
@@ -459,7 +459,7 @@ Tabs in order: `General` · `Appearance` · `Context` · `Hooks` · `Plugins` ·
 Tabs: `Profiles` · `Server` · `Appearance` · `Skills` · `MCP Servers` · `Marketplace` · `App Plugins` · `Open on phone` · `Logs` · `About`. The footer notes `Changes are saved to config.json`; press `Save` to persist.
 
 - **Server**: `Max upload size`, `History cap`, `Working-stuck timeout`, `Max group panels` (2–5, i.e. how many conversations sit side by side), and `Allow editing sensitive paths in auto-approve modes`.
-- **Appearance**: the defaults (pinned current question, auto recap, tool-group cards, message card headers). `Transcript spacing`, `Message text density`, `Font size`, and `Animation speed` now live in the header's Theme menu and save immediately.
+- **Appearance**: the defaults (pinned current question, auto recap, tool-group cards). `Transcript spacing`, `Message text density`, `Font size`, and `Animation speed` now live in the header's Theme menu and save immediately. Message cards are headerless — hover a card to see its full date and time.
 - **Logs**: `Level` (error/warn/info/debug/trace), `Scope filter`, and the `Log to file` toggle. Note that level/scope changes **apply immediately but are not persisted**.
 
 ![Profiles](screenshots/manual/ch9-global-profiles.png)

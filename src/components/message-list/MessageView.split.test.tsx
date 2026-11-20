@@ -37,7 +37,6 @@ describe('MessageView: multi-block assistant frames', () => {
     const { container } = render(
       <MessageView
         msg={combinedAssistant()}
-        showMessageHeaders={false}
         foldExpanded={false}
         foldSearchHit={false}
         onToggleFold={() => {}}

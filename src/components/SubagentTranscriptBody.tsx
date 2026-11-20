@@ -218,7 +218,6 @@ export function SubagentTranscriptBody({
             // Fixed defaults: the TasksPanel context has no panel prefs.
             toolGroupCards
             autoExpandRunningGroups
-            showMessageHeaders
             emptyStateContent={
               <div className="chat-messages-empty-side">
                 <div className="chat-messages-empty-title">

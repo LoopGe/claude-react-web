@@ -674,15 +674,6 @@ describe('SessionSearchPreview', () => {
     expect(screen.getByText('This message is not shown in the transcript')).toBeTruthy()
   })
 
-  it('honours the showMessageHeaders preference', () => {
-    const shown = renderPreview()
-    expect(shown.container.querySelector('.msg-header')).toBeTruthy()
-    shown.unmount()
-
-    const hidden = renderPreview({}, { showMessageHeaders: false })
-    expect(hidden.container.querySelector('.msg-header')).toBeNull()
-  })
-
   it('returns to the results on Back', () => {
     const { onBack } = renderPreview()
     fireEvent.click(screen.getByRole('button', { name: 'Back to results' }))

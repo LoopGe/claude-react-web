@@ -1727,7 +1727,6 @@ export class SessionManager {
       autoRecap: s.autoRecap,
       toolGroupCards: s.toolGroupCards,
       autoExpandRunningGroups: s.autoExpandRunningGroups,
-      showMessageHeaders: s.showMessageHeaders,
       cliDebug: s.cliDebug,
       appToolsGit: s.appToolsGit,
       firstPartyTools: s.firstPartyTools,
@@ -1963,19 +1962,16 @@ export class SessionManager {
       autoRecap?: boolean
       toolGroupCards?: boolean
       autoExpandRunningGroups?: boolean
-      showMessageHeaders?: boolean
     }
     const createPrefs = firstParty || uiPrefs.showPinnedUserMessage !== undefined
       || uiPrefs.autoRecap !== undefined
       || uiPrefs.toolGroupCards !== undefined
       || uiPrefs.autoExpandRunningGroups !== undefined
-      || uiPrefs.showMessageHeaders !== undefined
       ? {
           showPinnedUserMessage: uiPrefs.showPinnedUserMessage,
           autoRecap: uiPrefs.autoRecap,
           toolGroupCards: uiPrefs.toolGroupCards,
           autoExpandRunningGroups: uiPrefs.autoExpandRunningGroups,
-          showMessageHeaders: uiPrefs.showMessageHeaders,
           appToolsGit: firstParty?.[APP_TOOLS_SERVER_NAME],
           firstPartyTools: firstParty,
         }
@@ -2775,7 +2771,7 @@ export class SessionManager {
       // message-header / running-group override survives forking. No-op when
       // the source inherits global (all undefined) — the fork then inherits
       // global too.
-      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, toolGroupCards: meta.toolGroupCards, autoExpandRunningGroups: meta.autoExpandRunningGroups, showMessageHeaders: meta.showMessageHeaders, appToolsGit: meta.appToolsGit, firstPartyTools: meta.firstPartyTools },
+      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, toolGroupCards: meta.toolGroupCards, autoExpandRunningGroups: meta.autoExpandRunningGroups, appToolsGit: meta.appToolsGit, firstPartyTools: meta.firstPartyTools },
       // joinGroupOf: the source id — Y joins X's group (append semantics;
       // X stays, since fork doesn't remove the source). The crash-recovery
       // "Fork from last completed turn" button sets `replacesSource` so the
@@ -3366,7 +3362,7 @@ export class SessionManager {
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
-    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; toolGroupCards?: boolean; autoExpandRunningGroups?: boolean; showMessageHeaders?: boolean; appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> },
+    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; toolGroupCards?: boolean; autoExpandRunningGroups?: boolean; appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> },
     /** When this spawn is a fresh Y that should land in an existing session
      *  X's sidebar group, pass X's id here so the `created` broadcast carries
      *  `joinGroupOf: X`. Set by `/clear`, restart, and fork. Append
@@ -3607,7 +3603,6 @@ export class SessionManager {
       toolGroupCards: prefs?.toolGroupCards ?? existingMeta?.toolGroupCards,
       autoExpandRunningGroups:
         prefs?.autoExpandRunningGroups ?? existingMeta?.autoExpandRunningGroups,
-      showMessageHeaders: prefs?.showMessageHeaders ?? existingMeta?.showMessageHeaders,
       cliDebug: existingMeta?.cliDebug ?? metaSnapshot.cliDebug,
       appToolsGit: prefs?.appToolsGit ?? existingMeta?.appToolsGit,
       firstPartyTools: prefs?.firstPartyTools ?? existingMeta?.firstPartyTools,
@@ -3745,7 +3740,7 @@ export class SessionManager {
     // Strip the create-time per-session UI prefs (the client restart flow
     // sends them on the body). They are pure app-level state mirrored into
     // SessionInfo — the SDK has no such Options keys.
-    for (const key of ['showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups', 'showMessageHeaders']) {
+    for (const key of ['showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups']) {
       delete (sdkOptions as Record<string, unknown>)[key]
     }
     // The create body's `settings` rides the flag-settings layer, which
@@ -5368,7 +5363,6 @@ export class SessionManager {
         || s.autoRecap !== undefined
         || s.toolGroupCards !== undefined
         || s.autoExpandRunningGroups !== undefined
-        || s.showMessageHeaders !== undefined
         || s.appToolsGit !== undefined
         || s.firstPartyTools !== undefined
         ? {
@@ -5376,7 +5370,6 @@ export class SessionManager {
             autoRecap: s.autoRecap,
             toolGroupCards: s.toolGroupCards,
             autoExpandRunningGroups: s.autoExpandRunningGroups,
-            showMessageHeaders: s.showMessageHeaders,
             appToolsGit: s.appToolsGit,
             firstPartyTools: s.firstPartyTools,
           }
@@ -6725,7 +6718,6 @@ export class SessionManager {
       autoRecap?: boolean | undefined
       toolGroupCards?: boolean | undefined
       autoExpandRunningGroups?: boolean | undefined
-      showMessageHeaders?: boolean | undefined
     },
   ): Promise<SessionInfo> {
     return this.opLock.run(id, () => {
@@ -6741,9 +6733,6 @@ export class SessionManager {
       }
       if ('autoExpandRunningGroups' in partial) {
         s.autoExpandRunningGroups = partial.autoExpandRunningGroups
-      }
-      if ('showMessageHeaders' in partial) {
-        s.showMessageHeaders = partial.showMessageHeaders
       }
       s.lastActivityAt = Date.now()
       this.persist(s)
@@ -10617,7 +10606,6 @@ export class SessionManager {
     autoRecap?: boolean
     toolGroupCards?: boolean
     autoExpandRunningGroups?: boolean
-    showMessageHeaders?: boolean
     appToolsGit?: boolean
     firstPartyTools?: Record<string, boolean | null>
     firstPartyRevision?: string
@@ -10660,7 +10648,6 @@ export class SessionManager {
       autoRecap: x.autoRecap,
       toolGroupCards: x.toolGroupCards,
       autoExpandRunningGroups: x.autoExpandRunningGroups,
-      showMessageHeaders: x.showMessageHeaders,
       appToolsGit: x.appToolsGit,
       firstPartyTools: x.firstPartyTools,
       firstPartyRevision: x.firstPartyRevision,

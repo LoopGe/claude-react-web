@@ -154,7 +154,6 @@ describe('buildRestartSessionBody', () => {
         autoRecap: true,
         toolGroupCards: false,
         autoExpandRunningGroups: true,
-        showMessageHeaders: false,
       }),
     )
     expect(body).toEqual({
@@ -172,7 +171,6 @@ describe('buildRestartSessionBody', () => {
       autoRecap: true,
       toolGroupCards: false,
       autoExpandRunningGroups: true,
-      showMessageHeaders: false,
       joinGroupOf: 's1',
       evictingSource: true,
     })

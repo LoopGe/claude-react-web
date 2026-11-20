@@ -117,7 +117,6 @@ const CREATE_BODY_FIELDS = new Set([
   'includePartialMessages', 'includeHookEvents', 'settings', 'memory', 'sandbox',
   'cliDebug', 'firstPartyTools',
   'showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups',
-  'showMessageHeaders',
   'mcpServers', 'enabledMcpServers', 'enabledPlugins',
   'isolateWorktree',
 ])
@@ -304,7 +303,7 @@ function narrowCreateBody(body: Record<string, unknown>): { ok: true; value: Rec
   // flow sends these so the replacement session keeps the panel's overrides
   // instead of silently reverting to the global defaults. Absent = inherit
   // (never `null` — that form belongs to the /prefs route).
-  for (const name of ['showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups', 'showMessageHeaders']) {
+  for (const name of ['showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups']) {
     const v = rest[name]
     if (v !== undefined && typeof v !== 'boolean') {
       return { ok: false, error: `${name} must be a boolean` }
@@ -1057,14 +1056,12 @@ export function buildSessionRouter(
       autoRecap?: boolean | null
       toolGroupCards?: boolean | null
       autoExpandRunningGroups?: boolean | null
-      showMessageHeaders?: boolean | null
     }>(c.req)
     const partial: {
       showPinnedUserMessage?: boolean | undefined
       autoRecap?: boolean | undefined
       toolGroupCards?: boolean | undefined
       autoExpandRunningGroups?: boolean | undefined
-      showMessageHeaders?: boolean | undefined
     } = {}
     if (body && Object.prototype.hasOwnProperty.call(body, 'showPinnedUserMessage')) {
       const v = body.showPinnedUserMessage
@@ -1093,13 +1090,6 @@ export function buildSessionRouter(
         return c.json({ error: 'autoExpandRunningGroups must be a boolean or null' }, 400)
       }
       partial.autoExpandRunningGroups = v ?? undefined
-    }
-    if (body && Object.prototype.hasOwnProperty.call(body, 'showMessageHeaders')) {
-      const v = body.showMessageHeaders
-      if (v !== null && typeof v !== 'boolean') {
-        return c.json({ error: 'showMessageHeaders must be a boolean or null' }, 400)
-      }
-      partial.showMessageHeaders = v ?? undefined
     }
     const info = await sm.setPrefs(c.req.param('id'), partial)
     return c.json({ session: info })

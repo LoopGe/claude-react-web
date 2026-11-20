@@ -789,11 +789,6 @@ export interface Session {
    *  UI pref — no SDK call. Only meaningful while the effective
    *  `toolGroupCards` is on. */
   autoExpandRunningGroups?: boolean
-  /** Per-session override for message-card header rows (assistant/you
-   *  label + timestamp + sending status). Undefined = inherit the global
-   *  config default; a boolean pins it. Persisted via SessionMeta and
-   *  mirrored into SessionInfo. Pure UI pref — no SDK call. */
-  showMessageHeaders?: boolean
   /** User intent: per-session CLI debug logging. undefined = inherit the
    *  global config default. Persisted so resume/fork/restart keep the intent. */
   cliDebug?: boolean

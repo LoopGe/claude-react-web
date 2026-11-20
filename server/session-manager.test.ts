@@ -2339,7 +2339,6 @@ describe('SessionManager', () => {
       autoRecap: false,
       toolGroupCards: false,
       autoExpandRunningGroups: false,
-      showMessageHeaders: false,
     })
     await sm.setFirstPartyTool(info.id, 'git-tools', false)
 
@@ -2349,7 +2348,6 @@ describe('SessionManager', () => {
     expect(next.autoRecap).toBe(false)
     expect(next.toolGroupCards).toBe(false)
     expect(next.autoExpandRunningGroups).toBe(false)
-    expect(next.showMessageHeaders).toBe(false)
     expect(next.firstPartyTools?.['git-tools']).toBe(false)
     // Persisted too, so the next resume/fork of Y keeps them.
     const meta = store.get(next.id)
@@ -12510,24 +12508,20 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       autoRecap: false,
       toolGroupCards: false,
       autoExpandRunningGroups: false,
-      showMessageHeaders: false,
     } as Parameters<SessionManager['create']>[0])
     expect(info.showPinnedUserMessage).toBe(false)
     expect(info.autoRecap).toBe(false)
     expect(info.toolGroupCards).toBe(false)
     expect(info.autoExpandRunningGroups).toBe(false)
-    expect(info.showMessageHeaders).toBe(false)
     // Persisted too, so a later resume/fork of Y keeps them.
     const meta = store.get(info.id)
     expect(meta?.autoExpandRunningGroups).toBe(false)
-    expect(meta?.showMessageHeaders).toBe(false)
   })
 
   it('create() with no UI prefs leaves them undefined (inherit global)', async () => {
     const info = await sm.create({ cwd: TEST_CWD } as Parameters<SessionManager['create']>[0])
     expect(info.showPinnedUserMessage).toBeUndefined()
     expect(info.autoExpandRunningGroups).toBeUndefined()
-    expect(info.showMessageHeaders).toBeUndefined()
   })
 
   it('create() strips the app-level UI prefs from the SDK options', async () => {
@@ -12539,13 +12533,11 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       showPinnedUserMessage: false,
       toolGroupCards: false,
       autoExpandRunningGroups: false,
-      showMessageHeaders: false,
     } as Parameters<SessionManager['create']>[0])
     const opts = mockHandles[0].options as Record<string, unknown>
     expect(opts.showPinnedUserMessage).toBeUndefined()
     expect(opts.toolGroupCards).toBeUndefined()
     expect(opts.autoExpandRunningGroups).toBeUndefined()
-    expect(opts.showMessageHeaders).toBeUndefined()
   })
 
   it('omits git-tools from live setMcpServers when the session override disables it', async () => {

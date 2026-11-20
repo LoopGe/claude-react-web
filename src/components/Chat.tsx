@@ -510,7 +510,6 @@ export const Chat = memo(function Chat({
   const effectiveAutoRecap = sessionPrefs.autoRecap
   const effectiveToolGroupCards = sessionPrefs.toolGroupCards
   const effectiveAutoExpandRunningGroups = sessionPrefs.autoExpandRunningGroups
-  const effectiveShowMessageHeaders = sessionPrefs.showMessageHeaders
   // Pinned "current question" header — the user message of the turn in view,
   // shown when it has scrolled above the viewport. The pinned value lives in a
   // per-panel store, NOT Chat state: a scroll that crosses a user-message
@@ -2200,7 +2199,6 @@ export const Chat = memo(function Chat({
           tasklist={taskList}
           toolGroupCards={effectiveToolGroupCards}
           autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
-          showMessageHeaders={effectiveShowMessageHeaders}
           // The task checklist + monitor bar are bottom OVERLAYS of the
           // transcript, not siblings of it: rendering them here puts them in
           // `.chat-bottom-stack`, so settled messages scroll behind their
@@ -2687,7 +2685,6 @@ export const Chat = memo(function Chat({
           initialQuery={searchSeed}
           initialTarget={initialSearchTarget}
           toolGroupCards={effectiveToolGroupCards}
-          showMessageHeaders={effectiveShowMessageHeaders}
           autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
           cwd={session.cwd}
           onClose={() => onCloseSearch()}
@@ -2816,7 +2813,6 @@ export const Chat = memo(function Chat({
             onBackgroundTool={backgroundToolAction}
             toolGroupCards={effectiveToolGroupCards}
             autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
-            showMessageHeaders={effectiveShowMessageHeaders}
           />
         </SkillProvider>
         </SubagentProvider>
@@ -2843,7 +2839,6 @@ export const Chat = memo(function Chat({
               questionAnswers={questionAnswers}
               toolGroupCards={effectiveToolGroupCards}
               autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
-              showMessageHeaders={effectiveShowMessageHeaders}
             />
           </SkillProvider>
           </WorkflowProvider>

@@ -147,7 +147,6 @@ function makeProps(opts: {
     permissions: opts.permissions ?? noopPermissions,
     toolGroupCards: true,
     autoExpandRunningGroups: true,
-    showMessageHeaders: true,
     onClose: vi.fn(),
     onCollapse: vi.fn(),
   }

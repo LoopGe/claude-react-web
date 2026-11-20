@@ -11,8 +11,7 @@
 import { memo, useMemo } from 'react'
 import { Markdown } from '../Markdown'
 import type { SdkMessage } from '../../types'
-import { formatTokens } from '../../utils/format'
-import { IconUser } from '../icons/ToolIcons'
+import { formatTokens, formatFullTimestamp } from '../../utils/format'
 import { localCommandOf } from '../../../shared/results.js'
 import { toolResultTextRuns } from '../../../shared/tool-result-text.js'
 import { countMatches, extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../../search'
@@ -34,7 +33,6 @@ import {
   InformationalView,
   LocalCommandOutputView,
   MemoryRecallView,
-  MessageTimestamp,
   ModelRefusalFallbackView,
   ModelRefusalNoFallbackView,
   PermissionDeniedView,
@@ -44,25 +42,6 @@ import {
   ToolUseSummaryView,
 } from './views/frame-views'
 import { ContextUsageReportCard, UsageReportCard } from './views/structured-reports'
-
-/** Human labels for `SDKAssistantMessageError` codes shown in the message
- *  header badge. Unknown/future codes fall through to the raw value (still
- *  debug-friendly), so this map never has to track the SDK union exactly. */
-const ASSISTANT_ERROR_LABELS: Record<string, string> = {
-  authentication_failed: 'authentication failed',
-  oauth_org_not_allowed: 'organization not allowed',
-  account_on_hold: 'account on hold',
-  verification_required: 'verification required',
-  billing_error: 'billing error',
-  rate_limit: 'rate limit',
-  overloaded: 'overloaded',
-  invalid_request: 'invalid request',
-  model_not_found: 'model not found',
-  server_error: 'server error',
-  unknown: 'unknown error',
-  max_output_tokens: 'output limit reached',
-  cloud_credential_error: 'cloud credential error',
-}
 
 /** Human explanations for `SDKStartupFailureReason` — why Claude Code refused
  *  to start, so the result footer can offer the cause instead of a bare
@@ -97,10 +76,7 @@ export const MessageView = memo(function MessageView({
   activeResultIdxByBlock,
   sending,
   deliveryStatus,
-  working,
-  nextItemType,
   sessionId,
-  showMessageHeaders = true,
   onSwitchModel,
   onAbortBash,
   foldExpanded,
@@ -130,36 +106,21 @@ export const MessageView = memo(function MessageView({
    *  no result mark. The user-frame orphan-bubble walk uses the scalar
    *  `toolResultActiveMatchIdx` below instead. */
   activeResultIdxByBlock?: readonly (number | undefined)[]
-  /** When true, render the user bubble with a "sending" spinner.
-   *  Only meaningful for type='user' messages —propagated from the
+  /** Pre-ack optimistic state of a top-level user turn: dims the card (the
+   *  `msg-sending` root class) and drives the pending bash card's spinner.
+   *  Only meaningful for type='user' messages — propagated from the
    *  TranscriptItem's optimistic-placeholder flag. */
   sending?: boolean
-  /** Queue-delivery state of a top-level user turn. 'queued' renders a
-   *  "queued" chip (the SDK is busy and hasn't read this turn yet);
-   *  'consumed' renders a brief "processing" chip; 'injecting'/'injected'
-   *  are the mid-run steering states (spec §10 — 'injected' fades once an
-   *  assistant/result row follows, i.e. the injected turn has ended);
-   *  undefined renders nothing. Mutually exclusive with `sending` in practice
-   *  (sending is the pre-ack optimistic state, deliveryStatus is post-ack). */
+  /** Queue-delivery state of a top-level user turn. 'queued' dims the card
+   *  (the `msg-queued` root class — the SDK is busy and hasn't read this turn
+   *  yet). The other states ('consumed'/'injecting'/'injected') stay durable
+   *  in the data model but no longer render a header chip. Mutually exclusive
+   *  with `sending` in practice (sending is the pre-ack optimistic state,
+   *  deliveryStatus is post-ack). */
   deliveryStatus?: 'queued' | 'consumed' | 'injecting' | 'injected'
-  /** Whether the session is currently working. Gates the processing
-   *  indicator so it only shows on active turns, not on historical
-   *  consumed messages after a reconnect. */
-  working?: boolean
-  /** Type of the next message in the transcript. Used to hide the
-   *  processing indicator once the model has started responding
-   *  (assistant/result after a consumed user message). */
-  nextItemType?: string
   /** Session store id — used only by the draft branch (isDraft messages) to
    *  read the live `draft.text` from the store; harmless elsewhere. */
   sessionId?: string
-  /** Whether user bubbles and assistant cards render their `.msg-header`
-   *  row (label + timestamp + sending/queued/processing indicators) —
-   *  the `showMessageHeaders` UI pref. False renders those cards as bare
-   *  content. Only the user/assistant bubble branches are affected;
-   *  system-frame cards (bash, memory recall, …) keep their functional
-   *  headers. Defaults to true. */
-  showMessageHeaders?: boolean
   /** Called when the user clicks "Switch model" on a model_not_found
    *  error message. Forwarded from MessageList's onSwitchModel prop. */
   onSwitchModel?: () => void
@@ -455,121 +416,28 @@ export const MessageView = memo(function MessageView({
         </div>
       )
     }
-    // Show the "queued" chip only while the turn is genuinely waiting behind
-    // an in-flight turn: server-acknowledged (deliveryStatus === 'queued')
-    // and not still in the optimistic pre-ack 'sending' state. Once the SDK
-    // consumes it (deliveryStatus flips to 'consumed') the queued chip
-    // disappears and a "processing" chip takes its place —but only while
-    // the session is actively working, so historical consumed messages
-    // after a reconnect don't re-trigger the indicator.
+    // The queued card-root dim applies only while the turn is genuinely
+    // waiting behind an in-flight turn: server-acknowledged
+    // (deliveryStatus === 'queued') and not still in the optimistic pre-ack
+    // 'sending' state.
     const showQueued = !sending && deliveryStatus === 'queued'
-    // "Model has visibly moved on" proxy, shared by the injected and
-    // processing chips: once an assistant/result row follows this user turn,
-    // the turn it rode has ended. (Intervening rows — task-notification user
-    // frames, system banners — do NOT end the turn, they only delay the
-    // proxy; the `working` gate below is what guarantees the fade when the
-    // turn settles without a directly-following assistant row.)
-    const turnResponded = nextItemType === 'assistant' || nextItemType === 'result'
-    // Mid-run steering chips (spec §10). Both are live-turn promises, so both
-    // are gated on `working` — an idle session must not render a promise
-    // (crash orphan, spec §8.3; also every replayed/historical transcript,
-    // where working is false). Within the live turn: 'injected' fades once
-    // the model visibly responded to the turn it was delivered into;
-    // 'injecting' is a non-terminal steeredAt still awaiting delivery. The
-    // injectedAt stamp itself stays durable in the data model
-    // (replay/deriveDeliveryStatus) — only the chip presentation is transient.
-    const showInjectedChip = !sending && deliveryStatus === 'injected' && working && !turnResponded
-    const showInjectingChip = !sending && deliveryStatus === 'injecting' && working
-    // Show processing only while the session is working AND the model
-    // hasn't started responding yet. Once an assistant/result message
-    // appears after this user turn, the model has moved on —hide the
-    // indicator even if the session is still working on a subsequent turn.
-    const showProcessing = !sending && deliveryStatus === 'consumed' && working && !turnResponded
     return (
-      <div className={`msg user${sending ? ' msg-sending' : ''}${showQueued ? ' msg-queued' : ''}`}>
-        {showMessageHeaders && (
-        <div className="msg-header">
-          <span><IconUser size={12} /> you</span>
-          <MessageTimestamp ms={msg.receivedAt} />
-          {sending && (
-            <HoverHint label="Sending - waiting for the server to acknowledge" side="top">
-              <span
-                className="msg-sending-indicator"
-                aria-label="Sending"
-              >
-                <span className="msg-sending-spinner" aria-hidden />
-                <span className="msg-sending-label">sending</span>
-              </span>
-            </HoverHint>
-          )}
-          {showQueued && (
-            <HoverHint
-              label="Queued - the assistant is finishing the current turn; this message will be picked up next"
-              side="top"
+      <HoverHint label={formatFullTimestamp(msg.receivedAt)} side="top" disabled={msg.receivedAt == null}>
+        <div className={`msg user${sending ? ' msg-sending' : ''}${showQueued ? ' msg-queued' : ''}`}>
+          <div className="msg-body">
+            {/* Search-hit override: foldSearchHit is computed from the same
+                independent segments as the server indexes, so both Markdown
+                matches and attachment-name hits pin the body open. */}
+            <FoldableBody
+              expanded={foldExpanded}
+              forceOpen={foldSearchHit}
+              onToggle={() => onToggleFold(userBodyFoldKey(msg))}
             >
-              <span
-                className="msg-queued-indicator"
-                aria-label="Queued, waiting for the current turn to finish"
-              >
-                <span className="msg-queued-dot" aria-hidden />
-                <span className="msg-queued-label">queued</span>
-              </span>
-            </HoverHint>
-          )}
-          {showInjectingChip && (
-            <HoverHint
-              label="Injecting - this message will be delivered into the current turn at the next tool boundary"
-              side="top"
-            >
-              <span
-                className="msg-queued-indicator msg-steered-indicator"
-                aria-label="Injecting into the current turn"
-              >
-                <span className="msg-queued-dot" aria-hidden />
-                <span className="msg-queued-label">injecting</span>
-              </span>
-            </HoverHint>
-          )}
-          {showInjectedChip && (
-            <HoverHint
-              label="Injected - this message was delivered into the turn that was running when it was sent"
-              side="top"
-            >
-              <span
-                className="msg-queued-indicator msg-steered-indicator"
-                aria-label="Injected into the current turn"
-              >
-                <span className="msg-queued-dot" aria-hidden />
-                <span className="msg-queued-label">injected</span>
-              </span>
-            </HoverHint>
-          )}
-          {showProcessing && (
-            <HoverHint label="Processing - the model is working on this message" side="top">
-              <span
-                className="msg-processing-indicator"
-                aria-label="Processing"
-              >
-                <span className="msg-processing-dot" aria-hidden />
-                <span className="msg-processing-label">processing</span>
-              </span>
-            </HoverHint>
-          )}
+              {userSegments.map((segment, index) => renderUserSegment(segment, index))}
+            </FoldableBody>
+          </div>
         </div>
-        )}
-        <div className="msg-body">
-          {/* Search-hit override: foldSearchHit is computed from the same
-              independent segments as the server indexes, so both Markdown
-              matches and attachment-name hits pin the body open. */}
-          <FoldableBody
-            expanded={foldExpanded}
-            forceOpen={foldSearchHit}
-            onToggle={() => onToggleFold(userBodyFoldKey(msg))}
-          >
-            {userSegments.map((segment, index) => renderUserSegment(segment, index))}
-          </FoldableBody>
-        </div>
-      </div>
+      </HoverHint>
     )
   }
 
@@ -648,12 +516,12 @@ export const MessageView = memo(function MessageView({
     // one-click "Switch model" affordance instead of leaving the user to
     // decode the CLI's "Run /model" text (which doesn't apply to a web UI).
     const modelNotFound = msg.error === 'model_not_found'
-    // In-place draft card (inline streaming — design §5.3/§5.5): the body is
-    // the bare-block incremental renderer. A FROZEN interrupted half-card
-    // carries its text in content (rendered statically); the live row's
-    // placeholder reads `draft.text` from the store via `sessionId`, so the
-    // 80ms flushes re-render that leaf only. The header renders as usual —
-    // the absent timestamp hides the slot (no height jump at settle).
+    // In-place draft card (inline streaming — design §5.3): the body is the
+    // bare-block incremental renderer. A FROZEN interrupted half-card carries
+    // its text in content (rendered statically); the live row's placeholder
+    // reads `draft.text` from the store via `sessionId`, so the 80ms flushes
+    // re-render that leaf only. Cards are headerless, so draft and settled
+    // share the same shell — settle continuity holds with no reserved slot.
     const draftFrozenText = msg.isDraft
       ? blocks.map((b) => (b as { type?: string; text?: string }).type === 'text' ? (b as { text?: string }).text ?? '' : '').join('')
       : ''
@@ -676,56 +544,30 @@ export const MessageView = memo(function MessageView({
       return (
         <div className="msg-split">
           {splitParts.map(({ block, index }, i) => (
-            <div
-              key={index}
-              className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}
-            >
-              {showMessageHeaders && (
-                <div className="msg-header">
-                  <span>{isSubagent ? 'subagent' : 'assistant'}</span>
-                  <MessageTimestamp ms={msg.receivedAt} />
-                  {msg.error && !modelNotFound && (
-                    <HoverHint label={msg.error as string} side="top">
-                      <span className="msg-header-error">
-                        {ASSISTANT_ERROR_LABELS[msg.error as string] ?? (msg.error as string)}
-                      </span>
-                    </HoverHint>
+            <HoverHint key={index} label={formatFullTimestamp(msg.receivedAt)} side="top" disabled={msg.receivedAt == null}>
+              <div className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}>
+                <div className="msg-body">
+                  <BlockView
+                    block={block}
+                    searchQuery={searchQuery}
+                    activeMatchIdx={blockActiveIdx[index]}
+                    toolResultActiveMatchIdx={activeResultIdxByBlock?.[index]}
+                  />
+                  {modelNotFound && i === splitParts.length - 1 && onSwitchModel && (
+                    <button type="button" className="btn btn-sm msg-switch-model-btn" onClick={onSwitchModel}>
+                      Switch model
+                    </button>
                   )}
                 </div>
-              )}
-              <div className="msg-body">
-                <BlockView
-                  block={block}
-                  searchQuery={searchQuery}
-                  activeMatchIdx={blockActiveIdx[index]}
-                  toolResultActiveMatchIdx={activeResultIdxByBlock?.[index]}
-                />
-                {modelNotFound && i === splitParts.length - 1 && onSwitchModel && (
-                  <button type="button" className="btn btn-sm msg-switch-model-btn" onClick={onSwitchModel}>
-                    Switch model
-                  </button>
-                )}
               </div>
-            </div>
+            </HoverHint>
           ))}
         </div>
       )
     }
     return (
-      <div className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}>
-        {showMessageHeaders && (
-        <div className="msg-header">
-          <span>{isSubagent ? 'subagent' : 'assistant'}</span>
-          <MessageTimestamp ms={msg.receivedAt} />
-          {msg.error && !modelNotFound && (
-            <HoverHint label={msg.error as string} side="top">
-              <span className="msg-header-error">
-                {ASSISTANT_ERROR_LABELS[msg.error as string] ?? (msg.error as string)}
-              </span>
-            </HoverHint>
-          )}
-        </div>
-        )}
+      <HoverHint label={formatFullTimestamp(msg.receivedAt)} side="top" disabled={msg.receivedAt == null}>
+        <div className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}>
         <div
           className={msg.isDraft ? 'msg-body assistant-body draft-body' : 'msg-body'}
           aria-live={msg.isDraft ? 'polite' : undefined}
@@ -760,7 +602,8 @@ export const MessageView = memo(function MessageView({
             </button>
           )}
         </div>
-      </div>
+        </div>
+      </HoverHint>
     )
   }
 

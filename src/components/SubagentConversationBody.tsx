@@ -29,7 +29,6 @@ export function SubagentConversationBody({
   onBackgroundTool,
   toolGroupCards,
   autoExpandRunningGroups,
-  showMessageHeaders,
   replayReady = true,
   cwd,
 }: {
@@ -47,7 +46,6 @@ export function SubagentConversationBody({
   onBackgroundTool?: (toolUseId: string) => void
   toolGroupCards?: boolean
   autoExpandRunningGroups?: boolean
-  showMessageHeaders?: boolean
   /** Gates the empty state until the main history replay lands. */
   replayReady?: boolean
 }) {
@@ -72,7 +70,6 @@ export function SubagentConversationBody({
         onBackgroundTool={onBackgroundTool}
         toolGroupCards={toolGroupCards}
         autoExpandRunningGroups={autoExpandRunningGroups}
-        showMessageHeaders={showMessageHeaders}
         replayReady={replayReady}
         // Subagents are not interactive — you can't type into them. The
         // default ChatEmptyState ("Type a message below…") would mislead, so

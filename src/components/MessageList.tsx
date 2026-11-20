@@ -119,9 +119,9 @@ export interface ScrollNavigator {
 
 interface Props {
   items: TranscriptItem[]
-  /** Whether the session is currently processing a turn. Gates the
-   *  "processing" indicator on consumed user messages so it doesn't
-   *  reappear on historical messages after a reconnect. */
+  /** Whether the session is currently processing a turn. Forwarded to
+   *  ToolGroupCard so a group holding a running tool stays expanded through
+   *  the turn (autoExpandRunningGroups). */
   working?: boolean
   /** Whether consecutive tool-only rows fold into collapsible group cards
    *  (the transcript's `toolGroupCards` UI pref, resolved by the caller as
@@ -135,12 +135,6 @@ interface Props {
    *  every fold path is unchanged. Defaults to true. Only meaningful while
    *  `toolGroupCards` is on. */
   autoExpandRunningGroups?: boolean
-  /** Whether user bubbles and assistant cards render their `.msg-header`
-   *  row (label + timestamp + sending/queued/processing indicators) — the
-   *  `showMessageHeaders` UI pref, resolved by the caller as session
-   *  override ?? global default. False renders those cards as bare
-   *  content. Defaults to true. */
-  showMessageHeaders?: boolean
   /** True while a /clear is in flight (trigger → session-cleared frame).
    *  Adds a blur-fade-out to the transcript and a "Clearing…" veil so the
    *  ~1.7s server teardown+respawn reads as an intentional transition
@@ -390,7 +384,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, panelVisible, showEpoch, sessionId, static: isStatic = false, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, panelVisible, showEpoch, sessionId, static: isStatic = false, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -1440,10 +1434,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
             activeResultIdxByBlock={activeResultIdxByBlock}
             sending={item.sending}
             deliveryStatus={item.deliveryStatus}
-            working={working}
-            nextItemType={nextItemTypeMap.get(item.id)}
             sessionId={sessionId}
-            showMessageHeaders={showMessageHeaders}
             onSwitchModel={onSwitchModel}
             onAbortBash={onAbortBash}
             foldExpanded={expandedBodies.has(foldKey)}
@@ -1495,7 +1486,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // flip-time snapshot; identity-stable between reveals.
     // resultConsumedCtx: identity-stable (useCallback []), listed because
     // itemContent reads it for `consumedKey` — a no-op for invalidation.
-  }, [isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, toolResults, revealSnapshot, resultConsumedCtx])
+  }, [isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, toolResults, revealSnapshot, resultConsumedCtx])
 
   // Key rows by their stable message id instead of Virtuoso's default
   // (offset-space index).

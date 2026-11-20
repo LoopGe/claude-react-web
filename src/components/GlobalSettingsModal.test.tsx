@@ -367,7 +367,6 @@ describe('GlobalSettingsModal Appearance tab', () => {
     'Show pinned “current question” header',
     'Auto-generate session recap',
     'Use collapsible transcript cards',
-    'Show message card headers',
   ] as const
   /** The four preset groups moved out of the modal into the header Theme
    *  popover — they must not linger on either tab. */
@@ -391,12 +390,11 @@ describe('GlobalSettingsModal Appearance tab', () => {
   it('renders every display default switch from config', async () => {
     // Every value is deliberately the NON-default so a dropped /config/full
     // mapping can't pass by coinciding with the useState initial value.
-    // (useState defaults: all four switches true.)
+    // (useState defaults: all three switches true.)
     await openAppearanceTab({
       showPinnedUserMessage: false,
       autoRecap: false,
       toolGroupCards: false,
-      showMessageHeaders: false,
     })
 
     for (const name of MOVED_SWITCHES) {

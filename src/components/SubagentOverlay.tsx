@@ -72,9 +72,6 @@ interface Props {
   /** Auto-expand running groups pref (effective value from the owning Chat
    *  panel) — forwarded for consistency with the main transcript. */
   autoExpandRunningGroups?: boolean
-  /** Message-card header visibility pref (effective value from the owning
-   *  Chat panel) — forwarded for consistency with the main transcript. */
-  showMessageHeaders?: boolean
   /** Session working directory — relative paths in the conversation resolve
    *  against it (tool-row open buttons / Markdown links). */
   cwd?: string
@@ -99,7 +96,6 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   onBackgroundTool,
   toolGroupCards,
   autoExpandRunningGroups,
-  showMessageHeaders,
   sessionId,
   cwd,
   visible = true,
@@ -283,7 +279,6 @@ export const SubagentOverlay = memo(function SubagentOverlay({
           onBackgroundTool={onBackgroundTool}
           toolGroupCards={toolGroupCards}
           autoExpandRunningGroups={autoExpandRunningGroups}
-          showMessageHeaders={showMessageHeaders}
           cwd={cwd}
         />
       </div>

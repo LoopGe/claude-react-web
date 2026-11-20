@@ -19,8 +19,10 @@ export interface TranscriptItem {
   hiddenByDefault: boolean
   /** Wall-clock ms when the message was first observed (server-stamped via
    *  SdkMessage.receivedAt, or Date.now() for optimistic local sends).
-   *  Undefined for history restored from disk after a server restart — the
-   *  header timestamp is hidden in that case. */
+   *  Disk-restored history carries it too (the CLI JSONL's ISO timestamp,
+   *  normalized to epoch ms). Undefined only for drafts, pre-ack optimistic
+   *  bubbles, and old/corrupt disk lines without a parseable timestamp — the
+   *  card-hover timestamp is disabled in that case. */
   receivedAt?: number
   /** Original optimistic id preserved across the REST ack re-key. */
   optimisticSourceId?: string

@@ -73,9 +73,6 @@ interface Props {
   /** Auto-expand running groups pref (effective value — session override ??
    *  global default, resolved by ChatPanel). */
   autoExpandRunningGroups?: boolean
-  /** Message-card header visibility pref (effective value — session
-   *  override ?? global default, resolved by ChatPanel). */
-  showMessageHeaders?: boolean
   /** True close — deletes the ephemeral session. */
   onClose: () => void
   /** Collapse — hides the drawer but keeps the session alive. */
@@ -108,7 +105,6 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   permissions,
   toolGroupCards,
   autoExpandRunningGroups,
-  showMessageHeaders,
   onClose,
   onCollapse,
 }: Props) {
@@ -309,7 +305,6 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           transcriptRevealKey={session.id}
           toolGroupCards={toolGroupCards}
           autoExpandRunningGroups={autoExpandRunningGroups}
-          showMessageHeaders={showMessageHeaders}
           emptyStateContent={(
             // Side Chat-specific empty state. The drawer is ephemeral —
             // closing it deletes the conversation — and most users only

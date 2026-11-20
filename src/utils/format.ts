@@ -18,7 +18,7 @@ export function formatElapsed(ms: number): string {
 
 /** Clock time to the second, e.g. "14:23:05". Locale-aware (24h vs 12h
  *  follows the user's locale) but always includes seconds. Used for the
- *  compact timestamp shown inline in message headers. */
+ *  rate-limit divider's reset times. */
 export function formatClockTime(ms: number | undefined | null): string {
   if (ms == null) return ''
   try {

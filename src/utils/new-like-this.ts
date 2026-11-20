@@ -79,7 +79,6 @@ export type RestartSessionBody = Pick<
   autoRecap?: boolean
   toolGroupCards?: boolean
   autoExpandRunningGroups?: boolean
-  showMessageHeaders?: boolean
   joinGroupOf: string
   evictingSource: true
 }
@@ -118,7 +117,6 @@ export function buildRestartSessionBody(source: SessionInfo): RestartSessionBody
     autoRecap: source.autoRecap,
     toolGroupCards: source.toolGroupCards,
     autoExpandRunningGroups: source.autoExpandRunningGroups,
-    showMessageHeaders: source.showMessageHeaders,
     title: source.title,
     joinGroupOf: source.id,
     // X is being evicted by this restart (swapSession replaces X→Y), so the

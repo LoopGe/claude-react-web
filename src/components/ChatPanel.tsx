@@ -1401,7 +1401,6 @@ export const ChatPanel = memo(function ChatPanel({
           permissions={sideChatPermissions}
           toolGroupCards={sideChatPrefs!.toolGroupCards}
           autoExpandRunningGroups={sideChatPrefs!.autoExpandRunningGroups}
-          showMessageHeaders={sideChatPrefs!.showMessageHeaders}
           onClose={onCloseSideChat}
           onCollapse={onToggleCollapseSideChat}
         />

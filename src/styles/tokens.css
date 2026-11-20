@@ -278,7 +278,6 @@
   --btn-hover-bg: #242a35;
   --btn-hover-border: #3a4150;
   --drag-over-bg: #1a2030;
-  --assistant-header-fg: #a9b4d6;
   --code-bg: #0f1115;
   --code-fg: #c9d1d9;
   --code-bar-bg: color-mix(in srgb, var(--code-bg) 85%, var(--border));
@@ -450,7 +449,6 @@
   --btn-hover-bg: #d8dbe2;
   --btn-hover-border: #b0b6c1;
   --drag-over-bg: #e8ecf2;
-  --assistant-header-fg: #5a6a8a;
   --code-bg: #fafafa;
   --code-fg: #383a42;
   --code-bar-bg: #ebedf0;
@@ -576,7 +574,6 @@
   --btn-hover-bg: #1a1a1a;
   --btn-hover-border: #ffffff;
   --drag-over-bg: #1a1a33;
-  --assistant-header-fg: #00ffff;
   --code-bg: #000000;
   --code-fg: #ffffff;
   --code-bar-bg: #1a1a1a;
@@ -692,7 +689,6 @@
   --btn-hover-bg: #e8e8e8;
   --btn-hover-border: #000000;
   --drag-over-bg: #e8e8ff;
-  --assistant-header-fg: #0000cc;
   --code-bg: #ffffff;
   --code-fg: #000000;
   --code-bar-bg: #e8e8e8;
