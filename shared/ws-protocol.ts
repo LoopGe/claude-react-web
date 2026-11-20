@@ -724,3 +724,13 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
 /** WebSocket endpoint mounted on the Hono HTTP server. Kept as a
  *  constant so tests and tools all refer to the same path. */
 export const WS_PATH = '/api/ws'
+
+/** Transcript-mutation admission refusal (spec §8.1): a rebuild-pending
+ *  operation is durably persisted but has not entered a committed generation
+ *  yet, so send / scheduled-send fire / fork / discard / Side Chat pre-seed
+ *  answer HttpError(409, REBUILD_REQUIRED). NOT a persistence failure — the
+ *  scheduled-send ticker defers due sends (retried in order once admission
+ *  restores) instead of failing them, and Retry must not re-execute the
+ *  handed-off operation in a loop. Shared by the manager (throws it), the
+ *  ticker (matches it) and the client's recovery UX. */
+export const REBUILD_REQUIRED = 'REBUILD_REQUIRED'

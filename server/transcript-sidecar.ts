@@ -76,6 +76,16 @@ export interface TranscriptHolder {
    *  resume path materializes/re-dispatches `queued`/`notAttempted` and surfaces
    *  `dispatchUnknown` for manual recovery. Undefined until reconciled. */
   pendingRecovery?: PendingInputView
+  /** Set while a rebuild-pending operation awaits its committed generation
+   *  (spec §8.1): transcript-mutation admission is closed — send / scheduled
+   *  fire / fork / discard / Side Chat pre-seed answer 409 REBUILD_REQUIRED.
+   *  Distinct from `degraded` (the projection is intact, not broken) and from
+   *  `rebuildBlocked` (a capability refusal of the rebuild itself). OWNED BY
+   *  THE MANAGER: the writer's abortRebuild manages writer state only; the
+   *  manager's beginTranscriptRebuild / abortTranscriptRebuild / reconcile
+   *  paths are the flag's writers. Cleared when the pending operation enters
+   *  a committed generation, or on abortTranscriptRebuild(id, 'cancelled'). */
+  rebuildAdmissionPending?: boolean
 }
 
 export class TranscriptSidecar {

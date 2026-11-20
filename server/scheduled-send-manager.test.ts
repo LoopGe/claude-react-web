@@ -8,6 +8,7 @@ import {
   type ScheduledSendDeps,
 } from './scheduled-send-manager.js'
 import type { ScheduledSendBody } from '../shared/scheduled-send.js'
+import { REBUILD_REQUIRED } from '../shared/ws-protocol.js'
 
 /** Build a manager with a controllable clock + fake send. Does NOT start
  *  timers (tickMs keeps the interval inert at 24 h); tests drive tick()
@@ -120,5 +121,113 @@ describe('ScheduledSendManager', () => {
     m.shutdown()
     // No private-field peek: shutdown must leave tick() safe to call.
     await expect(m.tick()).resolves.toBeUndefined()
+  })
+
+  describe('REBUILD_REQUIRED deferral (spec §8.1)', () => {
+    it('a due send refused with REBUILD_REQUIRED is deferred, not failed, and sends once admission restores', async () => {
+      let blocked = true
+      const { m, setNow } = make({
+        send: vi.fn(async () => {
+          if (blocked) throw new HttpError(409, REBUILD_REQUIRED)
+          return { uuid: 'sent-uuid' }
+        }),
+      })
+      const rec = m.create('s1', { text: 'hi' }, 2_000_000)
+      setNow(2_000_001)
+      await m.tick()
+      expect(m.list('s1').map((r) => r.status)).toEqual(['deferred'])
+      blocked = false
+      await m.tick()
+      const after = m.list('s1')
+      expect(after).toHaveLength(1) // not duplicated, not lost
+      expect(after[0]).toMatchObject({ id: rec.id, status: 'sent', sentUuid: 'sent-uuid' })
+    })
+
+    it('deferred sends retry in original attempt order', async () => {
+      let blocked = true
+      const calls: string[] = []
+      const { m, setNow } = make({
+        send: vi.fn(async (_id: string, body: ScheduledSendBody) => {
+          calls.push('text' in body ? body.text : '<content>')
+          if (blocked) throw new HttpError(409, REBUILD_REQUIRED)
+          return { uuid: 'u' }
+        }),
+      })
+      m.create('s1', { text: 'first' }, 2_000_000)
+      m.create('s1', { text: 'second' }, 2_000_001)
+      setNow(2_000_002)
+      await m.tick()
+      expect(calls).toEqual(['first', 'second'])
+      expect(m.list('s1').map((r) => r.status)).toEqual(['deferred', 'deferred'])
+      blocked = false
+      calls.length = 0
+      await m.tick()
+      expect(calls).toEqual(['first', 'second'])
+      expect(m.list('s1').map((r) => r.status)).toEqual(['sent', 'sent'])
+    })
+
+    it('still-blocked deferred sends stay a single deferred record across ticks', async () => {
+      const send = vi.fn(async () => { throw new HttpError(409, REBUILD_REQUIRED) })
+      const { m, setNow } = make({ send })
+      m.create('s1', { text: 'hi' }, 2_000_000)
+      setNow(2_000_001)
+      await m.tick()
+      await m.tick()
+      await m.tick()
+      expect(send).toHaveBeenCalledTimes(3) // retried each tick, never double-fired
+      expect(m.list('s1').map((r) => r.status)).toEqual(['deferred'])
+    })
+
+    it('a deferred send that hits a different error fails terminally', async () => {
+      let blocked = true
+      const { m, setNow } = make({
+        send: vi.fn(async () => {
+          if (blocked) throw new HttpError(409, REBUILD_REQUIRED)
+          throw new HttpError(410, 'session s1 is terminated')
+        }),
+      })
+      m.create('s1', { text: 'hi' }, 2_000_000)
+      setNow(2_000_001)
+      await m.tick()
+      blocked = false
+      await m.tick()
+      expect(m.list('s1').map((r) => r.status)).toEqual(['failed'])
+      expect(m.list('s1')[0]?.error).toMatch(/terminated/)
+    })
+
+    it('a non-REBUILD_REQUIRED 409 still fails terminally (not deferred)', async () => {
+      const { m, setNow } = make({
+        send: vi.fn(async () => { throw new HttpError(409, 'session s1 send was interrupted') }),
+      })
+      m.create('s1', { text: 'hi' }, 2_000_000)
+      setNow(2_000_001)
+      await m.tick()
+      expect(m.list('s1').map((r) => r.status)).toEqual(['failed'])
+    })
+
+    it('remove cancels a deferred record', async () => {
+      const { m, setNow } = make({
+        send: vi.fn(async () => { throw new HttpError(409, REBUILD_REQUIRED) }),
+      })
+      const rec = m.create('s1', { text: 'hi' }, 2_000_000)
+      setNow(2_000_001)
+      await m.tick()
+      m.remove('s1', rec.id)
+      expect(m.list('s1').map((r) => r.status)).toEqual(['cancelled'])
+      // A later tick must not resurrect the cancelled record.
+      await m.tick()
+      expect(m.list('s1').map((r) => r.status)).toEqual(['cancelled'])
+    })
+
+    it('cancelAll drops deferred records too', async () => {
+      const { m, setNow } = make({
+        send: vi.fn(async () => { throw new HttpError(409, REBUILD_REQUIRED) }),
+      })
+      m.create('s1', { text: 'hi' }, 2_000_000)
+      setNow(2_000_001)
+      await m.tick()
+      m.cancelAll('s1')
+      expect(m.list('s1')).toEqual([])
+    })
   })
 })

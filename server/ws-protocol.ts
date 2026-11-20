@@ -53,4 +53,4 @@ export type WsServerFrame = shared.WsServerFrame<
   HookRuntimeEvent
 >
 
-export { WS_PATH } from '../shared/ws-protocol.js'
+export { WS_PATH, REBUILD_REQUIRED } from '../shared/ws-protocol.js'

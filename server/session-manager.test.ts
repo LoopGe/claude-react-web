@@ -383,7 +383,10 @@ import { COMPACT_SUMMARY_TIMEOUT_MS } from '../shared/compact-deadline.js'
 import { cleanupGitFixtures, makeRepo } from './test-git-fixtures.js'
 import { branchExists } from './git.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
-import { TranscriptSidecar, makeCommitV2 } from './transcript-sidecar.js'
+import { TranscriptSidecar, makeCommitV2, readPendingRebuilds } from './transcript-sidecar.js'
+import type { PendingOperation } from './transcript-reconcile.js'
+import { ScheduledSendManager } from './scheduled-send-manager.js'
+import { REBUILD_REQUIRED } from '../shared/ws-protocol.js'
 import { SessionSubscriptionRegistry } from './session-plugin-subscription.js'
 import { ResetJournal } from './reset-journal.js'
 import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
@@ -10205,6 +10208,190 @@ describe('SessionManager', () => {
     it('execInSession (!!) on a degraded session is refused with 423', async () => {
       const info = await makeDegraded()
       await expect(sm.execInSession(info.id, 'echo hi', { share: true })).rejects.toMatchObject({ status: 423 })
+    })
+  })
+  describe('rebuildAdmissionPending admission control (spec §8.1)', () => {
+    let prevConfigDir: string | undefined
+    beforeEach(() => {
+      prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    })
+
+    const emitAssistant = (uuid: string, id: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant',
+        uuid,
+        parent_tool_use_id: null,
+        message: { id, role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+    const asst = (uuid: string, id: string, text: string) =>
+      JSON.stringify({ type: 'assistant', uuid, message: { id, role: 'assistant', content: [{ type: 'text', text }] } })
+    const writeJsonl = (sessionId: string, lines: string[]) => {
+      const p = join(dir, 'projects', encodeCwd(TEST_CWD), `${sessionId}.jsonl`)
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, lines.join('\n') + '\n')
+    }
+    const pendingOp = (operationId: string, uuid: string): PendingOperation => ({
+      operationId,
+      entry: {
+        occurrenceId: `occ-${uuid}`,
+        msg: { type: 'assistant', uuid, parent_tool_use_id: null, message: { id: `m${uuid}`, role: 'assistant', content: [{ type: 'text', text: 'pending result' }] } },
+        source: 'provider',
+        aliases: [],
+        evicted: false,
+      },
+    })
+    const arm = (id: string, operationId = 'op-1', uuid = 'R') =>
+      sm.beginTranscriptRebuild(id, pendingOp(operationId, uuid))
+    const rebuildPendingRows = async (id: string) =>
+      (await new TranscriptSidecar(dir, id).load()).filter((r) => r.kind === 'rebuild-pending')
+    /** Wait for the live projection rows to be durable (fire-and-forget appends). */
+    const waitLiveRows = async (id: string, count: number) => {
+      expect(await waitFor(() => sm.transcriptHead(id)?.headSeq === count)).toBe(true)
+      expect(await waitFor(async () =>
+        (await new TranscriptSidecar(dir, id).load()).filter((r) => typeof r.seq === 'number').length === count,
+      )).toBe(true)
+    }
+
+    it('send and sendContent are refused with 409 REBUILD_REQUIRED while admission is pending', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await arm(info.id)
+      await expect(sm.send(info.id, 'hi')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+      await expect(sm.sendContent(info.id, [{ type: 'text', text: 'hi' }])).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+    })
+
+    it('fork, discard and Side Chat pre-seed are refused with 409 REBUILD_REQUIRED', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await arm(info.id)
+      await expect(sm.fork(info.id)).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+      await expect(sm.discard(info.id, 'not-an-anchor')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+      await expect(sm.createSideChat(info.id)).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+    })
+
+    it('a second beginTranscriptRebuild while one is pending is refused (single-flight)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await arm(info.id, 'op-1', 'R')
+      await expect(arm(info.id, 'op-2', 'S')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+      // Only the first op was persisted; the refused attempt left no trace.
+      const rows = await rebuildPendingRows(info.id)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].operationId).toBe('op-1')
+      // The refused second attempt must not corrupt the first's state:
+      // cancelling still restores admission exactly once.
+      await sm.abortTranscriptRebuild(info.id, 'cancelled')
+      await expect(sm.send(info.id, 'after cancel')).resolves.toMatchObject({ uuid: expect.any(String) })
+    })
+
+    it('admission restores once the pending operation enters a committed generation (retry rebuild)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      // Live arrival A,N,R vs provider order A,R,N — a genuine inversion.
+      emitAssistant('A', 'mA', 'first')
+      emitAssistant('N', 'mN', 'newer')
+      emitAssistant('R', 'mR', 'belongs in the middle')
+      await waitLiveRows(info.id, 3)
+      await arm(info.id)
+      writeJsonl(info.id, [asst('A', 'mA', 'first'), asst('R', 'mR', 'belongs in the middle'), asst('N', 'mN', 'newer')])
+      const r = await sm.retryTranscriptReconcile(info.id)
+      expect(r.degraded).toBe(false)
+      expect(r.generation).toBeGreaterThan(0)
+      // The committed generation superseded the durable pending payload.
+      expect(readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load())).toEqual([])
+      const sent = await sm.send(info.id, 'after rebuild')
+      expect(sent.uuid).toBeTruthy()
+    })
+
+    it('a retry that stays append-only keeps admission closed (pending not resolved)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      emitAssistant('A', 'mA', 'first')
+      await waitLiveRows(info.id, 1)
+      writeJsonl(info.id, [asst('A', 'mA', 'first')])
+      await arm(info.id)
+      const r = await sm.retryTranscriptReconcile(info.id)
+      expect(r.degraded).toBe(false)
+      expect(r.generation).toBe(0) // no generation committed — the op is still pending
+      expect(await rebuildPendingRows(info.id)).toHaveLength(1)
+      await expect(sm.send(info.id, 'still closed')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+    })
+
+    it('abortTranscriptRebuild(cancelled) restores admission and retains the durable payload', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await arm(info.id)
+      await sm.abortTranscriptRebuild(info.id, 'cancelled')
+      expect(await rebuildPendingRows(info.id)).toHaveLength(1) // retained for a later retry
+      const sent = await sm.send(info.id, 'restored')
+      expect(sent.uuid).toBeTruthy()
+    })
+
+    it('abortTranscriptRebuild(failed) keeps admission closed', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      await arm(info.id)
+      await sm.abortTranscriptRebuild(info.id, 'failed')
+      await expect(sm.send(info.id, 'still fenced')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+    })
+
+    it('permanent delete proceeds while admission is pending (tombstones the pending payload)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      emitAssistant('A', 'mA', 'first')
+      await waitLiveRows(info.id, 1)
+      writeJsonl(info.id, [asst('A', 'mA', 'first')])
+      await arm(info.id)
+      await expect(sm.delete(info.id, { deleteTranscript: true })).resolves.toBeUndefined()
+      expect(existsSync(join(dir, 'transcripts', `${info.id}.ndjson`))).toBe(false)
+      expect(() => sm.get(info.id)).toThrow(HttpError)
+    })
+
+    it('resume re-arms admission from the durable pending rows (crash window, spec §9)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      emitAssistant('A', 'mA', 'first')
+      await waitLiveRows(info.id, 1)
+      writeJsonl(info.id, [asst('A', 'mA', 'first')])
+      await arm(info.id)
+      await sm.unload(info.id) // holder + writer dropped; the sidecar (pending payload) stays
+      await sm.resume(info.id) // re-hydrate: the unsuperseded pending row re-closes admission
+      await expect(sm.send(info.id, 'still closed')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
+    })
+
+    it('due scheduled sends are deferred, not lost, and fire in order after admission restores', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      let now = 1_000_000
+      const calls: string[] = []
+      const scheduler = new ScheduledSendManager({
+        send: async (sessionId, body) => {
+          calls.push('text' in body ? body.text : '<content>')
+          const sent = 'content' in body
+            ? await sm.sendContent(sessionId, body.content)
+            : await sm.send(sessionId, body.text)
+          return { uuid: sent.uuid }
+        },
+        now: () => now,
+        tickMs: 86_400_000,
+      })
+      try {
+        const a = scheduler.create(info.id, { text: 'first' }, 2_000_000)
+        const b = scheduler.create(info.id, { text: 'second' }, 2_000_001)
+        await arm(info.id)
+        now = 2_000_002
+        await scheduler.tick()
+        // Both came due while admission was closed: deferred, NOT failed.
+        expect(scheduler.list(info.id).map((r) => r.status)).toEqual(['deferred', 'deferred'])
+        expect(calls).toEqual(['first', 'second'])
+        await sm.abortTranscriptRebuild(info.id, 'cancelled')
+        calls.length = 0
+        await scheduler.tick()
+        // Retried in original order, both sent.
+        expect(calls).toEqual(['first', 'second'])
+        const list = scheduler.list(info.id)
+        expect(list.map((r) => r.status)).toEqual(['sent', 'sent'])
+        expect(list.find((r) => r.id === a.id)?.sentUuid).toBeTruthy()
+        expect(list.find((r) => r.id === b.id)?.sentUuid).toBeTruthy()
+      } finally {
+        scheduler.shutdown()
+      }
     })
   })
   describe('fork pre-seed spawn-marker recovery (spec §11)', () => {

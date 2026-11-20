@@ -153,14 +153,17 @@ import {
   foldSidecarRows,
   foldSidecarRowsV2,
   makeCommitV2,
+  readPendingRebuilds,
   recordTranscriptMessage,
   unsupersededCorrupt,
   type TranscriptHolder,
   type PendingInputView,
+  type SidecarRow,
 } from './transcript-sidecar.js'
 import { occurrenceIdOf, semanticMessageProjection, type ProjectionEntry } from './transcript-projection.js'
 import { createHash } from 'node:crypto'
-import { alignOldByUuid, buildOrderedProjection, TranscriptRebuildBlockedError } from './transcript-reconcile.js'
+import { alignOldByUuid, buildOrderedProjection, TranscriptRebuildBlockedError, type PendingOperation } from './transcript-reconcile.js'
+import { REBUILD_REQUIRED } from './ws-protocol.js'
 import { SessionSubscriptionHub } from './session-subscription-hub.js'
 import { ResetJournal, type ResetJournalEntry } from './reset-journal.js'
 import { TranscriptWriter } from './transcript-writer.js'
@@ -2510,6 +2513,7 @@ export class SessionManager {
     const meta = live ?? this.store?.get(id)
     if (!meta) throw new HttpError(404, `session ${id} not found`)
     this.assertTranscriptMutable(id)
+    this.assertRebuildAdmission(id)
     if (!meta.lastTurnAt) {
       throw new HttpError(
         400,
@@ -2774,6 +2778,7 @@ export class SessionManager {
     opts?: { deleteOriginal?: boolean },
   ): Promise<SessionInfo> {
     this.assertTranscriptMutable(id)
+    this.assertRebuildAdmission(id)
     // 1. Validate the anchor: it must be a recorded turn anchor (a success
     //    turn's last assistant frame). A uuid not in the sidecar is either
     //    a non-anchor message or a turn whose anchor was never persisted —
@@ -3095,6 +3100,7 @@ export class SessionManager {
     const meta = live ?? this.store?.get(parentId)
     if (!meta) throw new HttpError(404, `parent session ${parentId} not found`)
     this.assertTranscriptMutable(parentId)
+    this.assertRebuildAdmission(parentId)
     if (meta.terminated) {
       throw new HttpError(400, 'Cannot create a Side Chat from a terminated session.')
     }
@@ -3843,6 +3849,7 @@ export class SessionManager {
   async send(id: string, text: string, clientOperationId?: string): Promise<SentUserMessage> {
     const s = this.requireSendable(id)
     this.assertTranscriptMutable(id)
+    this.assertRebuildAdmission(id)
     const lifecycle = this.beginSend(s)
     return this.opLock.run(id, async () => {
       this.assertSendCurrent(s, lifecycle)
@@ -3967,6 +3974,7 @@ export class SessionManager {
   ): Promise<SentUserMessage> {
     const s = this.requireSendable(id)
     this.assertTranscriptMutable(id)
+    this.assertRebuildAdmission(id)
     const lifecycle = this.beginSend(s)
     return this.opLock.run(id, async () => {
       this.assertSendCurrent(s, lifecycle)
@@ -8557,8 +8565,14 @@ export class SessionManager {
     const inFlight = this.transcriptReconciles.get(id)
     if (inFlight) return inFlight
     const p = (async () => {
+      // Rebuild-pending recovery bookkeeping (consumed in the finally): the
+      // freshest loaded rows and the pre-reconcile generation decide whether
+      // the durable pending payload re-arms admission after this reconcile.
+      let rows: SidecarRow[] = []
+      let genBeforeReconcile = t.store.generation
       try {
         const rawRows = await t.sidecar.load()
+        rows = rawRows
         let folded = foldSidecarRowsV2(rawRows)
         // Startup reset-journal fence (spec §8.3): enforce sidecar committed
         // generation >= journal generation, writing a missing reset batch.
@@ -8567,7 +8581,13 @@ export class SessionManager {
         const fenceWrote = await this.recoverResetJournal(
           id, t, folded.hasCommittedGeneration ? folded.generation : -1,
         )
-        if (fenceWrote) folded = foldSidecarRowsV2(await t.sidecar.load())
+        if (fenceWrote) {
+          // The fence appended a reset batch (which supersedes rebuild-pending
+          // rows) — re-read so the pending-rebuild recovery sees the same
+          // committed prefix the fold adopted.
+          rows = await t.sidecar.load()
+          folded = foldSidecarRowsV2(rows)
+        }
         // Warn only for corruption that still affects the adopted projection.
         // A corrupt batch superseded by a valid rebuild is dead history left
         // in the append-only file; re-warning on every reconcile would be a
@@ -8603,6 +8623,7 @@ export class SessionManager {
         )
         t.pendingRecovery = classifyPendingInputs(rawRows, canonUuids)
         this.registerPendingInputReferences(id, t.pendingRecovery)
+        genBeforeReconcile = t.store.generation
         if (!this.isSessionDeleteTombstoned(id)) await this.reconcileOrdered(t, id, composed)
       } catch (err) {
         if (err instanceof TranscriptRebuildBlockedError) {
@@ -8623,6 +8644,29 @@ export class SessionManager {
       } finally {
         t.reconciled = true
         this.transcriptReconciles.delete(id)
+        // Rebuild-pending recovery (spec §9): unsuperseded durable pending rows
+        // re-close admission and seed the writer's pendingRebuilds, so a crash
+        // between beginRebuild and the rebuild commit — or a retry whose
+        // reconcile stayed append-only — keeps mutations closed until the
+        // operation enters a committed generation. A reconcile that COMMITTED
+        // a new generation resolved them (the store's generation bumped;
+        // readPendingRebuilds supersedes per batch generation), so the re-arm
+        // is skipped. Runs even on a capability refusal / degraded error: the
+        // pending operation is unresolved either way.
+        if (t.store.generation === genBeforeReconcile) {
+          const pendingRebuilds = readPendingRebuilds(rows)
+          if (pendingRebuilds.length > 0) {
+            this.setRebuildAdmissionPending(id, true)
+            const w = this.writerFor(id)
+            // Dedup by operationId: a live beginTranscriptRebuild may have
+            // armed this holder BEFORE its first reconcile (the writer already
+            // holds that op); recovery must not double-list it.
+            const have = new Set(w.pendingRebuilds.map((p) => p.operationId))
+            for (const op of pendingRebuilds) {
+              if (!have.has(op.operationId)) w.addPendingRebuild(op)
+            }
+          }
+        }
       }
       return t
     })()
@@ -8760,6 +8804,11 @@ export class SessionManager {
       for (const a of ordered[i].aliases) t.store.registerUuidAlias(a, i)
     }
     t.hasOrderedRebuild = true
+    // The pending rebuild operation(s) entered the committed generation:
+    // admission reopens (spec §8.1). The durable half is readPendingRebuilds'
+    // generation supersession — a re-hydrate after this commit finds no
+    // unsuperseded pending rows and does not re-arm the flag.
+    this.setRebuildAdmissionPending(id, false)
     // Record the new generation in the cached history so the client-facing
     // epochs (rebaseEpoch) reflect this rebuild immediately.
     t.generationHistory = [...(t.generationHistory ?? []), { generation: t.store.generation, reason: 'ordered-rebuild', contentPolicy: 'preserve' }]
@@ -8988,6 +9037,68 @@ export class SessionManager {
     if (this.transcriptStores.get(id)?.degraded === true) {
       throw new HttpError(423, 'transcript-degraded')
     }
+  }
+
+  /** Rebuild-admission fence (spec §8.1): while a rebuild-pending operation
+   *  awaits its committed generation, transcript mutations (send / scheduled
+   *  fire / fork / discard / Side Chat pre-seed) are refused with 409
+   *  REBUILD_REQUIRED. DISTINCT from the degraded 423 fence — the old
+   *  projection is intact and the session is mid-rebuild, not broken.
+   *  No-op when the holder is healthy or absent. */
+  private assertRebuildAdmission(id: string): void {
+    if (this.transcriptStores.get(id)?.rebuildAdmissionPending === true) {
+      throw new HttpError(409, REBUILD_REQUIRED)
+    }
+  }
+
+  /** Id-based writer of the holder's rebuildAdmissionPending flag. The flag
+   *  is MANAGER-owned (spec §8.1): the writer's abortRebuild manages writer
+   *  state only and never reaches into the holder. beginTranscriptRebuild
+   *  reserves/restores on the holder INSTANCE it checked, so a concurrent
+   *  holder swap cannot redirect an in-flight reservation. */
+  private setRebuildAdmissionPending(id: string, on: boolean): void {
+    const t = this.transcriptStores.get(id)
+    if (t) t.rebuildAdmissionPending = on
+  }
+
+  /** Admit ONE rebuild-pending operation (spec §8.1): durably persist it via
+   *  the writer's beginRebuild (recovery batch, fsync before resolve, no
+   *  seq/ring/WS) and close transcript-mutation admission. This is the
+   *  manager seam the live anomaly detection calls.
+   *
+   *  SINGLE-FLIGHT: a second attempt while one is pending is refused with
+   *  REBUILD_REQUIRED. beginRebuild's failure path clears rebuildingFlag
+   *  unconditionally, so overlapping calls would corrupt the first's state.
+   *  The flag is reserved SYNCHRONOUSLY before the durable await so two
+   *  concurrent detections cannot both pass the check; a write failure
+   *  restores it (beginRebuild leaves nothing behind on rejection).
+   *
+   *  Degraded retry semantics (the decision Task 1 deferred here): a FAILED
+   *  rebuild (abortTranscriptRebuild 'failed') keeps the flag set, so a
+   *  degraded writer is never re-admitted through this door — the explicit
+   *  retry (fresh holder + writer) is the recovery path. */
+  async beginTranscriptRebuild(id: string, op: PendingOperation): Promise<void> {
+    const t = this.getOrCreateTranscript(id)
+    if (t.rebuildAdmissionPending === true) throw new HttpError(409, REBUILD_REQUIRED)
+    t.rebuildAdmissionPending = true
+    try {
+      await this.writerFor(id).beginRebuild(op)
+    } catch (err) {
+      t.rebuildAdmissionPending = false
+      throw err
+    }
+  }
+
+  /** Abort a pending rebuild (spec §8.1): the writer's abortRebuild releases
+   *  deferred old-generation commits in order ('failed' additionally fences
+   *  the writer), and the MANAGER-owned holder admission flag is cleared on
+   *  'cancelled' — the old projection is intact, so mutations resume
+   *  (deferRebuild / capability refusal). 'failed' keeps admission closed:
+   *  the session stays fenced until an explicit retry. Both outcomes retain
+   *  the durable pending payload for a later retry. */
+  async abortTranscriptRebuild(id: string, outcome: 'cancelled' | 'failed'): Promise<void> {
+    await this.transcriptWriters.get(id)?.abortRebuild(outcome)
+    if (outcome === 'cancelled') this.setRebuildAdmissionPending(id, false)
   }
 
   /** The session's persisted reset journal (spec §8.3), lazily created, under

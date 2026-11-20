@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildSessionRouter } from './sessions.js'
 import type { SessionManager } from '../session-manager.js'
+import { createErrorHandler, HttpError } from '../errors.js'
+import { REBUILD_REQUIRED } from '../../shared/ws-protocol.js'
 
 function makeApp() {
   const sm = {
@@ -61,5 +63,41 @@ describe('POST /sessions/:id/messages', () => {
     expect(res.status).toBe(200)
     expect(sm.sendContent).toHaveBeenCalledWith('s1', content, undefined)
     expect(await res.json()).toEqual({ ok: true, message: { uuid: 'u2', receivedAt: 2 } })
+  })
+})
+
+describe('POST /sessions/:id/messages — rebuild admission refusal', () => {
+  // The production app mounts createErrorHandler (server/app.ts); the bare
+  // router does not, so mirror it here to pin the HttpError → JSON contract.
+  function makeRefusingApp() {
+    const sm = {
+      send: vi.fn(async () => { throw new HttpError(409, REBUILD_REQUIRED) }),
+      sendContent: vi.fn(async () => { throw new HttpError(409, REBUILD_REQUIRED) }),
+    }
+    const app = buildSessionRouter(sm as unknown as SessionManager)
+    app.onError(createErrorHandler('[test]'))
+    return { app, sm }
+  }
+
+  it('a REBUILD_REQUIRED refusal maps to 409 with the reason body (text send)', async () => {
+    const { app } = makeRefusingApp()
+    const res = await app.request('/sessions/s1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: REBUILD_REQUIRED })
+  })
+
+  it('a REBUILD_REQUIRED refusal maps to 409 with the reason body (content send)', async () => {
+    const { app } = makeRefusingApp()
+    const res = await app.request('/sessions/s1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: [{ type: 'text', text: 'hi' }] }),
+    })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: REBUILD_REQUIRED })
   })
 })
