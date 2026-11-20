@@ -193,3 +193,114 @@ describe('AttachmentObjectStore', () => {
     } finally { cleanup(dir) }
   })
 })
+
+describe('AttachmentObjectStore images', () => {
+  const meta = { mediaType: 'image/png' as const, width: 4, height: 3 }
+  const imageBytes = new TextEncoder().encode('image-object-bytes')
+  const rootOf = (dir: string) => join(dir, 'claude-web-attachments', 'v1')
+  const metaPathOf = (dir: string, digest: string) =>
+    join(rootOf(dir), 'images', digest.slice(0, 2), `${digest}.json`)
+
+  it('publishes an image object under images/ with a meta sidecar and no alias', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-store-'))
+    try {
+      const store = new AttachmentObjectStore(dir)
+      const pub = await store.publishImage(imageBytes, meta)
+      expect(pub.bytes).toBe(imageBytes.byteLength)
+      expect(pub.objectPath).toBe(join(rootOf(dir), 'images', pub.digest.slice(0, 2), pub.digest))
+      expect(Buffer.from(readFileSync(pub.objectPath)).equals(Buffer.from(imageBytes))).toBe(true)
+      if (process.platform !== 'win32') {
+        expect(statSync(pub.objectPath).mode & 0o777).toBe(0o400)
+      }
+      const metaPath = metaPathOf(dir, pub.digest)
+      expect(existsSync(metaPath)).toBe(true)
+      expect(JSON.parse(readFileSync(metaPath, 'utf8'))).toEqual({ ...meta, bytes: imageBytes.byteLength })
+      // Images carry no filename alias: the digest is the identity.
+      expect(existsSync(join(rootOf(dir), 'files', pub.digest))).toBe(false)
+    } finally { cleanup(dir) }
+  })
+
+  it('dedupes identical image bytes to one object and one digest', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-store-'))
+    try {
+      const store = new AttachmentObjectStore(dir)
+      const a = await store.publishImage(imageBytes, meta)
+      const b = await store.publishImage(imageBytes, meta)
+      expect(a.digest).toBe(b.digest)
+      expect(a.objectPath).toBe(b.objectPath)
+      const shard = join(rootOf(dir), 'images', a.digest.slice(0, 2))
+      expect(readdirSync(shard).filter((e) => e === a.digest)).toHaveLength(1)
+      const [c, d] = await Promise.all([
+        store.publishImage(imageBytes, meta),
+        store.publishImage(imageBytes, meta),
+      ])
+      expect(c.digest).toBe(d.digest)
+      expect(c.objectPath).toBe(d.objectPath)
+      expect(Buffer.from(readFileSync(c.objectPath)).equals(Buffer.from(imageBytes))).toBe(true)
+    } finally { cleanup(dir) }
+  })
+
+  it('readVerifiedImage returns the stored bytes and meta', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-store-'))
+    try {
+      const store = new AttachmentObjectStore(dir)
+      const pub = await store.publishImage(imageBytes, meta)
+      const got = await store.readVerifiedImage(pub.digest)
+      expect(Buffer.from(got.bytes).equals(Buffer.from(imageBytes))).toBe(true)
+      expect(got.meta).toEqual({ ...meta, bytes: imageBytes.byteLength })
+    } finally { cleanup(dir) }
+  })
+
+  it('readVerifiedImage throws missing when the object is absent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-store-'))
+    try {
+      const store = new AttachmentObjectStore(dir)
+      const pub = await store.publishImage(imageBytes, meta)
+      removeFile(pub.objectPath)
+      await expect(store.readVerifiedImage(pub.digest)).rejects.toMatchObject({ code: 'missing' })
+    } finally { cleanup(dir) }
+  })
+
+  it('readVerifiedImage throws missing when the meta sidecar is absent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-store-'))
+    try {
+      const store = new AttachmentObjectStore(dir)
+      const pub = await store.publishImage(imageBytes, meta)
+      removeFile(metaPathOf(dir, pub.digest))
+      await expect(store.readVerifiedImage(pub.digest)).rejects.toMatchObject({ code: 'missing' })
+    } finally { cleanup(dir) }
+  })
+
+  it('readVerifiedImage throws corrupt on tampered length', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-store-'))
+    try {
+      const store = new AttachmentObjectStore(dir)
+      const pub = await store.publishImage(imageBytes, meta)
+      chmodSync(pub.objectPath, 0o600)
+      writeFileSync(pub.objectPath, Buffer.from('tampered-different-length'))
+      await expect(store.readVerifiedImage(pub.digest)).rejects.toMatchObject({ code: 'corrupt' })
+    } finally { cleanup(dir) }
+  })
+
+  it('readVerifiedImage throws corrupt on same-length tampered bytes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-store-'))
+    try {
+      const store = new AttachmentObjectStore(dir)
+      const pub = await store.publishImage(imageBytes, meta)
+      const tampered = Uint8Array.from(imageBytes)
+      tampered[0] ^= 0xff
+      chmodSync(pub.objectPath, 0o600)
+      writeFileSync(pub.objectPath, tampered)
+      await expect(store.readVerifiedImage(pub.digest)).rejects.toMatchObject({ code: 'corrupt' })
+    } finally { cleanup(dir) }
+  })
+
+  it('readVerifiedImage rejects a malformed digest instead of escaping the root', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-store-'))
+    try {
+      const store = new AttachmentObjectStore(dir)
+      await expect(store.readVerifiedImage('../../x')).rejects.toThrow(/digest/)
+      await expect(store.readVerifiedImage('A'.repeat(64))).rejects.toThrow(/digest/)
+    } finally { cleanup(dir) }
+  })
+})

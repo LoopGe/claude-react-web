@@ -14,12 +14,16 @@ import { dirname, join, parse, resolve as resolvePath } from 'node:path'
 import {
   aliasPathOf,
   attachmentRoot,
+  imageMetaPathOf,
+  imageObjectPathOf,
   isInsideAttachmentRoot,
   objectPathOf,
   sanitizeStoredName,
 } from './attachment-paths.js'
+import { writeAtomicDurable } from './json-file-store.js'
 import { AttachmentStoreError } from '../shared/attachment-store-error.js'
 import type { VerifyFileInput } from '../shared/attachment-store-error.js'
+import type { SupportedImageMediaType } from '../shared/image-media.js'
 
 // The error class/codes and verified-read input live in
 // shared/attachment-store-error.ts (neutral, host-free); this module
@@ -56,6 +60,26 @@ export interface PublishedAttachment {
   size: number
 }
 
+/** Caller-supplied image facts. The byte length is measured from the bytes,
+ *  not trusted from the caller, so it is not part of this input. */
+export interface ImageMeta {
+  mediaType: SupportedImageMediaType
+  width: number
+  height: number
+}
+
+/** The meta sidecar content: `ImageMeta` plus the stored byte length. */
+export interface StoredImageMeta extends ImageMeta {
+  bytes: number
+}
+
+export interface PublishedImage {
+  digest: string
+  objectPath: string
+  /** Stored byte length — the `bytes` field of an ImageAttachmentRef. */
+  bytes: number
+}
+
 function errorCode(err: unknown): string | undefined {
   return (err as NodeJS.ErrnoException | undefined)?.code
 }
@@ -79,18 +103,108 @@ export class AttachmentObjectStore {
   async publishStream(input: PublishStreamInput): Promise<PublishedAttachment> {
     const { chunks, maxBytes, signal } = input
     const name = sanitizeStoredName(input.name)
+    const { digest, objectPath, size, boundary, createdObject } =
+      await this.publishObjectCore(chunks, maxBytes, signal, (d) => objectPathOf(this.root, d))
+
+    let aliasPath: string | undefined
+    let createdAlias = false
+    try {
+      aliasPath = aliasPathOf(this.root, digest, name)
+      await this.ensureDurableDirectory(dirname(aliasPath), boundary)
+      try {
+        await fs.link(objectPath, aliasPath)
+        createdAlias = true
+      } catch (err) {
+        if (errorCode(err) !== 'EEXIST') throw err
+        await this.verifyFile({ path: aliasPath, digest, size, signal })
+      }
+      await fs.chmod(aliasPath, 0o400)
+
+      await this.syncDirectories([objectPath, aliasPath])
+      return { digest, objectPath, aliasPath, name, size }
+    } catch (err) {
+      // Best-effort cleanup of links this call landed: a failed publication
+      // must not leave an orphan alias or object behind. Only entries this
+      // call created are removed (an EEXIST hit is somebody else's file), and
+      // cleanup errors are swallowed — the original failure is what the
+      // caller needs to see.
+      if (createdAlias && aliasPath !== undefined) await fs.unlink(aliasPath).catch(() => {})
+      if (createdObject) await fs.unlink(objectPath).catch(() => {})
+      if (err instanceof AttachmentStoreError) throw err
+      throw new AttachmentStoreError('write-failed', `failed to publish attachment: ${errorMessage(err)}`, { cause: err })
+    }
+  }
+
+  /** Publish one content-addressed image object (no filename alias) plus its
+   *  meta sidecar. Equal bytes dedupe to one object and one digest; the sidecar
+   *  records the measured byte length alongside the caller's image facts. */
+  async publishImage(bytes: Uint8Array, meta: ImageMeta): Promise<PublishedImage> {
+    const { digest, objectPath, size } = await this.publishObjectCore(
+      (async function* () { yield bytes })(),
+      bytes.byteLength,
+      undefined,
+      (d) => imageObjectPathOf(this.root, d),
+    )
+    const metaPath = imageMetaPathOf(this.root, digest)
+    const stored: StoredImageMeta = { mediaType: meta.mediaType, bytes: size, width: meta.width, height: meta.height }
+    try {
+      // Durable atomic sidecar write (tmp + fsync + rename), reusing the
+      // shared JSON-sidecar primitive rather than re-implementing it.
+      await writeAtomicDurable(dirname(metaPath), metaPath, stored)
+      await this.syncDirectories([objectPath])
+      return { digest, objectPath, bytes: size }
+    } catch (err) {
+      if (err instanceof AttachmentStoreError) throw err
+      throw new AttachmentStoreError('write-failed', `failed to publish image: ${errorMessage(err)}`, { cause: err })
+    }
+  }
+
+  /** Read one stored image, verifying length + sha256 against the sidecar's
+   *  recorded byte length. Throws `missing` when the object or sidecar is
+   *  absent and `corrupt` when the bytes or sidecar fail integrity. */
+  async readVerifiedImage(digest: string): Promise<{ bytes: Uint8Array; meta: StoredImageMeta }> {
+    if (!DIGEST_PATTERN.test(digest)) {
+      throw new Error(`invalid attachment digest: ${digest}`)
+    }
+    const objectPath = imageObjectPathOf(this.root, digest)
+    const metaPath = imageMetaPathOf(this.root, digest)
+    const raw = await fs.readFile(metaPath, 'utf8').catch((err) => {
+      if (errorCode(err) === 'ENOENT') {
+        throw new AttachmentStoreError('missing', `image not found: ${metaPath}`, { cause: err })
+      }
+      throw err
+    })
+    let meta: StoredImageMeta
+    try {
+      meta = JSON.parse(raw) as StoredImageMeta
+    } catch (err) {
+      throw new AttachmentStoreError('corrupt', `image meta failed integrity verification: ${metaPath}`, { cause: err })
+    }
+    const out: Uint8Array[] = []
+    for await (const chunk of this.readVerified({ path: objectPath, digest, size: meta.bytes })) out.push(chunk)
+    return { bytes: Buffer.concat(out), meta }
+  }
+
+  /** Stage `chunks` into `tmp/`, hash + fsync, hard-link into the object tree
+   *  at `objectPathFor(digest)`, and mark the object read-only. Shared by file
+   *  and image publication; the caller adds any alias/sidecar and final dir
+   *  syncs. On failure, removes the staged temp and any object this call
+   *  created (an EEXIST dedupe hit is somebody else's file and is left alone). */
+  private async publishObjectCore(
+    chunks: AsyncIterable<Uint8Array>,
+    maxBytes: number,
+    signal: AbortSignal | undefined,
+    objectPathFor: (digest: string) => string,
+  ): Promise<{ digest: string; objectPath: string; size: number; boundary: string; createdObject: boolean }> {
     const tmpPath = join(this.root, 'tmp', randomUUID())
     let objectPath: string | undefined
-    let aliasPath: string | undefined
     let createdObject = false
-    let createdAlias = false
-
     try {
       const boundary = await this.ensureDurableHome()
       await this.ensureDurableDirectory(join(this.root, 'tmp'), boundary)
       const { digest, size } = await this.writeTempFile(tmpPath, chunks, maxBytes, signal)
 
-      objectPath = objectPathOf(this.root, digest)
+      objectPath = objectPathFor(digest)
       await this.ensureDurableDirectory(dirname(objectPath), boundary)
       try {
         await fs.link(tmpPath, objectPath)
@@ -107,28 +221,9 @@ export class AttachmentObjectStore {
       await fs.unlink(tmpPath)
 
       await fs.chmod(objectPath, 0o400)
-
-      aliasPath = aliasPathOf(this.root, digest, name)
-      await this.ensureDurableDirectory(dirname(aliasPath), boundary)
-      try {
-        await fs.link(objectPath, aliasPath)
-        createdAlias = true
-      } catch (err) {
-        if (errorCode(err) !== 'EEXIST') throw err
-        await this.verifyFile({ path: aliasPath, digest, size, signal })
-      }
-      await fs.chmod(aliasPath, 0o400)
-
-      await this.syncDirectories([objectPath, aliasPath])
-      return { digest, objectPath, aliasPath, name, size }
+      return { digest, objectPath, size, boundary, createdObject }
     } catch (err) {
       await fs.unlink(tmpPath).catch(() => {})
-      // Best-effort cleanup of links this call landed: a failed publication
-      // must not leave an orphan alias or object behind. Only entries this
-      // call created are removed (an EEXIST hit is somebody else's file), and
-      // cleanup errors are swallowed — the original failure is what the
-      // caller needs to see.
-      if (createdAlias && aliasPath !== undefined) await fs.unlink(aliasPath).catch(() => {})
       if (createdObject && objectPath !== undefined) await fs.unlink(objectPath).catch(() => {})
       if (err instanceof AttachmentStoreError) throw err
       throw new AttachmentStoreError('write-failed', `failed to publish attachment: ${errorMessage(err)}`, { cause: err })
