@@ -9523,9 +9523,12 @@ describe('SessionManager', () => {
         expect(forkMappings.some((e) => e.v === serverU && e.u === serverU)).toBe(true)
 
         // The live fork's seq space: pre-seeded rows + the live prompt + its
-        // result (the echo frame is dropped by the pump — no seq).
+        // result (the echo frame is dropped by the pump — no seq). Gate on the
+        // full count: the lastTurnAt wait above only proves the result was
+        // consumed, not that every frame's seq has landed — reading totalCount
+        // bare raced on slow CI runners (a missing row, not a duplicate).
+        expect(await waitFor(async () => (await sm.getTranscriptWindow(forked.id)).totalCount === 4)).toBe(true)
         const liveWin = await sm.getTranscriptWindow(forked.id)
-        expect(liveWin.totalCount).toBe(4)
         expect(liveWin.messages.map((m) => [(m.msg as { uuid?: string }).uuid, m.seq])).toEqual([
           [serverU, 0],
           ['sdk-a1', 1],
