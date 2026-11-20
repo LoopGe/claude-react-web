@@ -123,4 +123,38 @@ describe('scheduled-send routes', () => {
     await ticking
     expect(manager.list('s1')[0]).toMatchObject({ status: 'sent', sentUuid: 'delayed-uuid' })
   })
+
+  it('POST accepts an image ref block and stores it verbatim (verified at fire time, not here)', async () => {
+    const { app, manager } = make()
+    const ref = { id: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png', bytes: 68, width: 1, height: 1 }
+    const content = [{ type: 'text', text: 'look' }, { type: 'image', attachment: ref }]
+    const res = await app.request('/sessions/s1/schedules', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fireAt: 2_000_000, content }),
+    })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { schedule: { body: unknown; status: string } }
+    expect(body.schedule.status).toBe('pending')
+    expect(body.schedule.body).toEqual({ content })
+    expect(manager.list('s1')[0].body).toEqual({ content })
+    // GET surfaces the stored ref body unchanged.
+    const list = await app.request('/sessions/s1/schedules')
+    expect(((await list.json()) as { schedules: { body: unknown }[] }).schedules[0].body).toEqual({ content })
+  })
+
+  it('POST rejects a malformed image ref with 400', async () => {
+    const { app, manager } = make()
+    const res = await app.request('/sessions/s1/schedules', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        fireAt: 2_000_000,
+        content: [{ type: 'image', attachment: { id: 'sha256:zz', mediaType: 'image/png', bytes: 1, width: 1, height: 1 } }],
+      }),
+    })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toBe('invalid image reference block')
+    expect(manager.list('s1')).toHaveLength(0)
+  })
 })
