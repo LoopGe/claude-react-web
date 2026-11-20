@@ -174,8 +174,11 @@ stable, still zero duplicates).
 
 ## Related
 
-- [Ordered reconcile architecture note](../../proposed/architecture/2026-11-16-transcript-ordered-reconcile.md)
-  — owns the occurrence-identity decision this fix repairs (spec §5.2/§5.3/§7.1).
+- The ordered-reconcile architecture note
+  (`.agents/notes/proposed/architecture/2026-11-16-transcript-ordered-reconcile.md`,
+  not yet committed) owns the occurrence-identity decision this fix repairs
+  (spec §5.2/§5.3/§7.1). Referenced as plain text until that note lands — a
+  Markdown link to an untracked file breaks the CI link check on a fresh checkout.
 - [Whole-message assistant uuid reconcile](2026-11-10-multi-block-assistant-uuid-reconcile.md)
   — the response-coverage rule across uuid spaces; adjacent, not overlapping
   (that fix handles different-uuid copies of one response, this one same-uuid
