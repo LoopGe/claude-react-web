@@ -486,6 +486,36 @@ describe('SessionManager embedded terminal', () => {
     await done2
   })
 
+  it('(g3) a stale unsubscribe after re-subscribe does not kill the new viewer', async () => {
+    const info = await sm.create({ cwd, model: 'test-model' })
+    const old = sm.subscribeTerminal(info.id)!
+    const oldDone = (async () => {
+      for await (const _frame of old.iterable) { /* drain */ }
+    })()
+
+    // unload/sleep ends the old channel (endTerminalSubscribers) and drops
+    // the map entry, but the old SET object still holds the old pushable.
+    await sm.unload(info.id)
+    await oldDone
+
+    // Re-subscribe on the now-dormant session → a FRESH set in the map.
+    const fresh = sm.subscribeTerminal(info.id)!
+    const frames: TerminalChannelFrame[] = []
+    const done = (async () => {
+      for await (const frame of fresh.iterable) frames.push(frame)
+    })()
+
+    // The OLD consumer's cleanup runs late: it empties the old set, but must
+    // NOT delete the newer set the map now holds (identity guard).
+    old.unsubscribe()
+
+    // The new viewer still receives frames.
+    await startTerminal(info.id)
+    await waitUntil(() => frames.some((f) => f.kind === 'terminal-output'), 5000, 'new viewer output')
+    fresh.unsubscribe()
+    await done
+  })
+
   it('(h) subscribe seeds restored history for a dormant session with a persisted screen', async () => {
     const info = await sm.create({ cwd, model: 'test-model' })
     await sm.sleep(info.id)

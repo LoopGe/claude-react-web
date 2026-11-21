@@ -5466,7 +5466,13 @@ export class SessionManager {
       unsubscribe: () => {
         subs.delete(pushable)
         pushable.end()
-        if (subs.size === 0) this.terminalSubscribers.delete(id)
+        // Identity guard: endTerminalSubscribers (unload/sleep) drops the map
+        // entry but leaves this set intact, so a stale unsubscribe running
+        // after a re-subscribe must not delete the NEWER set the map now
+        // holds — only retire the entry when it is still THIS set.
+        if (subs.size === 0 && this.terminalSubscribers.get(id) === subs) {
+          this.terminalSubscribers.delete(id)
+        }
       },
     }
   }
