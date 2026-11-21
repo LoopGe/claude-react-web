@@ -7,10 +7,19 @@ import { NativeSessionLog, loadNativeSessionLogSync } from './log.js'
 import { nativeHistoryCache } from './cache.js'
 import { readNativeHistoryEntries, readNativeHistoryPage } from './reader.js'
 import { historyFromEvents } from './replay.js'
+import { migrateEventToV3 } from './migration.js'
+import { isSidechainEvent } from './format.js'
 import { makeNativePorts } from '../../native-host-adapters.js'
-import type { HistoryPage } from '../../../../shared/transcript-format.js'
+import { isRenderableSdkMessage, type HistoryPage, type RawLine } from '../../../../shared/transcript-format.js'
+import type { NativeSessionEvent } from '../vocabulary/session-event.js'
 
 const transcriptPort = makeNativePorts().transcript
+
+/** The canonical neutral events of a loaded log (v3 baseline, or the lossless
+ *  in-memory migration of a legacy view). */
+function neutralEventsOf(snapshot: { neutralEvents?: NativeSessionEvent[]; events: Parameters<typeof migrateEventToV3>[0][] }): NativeSessionEvent[] {
+  return snapshot.neutralEvents ?? snapshot.events.map(migrateEventToV3)
+}
 
 let dir: string
 afterEach(async () => { if (dir) { nativeHistoryCache.invalidate('s1'); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } })
@@ -136,8 +145,8 @@ describe('native history reader', () => {
     expect(entryUuids).not.toContain('side-result')
 
     // The model history the session resumes from is top-level only too.
-    const events = loadNativeSessionLogSync(dir, 's1')!.events
-    const history = JSON.stringify(historyFromEvents(events))
+    const snapshot = loadNativeSessionLogSync(dir, 's1')!
+    const history = JSON.stringify(historyFromEvents(neutralEventsOf(snapshot)))
     expect(history).toContain('top prompt')
     expect(history).not.toContain('inner reply')
     expect(history).not.toContain('inner result')
@@ -188,8 +197,8 @@ describe('native history reader', () => {
     expect(entries.map((entry) => entry.index)).toEqual([0, 1, 2])
     expect(JSON.stringify(entries)).not.toContain('PERSISTED SKILL BODY')
 
-    const history = historyFromEvents(loadNativeSessionLogSync(dir, 's1')!.events) as Array<{
-      content: Array<{ text?: string }>
+    const history = historyFromEvents(neutralEventsOf(loadNativeSessionLogSync(dir, 's1')!)) as Array<{
+      content: ReadonlyArray<{ text?: string }>
     }>
     expect(history.map((message) => message.content[0]?.text)).toEqual([
       'ctx',
@@ -217,7 +226,7 @@ describe('native history reader', () => {
     expect(pageText(page)).not.toContain('POST-COMPACT SKILL BODY')
     expect(JSON.stringify(await readNativeHistoryEntries(dir, 's1', transcriptPort))).not.toContain('SKILL BODY')
 
-    const history = JSON.stringify(historyFromEvents(loadNativeSessionLogSync(dir, 's1')!.events))
+    const history = JSON.stringify(historyFromEvents(neutralEventsOf(loadNativeSessionLogSync(dir, 's1')!)))
     expect(history).not.toContain('/before')
     expect(history).not.toContain('PRE-COMPACT SKILL BODY')
     expect(history).toContain('/after')
@@ -287,5 +296,32 @@ describe('native history reader', () => {
 
     const page = await readNativeHistoryPage(dir, 's1', transcriptPort, { limit: 10 })
     expect(pageText(page)).toContain('hello')
+  })
+})
+
+describe('native history read seam — UI history identity (T13)', () => {
+  it('projects v3 neutral events to SDK lines identical to the legacy read view', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-seam-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    const push = (e: never) => log.append(e)
+    push({ type: 'session/context', text: 'ctx' } as never)
+    push({ type: 'user', uuid: 'u1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'hi' }, { type: 'image', source: { type: 'base64', data: 'AAAA', media_type: 'image/png' } }] } } as never)
+    push({ type: 'assistant', uuid: 'a1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:01.000Z', message: { role: 'assistant', id: 'msg_orig', model: 'claude-test', stop_reason: 'tool_use', content: [{ type: 'thinking', thinking: 'hmm', signature: 'sig' }, { type: 'tool_use', id: 't1', name: 'Read', input: { file: 'a' } }], usage: { input_tokens: 10, output_tokens: 5 } } } as never)
+    push({ type: 'user', uuid: 'r1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'ok' }], is_error: false }] } } as never)
+    push({ type: 'assistant', uuid: 'side', session_id: 's1', parent_tool_use_id: 'agent1', timestamp: '2026-11-09T00:00:03.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'inner' }] } } as never)
+    await log.flush(); await log.close()
+
+    const snapshot = loadNativeSessionLogSync(dir, 's1')!
+    expect(snapshot.header.v).toBe(3)
+    const loaded = await nativeHistoryCache.load(dir, 's1')
+    // The seam's SDK lines equal the legacy read view's renderable subset
+    // verbatim — so normalize/paginateRenderable see byte-identical input.
+    const legacyRenderable = snapshot.events.filter((e) => isRenderableSdkMessage(e) || isSidechainEvent(e))
+    expect(loaded!.lines).toEqual(legacyRenderable)
+
+    // And the normalized entries equal the legacy normalize of those lines.
+    const entries = await readNativeHistoryEntries(dir, 's1', transcriptPort)
+    const mainLines = legacyRenderable.filter((e) => !isSidechainEvent(e))
+    expect(entries.map((e) => e.message)).toEqual(mainLines.map((line) => transcriptPort.normalize(line as unknown as RawLine, 's1', false)))
   })
 })

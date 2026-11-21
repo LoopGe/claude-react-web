@@ -13,8 +13,10 @@
 // Pure: no I/O and no logging.
 
 import { NativeSessionStorageError } from './errors.js'
+import { projectNeutralEventToLegacy } from './format.js'
 import type { NativeEventInput, NativeLogEvent, NativeSkillInvocationEvent } from './format.js'
 import type { NativeSessionLogSnapshot } from './log.js'
+import { migrateEventToV3 } from './migration.js'
 import { contextSnapshot, repairInterruptedTurn } from './replay.js'
 
 export interface BuildForkSeedOptions {
@@ -94,8 +96,16 @@ export function buildForkSeed(opts: BuildForkSeedOptions): NativeForkSeed {
   }
 
   append({ type: 'session/end-seed' })
-  const { synthetic } = repairInterruptedTurn(copied, { now: opts.now })
-  for (const event of synthetic) append(event)
+  // Repair runs over the NEUTRAL migration of the copied prefix (T13); the
+  // synthetic results project back to legacy SDK lines for the seed (which
+  // NativeSessionLog.open normalizes to neutral for a v3 child), stamped with
+  // the CHILD session id.
+  const { synthetic } = repairInterruptedTurn(copied.map(migrateEventToV3), { now: opts.now })
+  for (const event of synthetic) {
+    // The synthetic input carries no seq yet; stamp a placeholder the projection
+    // requires, then renumber into the child's range below.
+    events.push({ ...projectNeutralEventToLegacy({ ...event, seq: 0 }, newId), seq: events.length })
+  }
   append({ type: 'turn/end', reason: 'forked' })
   append({ type: 'session/context', text: contextSnapshot(cwd) })
 

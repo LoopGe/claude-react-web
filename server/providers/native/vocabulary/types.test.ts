@@ -80,6 +80,18 @@ describe('isRetainedThinkingBlock', () => {
     expect(isRetainedThinkingBlock({ type: 'redacted_thinking' })).toBe(false)
     expect(isRetainedThinkingBlock({ type: 'redacted_thinking', data: 1 })).toBe(false)
   })
+
+  it('applies the same retention to NEUTRAL reasoning blocks (T13 replay)', () => {
+    // Signed reasoning kept; unsigned / empty-signature stripped.
+    expect(isRetainedThinkingBlock({ type: 'reasoning', signature: 'sig-1' })).toBe(true)
+    expect(isRetainedThinkingBlock({ type: 'reasoning', signature: '' })).toBe(false)
+    expect(isRetainedThinkingBlock({ type: 'reasoning' })).toBe(false)
+    expect(isRetainedThinkingBlock({ type: 'reasoning', signature: 1 })).toBe(false)
+    // Redacted reasoning kept only with non-empty string data.
+    expect(isRetainedThinkingBlock({ type: 'reasoning', redacted: true, data: 'ENC' })).toBe(true)
+    expect(isRetainedThinkingBlock({ type: 'reasoning', redacted: true, data: '' })).toBe(false)
+    expect(isRetainedThinkingBlock({ type: 'reasoning', redacted: true })).toBe(false)
+  })
 })
 
 describe('ContentBlock union', () => {

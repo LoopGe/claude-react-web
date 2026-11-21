@@ -6,10 +6,10 @@
 //
 // Ownership split vs neutral replay (T13): replay folds the durable event
 // stream into NEUTRAL model history — first-class role-tool ToolResultMessages
-// (ungrouped), raw-JSON tool-call arguments, reasoning blocks kept verbatim —
-// applying the EVENT-level semantics (compact floor, sidechain skip, supplement
-// dedup, skill body verbatim). This adapter owns the API-level semantics the
-// Anthropic Messages request requires:
+// (ungrouped), raw-JSON tool-call arguments — applying the EVENT-level
+// semantics (compact floor, sidechain skip, supplement dedup, skill body
+// verbatim, signed-thinking retention). This adapter owns the API-level
+// semantics the Anthropic Messages request requires:
 //   - consecutive tool results grouped into ONE user message per assistant turn
 //     (an assistant or non-tool user message closes the open group);
 //   - raw-JSON tool-call arguments parsed into tool_use.input;

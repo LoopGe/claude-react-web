@@ -36,11 +36,13 @@ import type { AgentMessage, AgentUserMessage, ProviderContentBlock } from '../ag
 import {
   projectNativeFrameToSdk,
   projectNativeEventToSdk,
+  projectNativeEventToSdkLine,
   projectSdkInputToNative,
   wrapNativeCore,
   nativeCoreOf,
   type NativeFrameEnvelope,
 } from './native-host-frame-adapter.js'
+import { migrateEventToV3 } from './native/session-log/migration.js'
 
 const SESSION = 'sess-1'
 const UUID = '11111111-1111-4111-8111-111111111111'
@@ -376,6 +378,97 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
   it('durable session events have no live operational projection (null)', () => {
     const event: NativeSessionEvent = { type: 'session/end-seed', seq: 0, time: 0, data: { inherited: true } }
     expect(projectNativeEventToSdk(event)).toBeNull()
+  })
+})
+
+// ── Task 13: durable event → SDK RawLine history-read seam ─────────────────
+
+describe('projectNativeEventToSdkLine — history read seam (T13)', () => {
+  const TS = '2026-11-09T00:00:00.000Z'
+  const TIME = Date.parse(TS)
+
+  it('projects a user/message to the SDK user line (envelope + content)', () => {
+    const event: NativeSessionEvent = {
+      type: 'user/message', seq: 3, time: TIME, parentToolUseId: null,
+      data: { role: 'user', id: brandString<'MessageId'>('u1'), content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } },
+    }
+    expect(projectNativeEventToSdkLine(event, SESSION)).toEqual({
+      seq: 3, type: 'user', uuid: 'u1', session_id: SESSION, parent_tool_use_id: null, timestamp: TS,
+      message: { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    })
+  })
+
+  it('carries isCompactSummary and the sidechain parent verbatim', () => {
+    const event: NativeSessionEvent = {
+      type: 'user/message', seq: 0, time: TIME, parentToolUseId: PARENT,
+      data: { role: 'user', id: brandString<'MessageId'>('u2'), content: [{ type: 'text', text: 'seed' }], source: { kind: 'user' }, isCompactSummary: true },
+    }
+    const line = projectNativeEventToSdkLine(event, SESSION) as Record<string, any>
+    expect(line.parent_tool_use_id).toBe(PARENT)
+    expect(line.isCompactSummary).toBe(true)
+  })
+
+  it('projects an assistant/message with msg_<uuid> id, rawStopReason and usage', () => {
+    const message = createAssistantMessage({
+      content: [{ type: 'text', text: 'done' }, { type: 'tool-call', id: brandString<'ToolCallId'>('t1'), name: 'Read', arguments: '{"file":"a"}' }],
+      source: { provider: 'anthropic', model: 'claude-test' },
+    })
+    const event: NativeSessionEvent = {
+      type: 'assistant/message', seq: 4, time: TIME, parentToolUseId: null,
+      data: { message, stream: [], usage: NEUTRAL_USAGE, rawStopReason: 'stop_sequence' },
+    }
+    const line = projectNativeEventToSdkLine(event, SESSION) as Record<string, any>
+    expect(line.type).toBe('assistant')
+    expect(line.uuid).toBe(message.id)
+    expect(line.message.id).toBe(`msg_${message.id}`)
+    expect(line.message.model).toBe('claude-test')
+    // The rare raw reason survives verbatim (the closed FinishReason union
+    // cannot express it).
+    expect(line.message.stop_reason).toBe('stop_sequence')
+    expect(line.message.usage).toEqual(SDK_USAGE)
+    expect(line.message.content).toEqual([
+      { type: 'text', text: 'done' },
+      { type: 'tool_use', id: 't1', name: 'Read', input: { file: 'a' } },
+    ])
+  })
+
+  it('reconstructs stop_reason from the packed finish record when rawStopReason is absent', () => {
+    const message = createAssistantMessage({ content: [{ type: 'text', text: 'x' }], source: { provider: 'anthropic', model: 'm' } })
+    const event: NativeSessionEvent = {
+      type: 'assistant/message', seq: 0, time: TIME, parentToolUseId: null,
+      data: { message, stream: [{ type: 'chunk', time: TIME, chunk: { type: 'finish', reason: { kind: 'tool-calls' } } }] },
+    }
+    expect((projectNativeEventToSdkLine(event, SESSION) as Record<string, any>).message.stop_reason).toBe('tool_use')
+  })
+
+  it('projects a tool/result to the SDK user tool_result line', () => {
+    const message = createToolResultMessage({ callId: brandString<'ToolCallId'>('t1'), content: [{ type: 'text', text: 'ok' }], isError: false })
+    const event: NativeSessionEvent = { type: 'tool/result', seq: 5, time: TIME, parentToolUseId: null, data: { message } }
+    expect(projectNativeEventToSdkLine(event, SESSION)).toEqual({
+      seq: 5, type: 'user', uuid: message.id, session_id: SESSION, parent_tool_use_id: null, timestamp: TS,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'ok' }], is_error: false }] },
+    })
+  })
+
+  it('returns null for durable operational events (the reader synthesizes their lines)', () => {
+    const compact: NativeSessionEvent = { type: 'session/compact', seq: 0, time: TIME, data: { text: 'S', context: 'C', uuid: 'c1', timestamp: TS } }
+    const skill: NativeSessionEvent = { type: 'session/skill', seq: 1, time: TIME, data: { name: 'a', body: 'B', timestamp: TS } }
+    const context: NativeSessionEvent = { type: 'session/context', seq: 2, time: 0, data: { text: 'ctx' } }
+    expect(projectNativeEventToSdkLine(compact, SESSION)).toBeNull()
+    expect(projectNativeEventToSdkLine(skill, SESSION)).toBeNull()
+    expect(projectNativeEventToSdkLine(context, SESSION)).toBeNull()
+  })
+
+  it('round-trips a migrated legacy message event back to the identical SDK line', () => {
+    const legacy = [
+      { seq: 0, type: 'user', uuid: 'u1', session_id: SESSION, parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'text', text: 'hi' }, { type: 'image', source: { type: 'base64', data: 'AAAA', media_type: 'image/png' } }] } },
+      { seq: 1, type: 'assistant', uuid: 'a1', session_id: SESSION, parent_tool_use_id: null, timestamp: TS, message: { type: 'assistant', role: 'assistant', id: 'msg_original', model: 'claude-test', stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: 'hmm', signature: 'sig' }, { type: 'tool_use', id: 't1', name: 'Read', input: {} }], usage: { input_tokens: 10, output_tokens: 5 } } },
+      { seq: 2, type: 'user', uuid: 'r1', session_id: SESSION, parent_tool_use_id: 'agent1', timestamp: TS, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'bare string', is_error: true }] } },
+    ] as const
+    for (const event of legacy) {
+      const neutral = migrateEventToV3(event as never)
+      expect(projectNativeEventToSdkLine(neutral, SESSION)).toEqual(event)
+    }
   })
 })
 

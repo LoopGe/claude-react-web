@@ -3,13 +3,19 @@ import { describe, expect, it } from 'vitest'
 import { formatSupplementInstruction } from '../../steering-format.js'
 import { buildForkSeed } from './fork.js'
 import { historyFromEvents } from './replay.js'
+import { migrateEventToV3 } from './migration.js'
+
+const TS = '2026-11-09T00:00:00.000Z'
+/** Neutral replay of a legacy fork seed (the seed itself stays legacy-shaped;
+ *  NativeSessionLog.open normalizes it to neutral for a v3 child). */
+const replaySeed = (events: Parameters<typeof migrateEventToV3>[0][]) => historyFromEvents(events.map(migrateEventToV3))
 
 const source = {
   header: { type: 'session/header', v: 1, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
   events: [
     { seq: 0, type: 'session/context', text: 'ctx' },
-    { seq: 1, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
-    { seq: 2, type: 'assistant', uuid: 'a1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] } },
+    { seq: 1, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+    { seq: 2, type: 'assistant', uuid: 'a1', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] } },
   ],
   path: '/p', completeBytes: 0, totalBytes: 0,
 } as never
@@ -56,7 +62,7 @@ describe('buildForkSeed', () => {
           label: 'review',
           depth: 2,
           profile: { name: 'reviewer', instruction: 'REVIEW', skills: [] },
-          timestamp: 't',
+          timestamp: TS,
         },
       ],
       path: '/p', completeBytes: 0, totalBytes: 0,
@@ -74,16 +80,16 @@ describe('buildForkSeed', () => {
       label: 'review',
       depth: 2,
       profile: { name: 'reviewer', instruction: 'REVIEW', skills: [] },
-      timestamp: 't',
+      timestamp: TS,
     })
   })
   it('includes an immediately following session/skill when cutting at its raw user', () => {
     const withSkill = {
       header: { type: 'session/header', v: 1, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
       events: [
-        { seq: 0, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'image' }, { type: 'text', text: '/alpha args' }, { type: 'text', text: '/beta' }] } },
-        { seq: 1, type: 'session/skill', name: 'alpha', body: 'PERSISTED SKILL BODY', timestamp: 't' },
-        { seq: 2, type: 'assistant', uuid: 'a1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+        { seq: 0, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'image' }, { type: 'text', text: '/alpha args' }, { type: 'text', text: '/beta' }] } },
+        { seq: 1, type: 'session/skill', name: 'alpha', body: 'PERSISTED SKILL BODY', timestamp: TS },
+        { seq: 2, type: 'assistant', uuid: 'a1', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
       ],
       path: '/p', completeBytes: 0, totalBytes: 0,
     } as never
@@ -92,8 +98,8 @@ describe('buildForkSeed', () => {
 
     expect(seed.inheritedEventCount).toBe(2)
     expect(seed.events.slice(0, 2)).toEqual([
-      { seq: 0, type: 'user', uuid: 'u1', session_id: 'dst', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'image' }, { type: 'text', text: '/alpha args' }, { type: 'text', text: '/beta' }] } },
-      { seq: 1, type: 'session/skill', name: 'alpha', body: 'PERSISTED SKILL BODY', timestamp: 't' },
+      { seq: 0, type: 'user', uuid: 'u1', session_id: 'dst', parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'image' }, { type: 'text', text: '/alpha args' }, { type: 'text', text: '/beta' }] } },
+      { seq: 1, type: 'session/skill', name: 'alpha', body: 'PERSISTED SKILL BODY', timestamp: TS },
     ])
   })
   it.each([
@@ -121,8 +127,8 @@ describe('buildForkSeed', () => {
     const source = {
       header: { type: 'session/header', v: 1, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
       events: [
-        { seq: 0, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: parentToolUseId, timestamp: 't', message: { role: 'user', content } },
-        { seq: 1, type: 'session/skill', name: 'alpha', body: 'PERSISTED SKILL BODY', timestamp: 't' },
+        { seq: 0, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: parentToolUseId, timestamp: TS, message: { role: 'user', content } },
+        { seq: 1, type: 'session/skill', name: 'alpha', body: 'PERSISTED SKILL BODY', timestamp: TS },
       ],
       path: '/p', completeBytes: 0, totalBytes: 0,
     } as never
@@ -136,7 +142,7 @@ describe('buildForkSeed', () => {
     const rawOnly = {
       header: { type: 'session/header', v: 1, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
       events: [
-        { seq: 0, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: '/alpha' }] } },
+        { seq: 0, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'text', text: '/alpha' }] } },
       ],
       path: '/p', completeBytes: 0, totalBytes: 0,
     } as never
@@ -145,20 +151,17 @@ describe('buildForkSeed', () => {
 
     expect(seed.inheritedEventCount).toBe(1)
     expect(seed.events.filter((event) => event.type === 'session/skill')).toEqual([])
-    expect(historyFromEvents(seed.events)).toContainEqual({
-      role: 'user',
-      content: [{ type: 'text', text: '/alpha' }],
-    })
+    expect(JSON.stringify(replaySeed(seed.events))).toContain('/alpha')
   })
   it('keeps assistant anchors exclusive of later raw-user skill groups', () => {
     const withLaterSkill = {
       header: { type: 'session/header', v: 1, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
       events: [
-        { seq: 0, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: '/alpha' }] } },
-        { seq: 1, type: 'session/skill', name: 'alpha', body: 'FIRST SKILL', timestamp: 't' },
-        { seq: 2, type: 'assistant', uuid: 'a1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
-        { seq: 3, type: 'user', uuid: 'u2', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: '/beta' }] } },
-        { seq: 4, type: 'session/skill', name: 'beta', body: 'SECOND SKILL', timestamp: 't' },
+        { seq: 0, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'text', text: '/alpha' }] } },
+        { seq: 1, type: 'session/skill', name: 'alpha', body: 'FIRST SKILL', timestamp: TS },
+        { seq: 2, type: 'assistant', uuid: 'a1', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+        { seq: 3, type: 'user', uuid: 'u2', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'text', text: '/beta' }] } },
+        { seq: 4, type: 'session/skill', name: 'beta', body: 'SECOND SKILL', timestamp: TS },
       ],
       path: '/p', completeBytes: 0, totalBytes: 0,
     } as never
@@ -167,7 +170,7 @@ describe('buildForkSeed', () => {
 
     expect(seed.inheritedEventCount).toBe(3)
     expect(seed.events.filter((event) => event.type === 'session/skill')).toEqual([
-      { seq: 1, type: 'session/skill', name: 'alpha', body: 'FIRST SKILL', timestamp: 't' },
+      { seq: 1, type: 'session/skill', name: 'alpha', body: 'FIRST SKILL', timestamp: TS },
     ])
   })
   it('copies a supplement into the seed and replays it at its position', () => {
@@ -176,20 +179,20 @@ describe('buildForkSeed', () => {
       header: { type: 'session/header', v: 1, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
       events: [
         { seq: 0, type: 'session/context', text: 'ctx' },
-        { seq: 1, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } },
-        { seq: 2, type: 'session/supplement', uuid: 'steer-1', text: wrapped, timestamp: 't' },
-        { seq: 3, type: 'user', uuid: 'u2', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'later' }] } },
+        { seq: 1, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'text', text: 'go' }] } },
+        { seq: 2, type: 'session/supplement', uuid: 'steer-1', text: wrapped, timestamp: TS },
+        { seq: 3, type: 'user', uuid: 'u2', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'text', text: 'later' }] } },
       ],
     } as never
     const seed = buildForkSeed({ source: withSupplement, sourceId: 'src', newId: 'dst', cwd: '/new' })
     // The copied prefix carries the durable supplement verbatim (no
     // session_id to rewrite; seq renumbered into the child's range).
     expect(seed.events.filter((e) => e.type === 'session/supplement')).toEqual([
-      { seq: 2, type: 'session/supplement', uuid: 'steer-1', text: wrapped, timestamp: 't' },
+      { seq: 2, type: 'session/supplement', uuid: 'steer-1', text: wrapped, timestamp: TS },
     ])
     // Replaying the child seed reproduces it between the two prompts, so the
     // forked model history is the source's plus the child's own context line.
-    const messages = historyFromEvents(seed.events) as Array<{ role: string; content: Array<{ text?: string }> }>
+    const messages = replaySeed(seed.events) as Array<{ role: string; content: ReadonlyArray<{ text?: string }> }>
     expect(messages.map((m) => m.content[0]?.text)).toEqual([
       'ctx',
       'go',
@@ -206,9 +209,9 @@ describe('buildForkSeed', () => {
     const sourceV2 = {
       header: { type: 'session/header', v: 2, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
       events: [
-        { seq: 0, type: 'user', uuid: 'structured-user', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment }, { type: 'text', text: 'after' }] } },
-        { seq: 1, type: 'session/attachments', attachments: [attachment], timestamp: 'catalog-time' },
-        { seq: 2, type: 'assistant', uuid: 'answer-uuid', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+        { seq: 0, type: 'user', uuid: 'structured-user', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment }, { type: 'text', text: 'after' }] } },
+        { seq: 1, type: 'session/attachments', attachments: [attachment], timestamp: TS },
+        { seq: 2, type: 'assistant', uuid: 'answer-uuid', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
       ],
       path: '/p', completeBytes: 0, totalBytes: 0,
     } as never
@@ -217,11 +220,11 @@ describe('buildForkSeed', () => {
 
     expect(seed.version).toBe(2)
     expect(seed.events.slice(0, 3)).toEqual([
-      { seq: 0, type: 'user', uuid: 'structured-user', session_id: 'dst', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment }, { type: 'text', text: 'after' }] } },
-      { seq: 1, type: 'session/attachments', attachments: [attachment], timestamp: 'catalog-time' },
-      { seq: 2, type: 'assistant', uuid: 'answer-uuid', session_id: 'dst', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+      { seq: 0, type: 'user', uuid: 'structured-user', session_id: 'dst', parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment }, { type: 'text', text: 'after' }] } },
+      { seq: 1, type: 'session/attachments', attachments: [attachment], timestamp: TS },
+      { seq: 2, type: 'assistant', uuid: 'answer-uuid', session_id: 'dst', parent_tool_use_id: null, timestamp: TS, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
     ])
-    const history = historyFromEvents(seed.events)
+    const history = replaySeed(seed.events)
     expect(JSON.stringify(history)).toContain('"type":"file"')
     expect(JSON.stringify(history)).not.toContain('session/attachments')
   })
@@ -229,12 +232,12 @@ describe('buildForkSeed', () => {
     const rawOnly = {
       header: { type: 'session/header', v: 2, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
       events: [
-        { seq: 0, type: 'user', uuid: 'raw-user', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'raw only' }] } },
+        { seq: 0, type: 'user', uuid: 'raw-user', session_id: 'src', parent_tool_use_id: null, timestamp: TS, message: { role: 'user', content: [{ type: 'text', text: 'raw only' }] } },
       ],
       path: '/p', completeBytes: 0, totalBytes: 0,
     } as never
     const seed = buildForkSeed({ source: rawOnly, sourceId: 'src', newId: 'dst', cwd: '/new', resumeSessionAt: 'raw-user' })
     expect(seed.events.filter((event) => event.type === 'session/attachments')).toEqual([])
-    expect(historyFromEvents(seed.events)).toContainEqual({ role: 'user', content: [{ type: 'text', text: 'raw only' }] })
+    expect(JSON.stringify(replaySeed(seed.events))).toContain('raw only')
   })
 })

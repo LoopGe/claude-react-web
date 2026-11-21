@@ -5,16 +5,15 @@
 //     constructors): consecutive tool-result grouping, raw-JSON → parsed
 //     tool_use.input, the signed-thinking filter, file/PDF projection, and the
 //     loud contract violations (system/developer roles, store-backed images).
-//  2. A ROUND-TRIP PIN against the legacy path. T13 (neutral replay) has not
-//     landed, so a test-only fixture builder reconstructs the neutral history
-//     that neutral replay will produce — UNGROUPED first-class role-tool
-//     messages, raw-JSON tool arguments, unfiltered reasoning — applying the
-//     same EVENT-level semantics historyFromEvents owns (compact floor,
-//     sidechain skip, supplement dedup, skill body verbatim). The wire adapter
-//     owns the API-level semantics (grouping, parsed input, thinking filter,
-//     file/PDF). The pin asserts the split reconstructs the legacy output
-//     exactly: projectNativeHistoryToWire(fixture) deep-equals
-//     projectNativeMessages(historyFromEvents(events)).
+//  2. A ROUND-TRIP PIN against the legacy path, driven by REAL neutral replay
+//     (T13): the legacy event corpus is migrated to neutral v3 events
+//     (migrateEventToV3), folded by historyFromEvents into NEUTRAL model
+//     history (ungrouped first-class role-tool messages, raw-JSON tool
+//     arguments), and projected by the wire adapter. The legacy side is a
+//     FROZEN reference copy of the pre-T13 SDK-shaped historyFromEvents plus
+//     projectNativeMessages. The pin asserts the neutral split reconstructs
+//     the legacy output exactly: projectNativeHistoryToWire(historyFromEvents(
+//     neutralEvents)) deep-equals projectNativeMessages(legacyReplay(events)).
 import { afterEach, describe, expect, it } from 'vitest'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -23,7 +22,9 @@ import { join } from 'node:path'
 import { projectNativeHistoryToWire } from './wire-projection.js'
 import { nativeFileHandleText, projectNativeMessages, type NativeProjectionOptions } from '../attachment-projection.js'
 import { historyFromEvents } from '../session-log/replay.js'
-import { isSidechainEvent, type NativeFileAttachment, type NativeLogEvent } from '../session-log/format.js'
+import { isSidechainEvent, type NativeCompactEvent, type NativeFileAttachment, type NativeLogEvent } from '../session-log/format.js'
+import { migrateEventToV3 } from '../session-log/migration.js'
+import { isRetainedThinkingBlock } from '../frames.js'
 import { brandString } from '../vocabulary/brand.js'
 import {
   createAssistantMessage,
@@ -58,105 +59,101 @@ const toolCall = (id: string, name: string, args: string): ContentBlock =>
 
 // ── legacy event-corpus helpers (mirror replay.test.ts shapes) ─────────────
 const ctx = { seq: 0, type: 'session/context', text: 'ctx' } as const
-const user = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user', uuid: `u${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text }] } })
-const userWithUuid = (seq: number, text: string, uuid: string): NativeLogEvent => ({ seq, type: 'user', uuid, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text }] } })
-const assistantEvent = (seq: number, content: unknown[]): NativeLogEvent => ({ seq, type: 'assistant', uuid: `a${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content } })
-const result = (seq: number, id: string, isError = false): NativeLogEvent => ({ seq, type: 'user', uuid: `r${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'ok' }], is_error: isError }] } })
-const compact = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'session/compact', text, context: 'CTX', uuid: `c${seq}`, timestamp: 't' })
-const supplement = (seq: number, text: string, uuid = `sp${seq}`): NativeLogEvent => ({ seq, type: 'session/supplement', uuid, text, timestamp: 't' })
-const skill = (seq: number, body: string): NativeLogEvent => ({ seq, type: 'session/skill', name: 'alpha', body, timestamp: 't' })
-const sideUser = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user', uuid: `su${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'user', content: [{ type: 'text', text }] } })
-const sideAssistant = (seq: number, content: unknown[]): NativeLogEvent => ({ seq, type: 'assistant', uuid: `sa${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'assistant', content } })
-const sideResult = (seq: number, id: string): NativeLogEvent => ({ seq, type: 'user', uuid: `sr${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'inner ok' }], is_error: false }] } })
+const user = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user', uuid: `u${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text }] } })
+const userWithUuid = (seq: number, text: string, uuid: string): NativeLogEvent => ({ seq, type: 'user', uuid, session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text }] } })
+const assistantEvent = (seq: number, content: unknown[]): NativeLogEvent => ({ seq, type: 'assistant', uuid: `a${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'assistant', content } })
+const result = (seq: number, id: string, isError = false): NativeLogEvent => ({ seq, type: 'user', uuid: `r${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'ok' }], is_error: isError }] } })
+const compact = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'session/compact', text, context: 'CTX', uuid: `c${seq}`, timestamp: '2026-11-09T00:00:00.000Z' })
+const supplement = (seq: number, text: string, uuid = `sp${seq}`): NativeLogEvent => ({ seq, type: 'session/supplement', uuid, text, timestamp: '2026-11-09T00:00:00.000Z' })
+const skill = (seq: number, body: string): NativeLogEvent => ({ seq, type: 'session/skill', name: 'alpha', body, timestamp: '2026-11-09T00:00:00.000Z' })
+const sideUser = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user', uuid: `su${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text }] } })
+const sideAssistant = (seq: number, content: unknown[]): NativeLogEvent => ({ seq, type: 'assistant', uuid: `sa${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'assistant', content } })
+const sideResult = (seq: number, id: string): NativeLogEvent => ({ seq, type: 'user', uuid: `sr${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'inner ok' }], is_error: false }] } })
 const turnEnd = (seq: number): NativeLogEvent => ({ seq, type: 'turn/end', reason: 'completed' })
 
-// ── test-only neutral replay fixture (T13 preview) ─────────────────────────
-// Maps one legacy SDK content block to its neutral ContentBlock. Reasoning
-// keeps its signature/redacted data VERBATIM (the wire adapter owns the
-// retention filter); tool_use.input becomes RAW JSON arguments (the wire
-// adapter owns parsing). File occurrences keep the full resolved attachment
-// (a structural superset of the vocabulary's public FileAttachmentRef).
-function neutralBlock(block: Record<string, any>): ContentBlock {
-  switch (block.type) {
-    case 'text': return { type: 'text', text: block.text }
-    case 'thinking': return { type: 'reasoning', text: block.thinking, ...(block.signature !== undefined ? { signature: block.signature } : {}) }
-    case 'redacted_thinking': return { type: 'reasoning', text: '', redacted: true, data: block.data }
-    case 'tool_use': return { type: 'tool-call', id: callId(block.id), name: block.name, arguments: JSON.stringify(block.input) }
-    case 'image': return { type: 'image', source: block.source }
-    case 'file': return { type: 'file', attachment: block.attachment }
-    default: throw new Error(`fixture: unsupported SDK block type "${block.type}"`)
-  }
+// ── frozen legacy replay reference (pre-T13 historyFromEvents) ─────────────
+// The exact SDK-shaped rebuild the legacy path sent, kept here as the oracle
+// for the round-trip pin. Production replay is now NEUTRAL (historyFromEvents
+// over NativeSessionEvent[]); this reference is deliberately frozen so the pin
+// compares against the historical behavior, not a moving target.
+function legacyBlocksOf(content: unknown): Array<Record<string, any>> {
+  return Array.isArray(content) ? (content as Array<Record<string, any>>) : []
 }
-
-// Reconstruct the UNGROUPED neutral model history neutral replay (T13) will
-// produce from a legacy event stream. Event-level semantics mirror
-// historyFromEvents (compact floor, sidechain skip, supplement dedup, skill
-// body verbatim, metadata ignored); API-level semantics (tool-result grouping,
-// parsed input, thinking filter) are deliberately LEFT to the wire adapter.
-function neutralFixtureFromEvents(events: readonly NativeLogEvent[]): RequestMessage[] {
-  const out: RequestMessage[] = []
+function legacyIsToolResultUser(content: unknown): boolean {
+  const blocks = legacyBlocksOf(content)
+  return blocks.length > 0 && blocks[0].type === 'tool_result'
+}
+function legacyHistoryFromEvents(events: readonly NativeLogEvent[]): unknown[] {
+  const messages: Array<{ role: 'user' | 'assistant'; content: unknown[] }> = []
+  let openResults: { role: 'user'; content: unknown[] } | null = null
   let compactIndex = -1
   for (let i = events.length - 1; i >= 0; i--) {
     if (events[i].type === 'session/compact') { compactIndex = i; break }
   }
   let start = 0
   if (compactIndex !== -1) {
-    const c = events[compactIndex] as Extract<NativeLogEvent, { type: 'session/compact' }>
-    out.push(userText(c.context), userText(c.text))
+    const compact = events[compactIndex] as NativeCompactEvent
+    messages.push({ role: 'user', content: [{ type: 'text', text: compact.context }] })
+    messages.push({ role: 'user', content: [{ type: 'text', text: compact.text }] })
     start = compactIndex + 1
   }
   const userUuids = new Set<string>()
   for (let i = start; i < events.length; i++) {
-    const e = events[i]
-    if (e.type === 'user' && !isSidechainEvent(e)) userUuids.add(e.uuid)
+    const event = events[i]
+    if (event.type === 'user' && !isSidechainEvent(event)) userUuids.add(event.uuid)
   }
   for (let i = start; i < events.length; i++) {
-    const e = events[i]
-    switch (e.type) {
+    const event = events[i]
+    switch (event.type) {
       case 'session/context':
-        out.push(userText(e.text))
+        messages.push({ role: 'user', content: [{ type: 'text', text: event.text }] })
+        openResults = null
         break
       case 'assistant':
-        if (isSidechainEvent(e)) break
-        out.push(assistant((e.message.content as Record<string, any>[]).map(neutralBlock)))
+        if (isSidechainEvent(event)) break
+        messages.push({ role: 'assistant', content: legacyBlocksOf(event.message.content).filter(isRetainedThinkingBlock) })
+        openResults = null
         break
-      case 'user': {
-        if (isSidechainEvent(e)) break
-        const blocks = e.message.content as Record<string, any>[]
-        // Persisted tool-result events carry only tool_result blocks (the loop
-        // persists one result per event); each becomes a FIRST-CLASS tool
-        // message, ungrouped — the wire adapter regroups consecutive ones.
-        if (blocks.length > 0 && blocks[0].type === 'tool_result') {
-          for (const b of blocks) {
-            out.push(toolResult(b.tool_use_id, (b.content ?? []).map(neutralBlock), b.is_error ?? false))
+      case 'user':
+        if (isSidechainEvent(event)) break
+        if (legacyIsToolResultUser(event.message.content)) {
+          if (openResults) {
+            openResults.content.push(...legacyBlocksOf(event.message.content))
+          } else {
+            openResults = { role: 'user', content: [...legacyBlocksOf(event.message.content)] }
+            messages.push(openResults)
           }
         } else {
-          out.push(createUserMessage({ content: blocks.map(neutralBlock), source: { kind: 'user' } }))
+          messages.push({ role: 'user', content: [...legacyBlocksOf(event.message.content)] })
+          openResults = null
         }
         break
-      }
       case 'session/skill':
-        out.push(userText(e.body))
+        messages.push({ role: 'user', content: [{ type: 'text', text: event.body }] })
+        openResults = null
         break
       case 'session/supplement':
-        if (userUuids.has(e.uuid)) break
-        out.push(userText(e.text))
+        if (userUuids.has(event.uuid)) break
+        messages.push({ role: 'user', content: [{ type: 'text', text: event.text }] })
+        openResults = null
         break
       default:
-        break // turn/end, end-seed, agent, attachments, descriptor: metadata
+        break
     }
   }
-  return out
+  return messages
 }
 
 type WireMessage = { role: string; content: Array<Record<string, any>> }
 const wireOf = (messages: unknown[]) => messages as WireMessage[]
 
-// The round-trip pin: wire projection of the neutral fixture deep-equals the
-// legacy projection of historyFromEvents, for the same projection options.
+// The round-trip pin: REAL neutral replay (historyFromEvents over the migrated
+// v3 events) + wire projection deep-equals the frozen legacy replay +
+// projectNativeMessages, for the same projection options.
 async function pin(events: readonly NativeLogEvent[], opts: NativeProjectionOptions = {}): Promise<WireMessage[]> {
-  const wire = await projectNativeHistoryToWire(neutralFixtureFromEvents(events), opts, signal())
-  const legacy = await projectNativeMessages(historyFromEvents(events), opts, signal())
+  const neutralEvents = events.map((event) => migrateEventToV3(event))
+  const wire = await projectNativeHistoryToWire(historyFromEvents(neutralEvents), opts, signal())
+  const legacy = await projectNativeMessages(legacyHistoryFromEvents(events), opts, signal())
   expect(wire).toEqual(legacy)
   return wireOf(wire)
 }
@@ -464,8 +461,8 @@ describe('round-trip pin vs legacy projectNativeMessages(historyFromEvents)', ()
   })
 
   it('agent selections and attachment catalogs do not split tool results', async () => {
-    const agentSelection = (seq: number): NativeLogEvent => ({ seq, type: 'session/agent', name: null, base: { model: 'claude-sonnet-4-5', permissionMode: 'default' }, timestamp: 't' } as NativeLogEvent)
-    const catalog = (seq: number): NativeLogEvent => ({ seq, type: 'session/attachments', attachments: [handleAttachment], timestamp: 't' } as NativeLogEvent)
+    const agentSelection = (seq: number): NativeLogEvent => ({ seq, type: 'session/agent', name: null, base: { model: 'claude-sonnet-4-5', permissionMode: 'default' }, timestamp: '2026-11-09T00:00:00.000Z' } as NativeLogEvent)
+    const catalog = (seq: number): NativeLogEvent => ({ seq, type: 'session/attachments', attachments: [handleAttachment], timestamp: '2026-11-09T00:00:00.000Z' } as NativeLogEvent)
     const events = [
       user(0, 'go'),
       assistantEvent(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }]),
@@ -478,9 +475,9 @@ describe('round-trip pin vs legacy projectNativeMessages(historyFromEvents)', ()
 
   it('structured user file occurrences + tool-result files project to handle text', async () => {
     const events = [
-      { seq: 0, type: 'user', uuid: 'structured', session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment: handleAttachment }, { type: 'text', text: 'after' }] } } as NativeLogEvent,
+      { seq: 0, type: 'user', uuid: 'structured', session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment: handleAttachment }, { type: 'text', text: 'after' }] } } as NativeLogEvent,
       assistantEvent(1, [{ type: 'tool_use', id: 't1', name: 'AttachmentRead', input: { id: 'upload-1' } }]),
-      { seq: 2, type: 'user', uuid: 'r2', session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'read' }, { type: 'file', attachment: handleAttachment }], is_error: false }] } } as NativeLogEvent,
+      { seq: 2, type: 'user', uuid: 'r2', session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'read' }, { type: 'file', attachment: handleAttachment }], is_error: false }] } } as NativeLogEvent,
     ]
     const messages = await pin(events)
     expect(messages[0].content.map((b) => b.type)).toEqual(['text', 'text', 'text'])
@@ -492,7 +489,7 @@ describe('round-trip pin vs legacy projectNativeMessages(historyFromEvents)', ()
   it('legacy base64 image occurrences survive the round trip', async () => {
     const image = { type: 'image', source: { type: 'base64', data: 'AAAA', media_type: 'image/png' } }
     const events = [
-      { seq: 0, type: 'user', uuid: 'img', session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'see' }, image] } } as NativeLogEvent,
+      { seq: 0, type: 'user', uuid: 'img', session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'see' }, image] } } as NativeLogEvent,
       assistantEvent(1, [{ type: 'text', text: 'noted' }]),
     ]
     const messages = await pin(events)
@@ -519,7 +516,7 @@ describe('round-trip pin vs legacy projectNativeMessages(historyFromEvents)', ()
       user(0, 'go'),
       assistantEvent(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }]),
       result(2, 't1', true),
-      { seq: 3, type: 'user', uuid: 'repair', session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: [{ type: 'text', text: 'tool result missing (session interrupted)' }], is_error: true }] } } as NativeLogEvent,
+      { seq: 3, type: 'user', uuid: 'repair', session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: [{ type: 'text', text: 'tool result missing (session interrupted)' }], is_error: true }] } } as NativeLogEvent,
     ]
     const messages = await pin(events)
     expect(messages[2].content.map((b) => b.is_error)).toEqual([true, true])
@@ -547,9 +544,9 @@ describe('round-trip pin — PDF corpus', () => {
     const pdfAttachment: NativeFileAttachment = { id: 'pdf-9', name: 'paper.pdf', size: bytes.length, digest, path, mediaType: 'application/pdf', modelForm: 'pdf-document' }
     const opts: NativeProjectionOptions = { attachmentPort: makeNativePorts({ stateDir, uploadStore }).attachment }
     const events = [
-      { seq: 0, type: 'user', uuid: 'pdf-user', session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'summarize' }, { type: 'file', attachment: pdfAttachment }] } } as NativeLogEvent,
+      { seq: 0, type: 'user', uuid: 'pdf-user', session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'summarize' }, { type: 'file', attachment: pdfAttachment }] } } as NativeLogEvent,
       assistantEvent(1, [{ type: 'tool_use', id: 't1', name: 'AttachmentRead', input: { id: 'pdf-9' } }]),
-      { seq: 2, type: 'user', uuid: 'r2', session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'file', attachment: pdfAttachment }], is_error: false }] } } as NativeLogEvent,
+      { seq: 2, type: 'user', uuid: 'r2', session_id: 's', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'file', attachment: pdfAttachment }], is_error: false }] } } as NativeLogEvent,
       assistantEvent(3, [{ type: 'text', text: 'done' }]),
     ]
     const messages = await pin(events, opts)

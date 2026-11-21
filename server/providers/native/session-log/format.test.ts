@@ -563,8 +563,11 @@ describe('session log format v3 (neutral)', () => {
     expect(projectNeutralEventToLegacy(withFinish(null), 's1')).toMatchObject({ message: { stop_reason: null } })
   })
 
-  it('routes the legacy parseEventLine dispatcher through the v3 projection', () => {
-    const legacy = parseEventLine(JSON.parse(serializeEvent(neutralEvents[1])), 1, 's1', 'p', 3)
-    expect(legacy).toMatchObject({ type: 'assistant', uuid: 'a1', message: { id: 'msg_a1' } })
+  it('no longer dispatches v3 lines through the legacy parser (T13 removed the read seam)', () => {
+    // v3 lines are neutral events: the canonical parse is parseEventLineV3 and
+    // the SDK-line projection is the host adapter's history-read seam. The
+    // legacy parser rejects a neutral line as an unknown event type.
+    expect(() => parseEventLine(JSON.parse(serializeEvent(neutralEvents[1])), 1, 's1', 'p', 3)).toThrow(/unknown event type/)
+    expect(parseEventLineV3(JSON.parse(serializeEvent(neutralEvents[1])), 1, 's1', 'p')).toEqual(neutralEvents[1])
   })
 })

@@ -115,9 +115,16 @@ export type FinishReason = FinishReasonMap[keyof FinishReasonMap]
  *  signed (`signature` non-empty) or redacted (`data` non-empty). The API
  *  rejects unsigned thinking on a follow-up request, so those are stripped
  *  from history — the UI-facing assistant frame keeps every block. Semantics
- *  moved from ../frames.ts (which keeps its copy until the live loop and log
- *  replay migrate to this vocabulary); the two must never diverge. */
-export function isRetainedThinkingBlock(block: { type?: unknown; signature?: unknown; data?: unknown }): boolean {
+ *  moved from ../frames.ts (which keeps its SDK-shaped copy for the legacy
+ *  live loop); the two must never diverge. Handles BOTH the neutral
+ *  `reasoning` block (T13 neutral replay filters with this) and the SDK
+ *  `thinking` / `redacted_thinking` shapes (the wire adapter filters projected
+ *  blocks with the same predicate). */
+export function isRetainedThinkingBlock(block: { type?: unknown; signature?: unknown; data?: unknown; redacted?: unknown }): boolean {
+  if (block.type === 'reasoning') {
+    if (block.redacted === true) return typeof block.data === 'string' && block.data !== ''
+    return typeof block.signature === 'string' && block.signature !== ''
+  }
   if (block.type === 'thinking') return typeof block.signature === 'string' && block.signature !== ''
   if (block.type === 'redacted_thinking') return typeof block.data === 'string' && block.data !== ''
   return true

@@ -63,6 +63,8 @@ import { brandString } from './native/vocabulary/brand.js'
 import type { ContentBlock, TokenUsage } from './native/vocabulary/types.js'
 import type { NativeLiveFrame } from './native/vocabulary/stream.js'
 import type { NativeSessionEvent } from './native/vocabulary/session-event.js'
+import type { RawLine } from '../../shared/transcript-format.js'
+import { projectNeutralEventToLegacy } from './native/session-log/format.js'
 import type { AssistantFrame, OperationalFrame, NativeCoreFrame } from './native/vocabulary/live-frame.js'
 import type {
   NativeSessionCore,
@@ -245,8 +247,9 @@ function projectToolResult(message: ToolResultMessage, env: NativeFrameEnvelope)
 
 /** Project a neutral operational event to the exact SDK system/result subtype
  *  native emits (R6). Durable SessionEventMap keys return null: their SDK-line
- *  projection belongs to the history-read seam (T13), which supplies the
- *  host-envelope facts (session_id / uuid) this env-less function does not have. */
+ *  projection is the history-read seam `projectNativeEventToSdkLine` below,
+ *  which supplies the host-envelope facts (session_id / uuid) this env-less
+ *  function does not have. */
 export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalFrame): AgentMessage | null {
   switch (event.type) {
     case 'init':
@@ -320,6 +323,38 @@ export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalF
       return null
     default:
       return assertNever(event, 'projectNativeEventToSdk')
+  }
+}
+
+// ── History read seam: durable neutral event → SDK RawLine (T13) ───────────
+
+/** Project one durable neutral session event to the SDK RawLine the host
+ *  history path consumes (cache.ts collectRenderable / reader.ts normalize +
+ *  paginateRenderable). This is the history-read translation point (design
+ *  "Two translation points live, two read paths"): the neutral v3 log is
+ *  parsed natively, and ONLY this boundary knows the SDK line shape.
+ *
+ *  The three message events (user/message, assistant/message, tool/result)
+ *  project to the exact legacy SDK line — the lossless inverse the v1/v2
+ *  format owns (`projectNeutralEventToLegacy`, pinned by the migration
+ *  round-trip): envelope identity (uuid / session_id / parent_tool_use_id /
+ *  timestamp), the `msg_<uuid>` id convention (or the migrated original SDK
+ *  message.id), the verbatim rawStopReason (or the packed-finish fallback),
+ *  usage buckets, isCompactSummary, and a migrated bare-string tool_result
+ *  content. `seq` rides along so the reader's compact floor can key on it.
+ *
+ *  Durable operational events (context / compact / skill / supplement /
+ *  descriptor / attachments / agent / turn-end / end-seed) are NOT renderable
+ *  transcript lines: the reader synthesizes the compact boundary + summary
+ *  occurrences itself and ignores the rest, so they project to null. */
+export function projectNativeEventToSdkLine(event: NativeSessionEvent, sessionId: string): RawLine | null {
+  switch (event.type) {
+    case 'user/message':
+    case 'assistant/message':
+    case 'tool/result':
+      return projectNeutralEventToLegacy(event, sessionId) as unknown as RawLine
+    default:
+      return null
   }
 }
 

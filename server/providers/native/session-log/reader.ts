@@ -27,11 +27,17 @@ import { resolve } from 'node:path'
 import type { NativeTranscriptPort } from '../ports.js'
 import type { HistoryEntry, HistoryPage, HistoryReadResult, RawLine } from '../../../../shared/transcript-format.js'
 import { nativeHistoryCache } from './cache.js'
-import { isSidechainEvent, parseEventLine, parseHeaderLine } from './format.js'
-import type { NativeCompactEvent } from './format.js'
+import { isSidechainEvent, NATIVE_SESSION_LOG_V3, parseEventLine, parseEventLineV3, parseHeaderLine } from './format.js'
+import { migrateEventToV3 } from './migration.js'
+import type { NativeSessionEvent } from '../vocabulary/session-event.js'
 import { nativeSessionLogPath } from './paths.js'
 import { repairRenderableLines } from './replay.js'
 import { publicNativeHistoryLine } from '../attachment-projection.js'
+
+/** The neutral compact boundary event (v3 canonical; a v1/v2 boundary is
+ *  migrated to this shape in memory). The reader's floor/summary synthesis
+ *  reads its `data` payload + envelope `seq`. */
+type NeutralCompactEvent = Extract<NativeSessionEvent, { type: 'session/compact' }>
 
 function emptyPage(): HistoryPage {
   return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
@@ -47,7 +53,7 @@ interface CompactMemo {
   /** File stat this compact verdict describes — the freshness key. */
   size: number
   mtimeMs: number
-  compact: NativeCompactEvent | null
+  compact: NeutralCompactEvent | null
 }
 
 /** The renderable-line cache deliberately stores only transcript frames
@@ -76,7 +82,7 @@ function touchCompact(key: string, entry: CompactMemo): CompactMemo {
  *  raw substring pre-filter keeps a boundary-free log from JSON-parsing every
  *  event just to find one, and the backwards `lastIndexOf` walk avoids
  *  materializing the whole line array. */
-function findLastCompact(text: string, id: string, path: string): NativeCompactEvent | null {
+function findLastCompact(text: string, id: string, path: string): NeutralCompactEvent | null {
   const headerEnd = text.indexOf('\n')
   const header = parseHeaderLine(JSON.parse(text.slice(0, headerEnd)), id, path)
   let end = text.lastIndexOf('\n')
@@ -91,7 +97,12 @@ function findLastCompact(text: string, id: string, path: string): NativeCompactE
     // numeric seq; skip anything else rather than feeding the header to the
     // event parser.
     if (typeof raw.seq !== 'number') continue
-    const event = parseEventLine(raw, raw.seq, id, path, header.v)
+    // Parse the boundary natively: v3 lines are neutral events; a v1/v2
+    // boundary is migrated to the same neutral shape (T13 — the read path no
+    // longer goes through the legacy projection).
+    const event = header.v === NATIVE_SESSION_LOG_V3
+      ? parseEventLineV3(raw, raw.seq, id, path)
+      : migrateEventToV3(parseEventLine(raw, raw.seq, id, path, header.v))
     if (event.type === 'session/compact') return event
   }
   return null
@@ -105,7 +116,7 @@ async function lastCompactEvent(
   id: string,
   size: number,
   mtimeMs: number,
-): Promise<NativeCompactEvent | null> {
+): Promise<NeutralCompactEvent | null> {
   const path = nativeSessionLogPath(stateDir, id)
   const key = resolve(path)
   const memo = compactMemo.get(key)
@@ -121,20 +132,20 @@ async function lastCompactEvent(
  *  matches the live compact seed (and the CLI's summary frames); `normalize`
  *  passes it through unchanged, and `isCompactSummary` distinguishes it from
  *  a real user prompt. */
-function compactSummaryLine(event: NativeCompactEvent): RawLine {
+function compactSummaryLine(event: NeutralCompactEvent): RawLine {
   return {
     type: 'user',
-    uuid: event.uuid,
-    timestamp: event.timestamp,
+    uuid: event.data.uuid,
+    timestamp: event.data.timestamp,
     isCompactSummary: true,
-    message: { role: 'user', content: event.text },
+    message: { role: 'user', content: event.data.text },
   }
 }
 
 /** Start the renderable stream at the LAST compact boundary: drop every line
  *  the summary supersedes and prepend the summary line in their place. A log
  *  with no compact is unchanged. */
-function floorAtCompact(lines: readonly RawLine[], compact: NativeCompactEvent | null): RawLine[] {
+function floorAtCompact(lines: readonly RawLine[], compact: NeutralCompactEvent | null): RawLine[] {
   if (!compact) return [...lines]
   return [
     compactSummaryLine(compact),
@@ -216,12 +227,12 @@ export async function readNativeHistoryPage(
  *  read projection synthesizes away (it renders only the summary). Ordered
  *  reconcile must see BOTH boundary and summary as distinct occurrences sharing
  *  the event uuid (spec §11 compact); frameKind tells them apart. */
-function compactBoundaryLine(event: NativeCompactEvent): RawLine {
+function compactBoundaryLine(event: NeutralCompactEvent): RawLine {
   return {
     type: 'system',
     subtype: 'compact_boundary',
-    uuid: event.uuid,
-    timestamp: event.timestamp,
+    uuid: event.data.uuid,
+    timestamp: event.data.timestamp,
   }
 }
 

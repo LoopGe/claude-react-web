@@ -360,8 +360,12 @@ describe('migrateToV3 — eager-at-open writer migration', () => {
     expect(text).toContain('"type":"assistant/message"')
     expect(text).toContain('"type":"tool/result"')
     expect(text.split('\n')[0]).toContain('"v":3')
-    // Model history is unchanged by the migration.
-    expect(historyFromEvents(after.events)).toEqual(historyFromEvents(events))
+    // Model history is unchanged by the migration (neutral replay of the v3
+    // baseline equals neutral replay of the migrated legacy corpus). Compare
+    // role/content shape: the compact-floor seed messages mint fresh ids per
+    // replay, which the wire projection never reads.
+    const shape = (messages: ReturnType<typeof historyFromEvents>) => messages.map((m) => ({ role: m.role, content: m.content }))
+    expect(shape(historyFromEvents(after.neutralEvents!))).toEqual(shape(historyFromEvents(events.map(migrateEventToV3))))
   })
 
   it('is idempotent: a second migration is a no-op and bytes are stable', async () => {

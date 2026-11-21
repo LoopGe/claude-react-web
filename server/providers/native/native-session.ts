@@ -38,10 +38,10 @@ import type {
   NativeDrainMode,
 } from './core-contract.js'
 import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
-import { createAssistantMessage, createToolResultMessage, createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
+import { createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
 import type { ContentBlock, FinishReason, TokenUsage } from './vocabulary/types.js'
-import type { AssistantStreamRecord } from './vocabulary/session-event.js'
+import type { AssistantStreamRecord, NativeSessionEvent } from './vocabulary/session-event.js'
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
 import type { NativeHostPorts } from './ports.js'
@@ -51,6 +51,7 @@ import { defaultFrameContext, type FrameContext, type Usage } from './frames.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import { buildForkSeed } from './session-log/fork.js'
 import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './session-log/replay.js'
+import { migrateEventToV3 } from './session-log/migration.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
 import type { NativeFileAttachment, NativeLogEvent, NativeSubagentDescriptorEvent, NativeTurnEndReason } from './session-log/format.js'
@@ -122,70 +123,13 @@ function containsStructuredFile(content: unknown[]): boolean {
     && (block as { type?: unknown }).type === 'file')
 }
 
-// ── Temporary legacy→neutral history bridge (T9; superseded by T13) ─────────
-// The durable log + replay still produce API-shaped messages (historyFromEvents,
-// the inline user pushes). The turn loop now consumes NEUTRAL RequestMessage[],
-// so these producers are bridged at the history boundary. The wire adapter
-// (projectNativeHistoryToWire) is the exact inverse: it regroups consecutive
-// first-class tool results, parses raw-JSON arguments and re-applies the
-// signed-thinking filter, so a bridged history projects to the identical API
-// request the legacy path sent (pinned by wire-projection.test.ts's round-trip).
-// T13 replaces this bridge with a native neutral replay that folds events
-// directly; until then this is the one legacy→neutral seam.
-
-/** One API-shaped assistant block → neutral. Reasoning keeps signature/redacted
- *  data verbatim (the wire adapter owns retention); tool_use.input becomes RAW
- *  JSON arguments (the wire adapter owns parsing). */
-function neutralAssistantBlock(block: Record<string, any>): ContentBlock {
-  switch (block.type) {
-    case 'text': return { type: 'text', text: block.text }
-    case 'thinking': return { type: 'reasoning', text: block.thinking, ...(block.signature !== undefined ? { signature: block.signature } : {}) }
-    case 'redacted_thinking': return { type: 'reasoning', text: '', redacted: true, data: block.data }
-    case 'tool_use': return { type: 'tool-call', id: brandString<'ToolCallId'>(block.id), name: block.name, arguments: JSON.stringify(block.input ?? {}) }
-    default: throw new Error(`native history bridge: unsupported assistant block type "${block.type}"`)
-  }
-}
-
-/** One API-shaped user/tool input block → neutral. Images discriminate
- *  attachment-first (store-backed ref) vs source (legacy base64) — T8 F1. A file
- *  occurrence keeps its FULL resolved attachment for the wire adapter. */
-function neutralInputBlock(block: Record<string, any>): ContentBlock {
-  switch (block.type) {
-    case 'text': return { type: 'text', text: block.text }
-    case 'image': return 'attachment' in block ? { type: 'image', attachment: block.attachment } : { type: 'image', source: block.source }
-    case 'file': return { type: 'file', attachment: block.attachment }
-    default: throw new Error(`native history bridge: unsupported input block type "${block.type}"`)
-  }
-}
-
-/** Bridge an API-shaped model-history array (historyFromEvents output or an
- *  inline user push) to neutral RequestMessage[]. A user message whose content
- *  is tool_result blocks splits into FIRST-CLASS role-tool messages (ungrouped);
- *  the wire adapter regroups consecutive ones into one request user message. */
-export function legacyMessagesToNeutral(messages: readonly unknown[]): RequestMessage[] {
-  const out: RequestMessage[] = []
-  for (const message of messages as Array<{ role: string; content: unknown }>) {
-    if (message.role === 'assistant') {
-      const content = (message.content as Record<string, any>[]).map(neutralAssistantBlock)
-      out.push(createAssistantMessage({ content, source: { provider: 'anthropic', model: '' } }))
-    } else if (message.role === 'user') {
-      const blocks = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : (message.content as Record<string, any>[])
-      if (blocks.length > 0 && blocks[0].type === 'tool_result') {
-        for (const block of blocks) {
-          out.push(createToolResultMessage({
-            callId: brandString<'ToolCallId'>(block.tool_use_id),
-            content: ((block.content ?? []) as Record<string, any>[]).map(neutralInputBlock),
-            isError: block.is_error ?? false,
-          }))
-        }
-      } else {
-        out.push(createUserMessage({ content: blocks.map(neutralInputBlock), source: { kind: 'user' } }))
-      }
-    } else {
-      throw new Error(`native history bridge: unsupported message role "${message.role}"`)
-    }
-  }
-  return out
+/** The canonical NEUTRAL events of a session log: the v3 baseline when present,
+ *  otherwise the lossless in-memory migration of the legacy read view (a
+ *  resumed v1/v2 log whose eager-at-open migration has not completed yet, or a
+ *  legacy-version fork seed). Replay and repair consume these directly — there
+ *  is no SDK→neutral history bridge (T13). */
+function neutralEventsOf(log: NativeSessionLog): NativeSessionEvent[] {
+  return log.neutralEvents ?? log.events.map(migrateEventToV3)
 }
 
 /** Neutral disjoint TokenUsage → the SDK Usage shape the session's live
@@ -929,7 +873,7 @@ export class NativeSession implements NativeSessionCore {
       resume: false,
       seed: { events: selection ? [context, selection] : [context], inheritedEventCount: 0, isSeeded: false },
     })
-    this.history.push(...legacyMessagesToNeutral(historyFromEvents([context])))
+    this.history.push(...historyFromEvents(neutralEventsOf(log)))
     if (selection) {
       // Context and selection share the initial synchronous seed write: the
       // next-turn profile is durable before createSession returns.
@@ -945,16 +889,16 @@ export class NativeSession implements NativeSessionCore {
   private openResumeLog(opts: NativeSessionOptions): NativeSessionLog {
     const log = NativeSessionLog.open({ stateDir: opts.stateDir, id: opts.id, cwd: opts.cwd, resume: true })
     const events = log.events.slice()
-    const { synthetic } = repairInterruptedTurn(events)
+    const { synthetic } = repairInterruptedTurn(neutralEventsOf(log))
     if (synthetic.length > 0) {
       for (const event of synthetic) log.append(event)
       log.append({ type: 'turn/end', reason: 'interrupted' })
       flushInBackground(log, opts.id, 'interrupted-turn repair')
     }
-    // `append` mutated log.events, so this is the original prefix plus the
-    // synthetic results (now seq-numbered). `turn/end` is bookkeeping and is
-    // skipped by `historyFromEvents`.
-    this.history.push(...legacyMessagesToNeutral(historyFromEvents(log.events)))
+    // `append` mutated the log's event streams, so this is the original prefix
+    // plus the synthetic results (now seq-numbered). `turn/end` is bookkeeping
+    // and is skipped by `historyFromEvents`.
+    this.history.push(...historyFromEvents(neutralEventsOf(log)))
     this.restoreAgentSelection(log.events, log)
     this.restoreUsage(events)
     return log
@@ -1002,7 +946,7 @@ export class NativeSession implements NativeSessionCore {
       resume: false,
       seed,
     })
-    this.history.push(...legacyMessagesToNeutral(historyFromEvents(seed.events)))
+    this.history.push(...historyFromEvents(neutralEventsOf(log)))
     this.restoreAgentSelection(seed.events, log)
     // Match what a restart of this child would see: its copied prefix's
     // usage-bearing `turn/end` events define last/total (the `{forked}` close
@@ -1295,6 +1239,11 @@ export class NativeSession implements NativeSessionCore {
         message: frame.message,
         stream: packAssistantStream(frame.message.content, time0, frame.stopReason),
         usage: frame.usage,
+        // The verbatim API stop reason rides the durable event so rare reasons
+        // the closed FinishReason union cannot express (stop_sequence,
+        // pause_turn, refusal, …) survive live → durable → legacy projection
+        // (T12 migration carries it; the live emitter populates it here).
+        ...(frame.stopReason !== null ? { rawStopReason: frame.stopReason } : {}),
       },
     })
     // Keep the flush promise so `requestPermission` can await it before any
@@ -1342,36 +1291,21 @@ export class NativeSession implements NativeSessionCore {
    *  repair would make a later restart place the results after later turns,
    *  producing permanently invalid history. */
   private repairUnansweredToolUses(): void {
-    const { synthetic } = repairInterruptedTurn(this.log.events)
+    const { synthetic } = repairInterruptedTurn(neutralEventsOf(this.log))
     if (synthetic.length === 0) return
     for (const event of synthetic) {
       this.log.append(event)
       // The live ring/UI must see the same synthetic result the disk replay
       // will show, with the SAME uuid so the seq store and a later restart do
-      // not render it twice. Each synthetic event carries exactly one
-      // tool_result block (repairInterruptedTurn mints one per unanswered id);
-      // emit it as a first-class neutral tool result keyed by the event uuid,
-      // which the host adapter projects back to the identical SDK user frame.
-      const block = event.message.content[0] as {
-        tool_use_id: string
-        content: Array<{ type: 'text'; text: string }>
-        is_error?: boolean
-      }
-      const callId = brandString<'ToolCallId'>(block.tool_use_id)
-      const liveFrame = freezeMessage({
-        role: 'tool',
-        id: brandString<'MessageId'>(event.uuid),
-        source: { kind: 'tool', callId },
-        toolCallId: callId,
-        content: block.content.map((b) => ({ type: 'text' as const, text: b.text })),
-        isError: block.is_error ?? false,
-      })
-      this.output.push({ type: 'enveloped-conversation', frame: liveFrame, parentToolUseId: null })
+      // not render it twice. The synthetic neutral tool/result message's minted
+      // id IS that durable uuid (the legacy projection stamps it), so emit the
+      // message itself as a first-class neutral tool result — the host adapter
+      // projects it back to the identical SDK user frame — and join it to the
+      // model history ungrouped (the wire adapter regroups consecutive ones).
+      const message = event.data.message
+      this.output.push({ type: 'enveloped-conversation', frame: message, parentToolUseId: null })
+      this.history.push(message)
     }
-    this.history.push(...legacyMessagesToNeutral([{
-      role: 'user',
-      content: synthetic.flatMap((event) => event.message.content),
-    }]))
   }
 
   /** Start a discovery pass and return it as the current `skillsReady`.
@@ -1543,8 +1477,10 @@ export class NativeSession implements NativeSessionCore {
         if (this.pendingDurableInitial !== pending) {
           throw new Error('initial message was withdrawn before persistence')
         }
-        const rawMessage = { role: 'user', content: persisted.content } as { role: 'user'; content: unknown[] }
-        initialMessages = legacyMessagesToNeutral([rawMessage])
+        // The persisted content is already neutral (adapter-projected input,
+        // PDF model forms assigned); wrap it as an identified user message for
+        // the turn loop — no SDK→neutral bridge (T13).
+        initialMessages = [createUserMessage({ content: persisted.content as ContentBlock[], source: { kind: 'user' } })]
         this.log.append({
           type: 'user',
           uuid: next.id!,
@@ -1743,7 +1679,7 @@ export class NativeSession implements NativeSessionCore {
     })
     this.syncAttachmentReferences()
     flushInBackground(this.log, this.opts.id, 'compact summary')
-    this.history.push(...legacyMessagesToNeutral([{ role: 'user', content: message.content as unknown[] }]))
+    this.history.push(createUserMessage({ content: message.content, source: { kind: 'user' } }))
   }
 
   getAttachmentOccurrences(): readonly NativeAttachmentOccurrence[] {
@@ -1821,7 +1757,7 @@ export class NativeSession implements NativeSessionCore {
     })
     await this.log.flush()
     this.syncAttachmentReferences()
-    this.history.push(...legacyMessagesToNeutral([{ role: 'user', content: [{ type: 'text', text: summary }] }]))
+    this.history.push(createUserMessage({ content: [{ type: 'text', text: summary }], source: { kind: 'user' } }))
   }
 
   /** Compaction-only projection of the durable raw-user → instruction pairs.
@@ -1876,10 +1812,8 @@ export class NativeSession implements NativeSessionCore {
     this.history.splice(
       0,
       this.history.length,
-      ...legacyMessagesToNeutral([
-        { role: 'user', content: [{ type: 'text', text: context }] },
-        { role: 'user', content: [{ type: 'text', text: summary }] },
-      ]),
+      createUserMessage({ content: [{ type: 'text', text: context }], source: { kind: 'user' } }),
+      createUserMessage({ content: [{ type: 'text', text: summary }], source: { kind: 'user' } }),
     )
     this.lastUsage = { input_tokens: 0, output_tokens: 0 }
   }

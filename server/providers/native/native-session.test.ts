@@ -15,13 +15,15 @@ import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
 import { historyFromEvents } from './session-log/replay.js'
-import { legacyMessagesToNeutral } from './native-session.js'
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import type { ProviderSessionHandle } from '../types.js'
-import { createToolResultMessage } from './vocabulary/message.js'
+import { createToolResultMessage, createUserMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
 import { readNativeHistoryEntries } from './session-log/reader.js'
 import type { NativeEventInput, NativeFileAttachment, NativeLogEvent } from './session-log/format.js'
+import { migrateEventToV3 } from './session-log/migration.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
+import { projectNativeHistoryToWire } from './wire/wire-projection.js'
 import { formatSupplementInstruction } from '../steering-format.js'
 import { AGENT_GUIDANCE } from './subagent.js'
 import { NativeSkillCatalog } from './skills.js'
@@ -454,6 +456,20 @@ interface LogLike {
 
 function logOf(session: unknown): LogLike {
   return (coreOf(session) as { log: LogLike }).log
+}
+
+/** The canonical neutral events of a session's log (v3 baseline, or the
+ *  lossless in-memory migration of the legacy read view). Neutral replay
+ *  (historyFromEvents) consumes these directly (T13). */
+function neutralLogEvents(session: unknown): NativeSessionEvent[] {
+  const log = logOf(session) as unknown as { neutralEvents: NativeSessionEvent[] | null; events: NativeLogEvent[] }
+  return log.neutralEvents ?? log.events.map((event) => migrateEventToV3(event))
+}
+
+/** Wire projection of a session's neutral replayed history — the API request
+ *  messages the legacy path sent (the round-trip oracle for request pins). */
+async function replayedWireMessages(session: unknown): Promise<unknown[]> {
+  return projectNativeHistoryToWire(historyFromEvents(neutralLogEvents(session)), {}, new AbortController().signal)
 }
 
 function runNestedAgent(session: unknown, cwd: string, input: Record<string, unknown>) {
@@ -1012,11 +1028,8 @@ describe('NativeSession', () => {
     expect(supplementEvents).toEqual([
       expect.objectContaining({ type: 'session/supplement', uuid: 'sup-1', text: wrapped }),
     ])
-    const rebuilt = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[]) as Array<{
-      role: string
-      content: Array<{ text?: string }>
-    }>
-    expect(rebuilt.at(-2)).toEqual({ role: 'user', content: [{ type: 'text', text: wrapped }] })
+    const rebuilt = historyFromEvents(neutralLogEvents(session))
+    expect((rebuilt.at(-2) as { content: ReadonlyArray<{ text?: string }> }).content).toEqual([{ type: 'text', text: wrapped }])
     expect(rebuilt.at(-1)?.role).toBe('assistant')
     // Not a renderable line: the transcript reader excludes it.
     await (coreOf(session) as unknown as { log: { flush: () => Promise<void> } }).log.flush()
@@ -1360,7 +1373,7 @@ describe('NativeSession', () => {
 
     // ...while the model history excludes them (the report itself still reaches
     // the parent as the Agent call's tool_result).
-    const mainHistory = historyFromEvents(events as unknown as NativeLogEvent[])
+    const mainHistory = historyFromEvents(neutralLogEvents(session))
     const mainAssistantBodies = JSON.stringify(
       (mainHistory as Array<{ role: string; content: unknown[] }>).filter((m) => m.role === 'assistant'),
     )
@@ -3274,12 +3287,12 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('second') as never)
     await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
     expect(requests).toHaveLength(1)
-    const replayed = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[])
+    const replayed = await replayedWireMessages(session)
     expect(requests[0]).toEqual(replayed.slice(0, -1))
 
     await session.destroy()
     const resumed = provider.createSession({ id: 'skill-expand-fail', cwd: dir, resume: 'skill-expand-fail' })
-    expect(neutralShape((coreOf(resumed) as unknown as { history: unknown[] }).history)).toEqual(neutralShape(legacyMessagesToNeutral(replayed)))
+    expect(neutralShape((coreOf(resumed) as unknown as { history: unknown[] }).history)).toEqual(neutralShape(historyFromEvents(neutralLogEvents(resumed))))
     await resumed.destroy()
   })
 
@@ -3865,12 +3878,12 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('second') as never)
     await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
     expect(requests).toHaveLength(1)
-    const replayed = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[])
+    const replayed = await replayedWireMessages(session)
     expect(requests[0].messages).toEqual(replayed.slice(0, -1))
 
     await session.destroy()
     const resumed = provider.createSession({ id: 'flush', cwd: dir, resume: 'flush' })
-    expect(neutralShape((coreOf(resumed) as unknown as { history: unknown[] }).history)).toEqual(neutralShape(legacyMessagesToNeutral(replayed)))
+    expect(neutralShape((coreOf(resumed) as unknown as { history: unknown[] }).history)).toEqual(neutralShape(historyFromEvents(neutralLogEvents(resumed))))
     await resumed.destroy()
   })
 
@@ -3905,7 +3918,7 @@ describe('NativeSession', () => {
     internals.mcp = undefined
     session.enqueueUserMessage(userMsg('second') as never)
     await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
-    const replayed = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[])
+    const replayed = await replayedWireMessages(session)
     expect(requests).toHaveLength(1)
     expect(requests[0].messages).toEqual(replayed.slice(0, -1))
     await session.destroy()
@@ -3935,7 +3948,7 @@ describe('NativeSession', () => {
     internals.currentProfile = null
     session.enqueueUserMessage(userMsg('second') as never)
     await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
-    const replayed = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[])
+    const replayed = await replayedWireMessages(session)
     expect(requests).toHaveLength(1)
     expect(requests[0].messages).toEqual(replayed.slice(0, -1))
     await session.destroy()
@@ -3961,7 +3974,7 @@ describe('NativeSession', () => {
 
     session.enqueueUserMessage(userMsg('second') as never)
     await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
-    const replayed = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[])
+    const replayed = await replayedWireMessages(session)
     expect(requests).toHaveLength(2)
     expect(requests[1].messages).toEqual(replayed.slice(0, -1))
     await session.destroy()
@@ -4974,10 +4987,10 @@ describe('NativeSession', () => {
     // The model history now starts from the captured context + summary; the
     // pre-compact conversation is gone from what the next request sends.
     const history = (coreOf(session) as unknown as { history: unknown[] }).history
-    expect(neutralShape(history)).toEqual(neutralShape(legacyMessagesToNeutral([
-      { role: 'user', content: [{ type: 'text', text: compactEvent.context }] },
-      { role: 'user', content: [{ type: 'text', text: 'SUMMARY' }] },
-    ])))
+    expect(neutralShape(history)).toEqual(neutralShape([
+      createUserMessage({ content: [{ type: 'text', text: compactEvent.context }], source: { kind: 'user' } }),
+      createUserMessage({ content: [{ type: 'text', text: 'SUMMARY' }], source: { kind: 'user' } }),
+    ]))
     expect(JSON.stringify(history)).not.toContain('OLD-PROMPT')
     // The context bar resets; the per-model billing totals do not.
     const usage = (await session.getContextUsage?.()) as { totalTokens: number }
@@ -5742,5 +5755,57 @@ describe('NativeSession', () => {
       // Rejected before the session log was opened.
       expect(loadNativeSessionLogSync(dir, 'sandboxed')).toBeNull()
     })
+  })
+})
+describe('live assistant emitter carries rawStopReason (T13)', () => {
+  /** The neutral events of a session log (v3 canonical, or the lossless
+   *  in-memory migration of a legacy view). */
+  function neutralEventsOf(session: unknown): NativeSessionEvent[] {
+    const log = logOf(session) as unknown as { neutralEvents: NativeSessionEvent[] | null; events: NativeLogEvent[] }
+    return log.neutralEvents ?? log.events.map((event) => migrateEventToV3(event))
+  }
+
+  it('persists the verbatim API stop reason on the neutral assistant/message event', async () => {
+    const dir = await tempDir('native-rawstop-')
+    const provider = providerWithStreamer([textTurn('done')], dir)
+    const session = provider.createSession({ id: 'rawstop', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('hi') as never)
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+    const assistant = neutralEventsOf(session).find((e) => e.type === 'assistant/message') as
+      Extract<NativeSessionEvent, { type: 'assistant/message' }>
+    expect(assistant).toBeDefined()
+    expect(assistant.data.rawStopReason).toBe('end_turn')
+    await session.destroy()
+  })
+
+  it('a rare stop reason survives live → durable → legacy projection verbatim', async () => {
+    const dir = await tempDir('native-rawstop-rare-')
+    // `stop_sequence` is outside the closed FinishReason union: the packed
+    // finish record maps it to `stop` (→ end_turn on reconstruction), so ONLY
+    // the verbatim rawStopReason can preserve it.
+    const rareTurn: CanonicalEvent[] = [
+      { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+      { kind: 'block_start', index: 0, block: { type: 'text' } },
+      { kind: 'block_delta', index: 0, delta: { type: 'text', text: 'partial' } },
+      { kind: 'block_end', index: 0 },
+      { kind: 'message_end', stopReason: 'stop_sequence', usage: { output_tokens: 5 } },
+    ]
+    const provider = providerWithStreamer([rareTurn], dir)
+    const session = provider.createSession({ id: 'rawstop-rare', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('hi') as never)
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+    const assistant = neutralEventsOf(session).find((e) => e.type === 'assistant/message') as
+      Extract<NativeSessionEvent, { type: 'assistant/message' }>
+    expect(assistant.data.rawStopReason).toBe('stop_sequence')
+    // The legacy read view reconstructs the EXACT rare reason, not the
+    // finish-record fallback.
+    const legacyAssistant = logOf(session).events.find((e) => e.type === 'assistant') as
+      { message: { stop_reason?: string | null } }
+    expect(legacyAssistant.message.stop_reason).toBe('stop_sequence')
+    await session.destroy()
   })
 })

@@ -725,13 +725,10 @@ export function parseEventLine(
   path: string,
   version: number = NATIVE_SESSION_LOG_VERSION,
 ): NativeLogEvent {
-  // v3 lines are neutral NativeSessionEvents. The legacy-typed readers
-  // (cache/reader) consume the legacy projection so the host history path is
-  // unchanged until T13 migrates them to neutral; the canonical neutral parse
-  // is `parseEventLineV3` (used by the v3 writer/loader).
-  if (version === NATIVE_SESSION_LOG_V3) {
-    return projectNeutralEventToLegacy(parseEventLineV3(raw, expectedSeq, sessionId, path), sessionId)
-  }
+  // v1/v2 legacy parser only. v3 lines are neutral NativeSessionEvents parsed
+  // by `parseEventLineV3`; the host history read path projects them to SDK
+  // lines through the adapter seam (T13 removed the transitional v3→legacy
+  // dispatch that used to live here).
   if (!isObject(raw)) corrupt(sessionId, path, 'event must be an object')
   if (typeof raw.seq !== 'number') corrupt(sessionId, path, 'event seq must be a number')
   if (raw.seq !== expectedSeq) {
@@ -1142,13 +1139,17 @@ export function eventRequiresV3(event: NativeSessionEvent): boolean {
   }
 }
 
-// ── neutral → legacy projection (v1/v2 compat + the v3 legacy read view) ─────
-// The live log stays v1/v2 until T12 migrates it and T13 migrates the readers,
-// so a neutral event appended to a v1/v2 log is projected to the legacy event
-// shape here (the session-log layer owns version compat — the CORE no longer
-// projects). v3-only facts (stream records, tool error/meta) are dropped by
-// this projection; the assistant stop_reason is reconstructed from the packed
-// finish record so the legacy turn-boundary signal survives.
+// ── neutral → legacy projection (v1/v2 write compat + the SDK-line shape) ───
+// A neutral event appended to a not-yet-migrated v1/v2 log is projected to the
+// legacy event shape here (the session-log layer owns version compat — the CORE
+// no longer projects). v3-only facts (stream records, tool error/meta) are
+// dropped by this projection; the assistant stop_reason is reconstructed from
+// the verbatim rawStopReason (or the packed finish record) so the legacy
+// turn-boundary signal survives. This is also the lossless inverse the host
+// adapter's history-read seam (projectNativeEventToSdkLine) reuses to project
+// the three durable message events to SDK RawLines, and the log's legacy read
+// view for the metadata consumers (usage / agent selection / attachment index /
+// subagent catalog) that phase 4 neutralizes.
 
 function parseToolInput(json: string): Record<string, unknown> {
   if (!json) return {}
@@ -1214,9 +1215,10 @@ function stopReasonOfStream(stream: readonly AssistantStreamRecord[]): string | 
 }
 
 /** Project a neutral v3 event to the legacy v1/v2 NativeLogEvent shape. Used
- *  both to write neutral appends into a not-yet-migrated v1/v2 log and to expose
- *  a legacy read view of a v3 log for the transitional consumers (T13 removes
- *  the latter). `sessionId` stamps the legacy event-level session_id. */
+ *  to write neutral appends into a not-yet-migrated v1/v2 log, to expose the
+ *  log's legacy read view for metadata consumers, and (for the three message
+ *  events) by the host adapter's history-read seam as the SDK RawLine shape.
+ *  `sessionId` stamps the legacy event-level session_id. */
 export function projectNeutralEventToLegacy(event: NativeSessionEvent, sessionId: string): NativeLogEvent {
   const seq = event.seq
   const timestamp = new Date(event.time).toISOString()
