@@ -205,6 +205,7 @@ function _narrowingPin(event: NativeSessionEvent): void {
     expectTypeOf(event.data.usage).toEqualTypeOf<TokenUsage | undefined>()
     expectTypeOf(event.data.interrupted).toEqualTypeOf<true | undefined>()
     expectTypeOf(event.data.rawStopReason).toEqualTypeOf<string | undefined>()
+    expectTypeOf(event.data.meta).toEqualTypeOf<JsonValue | undefined>()
   }
   if (event.type === 'tool/result') {
     expectTypeOf(event.data.message).toEqualTypeOf<ToolResultMessage>()

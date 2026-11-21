@@ -240,6 +240,12 @@ function migrateAssistant(event: NativeAssistantEvent): NativeSessionEvent {
     stream: packStream(content, time, msg.stop_reason),
     ...(usage !== undefined && usage !== null ? { usage: neutralUsageOf(usage) } : {}),
     ...(typeof msg.stop_reason === 'string' ? { rawStopReason: msg.stop_reason } : {}),
+    // The original SDK message.id is INDEPENDENT of the event uuid in old v1/v2
+    // logs (the pre-neutral frames.ts minted `msg_<random>` distinct from the
+    // event uuid). The neutral message id carries the host uuid; the verbatim
+    // SDK id rides opaque meta so the legacy projection reconstructs the ORIGINAL
+    // id, not a rebuilt `msg_<uuid>` (Goal-4 lossless identity).
+    ...(typeof msg.id === 'string' ? { meta: { legacyMessageId: msg.id } } : {}),
   }
   return {
     type: 'assistant/message',

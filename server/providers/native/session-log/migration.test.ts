@@ -78,7 +78,9 @@ function corpus(): NativeLogEvent[] {
     {
       type: 'assistant', uuid: 'a1', session_id: SID, parent_tool_use_id: null, timestamp: TS2,
       message: {
-        type: 'assistant', role: 'assistant', id: 'msg_a1', model: 'claude-x', stop_reason: 'tool_use',
+        // GENUINE old durable shape: the SDK message.id is INDEPENDENT of the
+        // event uuid (pre-neutral frames.ts minted `msg_<random>`; M ≠ uuid).
+        type: 'assistant', role: 'assistant', id: 'msg_M1', model: 'claude-x', stop_reason: 'tool_use',
         content: [
           { type: 'thinking', thinking: 'pondering', signature: 'sig-abc' },
           { type: 'redacted_thinking', data: 'redacted-blob' },
@@ -94,7 +96,7 @@ function corpus(): NativeLogEvent[] {
     },
     {
       type: 'assistant', uuid: 'a2', session_id: SID, parent_tool_use_id: null, timestamp: TS2,
-      message: { type: 'assistant', role: 'assistant', id: 'msg_a2', model: 'claude-x', stop_reason: 'stop_sequence', content: [{ type: 'text', text: 'halted' }], usage: { input_tokens: 1, output_tokens: 2 } },
+      message: { type: 'assistant', role: 'assistant', id: 'msg_M2', model: 'claude-x', stop_reason: 'stop_sequence', content: [{ type: 'text', text: 'halted' }], usage: { input_tokens: 1, output_tokens: 2 } },
     } as WithoutSeq<NativeLogEvent>,
     { type: 'session/skill', name: 'code-review', body: '# Code review\nDo the thing.', timestamp: TS2 },
     { type: 'session/supplement', uuid: 'sup1', text: '<system-reminder>steer</system-reminder>', timestamp: TS2 },
@@ -112,7 +114,7 @@ function corpus(): NativeLogEvent[] {
     { type: 'session/agent', name: 'reviewer', definition: agentDefinition, base: agentBase, timestamp: TS2 },
     {
       type: 'assistant', uuid: 'a3', session_id: SID, parent_tool_use_id: 'tool-1', timestamp: TS2,
-      message: { type: 'assistant', role: 'assistant', id: 'msg_a3', model: 'claude-x', stop_reason: null, content: [{ type: 'text', text: 'partial' }] },
+      message: { type: 'assistant', role: 'assistant', id: 'msg_M3', model: 'claude-x', stop_reason: null, content: [{ type: 'text', text: 'partial' }] },
     } as WithoutSeq<NativeLogEvent>,
     {
       type: 'user', uuid: 'u2', session_id: SID, parent_tool_use_id: 'tool-1', timestamp: TS2,
@@ -261,10 +263,45 @@ describe('migrateEventToV3 — lossless per-event projection', () => {
   })
 })
 
+describe('assistant SDK message.id independence (Goal-4 lossless identity)', () => {
+  it('preserves an original message.id INDEPENDENT of the event uuid (real old durable shape)', () => {
+    // Git-proven old shape: pre-neutral frames.ts assistantFrame minted
+    // `msg_<crypto.randomUUID()>` distinct from the event uuid (U ≠ M).
+    const event = {
+      seq: 0, type: 'assistant', uuid: 'U-independent', session_id: SID, parent_tool_use_id: null, timestamp: TS,
+      message: { type: 'assistant', role: 'assistant', id: 'msg_M-independent', model: 'claude-x', stop_reason: 'end_turn', content: [{ type: 'text', text: 'hi' }], usage: { input_tokens: 1, output_tokens: 1 } },
+    } as NativeLogEvent
+    const neutral = migrateEventToV3(event)
+    const data = (neutral as unknown as { data: { message: { id: string }; meta?: { legacyMessageId?: string } } }).data
+    // The neutral message id carries the host uuid; the verbatim SDK id rides meta.
+    expect(data.message.id).toBe('U-independent')
+    expect(data.meta?.legacyMessageId).toBe('msg_M-independent')
+    const projected = roundTrip(event) as { uuid: string; message: { id: string } }
+    expect(projected.uuid).toBe('U-independent')
+    // The ORIGINAL independent id survives — NOT a rebuilt msg_<uuid>.
+    expect(projected.message.id).toBe('msg_M-independent')
+    expect(projected.message.id).not.toBe('msg_U-independent')
+    expect(projected).toEqual(event)
+  })
+
+  it('new neutral-core logs (no meta) still project the msg_<uuid> convention', () => {
+    const neutral = {
+      type: 'assistant/message', seq: 0, time: 1000, parentToolUseId: null,
+      data: {
+        message: { id: 'U2', role: 'assistant', content: [{ type: 'text', text: 'x' }], source: { kind: 'model', provider: 'anthropic', model: 'm' } },
+        stream: [],
+      },
+    }
+    const projected = projectNeutralEventToLegacy(neutral as never, SID) as { message: { id: string } }
+    expect(projected.message.id).toBe('msg_U2')
+  })
+})
+
 describe('rare stop_reason raw carriage (T11 minor 1)', () => {
   const rareAssistant = (uuid: string, stopReason: string): NativeLogEvent => ({
     seq: 0, type: 'assistant', uuid, session_id: SID, parent_tool_use_id: null, timestamp: TS,
-    message: { type: 'assistant', role: 'assistant', id: `msg_${uuid}`, model: 'claude-x', stop_reason: stopReason, content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 1, output_tokens: 1 } },
+    // Independent SDK id (M ≠ uuid), the genuine old durable shape.
+    message: { type: 'assistant', role: 'assistant', id: `msg_indep_${uuid}`, model: 'claude-x', stop_reason: stopReason, content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 1, output_tokens: 1 } },
   } as NativeLogEvent)
 
   it.each(['stop_sequence', 'pause_turn', 'refusal', 'end_turn', 'tool_use', 'max_tokens'])(

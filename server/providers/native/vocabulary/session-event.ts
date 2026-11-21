@@ -82,8 +82,13 @@ export interface SessionEventMap {
    *  reasons (`stop_sequence`, `pause_turn`, `refusal`, …); this field preserves
    *  them so v1/v2→v3 migration is lossless and the legacy projection
    *  reconstructs the exact original stop_reason. Absent when the source
-   *  carried no stop reason (null — an interrupted turn). */
-  'assistant/message': { message: AssistantMessage; stream: AssistantStreamRecord[]; usage?: TokenUsage; interrupted?: true; rawStopReason?: string }
+   *  carried no stop reason (null — an interrupted turn). `meta` is adapter-owned
+   *  opaque JSON (the same carriage tool/result uses); migration stores the
+   *  original SDK `message.id` here (`legacyMessageId`) because old v1/v2 logs
+   *  carry an id INDEPENDENT of the event uuid (`msg_<M>`, M ≠ uuid — the
+   *  pre-neutral frames.ts minted a fresh random). The legacy projection
+   *  reconstructs that original id rather than rebuilding `msg_<uuid>`. */
+  'assistant/message': { message: AssistantMessage; stream: AssistantStreamRecord[]; usage?: TokenUsage; interrupted?: true; rawStopReason?: string; meta?: JsonValue }
   /** A first-class tool result (v1/v2 persisted these as tool_result blocks
    *  inside user content). `error` names a structured tool failure; `meta`
    *  is adapter-owned opaque JSON (SDK-only representation lives here, never

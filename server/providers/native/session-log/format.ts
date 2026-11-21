@@ -981,6 +981,7 @@ function parseV3AssistantMessage(data: JsonObject, sessionId: string, path: stri
     if (typeof data.rawStopReason !== 'string') corrupt(sessionId, path, 'assistant/message data.rawStopReason must be a string')
     out.rawStopReason = data.rawStopReason
   }
+  if (data.meta !== undefined) out.meta = data.meta as SessionEventMap['assistant/message']['meta']
   return out
 }
 
@@ -1230,6 +1231,10 @@ export function projectNeutralEventToLegacy(event: NativeSessionEvent, sessionId
       }
     case 'assistant/message': {
       const message = event.data.message
+      // A migrated old log carries its ORIGINAL SDK message.id in meta — it is
+      // independent of the event uuid (`msg_<M>`, M ≠ uuid). Reconstruct it
+      // verbatim; a new neutral-core log (no meta) uses the `msg_<uuid>` convention.
+      const legacyMessageId = (event.data.meta as { legacyMessageId?: unknown } | undefined)?.legacyMessageId
       return {
         seq, type: 'assistant', uuid: message.id, session_id: sessionId,
         parent_tool_use_id: parent, timestamp,
@@ -1240,7 +1245,7 @@ export function projectNeutralEventToLegacy(event: NativeSessionEvent, sessionId
           type: 'assistant',
           role: 'assistant',
           content: message.content.map(neutralAssistantBlockToSdk),
-          id: `msg_${message.id}`,
+          id: typeof legacyMessageId === 'string' ? legacyMessageId : `msg_${message.id}`,
           model: message.source.model,
           // The verbatim raw stop reason wins when carried (migration preserves
           // rare API reasons the closed FinishReason union cannot express);
