@@ -88,6 +88,7 @@ import { deleteDraftImagesForRemovedSession } from './state/inputHistoryImages'
 import { useAppOverlays } from './app/useAppOverlays'
 import { useAppScrollRestoration } from './app/useAppScrollRestoration'
 import { scrollNavShortcuts } from './app/scroll-nav-shortcuts'
+import { terminalToggleShortcut } from './app/terminal-shortcut'
 import type { ScrollNavigator } from './components/MessageList'
 import { useExitPresence } from './hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
@@ -3123,6 +3124,26 @@ export function App() {
   const stripPoppedIdsRef = useRef(new Set<string>())
 
   const focusedTaskControlSupported = sessions.find((session) => session.id === focusedId)?.taskControlSupported !== false
+  const focusedTerminalSupported = sessions.find((session) => session.id === focusedId)?.terminalSupported === true
+  // Ctrl+` belongs to the panel beneath, not to a blocking dialog: while any
+  // App-hosted true modal is open the terminal toggle is suppressed. Sibling
+  // panel overlays (settings/git/tasks/worktree/search/terminal) are NOT
+  // modals — opening the terminal replaces them via the overlay union, so
+  // they never appear here. resumeDialogOpen covers both resume flows (the
+  // global modal and the panel-targeted picker) — both are pickers.
+  const terminalModalOpen =
+    paletteOpen
+    || newSessionDialogOpen
+    || resumeDialogOpen
+    || helpOpen
+    || globalSettingsOpen
+    || uploadsDialogOpen
+    || structuredOpen
+    || showSnippetsManager
+    || updateNagDialog !== null
+    || pendingSnippetSave !== null
+    || stripDialogs.confirm !== null
+    || stripDialogs.prompt !== null
 
   const shortcuts = useMemo(
     () => [
@@ -3407,6 +3428,18 @@ export function App() {
             ? null
             : focusedId,
         ),
+        // Ctrl+` toggles the focused panel's terminal overlay. Platform-fixed
+        // ctrl (Cmd+` is macOS window cycling); allowInInput covers the xterm
+        // textarea. Routing + true-modal suppression live in the tested
+        // factory; the palette entry comes free from its description.
+        terminalToggleShortcut({
+          focusedId,
+          supported: focusedTerminalSupported,
+          terminalOpenFor,
+          modalOpen: terminalModalOpen,
+          onOpen: handleOpenTerminal,
+          onClose: handleCloseTerminal,
+        }),
         {
           combo: 'escape',
           handler: () => {
@@ -3477,7 +3510,7 @@ export function App() {
       // [handleCloseSettings, handleCloseGitPanel]), so the omission only
       // affects eslint's static analysis, not runtime behaviour.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, handleCloseWorktree, toggleSidebarCollapsed, focusedId, focusedTaskControlSupported, scrollNavRegistry, sideChat],
+      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, handleCloseWorktree, toggleSidebarCollapsed, focusedId, focusedTaskControlSupported, scrollNavRegistry, sideChat, focusedTerminalSupported, terminalOpenFor, terminalModalOpen, handleOpenTerminal, handleCloseTerminal],
     )
   useKeyboardShortcuts(shortcuts)
 

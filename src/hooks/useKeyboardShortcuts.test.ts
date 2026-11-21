@@ -126,6 +126,19 @@ describe('useKeyboardShortcuts', () => {
       expect(handler).toHaveBeenCalledTimes(2)
     })
 
+    it('ctrl+` fires while a textarea holds focus (allowInInput)', () => {
+      const handler = vi.fn()
+      renderHook(() => useKeyboardShortcuts([{ combo: 'ctrl+`', handler, allowInInput: true }]))
+      const textarea = document.createElement('textarea')
+      document.body.appendChild(textarea)
+      textarea.focus()
+      const event = new KeyboardEvent('keydown', { key: '`', ctrlKey: true })
+      Object.defineProperty(event, 'target', { value: textarea })
+      window.dispatchEvent(event)
+      expect(handler).toHaveBeenCalledOnce()
+      document.body.removeChild(textarea)
+    })
+
     it('ctrl+` does not fire during IME composition (isComposing)', () => {
       const handler = vi.fn()
       renderHook(() => useKeyboardShortcuts([{ combo: 'ctrl+`', handler }]))

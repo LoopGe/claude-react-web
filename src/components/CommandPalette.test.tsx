@@ -96,4 +96,34 @@ describe('CommandPalette', () => {
     expect(shortcuts[1].handler).toHaveBeenCalled()
     expect(onClose).toHaveBeenCalled()
   })
+
+  it('lists a described ctrl+` shortcut as a command with the formatted combo hint', async () => {
+    // The terminal toggle's palette entry comes free from its description;
+    // the hint must render the platform-fixed ctrl token, not raw lowercase.
+    const platformDescriptor = Object.getOwnPropertyDescriptor(navigator, 'platform')
+    Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true })
+    try {
+      const toggle = shortcut('Toggle terminal', 'ctrl+`')
+      render(
+        <CommandPalette
+          open
+          onClose={vi.fn()}
+          shortcuts={[toggle]}
+          sessions={[]}
+          onSelectSession={vi.fn()}
+          onSelectMessage={vi.fn()}
+        />,
+      )
+      await waitFor(() => {
+        const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-palette-option]'))
+        expect(rows).toHaveLength(1)
+        expect(rows[0].textContent).toContain('Toggle terminal')
+        expect(rows[0].querySelector('.palette-item-hint')?.textContent).toBe('Ctrl+`')
+      })
+      fireEvent.click(document.querySelector('[data-palette-option]')!)
+      expect(toggle.handler).toHaveBeenCalled()
+    } finally {
+      if (platformDescriptor) Object.defineProperty(navigator, 'platform', platformDescriptor)
+    }
+  })
 })

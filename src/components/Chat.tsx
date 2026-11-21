@@ -289,8 +289,8 @@ interface Props {
   terminalOpen?: boolean
   onCloseTerminal?: () => void
   /** Open this panel's terminal overlay. Consumed by the composer terminal
-   *  button + Ctrl+` shortcut (wired in Task 11); declared here so the
-   *  App → ChatPanel → Chat seam is complete. */
+   *  button (shown while a shell is running); the Ctrl+` shortcut toggles the
+   *  same overlay from App's overlay union. */
   onOpenTerminal?: (sessionId: string) => void
   /** When true, render the Settings overlay on top of this chat panel. */
   settingsOpen?: boolean
@@ -489,7 +489,7 @@ export const Chat = memo(function Chat({
   worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, onCancelHandoff, handoffing, settingsTabRequest, messageJumpTarget, searchOpen, onOpenSearch, onCloseSearch, terminalOpen, onCloseTerminal, focused, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, composerControls, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, onCancelHandoff, handoffing, settingsTabRequest, messageJumpTarget, searchOpen, onOpenSearch, onCloseSearch, terminalOpen, onCloseTerminal, onOpenTerminal, focused, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, composerControls, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -520,6 +520,13 @@ export const Chat = memo(function Chat({
   if (terminalOpen && !terminalEverOpened) setTerminalEverOpened(true)
   const terminalSupported = session.terminalSupported === true
   const terminalChannel = useTerminalChannel(session.id, terminalSupported && terminalEverOpened)
+  // Composer terminal entry: the minimal boolean lift of the channel's live
+  // status. State transitions already re-render this Chat (the hook's host);
+  // output churn never touches React state, so the memoized Composer only
+  // re-renders when the running fact itself flips. Pre-first-open the channel
+  // is inactive (state null) — no running terminal exists to advertise, so
+  // the button's absence then is correct.
+  const terminalRunning = terminalChannel.state?.status === 'running'
   // Closing the terminal (X / backdrop / replaced by a sibling overlay) returns
   // focus to the composer. Keyed on the open prop — not onClose — so a sibling
   // overlay replacing the terminal also restores focus. The focus trap cannot
@@ -1002,6 +1009,9 @@ export const Chat = memo(function Chat({
    *  Composer (which carries the tasks button now) doesn't re-render on
    *  every Chat render. */
   const openTasksPanel = useCallback(() => onOpenTasksPanel?.(session.id), [onOpenTasksPanel, session.id])
+  /** Open this panel's terminal overlay (composer terminal button). Same
+   *  stable-callback contract as openTasksPanel for the memoized Composer. */
+  const openTerminal = useCallback(() => onOpenTerminal?.(session.id), [onOpenTerminal, session.id])
 
   // 鈹€鈹€ Subagent overlay state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // Stack of toolUseIds: empty = closed; otherwise the last entry is the
@@ -2488,6 +2498,8 @@ export const Chat = memo(function Chat({
               onOpenTasks={openTasksPanel}
               taskCount={indicatorTaskCount}
               totalTaskCount={taskCount}
+              onOpenTerminal={onOpenTerminal ? openTerminal : undefined}
+              terminalRunning={terminalRunning}
             />
           </div>,
           dockSlot,
