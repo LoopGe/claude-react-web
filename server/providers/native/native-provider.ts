@@ -15,7 +15,7 @@ import { NativeMcpConnections } from './mcp/connections.js'
 import { SharedRegistry } from './mcp/shared-registry.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
 import { NativeSession } from './native-session.js'
-import { wrapNativeCore, type NativeHostCallbacks } from '../native-host-frame-adapter.js'
+import { wrapNativeCore, projectFileBlocksForProvider, type NativeHostCallbacks } from '../native-host-frame-adapter.js'
 import { NativeModelContextResolver } from './model-context.js'
 import { AnthropicModelDiscovery } from './model-discovery.js'
 import { AGENT_GUIDANCE } from './subagent.js'
@@ -44,7 +44,6 @@ import type { UploadStore } from '../../upload-store.js'
 import { NativeAttachmentReferenceIndex } from './attachment-reference-index.js'
 import { PdfBudgetLedger, PreparedPdfStore } from './pdf-documents.js'
 import { createAttachmentReadTool } from './tools/index.js'
-import { projectFileBlocksForProvider } from '../../agent-message.js'
 import { extractToolProfile } from '../../../shared/tool-profile.js'
 
 import { NativeReadState } from './read-state.js'
@@ -54,8 +53,12 @@ const STATIC_TOOLS: ToolDef[] = [grepTool, globTool, lsTool, notebookEditTool, a
 /** The pre-fidelity (legacy text-only) input boundary: structured file blocks
  *  become handle text BEFORE the neutral input projection, so the core receives
  *  text-only messages. Applied through wrapNativeCore's projectInput hook; the
- *  pairing/lease bookkeeping still keys on the original host message. T14
- *  unifies this with the fidelity path through the adapter. */
+ *  pairing/lease bookkeeping still keys on the original host message. Both this
+ *  and the fidelity path compose the SAME neutral core + host adapter — the
+ *  fidelity flag only selects whether the input is pre-projected here (and
+ *  whether the attachment-read tool is installed), never a different session
+ *  class. The projection itself is adapter-owned (re-exported from the host
+ *  frame adapter, the boundary home). */
 const legacyInputProjection = { projectInput: projectFileBlocksForProvider }
 
 /** The Agent tool's prompt section. The text is the tool def's own guidance
