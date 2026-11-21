@@ -14,6 +14,13 @@
 // as user-input-priority, which xterm parses synchronously (the documented
 // user-input echo path). We never subscribe to the headless onData, so the empty
 // input event has no effect beyond setting that priority flag.
+//
+// Persistence is LAZY (I3): the output path only marks the store dirty with a
+// producer closure; the O(scrollback) serialize runs when the debounce timer
+// fires or flush()/snapshot() is called — never per chunk (under sustained
+// flood the trailing debounce never fires, so a per-chunk serialize would be
+// computed and discarded every time). The invariant above is untouched: parse
+// stays synchronous, and every serialize reads the already-parsed screen.
 
 import { randomUUID } from 'node:crypto'
 import { basename } from 'node:path'
@@ -234,7 +241,10 @@ export class TerminalSession {
 
     // Spawn succeeded: release the previous screen (the restored seed or an
     // exited generation's) before replacing it. A failed spawn above leaves
-    // the old headless and restored state untouched.
+    // the old headless and restored state untouched. Any pending persistence
+    // producer reads the OLD generation's live serializer, so cancel it
+    // before the dispose (a fired producer would serialize a dead screen).
+    this.store.cancel(this.sessionId)
     this.headless?.dispose()
     this.pty = pty
     this.headless = term
@@ -268,11 +278,11 @@ export class TerminalSession {
       term.input('')
       term.write(carry + chunk)
       const s = ++this.seq
-      this.store.schedule(this.sessionId, {
+      this.store.schedule(this.sessionId, () => ({
         screen: ser.serialize(),
         state: this.state(),
         savedAt: Date.now(),
-      })
+      }))
       this.events.onOutput(id, s, chunk)
     }
 
@@ -290,11 +300,13 @@ export class TerminalSession {
       term.input('')
       term.write(data)
       const s = ++this.seq
-      this.store.schedule(this.sessionId, {
+      // Lazy persistence: mark dirty only — the producer serializes the
+      // live screen when the debounce fires (I3; no per-chunk serialize).
+      this.store.schedule(this.sessionId, () => ({
         screen: ser.serialize(),
         state: this.state(),
         savedAt: Date.now(),
-      })
+      }))
       this.events.onOutput(id, s, data)
     })
     pty.onExit(({ exitCode }) => {
@@ -309,11 +321,11 @@ export class TerminalSession {
       // emitter where it would crash the server. The route-driven flush() still
       // propagates to its caller, which can surface a 500.
       try {
-        this.store.schedule(this.sessionId, {
+        this.store.schedule(this.sessionId, () => ({
           screen: ser.serialize(),
           state: this.state(),
           savedAt: Date.now(),
-        })
+        }))
         this.store.flush(this.sessionId)
       } catch (err) {
         log.error(`[${this.sessionId}] exit screen persistence failed: ${(err as Error).message}`)
@@ -365,11 +377,20 @@ export class TerminalSession {
   }
 
   /** Unload/shutdown path: kill the tree but KEEP persistence (a later restart
-   *  restores the screen). No state event — the holder is discarding this slot.
-   *  flush() writes any pending screen afterwards. Same restored-seed guard as
-   *  close(): a never-created restored slot still releases its headless. */
+   *  restores the screen). No state event — the holder is discarding this slot
+   *  (the manager pushes the idle heal frame itself). The pending screen is
+   *  flushed BEFORE killAndClear: the lazy producer reads the live serializer,
+   *  which the clear releases. Best-effort like the exit path — dispose runs
+   *  from caller-less contexts (GC force-unload, shutdown), so a write failure
+   *  logs, never throws. Same restored-seed guard as close(): a never-created
+   *  restored slot still releases its headless. */
   dispose(): void {
     if (this.status === 'idle' && this.headless === null) return
+    try {
+      this.flush()
+    } catch (err) {
+      log.error(`[${this.sessionId}] terminal screen flush on dispose failed: ${(err as Error).message}`)
+    }
     this.killAndClear()
     this.status = 'idle'
     this.exitCode = undefined

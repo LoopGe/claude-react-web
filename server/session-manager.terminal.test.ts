@@ -378,11 +378,11 @@ describe('SessionManager embedded terminal', () => {
     await sm.sleep(info.id)
     // A prior server lifetime's screen: persisted file, no live slot.
     const seed = new TerminalScreenStore(dir)
-    seed.schedule(info.id, {
+    seed.schedule(info.id, () => ({
       screen: seedScreen('prior life', 80, 24),
       state: { status: 'running', shell: 'cmd.exe', cwd, cols: 80, rows: 24 },
       savedAt: Date.now(),
-    })
+    }))
     seed.flush(info.id)
     expect(existsSync(fileFor(info.id))).toBe(true)
     await sm.delete(info.id)
@@ -520,11 +520,11 @@ describe('SessionManager embedded terminal', () => {
     const info = await sm.create({ cwd, model: 'test-model' })
     await sm.sleep(info.id)
     const seed = new TerminalScreenStore(dir)
-    seed.schedule(info.id, {
+    seed.schedule(info.id, () => ({
       screen: seedScreen('restored history line', 80, 24),
       state: { status: 'running', shell: 'cmd.exe', cwd, cols: 80, rows: 24 },
       savedAt: Date.now(),
-    })
+    }))
     seed.flush(info.id)
 
     const sub = sm.subscribeTerminal(info.id)!
@@ -549,5 +549,102 @@ describe('SessionManager embedded terminal', () => {
     const after = metrics.snapshot().counters
     expect((after['terminal_spawn_total'] ?? 0) - (before['terminal_spawn_total'] ?? 0)).toBe(1)
     expect((after['terminal_output_bytes'] ?? 0) - (before['terminal_output_bytes'] ?? 0)).toBeGreaterThan(0)
+  })
+
+  // ── I2 + I5: the terminalRunning lifecycle fact ─────────────────────
+
+  /** Collect global session events for one session id. */
+  function collectUpdates(id: string) {
+    const global = sm.subscribeGlobal()
+    const updates: Array<{ terminalRunning?: boolean }> = []
+    const done = (async () => {
+      for await (const ev of global.iterable) {
+        if (ev.kind === 'update' && ev.session.id === id) updates.push(ev.session)
+      }
+    })()
+    return {
+      updates,
+      /** The latest broadcast terminalRunning value (undefined = none yet). */
+      latest: () => updates.at(-1)?.terminalRunning,
+      stop: async () => {
+        global.unsubscribe()
+        await done
+      },
+    }
+  }
+
+  it('(j) session-update broadcasts terminalRunning on spawn / exit / close', async () => {
+    const info = await sm.create({ cwd, model: 'test-model' })
+    const feed = collectUpdates(info.id)
+    expect(feed.latest()).toBeUndefined()
+
+    const { terminalId } = await startTerminal(info.id)
+    expect(feed.latest()).toBe(true)
+    const spawns = feed.updates.length
+
+    // Attach while running: no transition, no extra terminal lifecycle fact
+    // (other metadata churn may broadcast, but the value stays true).
+    sm.terminalCreate(info.id, 80, 24)
+    expect(feed.latest()).toBe(true)
+
+    // Output churn is NOT a lifecycle event: a command round-trip broadcasts
+    // no session-update at all (the render-isolation contract).
+    const beforeOutput = feed.updates.length
+    sm.terminalInput(info.id, terminalId, 'echo quiet\r')
+    await waitUntil(() => sm.terminalSnapshot(info.id).screen.includes('quiet'), 15000, 'echo output')
+    expect(feed.updates.length).toBe(beforeOutput)
+
+    sm.terminalInput(info.id, terminalId, 'exit\r')
+    await waitUntil(() => sm.terminalSnapshot(info.id).state.status === 'exited', 15000, 'shell exit')
+    await waitUntil(() => feed.latest() === false, 5000, 'exit lifecycle broadcast')
+    expect(feed.updates.length).toBeGreaterThan(spawns)
+
+    sm.terminalClose(info.id)
+    await waitUntil(() => feed.latest() === false, 5000, 'close lifecycle broadcast')
+    await feed.stop()
+  })
+
+  it('(j2) the dormant projection carries terminalRunning (no live Query needed)', async () => {
+    const info = await sm.create({ cwd, model: 'test-model' })
+    await sm.sleep(info.id)
+    const feed = collectUpdates(info.id)
+    expect(sm.get(info.id).terminalRunning).toBe(false)
+
+    await startTerminal(info.id)
+    // Dormant session, live shell: the indicator reads true from the meta
+    // projection, and the transition broadcast reaches global subscribers.
+    expect(sm.get(info.id).terminalRunning).toBe(true)
+    expect(sm.get(info.id).running).toBe(false)
+    expect(feed.latest()).toBe(true)
+    expect(sm.list().find((s) => s.id === info.id)?.terminalRunning).toBe(true)
+
+    sm.terminalClose(info.id)
+    expect(sm.get(info.id).terminalRunning).toBe(false)
+    await waitUntil(() => feed.latest() === false, 5000, 'close lifecycle broadcast')
+    expect(mockHandles).toHaveLength(1)
+    await feed.stop()
+  })
+
+  it('(j3) dispose pushes an idle state frame BEFORE ending the channel and broadcasts terminalRunning=false', async () => {
+    const info = await sm.create({ cwd, model: 'test-model' })
+    const sub = sm.subscribeTerminal(info.id)!
+    const frames: TerminalChannelFrame[] = []
+    const done = (async () => {
+      for await (const frame of sub.iterable) frames.push(frame)
+    })()
+    const feed = collectUpdates(info.id)
+
+    const { pid } = await startTerminal(info.id)
+    expect(feed.latest()).toBe(true)
+
+    // The I5 path: a server-side channel end (unload / GC force-unload)
+    // must heal attached viewers instead of freezing them at 'running'.
+    await sm.unload(info.id)
+    await done // the channel ended — the idle frame must have landed FIRST
+    const last = frames.at(-1)
+    expect(last).toMatchObject({ kind: 'terminal-state', terminalId: '', state: { status: 'idle' } })
+    await waitUntil(() => feed.latest() === false, 5000, 'dispose lifecycle broadcast')
+    await waitUntil(() => !alive(pid), 5000, 'shell death')
+    await feed.stop()
   })
 })

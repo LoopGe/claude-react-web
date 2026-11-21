@@ -44,7 +44,7 @@ describe('TerminalScreenStore', () => {
 
   it('persists after the full 2000ms trailing debounce, not 1ms before', () => {
     const d = data('hello\r\n$ ')
-    store.schedule('s1', d)
+    store.schedule('s1', () => d)
     vi.advanceTimersByTime(1999)
     expect(existsSync(fileFor('s1'))).toBe(false)
     vi.advanceTimersByTime(1)
@@ -52,10 +52,10 @@ describe('TerminalScreenStore', () => {
   })
 
   it('coalesces two schedules within the window into ONE write of the last data', () => {
-    store.schedule('s1', data('first'))
+    store.schedule('s1', () => data('first'))
     vi.advanceTimersByTime(1000)
     expect(existsSync(fileFor('s1'))).toBe(false)
-    store.schedule('s1', data('second'))
+    store.schedule('s1', () => data('second'))
     // t=2000: the FIRST schedule's original deadline — the window restarted,
     // so no write may land here.
     vi.advanceTimersByTime(1000)
@@ -71,7 +71,7 @@ describe('TerminalScreenStore', () => {
 
   it('flush writes immediately and cancels the pending timer', () => {
     const d = data('flushed')
-    store.schedule('s1', d)
+    store.schedule('s1', () => d)
     store.flush('s1')
     // Written synchronously — no timer advance needed.
     expect(readFileSync(fileFor('s1'), 'utf8')).toBe(JSON.stringify(d, null, 2))
@@ -87,7 +87,7 @@ describe('TerminalScreenStore', () => {
 
   it('load round-trips persisted data; an absent file loads null', () => {
     const d = data('round trip', 123)
-    store.schedule('s1', d)
+    store.schedule('s1', () => d)
     store.flush('s1')
     expect(store.load('s1')).toEqual(d)
     // A fresh store instance (server restart) reads the same file.
@@ -115,25 +115,70 @@ describe('TerminalScreenStore', () => {
     mkdirSync(fileFor('s1'), { recursive: true })
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
-      store.schedule('s1', data('doomed'))
+      store.schedule('s1', () => data('doomed'))
       // Fake timers run the callback synchronously, so an uncaught write
       // error would propagate out of advanceTimersByTime and fail here.
       expect(() => vi.advanceTimersByTime(TERMINAL_SCREEN_DEBOUNCE_MS)).not.toThrow()
       expect(errorSpy).toHaveBeenCalledTimes(1)
       expect(errorSpy.mock.calls[0][0]).toBe('[terminal]')
       // The caller-driven synchronous path still surfaces the failure.
-      store.schedule('s1', data('doomed'))
+      store.schedule('s1', () => data('doomed'))
       expect(() => store.flush('s1')).toThrow()
     } finally {
       errorSpy.mockRestore()
     }
   })
 
+  it('the producer runs at WRITE time, not schedule time (lazy persistence, I3)', () => {
+    let screen = 'first'
+    let calls = 0
+    store.schedule('s1', () => {
+      calls++
+      return data(screen)
+    })
+    // Scheduling alone never serializes — the output path only marks dirty.
+    expect(calls).toBe(0)
+    vi.advanceTimersByTime(1000)
+    screen = 'second'
+    store.schedule('s1', () => {
+      calls++
+      return data(screen)
+    })
+    expect(calls).toBe(0)
+    // The fire-time producer reads the CURRENT screen, not schedule-time data.
+    vi.advanceTimersByTime(TERMINAL_SCREEN_DEBOUNCE_MS)
+    expect(calls).toBe(1)
+    expect(JSON.parse(readFileSync(fileFor('s1'), 'utf8'))).toEqual(data('second'))
+  })
+
+  it('flush produces synchronously from live state', () => {
+    let screen = 'before'
+    store.schedule('s1', () => data(screen))
+    screen = 'at-flush'
+    store.flush('s1')
+    expect(JSON.parse(readFileSync(fileFor('s1'), 'utf8'))).toEqual(data('at-flush'))
+  })
+
+  it('cancel drops the pending producer without writing', () => {
+    let calls = 0
+    store.schedule('s1', () => {
+      calls++
+      return data('doomed')
+    })
+    store.cancel('s1')
+    vi.advanceTimersByTime(TERMINAL_SCREEN_DEBOUNCE_MS * 2)
+    expect(calls).toBe(0)
+    expect(existsSync(fileFor('s1'))).toBe(false)
+    // Cancelling again / cancelling an unknown session is a no-op.
+    expect(() => store.cancel('s1')).not.toThrow()
+    expect(() => store.cancel('never')).not.toThrow()
+  })
+
   it('remove deletes the file and cancels a pending timer', () => {
-    store.schedule('s1', data('old'))
+    store.schedule('s1', () => data('old'))
     store.flush('s1')
     expect(existsSync(fileFor('s1'))).toBe(true)
-    store.schedule('s1', data('new'))
+    store.schedule('s1', () => data('new'))
     store.remove('s1')
     expect(existsSync(fileFor('s1'))).toBe(false)
     // The cancelled pending write must not resurrect the file.

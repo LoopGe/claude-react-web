@@ -518,15 +518,20 @@ export const Chat = memo(function Chat({
   // latch so panels that never open a terminal carry no terminal WS traffic.
   const [terminalEverOpened, setTerminalEverOpened] = useState(false)
   if (terminalOpen && !terminalEverOpened) setTerminalEverOpened(true)
-  const terminalSupported = session.terminalSupported === true
+  // Three-state capability collapse, same convention as taskControlSupported
+  // (`!== false` everywhere — App's shortcut gate included): the server
+  // always stamps a boolean, and an unknown/undefined capability on a legacy
+  // frame retains the Claude-compatible UI.
+  const terminalSupported = session.terminalSupported !== false
   const terminalChannel = useTerminalChannel(session.id, terminalSupported && terminalEverOpened)
-  // Composer terminal entry: the minimal boolean lift of the channel's live
-  // status. State transitions already re-render this Chat (the hook's host);
-  // output churn never touches React state, so the memoized Composer only
-  // re-renders when the running fact itself flips. Pre-first-open the channel
-  // is inactive (state null) — no running terminal exists to advertise, so
-  // the button's absence then is correct.
-  const terminalRunning = terminalChannel.state?.status === 'running'
+  // Composer terminal entry: the SessionInfo lifecycle fact, broadcast on
+  // every terminal transition (spawn / exit / close / dispose). It works
+  // BEFORE first open, after a reload, and in bystander tabs — none of which
+  // have a terminal channel subscription (the latch above gates that on
+  // first open). The overlay itself keeps reading the channel's live state.
+  // Lifecycle-only: session-update never fires per output chunk, so the
+  // memoized Composer only re-renders when the running fact itself flips.
+  const terminalRunning = session.terminalRunning === true
   // Closing the terminal (X / backdrop / replaced by a sibling overlay) returns
   // focus to the composer. Keyed on the open prop — not onClose — so a sibling
   // overlay replacing the terminal also restores focus. The focus trap cannot

@@ -11,6 +11,15 @@
 // process-fatal; flush() surfaces write errors to its caller. load() guards
 // corrupt JSON — the proven failure mode this store exists to survive — by
 // treating it as absent with one warn.
+//
+// Lazy production (I3): schedule() takes a PRODUCER, not a finished payload.
+// Serializing the headless screen is O(scrollback) (~4 ms at 120x30, ~41 ms
+// at 500x200 — measured), and under sustained output the trailing debounce
+// never fires, so an eager per-chunk serialize is computed and discarded on
+// every chunk. The producer runs only when the debounce timer fires or
+// flush() is called, reading the LIVE screen at that moment — one serialize
+// per quiet window instead of one per chunk. The caller must cancel() the
+// pending producer before releasing the generation it reads.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -29,7 +38,7 @@ export interface PersistedTerminal {
 }
 
 interface PendingWrite {
-  data: PersistedTerminal
+  produce: () => PersistedTerminal
   timer: NodeJS.Timeout
 }
 
@@ -41,14 +50,16 @@ export class TerminalScreenStore {
     this.dir = join(stateDir, 'terminal-screens')
   }
 
-  /** Trailing debounce: replaces any pending data for the session and
-   *  restarts the window, so only the last screen of a burst is written. */
-  schedule(sessionId: string, data: PersistedTerminal): void {
-    this.cancelPending(sessionId)
+  /** Trailing debounce: replaces any pending producer for the session and
+   *  restarts the window, so only the last screen of a burst is written.
+   *  The producer runs at WRITE time (timer fire or flush), never here —
+   *  the output path only marks the session dirty. */
+  schedule(sessionId: string, produce: () => PersistedTerminal): void {
+    this.cancel(sessionId)
     const timer = setTimeout(() => {
       this.pending.delete(sessionId)
       try {
-        this.write(sessionId, data)
+        this.write(sessionId, produce())
       } catch (err) {
         // Best-effort persistence (the spec accepts the crash window): a
         // failed debounced write is logged loudly but must not crash the
@@ -59,16 +70,18 @@ export class TerminalScreenStore {
     }, TERMINAL_SCREEN_DEBOUNCE_MS)
     // A pending persistence write must not keep the process alive.
     timer.unref()
-    this.pending.set(sessionId, { data, timer })
+    this.pending.set(sessionId, { produce, timer })
   }
 
-  /** Cancel the timer and write the pending data synchronously (shell-exit
-   *  and graceful-shutdown paths). No-op when nothing is pending. */
+  /** Cancel the timer and produce + write the pending screen synchronously
+   *  (shell-exit and graceful-shutdown paths). No-op when nothing is
+   *  pending. The producer reads live state, so callers must flush BEFORE
+   *  releasing the generation it serializes. */
   flush(sessionId: string): void {
     const entry = this.pending.get(sessionId)
     if (!entry) return
-    this.cancelPending(sessionId)
-    this.write(sessionId, entry.data)
+    this.cancel(sessionId)
+    this.write(sessionId, entry.produce())
   }
 
   /** The persisted screen, or null when absent or corrupt. Corrupt JSON is
@@ -88,19 +101,23 @@ export class TerminalScreenStore {
 
   /** Delete the file and cancel any pending write so it cannot resurrect. */
   remove(sessionId: string): void {
-    this.cancelPending(sessionId)
+    this.cancel(sessionId)
     rmSync(this.fileFor(sessionId), { force: true })
   }
 
-  private fileFor(sessionId: string): string {
-    return join(this.dir, `${sessionId}.json`)
-  }
-
-  private cancelPending(sessionId: string): void {
+  /** Drop a pending producer WITHOUT writing. The producer reads live
+   *  generation state, so a caller replacing that generation (a fresh
+   *  spawn) must cancel first — a fired producer would serialize a
+   *  disposed screen. */
+  cancel(sessionId: string): void {
     const entry = this.pending.get(sessionId)
     if (!entry) return
     clearTimeout(entry.timer)
     this.pending.delete(sessionId)
+  }
+
+  private fileFor(sessionId: string): string {
+    return join(this.dir, `${sessionId}.json`)
   }
 
   /** Atomic full-replace: write a uniquely-named tmp file, then rename it

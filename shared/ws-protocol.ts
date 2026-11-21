@@ -71,9 +71,11 @@ export interface WsSubagentTranscriptUnsubscribe {
 
 /** Ask the server to stream this session's terminal channel (output, state,
  *  snapshots) on this connection. Ref-counted like the other per-session
- *  channels, with the same `subscribe-result` semantics; the server seeds the
- *  channel with a `terminal-snapshot`. Independent of the session's message
- *  channel — the terminal overlay subscribes without attaching the transcript. */
+ *  channels, but WITHOUT `subscribe-result` bookkeeping: the seeding
+ *  `terminal-snapshot` IS the ack (the hub folds `subscribe-result` into the
+ *  message channel's liveness, so a terminal one would pollute it).
+ *  Independent of the session's message channel — the terminal overlay
+ *  subscribes without attaching the transcript. */
 export interface WsTerminalSubscribe {
   kind: 'terminal-subscribe'
   sessionId: string
@@ -776,10 +778,10 @@ export interface WsSubagentTranscript {
   frames: unknown[]
 }
 
-/** Full terminal seed, sent on subscribe and on resync: the serialized
- *  headless screen plus the generation, seq, and state it reflects.
- *  `snapshot.terminalId` is a fresh uuid per spawn — clients drop frames
- *  from a dead generation. */
+/** Full terminal seed, sent on subscribe, as the direct answer to
+ *  `terminal-create`, and on resync: the serialized headless screen plus the
+ *  generation, seq, and state it reflects. `snapshot.terminalId` is a fresh
+ *  uuid per spawn — clients drop frames from a dead generation. */
 export interface WsTerminalSnapshot {
   kind: 'terminal-snapshot'
   sessionId: string
@@ -797,13 +799,25 @@ export interface WsTerminalOutput {
   data: string
 }
 
-/** Terminal lifecycle transition (spawn / exit / close), carrying the full
- *  post-transition state. */
+/** Terminal lifecycle transition (spawn / exit / close / server-side
+ *  dispose), carrying the full post-transition state. */
 export interface WsTerminalState {
   kind: 'terminal-state'
   sessionId: string
   terminalId: string
   state: TerminalState
+}
+
+/** A terminal control failure (stale generation, unsupported host, unknown
+ *  session, channel teardown) — scoped to the terminal overlay, NOT the
+ *  transcript. Deliberately a distinct kind from the prose `error` frame:
+ *  the session synchronizer owns `error` (it renders the persistent chat
+ *  error bar), while terminal control errors are transient terminal-local
+ *  notices that the synchronizer ignores. */
+export interface WsTerminalError {
+  kind: 'terminal-error'
+  sessionId: string
+  message: string
 }
 
 export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, HookEvent = never> =
@@ -848,6 +862,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsTerminalSnapshot
   | WsTerminalOutput
   | WsTerminalState
+  | WsTerminalError
   | WsClientDebugRequest
   | WsPong
   | WsError

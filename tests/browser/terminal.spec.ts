@@ -12,17 +12,25 @@
 // paints the viewport only, which is fine here: the echoed command and its
 // output stay near the cursor, inside the visible rows.
 //
-// Flow (task-12 brief): open session → Ctrl+` → terminal visible → create →
-// type `echo crw-e2e-marker` + Enter → marker renders → resize window → no
-// crash (a second command round-trips) → reload page → reopen → screen
-// restored (marker present, shell still running) → end the shell (`exit`) →
-// exit banner + composer button gone.
+// Flow: open session → Ctrl+` → idle overlay with NO error bar (the C2
+// repro: an idle fit must not send a doomed resize) → create → type
+// `echo crw-e2e-marker` + Enter → marker renders → resize window → a second
+// command round-trips → reload → composer button visible BEFORE reopening
+// the overlay (the I2 lifecycle fact) → reopen → screen restored → a second
+// tab sees the button without opening → `exit` → exit banner → Restart →
+// sleep rejected 409 blaming the running terminal → KILL button → shell
+// dies, screen clears, button gone → sleep unblocks (200) → dormant panel →
+// resume → fresh terminal round-trips → exit. (The create-time channel
+// revival after a server-side dispose is unit-pinned in
+// frame-bridge.terminal.test.ts — the dormant panel unmounts the keep-alive
+// overlay, so the UI path re-subscribes fresh instead.)
 
 import { expect, test, type Page } from '@playwright/test'
 
 const D = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 const MARKER = 'crw-e2e-marker'
 const RESIZE_MARKER = 'crw-e2e-resized'
+const REVIVAL_MARKER = 'crw-e2e-revived'
 
 async function openSession(page: Page, id: string) {
   const panel = page.locator(`[data-panel-id="${id}"]`)
@@ -44,7 +52,7 @@ function screenText(page: Page) {
   return page.locator(`[data-panel-id="${D}"] .xterm-rows`).innerText()
 }
 
-test('terminal: spawn, type, resize, reload-reattach, exit', async ({ page, request }) => {
+test('terminal: spawn, type, resize, reload-reattach, exit, kill, revive', async ({ page, request, context }) => {
   // Capability degradation is part of the feature: on a host without node-pty
   // the probe reports terminalSupported=false and there is nothing to drive.
   const body = (await (await request.get('/api/sessions')).json()) as {
@@ -66,6 +74,7 @@ test('terminal: spawn, type, resize, reload-reattach, exit', async ({ page, requ
   const overlay = panel.locator('.terminal-panel')
   const status = overlay.locator('.terminal-panel-status')
   const composerButton = panel.locator('button.composer-terminal')
+  const errorBar = panel.locator('.error-bar')
 
   // Ctrl+` opens the overlay; no shell exists yet, so the idle banner offers
   // creation and the composer carries no terminal button.
@@ -73,6 +82,14 @@ test('terminal: spawn, type, resize, reload-reattach, exit', async ({ page, requ
   await expect(overlay).toBeVisible()
   await expect(status).toHaveAttribute('data-status', 'idle')
   await expect(composerButton).toHaveCount(0)
+
+  // C2 repro: the idle body's FitAddon fires onResize while no generation is
+  // live. The channel guard must swallow it — no doomed frame, no persistent
+  // chat error bar, no terminal-local notice. Give the fit/observer a beat.
+  await page.waitForTimeout(600)
+  await expect(errorBar).toHaveClass(/error-bar-empty/)
+  expect((await errorBar.innerText()).trim()).toBe('')
+  await expect(overlay.locator('.terminal-error-notice')).toHaveCount(0)
 
   await overlay.getByRole('button', { name: 'New terminal' }).click()
   await expect(status).toHaveAttribute('data-status', 'running')
@@ -104,16 +121,27 @@ test('terminal: spawn, type, resize, reload-reattach, exit', async ({ page, requ
     .poll(async () => ((await screenText(page)).match(new RegExp(RESIZE_MARKER, 'g')) ?? []).length, { timeout: 15_000 })
     .toBeGreaterThanOrEqual(2)
 
-  // Reload: the shell outlives the page. Reopening the overlay re-anchors from
-  // the channel snapshot — the screen (marker included) restores without a
-  // respawn, and the composer button advertises the still-running shell.
+  // Reload: the shell outlives the page. The composer button advertises the
+  // running shell BEFORE the overlay is reopened — the SessionInfo lifecycle
+  // fact, not the (not-yet-subscribed) terminal channel (I2).
   await page.reload({ waitUntil: 'domcontentloaded' })
   await openSession(page, D)
+  await expect(composerButton).toBeVisible()
   await toggleTerminal(page)
   await expect(overlay).toBeVisible()
   await expect(status).toHaveAttribute('data-status', 'running')
-  await expect(composerButton).toBeVisible()
   await expect.poll(async () => (await screenText(page)).includes(MARKER), { timeout: 15_000 }).toBe(true)
+
+  // A second tab sees the same lifecycle fact with no terminal subscription
+  // of its own (the overlay was never opened there).
+  const tab2 = await context.newPage()
+  await tab2.goto('/', { waitUntil: 'domcontentloaded' })
+  const showSidebar2 = tab2.getByRole('button', { name: 'Show sidebar' })
+  if (await showSidebar2.isVisible()) await showSidebar2.click()
+  await openSession(tab2, D)
+  await expect(tab2.locator(`[data-panel-id="${D}"] button.composer-terminal`)).toBeVisible()
+  await expect(tab2.locator(`[data-panel-id="${D}"] .terminal-panel`)).toHaveCount(0)
+  await tab2.close()
 
   // End the shell the way a user does — `exit`. Natural exit transitions to
   // the exited banner (no auto-respawn) and the composer button disappears.
@@ -123,6 +151,61 @@ test('terminal: spawn, type, resize, reload-reattach, exit', async ({ page, requ
   await expect(status).toHaveAttribute('data-status', 'exited')
   await expect(overlay.locator('.terminal-banner-message')).toContainText('Process exited')
   await expect(composerButton).toHaveCount(0)
+
+  // Restart, then prove the sleep guard blames the RUNNING terminal…
+  await overlay.getByRole('button', { name: 'Restart' }).click()
+  await expect(status).toHaveAttribute('data-status', 'running')
+  const blocked = await request.post(`/api/sessions/${D}/sleep`)
+  expect(blocked.status()).toBe(409)
+  expect(await blocked.text()).toContain('running terminal')
+
+  // …and the KILL affordance (C1) is the UI path that unblocks it: the shell
+  // tree dies, the screen clears, the indicator goes away.
+  await overlay.getByRole('button', { name: 'Kill terminal' }).click()
+  await expect(status).toHaveAttribute('data-status', 'idle')
+  await expect(composerButton).toHaveCount(0)
+  await expect(overlay.locator('.terminal-restored-badge')).toHaveCount(0)
+  await expect.poll(async () => (await screenText(page)).trim(), { timeout: 10_000 }).toBe('')
+  // No error bar from the kill either — close is a normal control op.
+  await expect(errorBar).toHaveClass(/error-bar-empty/)
+
+  const slept = await request.post(`/api/sessions/${D}/sleep`)
+  expect(slept.status()).toBe(200)
+
+  // Sleep unloads the session: the panel swaps to the dormant empty state
+  // (Chat — and the keep-alive overlay with it — unmounts on dormancy, the
+  // existing panel lifecycle). The dispose healed the channel server-side
+  // before ending it (unit-pinned); the indicator is gone with the session.
+  await expect(panel.getByRole('heading', { name: 'Session is dormant' })).toBeVisible()
+  await expect(composerButton).toHaveCount(0)
+
+  // Resume and prove the terminal works on the resumed session: a fresh
+  // subscribe (the old channel ended with the dispose), a fresh shell (the
+  // kill removed the persisted screen), and a full output round-trip.
+  await panel.locator('.chat-panel-resume-btn').click()
+  await expect(panel.locator('.chat-panel-header')).toBeVisible()
+  await panel.locator('.chat-panel-header').click()
+  // The overlay union survives the sleep, so the resumed Chat may already
+  // reveal the terminal (keep-alive latch re-arms on mount). Toggle only
+  // when it is not revealed — a blind Ctrl+` would CLOSE it.
+  if (!(await overlay.isVisible())) await toggleTerminal(page)
+  await expect(overlay).toBeVisible()
+  await expect(status).toHaveAttribute('data-status', 'idle')
+  await overlay.getByRole('button', { name: 'New terminal' }).click()
+  await expect(status).toHaveAttribute('data-status', 'running')
+  await expect(composerButton).toBeVisible()
+  await expect.poll(async () => (await screenText(page)).includes('>'), { timeout: 20_000 }).toBe(true)
+  await panel.locator('.terminal-body').click()
+  await page.keyboard.type(`echo ${REVIVAL_MARKER}`)
+  await page.keyboard.press('Enter')
+  await expect
+    .poll(async () => ((await screenText(page)).match(new RegExp(REVIVAL_MARKER, 'g')) ?? []).length, { timeout: 15_000 })
+    .toBeGreaterThanOrEqual(2)
+
+  // Leave the fixture tidy: end the shell.
+  await page.keyboard.type('exit')
+  await page.keyboard.press('Enter')
+  await expect(status).toHaveAttribute('data-status', 'exited')
 
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })

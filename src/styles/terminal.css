@@ -38,23 +38,26 @@
   --term-bright-cyan: #76d4e2;
   --term-bright-white: #ffffff;
 }
+/* Light-theme ANSI inks must stay readable on the white --term-bg: the
+   SGR 37/97 whites are mid-greys (near-white values vanished at ~1.0:1),
+   and every colour clears 3:1 — guarded by terminal-ansi-contrast.test.ts. */
 [data-theme='light'] {
   --term-black: #2a2f3a;
   --term-red: #c45465;
   --term-green: #2e9e56;
-  --term-yellow: #c79518;
+  --term-yellow: #9a6700;
   --term-blue: #4f62c8;
   --term-magenta: #8a5fc7;
-  --term-cyan: #3ea8b8;
-  --term-white: #f5f6f8;
+  --term-cyan: #1b7c83;
+  --term-white: #57606a;
   --term-bright-black: #6e7685;
   --term-bright-red: #d4687a;
-  --term-bright-green: #4db89e;
-  --term-bright-yellow: #e6b450;
+  --term-bright-green: #2e8b57;
+  --term-bright-yellow: #a06e00;
   --term-bright-blue: #7b8cde;
   --term-bright-magenta: #a87bde;
-  --term-bright-cyan: #5ec4d4;
-  --term-bright-white: #ffffff;
+  --term-bright-cyan: #2b8a94;
+  --term-bright-white: #6a7280;
 }
 
 /* ── Backdrop + card (mirrors search-panel.css) ─────────────────────── */
@@ -170,8 +173,34 @@
   border-radius: var(--radius-sm);
   padding: 2px 8px;
 }
+/* Kill (explicit close) sits beside the hide-X at the header's right edge.
+   Its auto margin pushes the pair right; the adjacent-X rule drops the
+   second auto so the two buttons stay together. With no kill button (fresh
+   idle slot) the X keeps its own auto margin. */
+.terminal-panel-kill {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.terminal-panel-kill + .terminal-panel-close {
+  margin-left: 0;
+}
+.terminal-panel-kill:hover:not(:disabled) {
+  color: var(--danger-text);
+}
 .terminal-panel-close {
   margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* Transient terminal-local control-error notice (terminal-error frames).
+   Deliberately not the transcript error bar: it lives inside the overlay
+   and auto-clears (useTerminalChannel's notice timer). */
+.terminal-error-notice {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger-text);
+  font-size: var(--fs-sm);
   flex-shrink: 0;
 }
 

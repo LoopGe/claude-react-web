@@ -576,6 +576,32 @@ describe('SessionSynchronizer protocol', () => {
     sync.stop()
   })
 
+  it('ignores terminal-error frames — terminal control failures never reach the transcript error bar', () => {
+    const sid = 's1'
+    const store = getSessionStore(sid)
+    const sync = new SessionSynchronizer({
+      sessionId: sid,
+      store,
+      hub: fakeHub,
+      get: fakeGet,
+      post: fakePost,
+      handlers: noopHandlers,
+    })
+    sync.start()
+
+    dispatchToSession(sid, {
+      kind: 'terminal-error',
+      sessionId: sid,
+      message: 'terminal-resize: terminal generation is not live',
+    } as WsServerFrame)
+
+    // No ERROR dispatch, no forced replayReady — the terminal overlay owns
+    // the notice (useTerminalChannel), not the transcript.
+    expect(store.getSnapshot().error).toBeNull()
+    expect(store.getSnapshot().replayReady).toBe(false)
+    sync.stop()
+  })
+
   it('forces replayReady on an error frame before any page (no stuck skeleton)', () => {
     // If the transcript never became ready (e.g. the subscribe failed
     // because the session was already torn down), the error frame forces

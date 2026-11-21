@@ -43,7 +43,7 @@ export type WsPermissionResolved = shared.WsPermissionResolved<shared.Permission
 export type WsSessionRecapUpdate = shared.WsSessionRecapUpdate<SessionRecap>
 export type WsHookRunEvent = shared.WsHookRunEvent<HookRuntimeEvent>
 export type { WsContextUsage, WsPromptSuggestion, WsTasksSnapshot, WsTasklistSnapshot, WsGitSnapshot, WsMessageConsumed, WsTurnChanges, WsMessagesWithdrawn, WsAttached, WsTranscriptRebased, WsRebuildWaiting, RebuildBlocker, WsMessagesEvicted, WsMessageSteered, WsMessageQueued, WsSessionCleared, WsCommandsChanged, WsPong, WsError, PermissionDecision, WsAppPluginsSnapshot, WsAppPluginStateChanged, WsAppPluginContributionsChanged, WsAppPluginEvent, WsWidgetPayload, WsCliNotification, CliNotification, WsSubagentTranscript, WsClientDebugRequest } from '../shared/ws-protocol.js'
-export type { WsTerminalSnapshot, WsTerminalOutput, WsTerminalState } from '../shared/ws-protocol.js'
+export type { WsTerminalSnapshot, WsTerminalOutput, WsTerminalState, WsTerminalError } from '../shared/ws-protocol.js'
 
 export type WsServerFrame = shared.WsServerFrame<
   SessionInfo,

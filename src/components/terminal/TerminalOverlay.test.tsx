@@ -126,19 +126,34 @@ interface MockChannel {
   resize: ReturnType<typeof vi.fn>
   close: ReturnType<typeof vi.fn>
   subscribeOutput: ReturnType<typeof vi.fn>
+  subscribeAnchor: ReturnType<typeof vi.fn>
   unsubscribes: Array<ReturnType<typeof vi.fn>>
   emitOutput: (data: string) => void
+  emitAnchor: (snap: TerminalSnapshot) => void
 }
 
 function makeChannel(
-  opts: { supported?: boolean; state?: TerminalState | null; snapshot?: TerminalSnapshot | null } = {},
+  opts: { supported?: boolean; state?: TerminalState | null; snapshot?: TerminalSnapshot | null; error?: string | null } = {},
 ): MockChannel {
   const listeners = new Set<(d: string) => void>()
+  const anchorListeners = new Set<(s: TerminalSnapshot) => void>()
   const unsubscribes: Array<ReturnType<typeof vi.fn>> = []
   const subscribeOutput = vi.fn((cb: (d: string) => void) => {
     listeners.add(cb)
     const off = vi.fn(() => {
       listeners.delete(cb)
+    })
+    unsubscribes.push(off)
+    return off
+  })
+  // Mirrors the real hook: registration seeds the callback synchronously
+  // with the latest anchor, later anchors dispatch synchronously.
+  const subscribeAnchor = vi.fn((cb: (s: TerminalSnapshot) => void) => {
+    anchorListeners.add(cb)
+    const seed = opts.snapshot === undefined ? snapshot() : opts.snapshot
+    if (seed) cb(seed)
+    const off = vi.fn(() => {
+      anchorListeners.delete(cb)
     })
     unsubscribes.push(off)
     return off
@@ -151,7 +166,9 @@ function makeChannel(
     supported: opts.supported ?? true,
     state: opts.state ?? state(),
     snapshot: opts.snapshot ?? snapshot(),
+    error: opts.error ?? null,
     subscribeOutput,
+    subscribeAnchor,
     input,
     create,
     resize,
@@ -164,9 +181,13 @@ function makeChannel(
     resize,
     close,
     subscribeOutput,
+    subscribeAnchor,
     unsubscribes,
     emitOutput: (d) => {
       for (const cb of listeners) cb(d)
+    },
+    emitAnchor: (s) => {
+      for (const cb of anchorListeners) cb(s)
     },
   }
 }
@@ -474,21 +495,31 @@ describe('TerminalOverlay — restored-history indicator (Task 6 carry)', () => 
 })
 
 describe('TerminalOverlay — body mechanics', () => {
-  it('writes the snapshot screen on mount and rewrites it on every new snapshot (resync)', async () => {
+  it('writes the snapshot screen on mount and rewrites it on every new anchor (resync)', async () => {
     const mock = makeChannel({ snapshot: snapshot({ screen: 'first screen' }) })
-    const { view } = await renderOverlay({ open: true, channel: mock })
+    await renderOverlay({ open: true, channel: mock })
     await waitForBody()
     const term = lastTerm()
     expect(term.written.join('')).toContain('first screen')
 
-    const resynced = makeChannel({
-      snapshot: snapshot({ terminalId: 'gen-1', seq: 9, screen: 'resynced screen' }),
-    })
-    view.rerender(
-      <TerminalOverlay sessionId="s1" open onClose={vi.fn()} supported channel={resynced.channel} />,
-    )
-    await waitFor(() => expect(term.written.join('')).toContain('resynced screen'))
+    // A resync answer dispatches through the SAME channel's anchor listeners
+    // (the real hook's ref-backed set survives channel-object identity changes).
+    mock.emitAnchor(snapshot({ terminalId: 'gen-1', seq: 9, screen: 'resynced screen' }))
+    expect(term.written.join('')).toContain('resynced screen')
     expect(term.resetCount).toBeGreaterThan(0)
+  })
+
+  it('an output frame dispatched right after a new anchor survives (no passive-effect wipe)', async () => {
+    const mock = makeChannel({ snapshot: snapshot({ screen: 'seed' }) })
+    await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    const term = lastTerm()
+    // The I4 interleave: anchor dispatch, then an output frame BEFORE any
+    // React commit. The anchor applies synchronously in dispatch order, so
+    // the newer chunk is written after the seed and never wiped.
+    mock.emitAnchor(snapshot({ seq: 5, screen: 're-anchored' }))
+    mock.emitOutput('newer chunk')
+    expect(term.written.join('')).toBe('re-anchorednewer chunk')
   })
 
   it('reads the xterm theme from computed CSS variables', async () => {
@@ -521,5 +552,68 @@ describe('TerminalOverlay — body mechanics', () => {
     await renderOverlay({ open: true })
     await waitForBody()
     expect(lastTerm().focusCount).toBeGreaterThan(0)
+  })
+})
+
+describe('TerminalOverlay — kill affordance (C1)', () => {
+  it('a running terminal shows the kill button; clicking it calls channel.close', async () => {
+    const { mock } = await renderOverlay({ open: true })
+    await waitForBody()
+    const kill = screen.getByRole('button', { name: 'Kill terminal' })
+    fireEvent.click(kill)
+    expect(mock.close).toHaveBeenCalledTimes(1)
+    // The hide-X is a separate control and was not clicked.
+    expect(screen.getByRole('button', { name: 'Close terminal' })).toBeTruthy()
+  })
+
+  it('an exited generation keeps the kill button (retained screen to clear)', async () => {
+    const mock = makeChannel({
+      state: state({ status: 'exited', exitCode: 0 }),
+      snapshot: snapshot({ state: state({ status: 'exited', exitCode: 0 }) }),
+    })
+    await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    fireEvent.click(screen.getByRole('button', { name: 'Kill terminal' }))
+    expect(mock.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('restored-idle history keeps the kill button (close clears the history)', async () => {
+    const mock = makeChannel({
+      state: state({ status: 'idle' }),
+      snapshot: snapshot({ terminalId: '', seq: 0, screen: 'history', restored: true, state: state({ status: 'idle' }) }),
+    })
+    await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    expect(screen.getByRole('button', { name: 'Kill terminal' })).toBeTruthy()
+  })
+
+  it('a fresh idle slot (no terminal, no history) hides the kill button', async () => {
+    const mock = makeChannel({
+      state: state({ status: 'idle', cols: 0, rows: 0 }),
+      snapshot: snapshot({ terminalId: '', seq: 0, screen: '', restored: false, state: state({ status: 'idle', cols: 0, rows: 0 }) }),
+    })
+    await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    expect(screen.queryByRole('button', { name: 'Kill terminal' })).toBeNull()
+    // The hide-X remains.
+    expect(screen.getByRole('button', { name: 'Close terminal' })).toBeTruthy()
+  })
+})
+
+describe('TerminalOverlay — terminal-local error notice (C2)', () => {
+  it('renders channel.error as a transient status notice inside the overlay', async () => {
+    const mock = makeChannel({ error: 'terminal-resize: terminal generation is not live' })
+    await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    const notice = document.querySelector('.terminal-error-notice')
+    expect(notice).toBeTruthy()
+    expect(notice!.textContent).toContain('terminal generation is not live')
+    expect(notice!.getAttribute('role')).toBe('status')
+  })
+
+  it('no notice without an error', async () => {
+    await renderOverlay({ open: true })
+    await waitForBody()
+    expect(document.querySelector('.terminal-error-notice')).toBeNull()
   })
 })

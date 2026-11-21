@@ -6,16 +6,20 @@
 // and the next mount re-anchors from the channel snapshot.
 //
 // IO contract (Task 9 channel):
-//   - snapshot.screen is the authoritative anchor: written on mount and
-//     rewritten (reset + write) on every NEW snapshot object — resync answers
-//     and bystander generation re-anchors produce them. The hub dispatches one
-//     frame per message, so the snapshot effect commits before any later
-//     output frame arrives; reset never wipes already-applied newer output.
+//   - snapshot.screen is the authoritative anchor: applied (reset + write)
+//     SYNCHRONOUSLY through the leaf subscribeAnchor listener — on registration
+//     (the mount seed) and inside every snapshot dispatch. A passive effect
+//     keyed on the snapshot prop would race: an output frame dispatched between
+//     the snapshot and the effect's commit is written and then wiped by the
+//     rewrite, while the channel's seq has already advanced past it. The
+//     listener runs in dispatch order, so the anchor always lands before any
+//     later output frame.
 //   - live output → term.write through the leaf subscribeOutput listener (no
 //     React state, no host re-render per chunk).
 //   - onData → channel.input (xterm resolves IME composition internally and
 //     emits onData exactly once — no composition handling here).
-//   - onResize → channel.resize, driven by FitAddon.
+//   - onResize → channel.resize, driven by FitAddon (the channel guards it on
+//     a live generation, so an idle fit sends nothing).
 //
 // Fit stand-down: a hidden container has clientWidth 0 (same rule as
 // useTranscriptScroll); fit is skipped then and re-run on reveal via the
@@ -99,6 +103,12 @@ export function TerminalBody({ channel, visible }: TerminalBodyProps) {
     termRef.current = term
     fitRef.current = fit
 
+    // Screen anchor first (its registration seed writes the current screen),
+    // then live output — both synchronous, so dispatch order is write order.
+    const offAnchor = channelRef.current.subscribeAnchor((snap) => {
+      term.reset()
+      if (snap.screen) term.write(snap.screen)
+    })
     const offOutput = channelRef.current.subscribeOutput((data) => term.write(data))
     const dataDisposable = term.onData((data) => channelRef.current.input(data))
     const resizeDisposable = term.onResize(({ cols, rows }) => channelRef.current.resize(cols, rows))
@@ -123,6 +133,7 @@ export function TerminalBody({ channel, visible }: TerminalBodyProps) {
     })
 
     return () => {
+      offAnchor()
       offOutput()
       dataDisposable.dispose()
       resizeDisposable.dispose()
@@ -134,15 +145,6 @@ export function TerminalBody({ channel, visible }: TerminalBodyProps) {
       fitNowRef.current = () => {}
     }
   }, [])
-
-  // Screen anchor: write on mount and rewrite on every NEW snapshot object.
-  const snapshot = channel.snapshot
-  useEffect(() => {
-    const term = termRef.current
-    if (!term || !snapshot) return
-    term.reset()
-    if (snapshot.screen) term.write(snapshot.screen)
-  }, [snapshot])
 
   // Reveal: focus the terminal and refit (a hidden container stood down).
   useEffect(() => {

@@ -274,6 +274,13 @@ export interface SessionInfoBase<PM = string> {
    *  false hides the terminal entry points. Not persisted — re-derived from
    *  the cached probe on every live and dormant projection. */
   terminalSupported?: boolean
+  /** Whether this session's terminal slot holds a live PTY shell. The
+   *  composer terminal indicator reads this fact directly (no terminal
+   *  channel subscription needed — it works before first open, after a
+   *  reload, and in bystander tabs). Broadcast on terminal lifecycle
+   *  transitions only (spawn / exit / close / dispose), never per chunk.
+   *  Not persisted — a shell never outlives its server lifetime. */
+  terminalRunning?: boolean
   /** Whether this session's provider implements mid-run steering (the
    *  claude provider does; runtime degradation on old CLIs is handled inside
    *  the handle, so this is the provider mechanism flag — spec §9). Drives

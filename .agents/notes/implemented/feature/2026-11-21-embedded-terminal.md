@@ -64,9 +64,13 @@ tarball 自带 6 平台 N-API prebuilds，零编译、`--ignore-scripts` 可用�
 `SessionInfo.terminalSupported`（host 属性，非 provider）。`build.mjs` 两个 bundle
 均 external node-pty（内联则运行时崩溃）；`desktop/electron-builder.yml`
 `asarUnpack` 之。Windows ConPTY drain 补丁经 `patch-package` 落地
-（`patches/node-pty+1.2.0-beta.15.patch`，patch-package 为生产依赖、`postinstall`、
-`files` 携带 `patches/` 使 npx 消费者同样获得）。缺失 node-pty 时能力探测降级：
-palette 动作隐藏、快捷键 no-op + toast，其余零变化。
+（`patches/node-pty+1.2.0-beta.15.patch`，patch-package 为生产依赖），
+`postinstall` 走 `scripts/postinstall.mjs` 门：仅当 node-pty 可解析才跑
+patch-package（否则干净跳过——缺失可选依赖的主机不再整体安装失败）；
+`files` 携带 `patches/` 与 `scripts/postinstall.mjs` 使 npx 消费者同样获得。
+xterm 全族（headless/xterm/addon-serialize/addon-fit）精确 pin：screen==seq
+依赖其内部行为。缺失 node-pty 时能力探测降级：palette 动作隐藏、快捷键
+no-op + toast，其余零变化。
 
 **WS 通道**按 subagent-transcript 模式独立于消息通道（frame-bridge 自持
 `terminalSubs`，不挂 startSession 的驱动/清理数组）：`terminal-subscribe`
@@ -81,6 +85,55 @@ seq 缺口触发**一次** `terminal-resync`；无原始输出回放（scrollbac
 escape 序列）。
 
 完整协议、客户端保活/键盘语义、打包与验收见[内嵌终端设计](../../../../docs/superpowers/specs/2026-11-21-embedded-terminal-design.md)。
+
+## 终审修复波（2026-11-22）
+
+全分支终审后的合并前修复，决定与取舍：
+
+- **Kill 按钮（C1）**：overlay 头部 X 旁新增 trash 按钮（`channel.close()`），
+  存在终端即可见（running / exited / restored 历史）。X 只隐藏保活 overlay，
+  kill 才杀树清屏——sleep 409 blame 的"close it before sleeping"自此有 UI
+  路径。**不做确认弹窗**：brief 允许从简，kill 是明确标记的主动操作，与
+  GitPanel 易误触的写操作不同。
+- **终端控制错误离开转录错误栏（C2）**：新增独立帧种 `terminal-error`
+  （sessionId + message），session-synchronizer 的 switch 默认忽略它；
+  prose `error` 帧仍归转录错误栏。通道 hook 把它渲染为 overlay 内 5s 瞬态
+  notice。选独立帧种而非消息前缀跳过：前缀是字符串协议，帧种是类型协议，
+  与 wire-protocol 惯例一致。同时 input/resize 加活锚守卫（idle fit /
+  exited resize 不再发必败帧）——错误源头与错误路由一起治。
+- **生命周期事实广播（I2+I5，同一架构项）**：`SessionInfo.terminalRunning`
+  由 manager 的 terminals map 投影（live/dormant 同值），每次终端转移
+  （spawn/exit/close/dispose）广播一条 session-update——仅生命周期，绝不
+  逐块。composer 按钮改读该事实（不再依赖通道订阅），reload 后/首开前/
+  旁观 tab 均可见。`disposeTerminal` 在结束 pushable **之前**推 idle
+  terminal-state 帧，保活客户端愈合而非冻结在 running。附带修复一个已证实
+  的缺口：dispose 后同连接的下一个 create 原本无输出可流（bridge 订阅条目
+  已释放）——create 在无活条目时重开通道（`openTerminalChannel` 提取复用）。
+- **逐块序列化改为惰性（I3，先测量后修）**：实测（monitorEventLoopDelay，
+  同 event-loop-probe 机制）serialize() 满 scrollback 约 4ms/次（120×30）、
+  41ms/次（500×200）；持续洪泛下 trailing 防抖永不触发，逐块 serialize
+  占输出路径单块成本 99.8%，洪泛窗口事件循环 max ~600ms（基线 ~24ms）。
+  改为 store.schedule 接收 **producer**，仅在防抖触发/flush 时序列化活屏幕；
+  修后同洪泛 max 43ms、均值回到基线，块吞吐 6.7/s → 1262/s。screen==seq
+  不变量不动（解析仍同步，serialize 只读已解析屏幕）。代价：生成替换须
+  `cancel()` 旧 producer（create 做），dispose 须先 flush 再 killAndClear
+  （producer 读活序列化器）。
+- **屏幕锚同步化（I4）**：snapshot 锚改经叶子 `subscribeAnchor` 在派发内
+  同步应用（注册即种最新锚），废弃被动 effect 重写——后者与提交前派发的
+  输出帧竞态，先写后擦且 seq 已前进（静默丢块）。idle state 帧合成清空锚
+  （screen ''、restored false），close/dispose 同时清屏幕与 restored 徽章
+  （M4）。已知残留（先前即有，未改）：body 挂载前派发的输出块对 body 丢失，
+  直到下一次 resync——与 I4 的"先写后擦"是不同缺口。
+- **浅色 ANSI 对比（I1）**：white/brightWhite 改中灰（两主题 ≥4.5:1），
+  浅色主题其余低于 3:1 的色（yellow/cyan/brightGreen/brightYellow/brightCyan）
+  一并调深——同属"浅色主题 ANSI 不可见"一类；`terminal-ansi-contrast.test.ts`
+  钉住两主题白 ≥4.5:1、浅色全 16 色 ≥3:1（深色 black 贴近背景是终端惯例，
+  不入 3:1 扫描）。
+- **postinstall 门（I6）**：`scripts/postinstall.mjs` 仅在 node-pty 可解析时
+  跑 patch-package（createRequire 自脚本位置，dev/消费者 hoist 布局均可），
+  缺失则干净跳过——musl/无工具链主机的 npm install 不再整体失败。
+  `files` 增携 `scripts/postinstall.mjs`。xterm 全族精确 pin（M2）：
+  screen==seq 依赖 headless/serialize 内部行为，浏览器 xterm 须同步解析。
 
 ## Alternatives considered
 
@@ -123,14 +176,23 @@ node 20.18.3），node-pty ConPTY 往返通过。
 
 行为由单元/集成套件钉住：`server/terminal.test.ts`（状态机、幂等 create/attach、
 seq 单调 + 生成围栏、快照序列化、有界 input、kill-on-delete/unload 含 win32
-围栏、resync-after-gap）、`terminal-store` / `terminal-restart` /
-`session-manager.terminal`（sleep 409 blame、dormant create 不 spawn Query、
-delete/unload/shutdown 生命周期）/ `frame-bridge.terminal`（通道 seed/扇出/身份
-释放）、`useTerminalChannel`（渲染隔离、seq 缺口 resync、binding 自动新建）、
-`TerminalOverlay`（保活、Esc 聚焦门、exited/unavailable、IME）/ `terminal-shortcut`。
+围栏、resync-after-gap）、`terminal-store`（防抖/flush/producer 惰性/cancel）/
+`terminal-restart` / `session-manager.terminal`（sleep 409 blame、dormant create
+不 spawn Query、delete/unload/shutdown 生命周期、terminalRunning 转移广播、
+dispose 先 idle 帧后结束通道）/ `frame-bridge.terminal`（通道 seed/扇出/身份
+释放、terminal-error 不走 prose error、dispose 后 create 复活通道）、
+`useTerminalChannel`（渲染隔离、seq 缺口 resync、binding 自动新建、活锚守卫、
+terminal-error 瞬态 notice、同步锚 + idle 合成清空锚）、
+`TerminalOverlay`（保活、Esc 聚焦门、exited/unavailable、IME、kill 按钮可见性）/
+`TerminalBody.anchor`（真实 hook+body 的快照/输出交错不丢块）/
+`session-synchronizer`（terminal-error 不入转录错误栏）/
+`terminal-ansi-contrast`（两主题白 ≥4.5:1、浅色全色 ≥3:1）/
+`scripts/postinstall`（缺 node-pty 干净跳过）/ `terminal-shortcut`。
 真实 xterm 往返由浏览器 E2E `tests/browser/terminal.spec.ts`
-（`playwright.app.config.ts`）覆盖：spawn → type → resize → reload-reattach →
-exit；读屏走 `.xterm-rows`（@xterm/xterm 6 核心是 DOM 渲染器，无生产测试钩子）。
+（`playwright.app.config.ts`）覆盖：idle 打开无错误栏 → spawn → type → resize →
+reload 后未开 overlay 即见 composer 按钮 → 旁观 tab → exit → restart →
+sleep 409 blame → kill → sleep 200 → dormant → resume → 新终端往返 → exit；
+读屏走 `.xterm-rows`（@xterm/xterm 6 核心是 DOM 渲染器，无生产测试钩子）。
 
 手动验收（Windows 11 开发机，真实 server + 真实 node-pty，仅 provider 边界为
 fake）：交互式 stdin 提示（`cmd /c set /p`，ssh/sudo 的同类路径——本机无 :22

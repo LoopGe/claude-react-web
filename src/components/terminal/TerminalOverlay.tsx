@@ -14,7 +14,7 @@
 
 import { Suspense, lazy, useCallback } from 'react'
 import { Overlay } from '../Overlay'
-import { IconTerminal, IconX } from '../icons/ToolIcons'
+import { IconTerminal, IconTrash, IconX } from '../icons/ToolIcons'
 import type { TerminalChannel } from '../../hooks/useTerminalChannel'
 
 const TerminalBody = lazy(() => import('./TerminalBody').then((m) => ({ default: m.TerminalBody })))
@@ -38,11 +38,22 @@ export function TerminalOverlay({ sessionId, open, onClose, supported, channel }
   // Persistent restored-history indicator (Task 6 carry): win32's restart
   // divider lands in scrollback above the fold, so the header badge is what
   // makes the boundary unmistakable. A fresh non-restored generation's
-  // snapshot (restored=false) clears it.
+  // snapshot (restored=false) clears it — as does a server-confirmed idle
+  // (the channel synthesizes the cleared anchor on close/dispose).
   const restored = snapshot?.restored === true
+  // The kill affordance exists whenever close() would do something: a live
+  // shell, an exited generation's retained screen, or restored history. A
+  // fresh idle slot (nothing to kill, no screen) hides it.
+  const killable = status === 'running' || status === 'exited' || restored
 
   const handleEscape = useCallback(() => {
     channel.input('\x1b')
+  }, [channel])
+
+  // Explicit kill (spec goal 3): close() kills the process tree and clears
+  // the screen server-side; the X beside it only hides the keep-alive overlay.
+  const handleKill = useCallback(() => {
+    channel.close()
   }, [channel])
 
   // Spawn at the last known size; the body refits and resizes once revealed.
@@ -89,10 +100,26 @@ export function TerminalOverlay({ sessionId, open, onClose, supported, channel }
               Restored history
             </span>
           )}
+          {killable && (
+            <button
+              className="btn btn-icon terminal-panel-kill"
+              onClick={handleKill}
+              aria-label="Kill terminal"
+              title="Kill the shell and clear its screen"
+            >
+              <IconTrash size={14} />
+            </button>
+          )}
           <button className="btn btn-icon terminal-panel-close" onClick={onClose} aria-label="Close terminal">
             <IconX size={14} />
           </button>
         </header>
+
+        {channel.error && (
+          <div className="terminal-error-notice" role="status">
+            {channel.error}
+          </div>
+        )}
 
         {!supported ? (
           <div className="terminal-unavailable">

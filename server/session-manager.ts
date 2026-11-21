@@ -767,9 +767,6 @@ function debugContextUsageMismatch(
 }
 
 const log = createLogger('session')
-// Terminal-specific diagnostics ride the terminal scope (the terminal core
-// and store log there too), not the manager's session scope.
-const termLog = createLogger('terminal')
 
 /** One frame on the per-session terminal channel. Ephemeral: never enters
  *  the history ring or the message channel — the manager fans it out to the
@@ -5350,11 +5347,29 @@ export class SessionManager {
         },
         onState: (terminalId, state) => {
           this.pushTerminalFrame(id, { kind: 'terminal-state', sessionId: id, terminalId, state })
+          // Lifecycle fact for every tab (the composer indicator reads
+          // SessionInfo.terminalRunning without a terminal subscription).
+          this.broadcastTerminalLifecycle(id)
         },
       },
     })
     this.terminals.set(id, slot)
     return slot
+  }
+
+  /** Broadcast a session-update carrying the current terminalRunning fact.
+   *  Terminal transitions (spawn / exit / close / dispose) are lifecycle
+   *  events — one broadcast each, never per output chunk. Works for dormant
+   *  sessions too (terminal ops never require a live Query): the projection
+   *  comes from the live map or the persisted meta, same as list(). */
+  private broadcastTerminalLifecycle(id: string): void {
+    const live = this.sessions.get(id)
+    if (live) {
+      this.broadcastGlobal({ kind: 'update', session: this.info(live) })
+      return
+    }
+    const meta = this.store?.get(id)
+    if (meta) this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(meta) })
   }
 
   /** Fan one frame out to the session's terminal-channel subscribers. */
@@ -5378,23 +5393,31 @@ export class SessionManager {
     this.terminalSubscribers.delete(id)
   }
 
-  /** Dispose one terminal slot on the unload/shutdown path: kill the tree,
-   *  flush pending persistence (KEEP the file — a later create restores it),
-   *  end its channel subscribers, drop the slot so the next terminal op
-   *  re-materializes from meta (a disposed slot would not re-load the file).
-   *  The flush is best-effort like the shell-exit path: unload runs from
-   *  caller-less contexts (GC force-unload, shutdown) where a write failure
-   *  (ENOSPC, Windows EPERM on a locked tmp) must log, never crash. */
+  /** Dispose one terminal slot on the unload/shutdown path: kill the tree
+   *  (dispose flushes pending persistence FIRST — KEEP the file, a later
+   *  create restores it), end its channel subscribers, drop the slot so the
+   *  next terminal op re-materializes from meta (a disposed slot would not
+   *  re-load the file). The flush is best-effort inside dispose(): unload
+   *  runs from caller-less contexts (GC force-unload, shutdown) where a
+   *  write failure (ENOSPC, Windows EPERM on a locked tmp) must log, never
+   *  crash.
+   *
+   *  Attached viewers heal BEFORE the channel ends: an idle terminal-state
+   *  frame is pushed first (a keep-alive client otherwise freezes at
+   *  'running' with no frame to transition it), and the session-update
+   *  terminalRunning fact heals tabs with no terminal subscription. */
   private disposeTerminal(id: string): void {
     const terminal = this.terminals.get(id)
     if (terminal) {
       terminal.dispose()
-      try {
-        terminal.flush()
-      } catch (err) {
-        termLog.error(`[${id}] terminal screen flush on unload failed: ${(err as Error).message}`)
-      }
       this.terminals.delete(id)
+      this.pushTerminalFrame(id, {
+        kind: 'terminal-state',
+        sessionId: id,
+        terminalId: '',
+        state: terminal.snapshot().state,
+      })
+      this.broadcastTerminalLifecycle(id)
     }
     this.endTerminalSubscribers(id)
   }
@@ -11815,6 +11838,11 @@ export class SessionManager {
       // Host property (the cached node-pty probe), not a provider one — the
       // same value for every session, live or dormant.
       terminalSupported: terminalCapability().supported,
+      // Lifecycle fact for the composer terminal indicator: a live PTY in
+      // this session's slot (manager-owned, so it reads the same for live
+      // and dormant sessions). Broadcast on every terminal transition via
+      // broadcastTerminalLifecycle — never per output chunk.
+      terminalRunning: this.terminals.get(x.id)?.running === true,
       terminated: x.terminated,
       terminatedReason: x.terminatedReason,
       canRetryResume: x.terminated && isTransientTerminatedReason(x.terminatedReason),

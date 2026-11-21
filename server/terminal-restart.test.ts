@@ -174,7 +174,7 @@ describe('TerminalSession restart flow', () => {
       cols,
       rows,
     }
-    store.schedule('term-restart', { screen, state, savedAt: Date.now() })
+    store.schedule('term-restart', () => ({ screen, state, savedAt: Date.now() }))
     store.flush('term-restart')
     return screen
   }

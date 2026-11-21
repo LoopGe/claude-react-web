@@ -354,3 +354,171 @@ describe('useTerminalChannel: control frames', () => {
     expect(sentOf('terminal-resize')).toEqual([{ kind: 'terminal-resize', sessionId: SID, terminalId: 'g1', cols: 120, rows: 40 }])
   })
 })
+
+describe('useTerminalChannel: live-anchor guard (C2a)', () => {
+  it('an idle fit never sends a doomed resize (the idle-open error-bar repro)', () => {
+    const { result } = renderHook(() => useTerminalChannel(SID, true))
+    // The idle seed every fresh overlay receives; TerminalBody's FitAddon
+    // fires onResize from this state.
+    act(() => {
+      emit({
+        kind: 'terminal-snapshot',
+        snapshot: snapshot({ terminalId: '', seq: 0, screen: '', state: termState({ status: 'idle', cols: 0, rows: 0 }) }),
+      })
+    })
+    act(() => {
+      result.current.resize(100, 30)
+      result.current.input('x')
+    })
+    expect(sentOf('terminal-resize')).toEqual([])
+    expect(sentOf('terminal-input')).toEqual([])
+  })
+
+  it('input/resize on an exited generation are no-ops', () => {
+    const { result } = renderHook(() => useTerminalChannel(SID, true))
+    act(() => { emit({ kind: 'terminal-snapshot', snapshot: snapshot() }) })
+    act(() => { emit({ kind: 'terminal-state', terminalId: 'g1', state: termState({ status: 'exited', exitCode: 0 }) }) })
+    act(() => {
+      result.current.resize(100, 30)
+      result.current.input('x')
+    })
+    expect(sentOf('terminal-resize')).toEqual([])
+    expect(sentOf('terminal-input')).toEqual([])
+  })
+
+  it('pre-seed input/resize (no frame yet) are no-ops', () => {
+    const { result } = renderHook(() => useTerminalChannel(SID, true))
+    act(() => {
+      result.current.resize(100, 30)
+      result.current.input('x')
+    })
+    expect(sentOf('terminal-resize')).toEqual([])
+    expect(sentOf('terminal-input')).toEqual([])
+  })
+
+  it('a restarted generation re-arms control ops', () => {
+    const { result } = renderHook(() => useTerminalChannel(SID, true))
+    act(() => { emit({ kind: 'terminal-snapshot', snapshot: snapshot() }) })
+    act(() => { emit({ kind: 'terminal-state', terminalId: 'g1', state: termState({ status: 'exited', exitCode: 0 }) }) })
+    act(() => { emit({ kind: 'terminal-snapshot', snapshot: snapshot({ terminalId: 'g2' }) }) })
+    act(() => { result.current.input('ls\r') })
+    expect(sentOf('terminal-input')).toEqual([{ kind: 'terminal-input', sessionId: SID, terminalId: 'g2', data: 'ls\r' }])
+  })
+})
+
+describe('useTerminalChannel: terminal-local error notice (C2b)', () => {
+  it('a terminal-error frame surfaces a transient error, auto-clearing after the notice window', () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useTerminalChannel(SID, true))
+      act(() => { emit({ kind: 'terminal-error', message: 'terminal-input: terminal generation is not live' }) })
+      expect(result.current.error).toBe('terminal-input: terminal generation is not live')
+      act(() => { vi.advanceTimersByTime(4999) })
+      expect(result.current.error).not.toBeNull()
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(result.current.error).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a second error replaces the first and restarts the window', () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useTerminalChannel(SID, true))
+      act(() => { emit({ kind: 'terminal-error', message: 'first' }) })
+      act(() => { vi.advanceTimersByTime(3000) })
+      act(() => { emit({ kind: 'terminal-error', message: 'second' }) })
+      act(() => { vi.advanceTimersByTime(3000) })
+      // The FIRST timer would have fired by now; the second is still armed.
+      expect(result.current.error).toBe('second')
+      act(() => { vi.advanceTimersByTime(2000) })
+      expect(result.current.error).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('output churn never renders the host even with an error notice armed', () => {
+    let renders = 0
+    const { result } = renderHook(() => { renders++; return useTerminalChannel(SID, true) })
+    act(() => { emit({ kind: 'terminal-snapshot', snapshot: snapshot() }) })
+    act(() => { emit({ kind: 'terminal-error', message: 'notice' }) })
+    const got: string[] = []
+    act(() => { result.current.subscribeOutput((d) => got.push(d)) })
+    renders = 0
+    act(() => {
+      for (let seq = 1; seq <= 5; seq++) emit({ kind: 'terminal-output', terminalId: 'g1', seq, data: `c${seq}` })
+    })
+    expect(renders).toBe(0)
+    expect(got).toHaveLength(5)
+  })
+})
+
+describe('useTerminalChannel: synchronous screen anchor (I4)', () => {
+  it('anchor listeners run inside the snapshot dispatch, before any later output', () => {
+    const { result } = renderHook(() => useTerminalChannel(SID, true))
+    const order: string[] = []
+    act(() => {
+      result.current.subscribeAnchor((s) => order.push(`anchor:${s.seq}:${s.screen}`))
+      result.current.subscribeOutput((d) => order.push(`out:${d}`))
+    })
+    // One act() batches the React commits — the passive-effect version would
+    // apply the anchor AFTER the output write (the wipe race). The listener
+    // applies it in dispatch order instead.
+    act(() => {
+      emit({ kind: 'terminal-snapshot', snapshot: snapshot({ seq: 2, screen: 'seed' }) })
+      emit({ kind: 'terminal-output', terminalId: 'g1', seq: 3, data: 'newer' })
+    })
+    expect(order).toEqual(['anchor:2:seed', 'out:newer'])
+  })
+
+  it('a late subscriber is seeded immediately with the latest anchor', () => {
+    const { result } = renderHook(() => useTerminalChannel(SID, true))
+    act(() => { emit({ kind: 'terminal-snapshot', snapshot: snapshot({ seq: 4, screen: 'current screen' }) }) })
+    const seen: TerminalSnapshot[] = []
+    act(() => { result.current.subscribeAnchor((s) => seen.push(s)) })
+    expect(seen).toEqual([snapshot({ seq: 4, screen: 'current screen' })])
+  })
+
+  it('the anchor disposer stops delivery', () => {
+    const { result } = renderHook(() => useTerminalChannel(SID, true))
+    const seen: string[] = []
+    let off: () => void = () => {}
+    act(() => { off = result.current.subscribeAnchor((s) => seen.push(s.screen)) })
+    act(() => { emit({ kind: 'terminal-snapshot', snapshot: snapshot({ screen: 'a' }) }) })
+    act(() => { off() })
+    act(() => { emit({ kind: 'terminal-snapshot', snapshot: snapshot({ screen: 'b' }) }) })
+    expect(seen).toEqual(['a'])
+  })
+
+  it('an idle state frame synthesizes the cleared anchor (M4: no stale restored badge/screen)', () => {
+    const { result } = renderHook(() => useTerminalChannel(SID, true))
+    const anchors: TerminalSnapshot[] = []
+    act(() => { result.current.subscribeAnchor((s) => anchors.push(s)) })
+    act(() => {
+      emit({
+        kind: 'terminal-snapshot',
+        snapshot: snapshot({ terminalId: '', seq: 0, screen: 'history', restored: true, state: termState({ status: 'idle' }) }),
+      })
+    })
+    expect(result.current.snapshot?.restored).toBe(true)
+    // Server-confirmed clear (close or dispose) — state only, no snapshot frame.
+    act(() => { emit({ kind: 'terminal-state', terminalId: '', state: termState({ status: 'idle', cols: 0, rows: 0 }) }) })
+    expect(result.current.snapshot).toEqual({
+      terminalId: '', seq: 0, screen: '', state: termState({ status: 'idle', cols: 0, rows: 0 }), restored: false,
+    })
+    expect(anchors.at(-1)).toEqual(result.current.snapshot)
+  })
+
+  it('a running client heals to idle on a dispose state frame (I5)', () => {
+    const { result } = renderHook(() => useTerminalChannel(SID, true))
+    act(() => { emit({ kind: 'terminal-state', terminalId: 'g1', state: termState() }) })
+    expect(result.current.state?.status).toBe('running')
+    // disposeTerminal pushes idle BEFORE ending the channel.
+    act(() => { emit({ kind: 'terminal-state', terminalId: '', state: termState({ status: 'idle', cols: 80, rows: 24 }) }) })
+    expect(result.current.state?.status).toBe('idle')
+    expect(result.current.snapshot?.screen).toBe('')
+    expect(localStorage.getItem(KEY)).toBeNull()
+  })
+})

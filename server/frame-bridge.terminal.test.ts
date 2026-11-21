@@ -236,7 +236,7 @@ describe('SessionConnection: terminal channel', () => {
     conn.close()
   })
 
-  it('(d) surfaces a stale-generation input as a prose error frame; the channel stays live', async () => {
+  it('(d) surfaces a stale-generation input as a terminal-error frame; the channel stays live', async () => {
     const { fake, sink, conn } = setup()
     fake.addSession('s1')
     fake.staleInputError = new HttpError(409, 'terminal generation is not live')
@@ -246,10 +246,13 @@ describe('SessionConnection: terminal channel', () => {
     await waitForFrame(sink, (f) => f.kind === 'terminal-state')
 
     send(conn, { kind: 'terminal-input', sessionId: 's1', terminalId: 't-dead', data: 'ls\r' })
-    const err = await waitForFrame(sink, (f) => f.kind === 'error')
+    const err = await waitForFrame(sink, (f) => f.kind === 'terminal-error')
     expect(err).toEqual({
-      kind: 'error', sessionId: 's1', message: 'terminal-input: terminal generation is not live',
+      kind: 'terminal-error', sessionId: 's1', message: 'terminal-input: terminal generation is not live',
     })
+    // Terminal control failures must NEVER ride the prose error frame — the
+    // session synchronizer renders that as the persistent chat error bar.
+    expect(sink.kinds('error')).toEqual([])
 
     // The channel survived the error: a valid input's output still arrives.
     send(conn, { kind: 'terminal-input', sessionId: 's1', terminalId: 't-live', data: 'ls\r' })
@@ -306,23 +309,24 @@ describe('SessionConnection: terminal channel', () => {
     conn.close()
   })
 
-  it('(g) surfaces an unsupported session as an error frame without crashing the connection', async () => {
+  it('(g) surfaces an unsupported session as a terminal-error frame without crashing the connection', async () => {
     const { fake, sink, conn } = setup()
     fake.unsupported = true
     fake.addSession('s1')
     send(conn, { kind: 'terminal-subscribe', sessionId: 's1' })
-    const err = await waitForFrame(sink, (f) => f.kind === 'error')
+    const err = await waitForFrame(sink, (f) => f.kind === 'terminal-error')
     expect(err).toEqual({
-      kind: 'error', sessionId: 's1', message: 'terminal subscribe: terminal not supported',
+      kind: 'terminal-error', sessionId: 's1', message: 'terminal subscribe: terminal not supported',
     })
     expect(sink.kinds('terminal-snapshot')).toEqual([])
 
     // Control ops surface the same capability gate…
     send(conn, { kind: 'terminal-create', sessionId: 's1', cols: 80, rows: 24 })
-    await waitForFrame(sink, (f) => f.kind === 'error' && String(f.message).startsWith('terminal-create:'))
+    await waitForFrame(sink, (f) => f.kind === 'terminal-error' && String(f.message).startsWith('terminal-create:'))
     // …and the connection is still serving frames afterwards.
     send(conn, { kind: 'ping', nonce: 1 })
     await waitForFrame(sink, (f) => f.kind === 'pong')
+    expect(sink.kinds('error')).toEqual([])
     conn.close()
   })
 
@@ -359,13 +363,14 @@ describe('SessionConnection: terminal channel', () => {
     conn2.close()
   })
 
-  it('answers an unknown session with an error frame (manager returns null)', async () => {
+  it('answers an unknown session with a terminal-error frame (manager returns null)', async () => {
     const { sink, conn } = setup()
     send(conn, { kind: 'terminal-subscribe', sessionId: 'ghost' })
-    await waitForFrame(sink, (f) => f.kind === 'error')
-    expect(sink.kinds('error')).toEqual([
-      { kind: 'error', sessionId: 'ghost', message: 'terminal subscribe: session ghost not found' },
+    await waitForFrame(sink, (f) => f.kind === 'terminal-error')
+    expect(sink.kinds('terminal-error')).toEqual([
+      { kind: 'terminal-error', sessionId: 'ghost', message: 'terminal subscribe: session ghost not found' },
     ])
+    expect(sink.kinds('error')).toEqual([])
     conn.close()
   })
 
@@ -405,6 +410,30 @@ describe('SessionConnection: terminal channel', () => {
     expect(sink.kinds('terminal-snapshot')).toHaveLength(2)
     send(conn, { kind: 'terminal-input', sessionId: 's1', terminalId: 't-live', data: 'after\r' })
     await waitForFrame(sink, (f) => f.kind === 'terminal-output')
+    conn.close()
+  })
+
+  it('a create after a server-side channel end revives the channel (sleep/dispose heal)', async () => {
+    const { fake, sink, conn } = setup()
+    fake.addSession('s1', runningSnapshot())
+    send(conn, { kind: 'terminal-subscribe', sessionId: 's1' })
+    await tick()
+    // Manager-side teardown (sleep / GC dispose) ends the pushable; the
+    // bridge releases its entry. The client's overlay stays mounted.
+    fake.endAll('s1')
+    await tick()
+
+    // The next create re-opens the channel WITHOUT a new terminal-subscribe
+    // frame: the revived seed snapshot lands, then the create answer, and
+    // live output flows again.
+    send(conn, { kind: 'terminal-create', sessionId: 's1', cols: 80, rows: 24 })
+    await waitForFrame(sink, (f) => f.kind === 'terminal-state')
+    expect(fake.subscribes).toBe(2)
+    send(conn, { kind: 'terminal-input', sessionId: 's1', terminalId: 't-live', data: 'revived\r' })
+    await waitForFrame(sink, (f) => f.kind === 'terminal-output')
+    expect(sink.kinds('terminal-output')).toEqual([
+      { kind: 'terminal-output', sessionId: 's1', terminalId: 't-live', seq: 1, data: 'revived\r' },
+    ])
     conn.close()
   })
 

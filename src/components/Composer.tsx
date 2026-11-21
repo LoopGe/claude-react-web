@@ -194,8 +194,9 @@ interface Props {
    *  when this AND terminalRunning are set — a running shell is the only
    *  state with something to show, so idle/exited panels carry no button. */
   onOpenTerminal?: () => void
-  /** The panel's terminal channel reports a running shell. Lifted from
-   *  Chat's channel state (status transitions only — never output churn). */
+  /** The session's terminal slot holds a live shell (SessionInfo's
+   *  terminalRunning lifecycle fact — broadcast on terminal transitions
+   *  only, never output churn; works without a terminal subscription). */
   terminalRunning?: boolean
 }
 
