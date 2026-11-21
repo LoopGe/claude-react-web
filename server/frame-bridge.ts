@@ -41,6 +41,7 @@ import type {
   WsSubagentTranscriptUnsubscribe,
   WsTasklistSnapshot,
   WsTranscriptRebased,
+  WsRebuildWaiting,
   WsTurnChanges,
 } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
@@ -888,6 +889,13 @@ export class SessionConnection {
         // generation before any new-generation frame arrives.
         if ((value as { kind?: string } | null)?.kind === 'transcript-rebased') {
           this.sink.send(value as WsTranscriptRebased)
+          return
+        }
+        // Actionable rebuild-waiting status (spec §8.1): forwarded UNWRAPPED on
+        // the primary queue like the rebase envelope — a control frame, not a
+        // transcript row, so it carries no seq/generation stamp.
+        if ((value as { kind?: string } | null)?.kind === 'rebuild-waiting') {
+          this.sink.send(value as WsRebuildWaiting)
           return
         }
         // The same message object reference is delivered to every

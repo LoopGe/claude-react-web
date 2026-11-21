@@ -831,6 +831,16 @@ export function buildSessionRouter(
     return c.json({ ok: true, ...result })
   })
 
+  // Defer a pending transcript rebuild (spec §8.1, Task 6): the user chooses to
+  // keep working on the old projection instead of waiting for a long-term
+  // blocker (background task / plugin invocation) to clear. Restores admission,
+  // pauses auto-scheduling, and retains the durable pending payload + a warning.
+  // A new anomaly or an explicit Retry (POST /transcript/reconcile) resumes it.
+  app.post('/sessions/:id/transcript/defer-rebuild', async (c) => {
+    const result = await sm.deferRebuild(c.req.param('id'))
+    return c.json({ ok: true, ...result })
+  })
+
   // Handoff `/handoff` — the app-side summarize + clear-with-seed flow: the
   // session's history is summarized by the aux LLM and a FRESH continuation
   // session Y is seeded with the hand-off summary (the client swaps the panel

@@ -13,7 +13,7 @@
  * SessionManager wires the real sidecar/store/provider in Tasks 6–7.
  */
 
-import { makeCommitV2, type GenerationRecord } from './transcript-sidecar.js'
+import { makeCommitV2, makeRebuildPendingRow, type GenerationRecord } from './transcript-sidecar.js'
 import type { PendingOperation } from './transcript-reconcile.js'
 import type { ResetJournal } from './reset-journal.js'
 
@@ -210,6 +210,14 @@ export class TranscriptWriter {
    *  materialization and recovery. */
   nextDispatchOrdinal(): number {
     return ++this.dispatchOrdinalCounter
+  }
+
+  /** Raise the dispatch-ordinal floor past a recovered/replayed max WITHOUT
+   *  enqueuing (the drained bucket replays straight to the provider, never the
+   *  queued queue — final review #3, RF5). Bump-only: a lower ordinal never
+   *  lowers the floor. */
+  seedDispatchOrdinal(ordinal: number): void {
+    if (ordinal > this.dispatchOrdinalCounter) this.dispatchOrdinalCounter = ordinal
   }
 
   /** Record the durable dispatch states (enqueue-not-attempted → enqueue-
@@ -414,11 +422,92 @@ export class TranscriptWriter {
     this.queued.unshift(...ops)
   }
 
+  /** Persist a rebuild-quiesce drain as `drained-to-pending` (spec §8.1 step 3,
+   *  Task 5): ONE input batch carrying every preserved entry's public payload,
+   *  queueEntryId (operationId), kind and global dispatchOrdinal. This is NOT a
+   *  withdrawal — classifyPendingInputs routes these to the read-only
+   *  drainedToPending bucket (no auto re-dispatch); only the rebuild executor's
+   *  explicit resume replay consumes them. Chained on dispatchQueue so the
+   *  batch lands AFTER any in-flight queued-not-published / dispatch-state
+   *  commit (the drained state must be the LAST input state per operationId).
+   *  The provider payload is deliberately NOT stored: replay re-resolves
+   *  attachment file blocks through the send-path resolver (spec §10), exactly
+   *  as crash recovery does, so the sidecar never holds resolved native paths. */
+  drainToPending(ops: readonly DispatchOp[]): Promise<void> {
+    if (ops.length === 0) return Promise.resolve()
+    const run = this.dispatchQueue.then(async () => {
+      const batchId = nextBatchId()
+      const rows = ops.map((op) => ({
+        v: 2,
+        batchId,
+        operationId: op.operationId,
+        dispatchOrdinal: op.dispatchOrdinal,
+        state: 'drained-to-pending',
+        inputKind: op.kind,
+        payload: op.payload,
+      }))
+      await this.commit(
+        rows,
+        makeCommitV2({ batchId, batchType: 'input', generation: this.deps.generation(), reason: 'initial', contentPolicy: 'preserve', rows }),
+      )
+    })
+    this.pendingDispatch++
+    this.dispatchQueue = run.catch(() => {}).finally(() => { this.pendingDispatch-- })
+    return run
+  }
+
+  /** Advance preserved entries past `drained-to-pending` once the resume replay
+   *  has dispatched them (spec §8.1 step 6): commit `enqueue-attempted` per op
+   *  so a crash mid-replay classifies them as dispatch-unknown (manual recovery,
+   *  never auto re-dispatched) rather than stranding them in the read-only
+   *  drained bucket. The materialized prompt row / consumed lifecycle resolves
+   *  them on the next reconcile. */
+  markDrainedDispatched(ops: readonly DispatchOp[]): Promise<void> {
+    if (ops.length === 0) return Promise.resolve()
+    const run = this.dispatchQueue.then(async () => {
+      for (const op of ops) await this.inputCommit(op, 'enqueue-attempted')
+    })
+    this.pendingDispatch++
+    this.dispatchQueue = run.catch(() => {}).finally(() => { this.pendingDispatch-- })
+    return run
+  }
+
   deferOldCommit(msg: unknown, seq: number): void {
     this.deferred.push({ msg, seq })
   }
   addPendingRebuild(op: PendingOperation): void {
     this.pending.push(op)
+  }
+
+  /** Initiate an ordered rebuild for one pending operation (spec §8.1/§8.3,
+   *  Task 1): set the rebuilding flag, durably append a non-public `recovery`
+   *  batch carrying the full rebuild-pending payload + entry identity (fsync
+   *  BEFORE resolve), THEN add the op to pendingRebuilds. No seq, no ring, no
+   *  WS frame — this record is the only write allowed before capability upgrade
+   *  and never advances a client cursor.
+   *
+   *  All-or-nothing postcondition: on resolve the op is durable AND pending AND
+   *  rebuilding is set; on rejection NOTHING is left behind — a closed writer
+   *  rejects up front (mirrors appendDurable's fence, so a no-op commit can never
+   *  smuggle a non-durable op into pendingRebuilds), and a write failure resets
+   *  the flag and rethrows (durable-before-publish barrier), leaving
+   *  pendingRebuilds empty and rebuilding false. Degraded-state admission is a
+   *  Task 2 retry-semantics decision and is deliberately NOT fenced here. */
+  async beginRebuild(op: PendingOperation): Promise<void> {
+    if (this.closedFlag) throw new Error('closed: transcript writer fenced')
+    this.rebuildingFlag = true
+    const batchId = nextBatchId()
+    const row = makeRebuildPendingRow(op, batchId, this.nextDispatchOrdinal())
+    try {
+      await this.commit(
+        [row],
+        makeCommitV2({ batchId, batchType: 'recovery', generation: this.deps.generation(), reason: 'initial', contentPolicy: 'preserve', rows: [row] }),
+      )
+    } catch (err) {
+      this.rebuildingFlag = false
+      throw err
+    }
+    this.addPendingRebuild(op)
   }
 
   /** Release deferred old-generation commits in order; retain pendingRebuilds

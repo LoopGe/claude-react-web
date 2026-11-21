@@ -646,6 +646,14 @@ export class SessionSynchronizer {
         store.dispatch({ type: 'CONTEXT_USAGE', usage: frame.usage as ContextUsage })
         break
       }
+      case 'rebuild-waiting': {
+        // Actionable rebuild-waiting status (spec §8.1): a control frame on the
+        // primary queue (no seq/generation). Non-empty blockers set the Composer
+        // banner; an empty array clears it. The reducer's mirror resets provide
+        // the generation guard (a committed rebuild drops the slot).
+        store.dispatch({ type: 'REBUILD_WAITING', blockers: frame.blockers, pendingOperationCount: frame.pendingOperationCount })
+        break
+      }
       case 'prompt-suggestion': {
         store.dispatch({ type: 'PROMPT_SUGGESTION', suggestion: frame.suggestion })
         break

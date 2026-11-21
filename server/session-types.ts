@@ -30,7 +30,7 @@ import type { SessionSkillOverride } from '../shared/skills.js'
 import type { SessionToolProfile } from '../shared/tool-profile.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
-import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased, WsTurnChanges } from '../shared/ws-protocol.js'
+import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased, WsRebuildWaiting, WsTurnChanges } from '../shared/ws-protocol.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 import type { FirstPartyToolStatus } from '../shared/first-party.js'
 
@@ -125,11 +125,12 @@ export interface DebugSessionDetail extends DebugSessionSummary {
   contextUsageMismatch: boolean
 }
 
-/** One frame on the primary per-session message queue: an SDK message, or
- *  the ordered-rebase control envelope (spec §8.3). The envelope rides the
- *  SAME FIFO so every connection receives the reset before any
- *  new-generation frame; frame-bridge distinguishes it by `kind`. */
-export type SessionLiveFrame = SDKMessage | WsTranscriptRebased
+/** One frame on the primary per-session message queue: an SDK message, the
+ *  ordered-rebase control envelope (spec §8.3), or the actionable
+ *  rebuild-waiting status (spec §8.1). Both control frames ride the SAME FIFO
+ *  so every connection receives them in order relative to live frames;
+ *  frame-bridge distinguishes them by `kind` and forwards them unwrapped. */
+export type SessionLiveFrame = SDKMessage | WsTranscriptRebased | WsRebuildWaiting
 
 /** Subscriber — each connected client gets one of these. */
 export interface Subscriber {
@@ -295,6 +296,17 @@ export type { SessionPhase, SessionRecap, SessionRecapStats } from '../shared/se
  *  truth lives in the shared wire protocol so server and plugin contract can't
  *  drift. */
 export type { SessionActivity } from '../shared/app-plugins/rpc-protocol.js'
+
+/** One host-dispatched input tracked for the rebuild drain-preserve-replay
+ *  (spec §8.1, Task 5). `payload` is the public wire form (ring/broadcast);
+ *  `providerPayload` is the resolved form the provider enqueue uses (absent
+ *  for plain-text sends, where payload === providerPayload). */
+export interface DispatchLedgerEntry {
+  kind: 'user' | 'supplement' | 'control'
+  dispatchOrdinal: number
+  payload: SDKUserMessage
+  providerPayload?: unknown
+}
 
 export interface Session {
   id: string
@@ -823,6 +835,18 @@ export interface Session {
    *  turn-end fallback can recover the original message even after ring
    *  eviction (historyCap). */
   steeredInFlight: Map<string, SDKUserMessage>
+  /** Per-session dispatch ledger (spec §8.1 drain-preserve-replay, Task 5):
+   *  every input the host dispatched (user / supplement / control) keyed by its
+   *  queueEntryId (uuid), carrying the global dispatchOrdinal + public payload
+   *  + resolved provider payload. The rebuild quiesce's drainInputQueue joins
+   *  the live queues (writer queued-not-published, host Pushable, undelivered
+   *  supplements) against this ledger to preserve each entry's ordinal/kind/
+   *  payload for the resume replay. Runtime-only: read at drain (before
+   *  teardown); the durable drained-to-pending rows drive the post-resume
+   *  replay, so a fresh Session starts empty. Optional so minimal test fixtures
+   *  that never dispatch input can omit it; spawn always initializes it and the
+   *  dispatch sites lazily create it (`??=`) for any fixture that does dispatch. */
+  dispatchLedger?: Map<string, DispatchLedgerEntry>
   /** Snapshot anchor captures deferred because send() fired while the
    *  session was working (pendingTurns>0, queueDepth>0, etc). Each uuid
    *  is a user message that needs capture+recordAnchor when the turn

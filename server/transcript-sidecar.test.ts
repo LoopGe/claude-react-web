@@ -13,10 +13,13 @@ import {
   truncateToLastCommit,
   unsupersededCorrupt,
   makeCommitV2,
+  makeRebuildPendingRow,
+  readPendingRebuilds,
   recordTranscriptMessage,
   transcriptRow,
   type TranscriptHolder,
 } from './transcript-sidecar'
+import type { PendingOperation } from './transcript-reconcile'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -853,5 +856,139 @@ describe('classifyPendingInputs (T7b-6 crash-recovery classification)', () => {
       ...inputBatch('u2', 2, 'queued-not-published', payload('u2')),
     ]
     expect(classifyPendingInputs(rows).queued.map((o) => o.operationId)).toEqual(['u1', 'u2', 'u3'])
+  })
+
+  // ── drained-to-pending (spec §8.1 drain-preserve-replay, Task 5) ──
+  const drainedBatch = (operationId: string, dispatchOrdinal: number, inputKind: string, p?: unknown) => {
+    const batchId = `dr-${++bid}`
+    const row = { v: 2, batchId, operationId, dispatchOrdinal, state: 'drained-to-pending', inputKind, ...(p !== undefined ? { payload: p } : {}) }
+    return [row, makeCommitV2({ batchId, batchType: 'input', generation: 0, reason: 'initial', contentPolicy: 'preserve', rows: [row] })]
+  }
+
+  it('drained-to-pending → drainedToPending bucket, NEVER auto re-dispatch (not queued/notAttempted)', () => {
+    const rows = [...drainedBatch('u1', 1, 'user', payload('u1'))]
+    const view = classifyPendingInputs(rows)
+    expect(view.drainedToPending).toEqual([{ operationId: 'u1', dispatchOrdinal: 1, payload: payload('u1'), kind: 'user' }])
+    expect(view.queued).toEqual([])
+    expect(view.notAttempted).toEqual([])
+    expect(view.dispatchUnknown).toEqual([])
+  })
+
+  it('drained-to-pending preserves supplement/control kind for the resume replay', () => {
+    const rows = [
+      ...drainedBatch('c1', 1, 'control', payload('c1')),
+      ...drainedBatch('s1', 2, 'supplement', payload('s1')),
+      ...drainedBatch('u1', 3, 'user', payload('u1')),
+    ]
+    const view = classifyPendingInputs(rows)
+    expect(view.drainedToPending.map((o) => [o.operationId, o.kind])).toEqual([['c1', 'control'], ['s1', 'supplement'], ['u1', 'user']])
+  })
+
+  it('drained-to-pending stays pending even when its prompt row is materialized (materialization is NOT dispatch evidence)', () => {
+    // A drained host-queue turn was published at send time (live row) but the
+    // provider never consumed it — it must still replay, unlike a queued op
+    // whose materialization resolves it.
+    const rows = [...drainedBatch('u1', 1, 'user', payload('u1')), ...liveBatch(2, 'u1')]
+    expect(classifyPendingInputs(rows).drainedToPending.map((o) => o.operationId)).toEqual(['u1'])
+    expect(classifyPendingInputs(rows).queued).toEqual([])
+  })
+
+  it('drained-to-pending resolved by consumed lifecycle / canonical provider uuid → excluded', () => {
+    const consumed = [...drainedBatch('u1', 1, 'user', payload('u1')), ...lifecycleBatch('u1', 'consumed')]
+    expect(classifyPendingInputs(consumed).drainedToPending).toEqual([])
+    const canonical = [...drainedBatch('u1', 1, 'user', payload('u1'))]
+    expect(classifyPendingInputs(canonical, new Set(['u1'])).drainedToPending).toEqual([])
+  })
+
+  it('drained-to-pending advanced to enqueue-attempted by the replay → dispatchUnknown (no longer drained)', () => {
+    const rows = [...drainedBatch('u1', 1, 'user', payload('u1')), ...inputBatch('u1', 1, 'enqueue-attempted')]
+    const view = classifyPendingInputs(rows)
+    expect(view.drainedToPending).toEqual([])
+    expect(view.dispatchUnknown.map((o) => o.operationId)).toEqual(['u1'])
+  })
+})
+
+describe('readPendingRebuilds (rebuild-pending recovery, spec §8.1/§8.3)', () => {
+  let bid = 0
+  const resultMsg = (uuid: string) => ({ type: 'result', uuid, subtype: 'success', assistantUuid: `A-${uuid}`, num_turns: 1 })
+  const pendingOp = (operationId: string, uuid: string, source: 'result' | 'app' | 'provider' = 'result'): PendingOperation => ({
+    operationId,
+    entry: { occurrenceId: `uuid:${uuid}:${source === 'result' ? 'result' : 'user'}:app:hash`, msg: resultMsg(uuid), source, aliases: [], evicted: false },
+  })
+  function pendingBatch(op: PendingOperation, dispatchOrdinal: number, generation = 0) {
+    const batchId = `rp-${++bid}`
+    const row = makeRebuildPendingRow(op, batchId, dispatchOrdinal)
+    return [row, makeCommitV2({ batchId, batchType: 'recovery', generation, reason: 'initial', contentPolicy: 'preserve', rows: [row] })]
+  }
+  function generationBatch(generation: number) {
+    const batchId = `gen-${++bid}`
+    return [makeCommitV2({ batchId, batchType: 'generation', generation, reason: 'ordered-rebuild', contentPolicy: 'preserve', rows: [] })]
+  }
+  function resetBatch(generation: number) {
+    const batchId = `rst-${++bid}`
+    return [makeCommitV2({ batchId, batchType: 'reset', generation, reason: 'clear', contentPolicy: 'replace', rows: [] })]
+  }
+
+  it('recovers the full payload + entry identity from a committed recovery row', () => {
+    const op = pendingOp('op1', 'R1')
+    expect(readPendingRebuilds(pendingBatch(op, 1))).toEqual([op])
+  })
+
+  it('drops the pending once a newer generation commits (superseded)', () => {
+    const op = pendingOp('op1', 'R1')
+    const rows = [...pendingBatch(op, 1, 0), ...generationBatch(1)]
+    expect(readPendingRebuilds(rows)).toEqual([])
+  })
+
+  it('keeps the pending when the committed generation is not newer', () => {
+    const op = pendingOp('op1', 'R1')
+    const rows = [...pendingBatch(op, 1, 5), ...generationBatch(5)]
+    expect(readPendingRebuilds(rows)).toEqual([op])
+  })
+
+  it('supersedes per-batch across multiple pendings: only ops at/above the adopted generation survive', () => {
+    const opA = pendingOp('opA', 'RA') // persisted at gen 0
+    const opB = pendingOp('opB', 'RB') // persisted at gen 1
+    const rows = [...pendingBatch(opA, 1, 0), ...pendingBatch(opB, 2, 1), ...generationBatch(1)]
+    // adopted gen 1 supersedes opA (0 < 1) but NOT opB (1 >= 1) — a global drop
+    // would wrongly lose opB.
+    expect(readPendingRebuilds(rows).map((o) => o.operationId)).toEqual(['opB'])
+  })
+
+  it('a reset (clear) generation supersedes the pending', () => {
+    const op = pendingOp('op1', 'R1')
+    const rows = [...pendingBatch(op, 1, 0), ...resetBatch(1)]
+    expect(readPendingRebuilds(rows)).toEqual([])
+  })
+
+  it('ignores an uncommitted crash tail (no commit record)', () => {
+    const op = pendingOp('op1', 'R1')
+    const row = makeRebuildPendingRow(op, 'rp-tail', 1)
+    expect(readPendingRebuilds([row])).toEqual([])
+  })
+
+  it('ignores a corrupt (bad-checksum) recovery commit', () => {
+    const op = pendingOp('op1', 'R1')
+    const batch = pendingBatch(op, 1)
+    const commit = batch[1] as { checksum: string }
+    commit.checksum = 'deadbeef'
+    expect(readPendingRebuilds(batch)).toEqual([])
+  })
+
+  it('ignores non-rebuild-pending recovery rows', () => {
+    const batchId = 'rp-other'
+    const row = { v: 2, batchId, kind: 'result-revision', operationId: 'op1', payload: { kind: 'result-revision' } }
+    const rows = [row, makeCommitV2({ batchId, batchType: 'recovery', generation: 0, reason: 'initial', contentPolicy: 'preserve', rows: [row] })]
+    expect(readPendingRebuilds(rows)).toEqual([])
+  })
+
+  it('orders recovered ops by dispatchOrdinal and dedups by operationId (last wins)', () => {
+    const op1 = pendingOp('op1', 'R1')
+    const op2 = pendingOp('op2', 'R2')
+    const op2b = pendingOp('op2', 'R2b') // retry re-persists op2 with a newer payload
+    const rows = [...pendingBatch(op2, 2), ...pendingBatch(op1, 1), ...pendingBatch(op2b, 3)]
+    const recovered = readPendingRebuilds(rows)
+    expect(recovered.map((o) => o.operationId)).toEqual(['op1', 'op2'])
+    expect(recovered[1]).toEqual(op2b) // last committed payload wins, exactly once
   })
 })

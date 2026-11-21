@@ -110,6 +110,67 @@ describe('reducer: legacy cursor fields are absent from the mirror', () => {
   })
 })
 
+describe('reducer: rebuild-waiting status (spec §8.1, Task 6)', () => {
+  it('REBUILD_WAITING with blockers sets the mirror slot', () => {
+    const state = reduceSessionState(createInitialSessionState('s'), {
+      type: 'REBUILD_WAITING', blockers: ['background-task'], pendingOperationCount: 2,
+    })
+    expect(state.mirror.rebuildWaiting).toEqual({ blockers: ['background-task'], pendingOperationCount: 2 })
+  })
+
+  it('an empty-blockers frame clears the slot', () => {
+    let state = reduceSessionState(createInitialSessionState('s'), {
+      type: 'REBUILD_WAITING', blockers: ['turn', 'plugin-invocation'], pendingOperationCount: 1,
+    })
+    expect(state.mirror.rebuildWaiting).not.toBeNull()
+    state = reduceSessionState(state, { type: 'REBUILD_WAITING', blockers: [], pendingOperationCount: 0 })
+    expect(state.mirror.rebuildWaiting).toBeNull()
+  })
+
+  it('an identical re-emission reuses the previous reference (no subscriber churn)', () => {
+    const first = reduceSessionState(createInitialSessionState('s'), {
+      type: 'REBUILD_WAITING', blockers: ['background-task'], pendingOperationCount: 1,
+    })
+    const second = reduceSessionState(first, {
+      type: 'REBUILD_WAITING', blockers: ['background-task'], pendingOperationCount: 1,
+    })
+    expect(second).toBe(first)
+    expect(second.mirror.rebuildWaiting).toBe(first.mirror.rebuildWaiting)
+  })
+
+  it('a changed blocker set updates the slot', () => {
+    const first = reduceSessionState(createInitialSessionState('s'), {
+      type: 'REBUILD_WAITING', blockers: ['background-task'], pendingOperationCount: 1,
+    })
+    const second = reduceSessionState(first, {
+      type: 'REBUILD_WAITING', blockers: ['client-upgrade'], pendingOperationCount: 1,
+    })
+    expect(second.mirror.rebuildWaiting).toEqual({ blockers: ['client-upgrade'], pendingOperationCount: 1 })
+  })
+
+  it('generation guard: REBASE_TRANSCRIPT drops the waiting status (committed rebuild)', () => {
+    const waiting = reduceSessionState(createInitialSessionState('s'), {
+      type: 'REBUILD_WAITING', blockers: ['background-task'], pendingOperationCount: 1,
+    })
+    const rebased = reduceSessionState(waiting, { type: 'REBASE_TRANSCRIPT', generation: 1, headSeq: 5 })
+    expect(rebased.mirror.rebuildWaiting).toBeNull()
+  })
+
+  it('generation guard: CLEAR_TRANSCRIPT and WINDOW_BUMP drop the waiting status', () => {
+    const waiting = reduceSessionState(createInitialSessionState('s'), {
+      type: 'REBUILD_WAITING', blockers: ['turn'], pendingOperationCount: 1,
+    })
+    expect(reduceSessionState(waiting, { type: 'CLEAR_TRANSCRIPT' }).mirror.rebuildWaiting).toBeNull()
+    expect(reduceSessionState(waiting, { type: 'WINDOW_BUMP', generation: 2, headSeq: 0 }).mirror.rebuildWaiting).toBeNull()
+  })
+
+  it('the waiting status never touches the intent layer', () => {
+    const base = createInitialSessionState('s')
+    const state = reduceSessionState(base, { type: 'REBUILD_WAITING', blockers: ['background-task'], pendingOperationCount: 1 })
+    expect(state.intent).toBe(base.intent)
+  })
+})
+
 describe('reducer: optimistic user message + server echo', () => {
   it('replaces the optimistic placeholder in-place (does NOT append a duplicate)', () => {
     // Regression: when insertUserMessage runs BEFORE the POST awaits, the

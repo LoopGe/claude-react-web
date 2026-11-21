@@ -185,6 +185,38 @@ describe('pump: unaccounted main-thread turn stamping', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Background-task terminal notify (spec §8.1, Task 4). The pump folds a
+// terminal task signal and notifies the SessionManager's pending-rebuild
+// scheduler so a settled background task re-evaluates the quiesce gate.
+// ---------------------------------------------------------------------------
+describe('pump: background-task terminal notify (Task 4)', () => {
+  it('fires onBackgroundTaskSettled after a task_notification fold', async () => {
+    const notif = { type: 'system', subtype: 'task_notification', task_id: 't1', status: 'completed', tool_use_id: 'tu1' } as unknown as SDKMessage
+    const { session } = makePumpSession([notif])
+    const settled: string[] = []
+    await pump(session, makePumpDeps({ onBackgroundTaskSettled: (id) => settled.push(id) }))
+    expect(settled).toEqual(['s-pump'])
+    expect(session.tasks.get('t1')?.status).toBe('completed')
+  })
+
+  it('fires onBackgroundTaskSettled after a background_tasks_changed fold', async () => {
+    const frame = { type: 'system', subtype: 'background_tasks_changed', tasks: [] } as unknown as SDKMessage
+    const { session } = makePumpSession([frame])
+    const settled: string[] = []
+    await pump(session, makePumpDeps({ onBackgroundTaskSettled: (id) => settled.push(id) }))
+    expect(settled).toEqual(['s-pump'])
+  })
+
+  it('does NOT fire on a non-terminal task_progress fold', async () => {
+    const frame = { type: 'system', subtype: 'task_progress', task_id: 't1', summary: 'working' } as unknown as SDKMessage
+    const { session } = makePumpSession([frame])
+    const settled: string[] = []
+    await pump(session, makePumpDeps({ onBackgroundTaskSettled: (id) => settled.push(id) }))
+    expect(settled).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Frame-origin classification at ingestion (agent note
 // 2026-11-19-user-frame-origin-identity). Host echoes are identified by
 // send-ledger uuid membership; CLI synthetic frames (compact summary,

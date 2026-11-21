@@ -549,7 +549,24 @@ export class AppPluginManager implements AppPluginBroadcaster {
     } finally {
       this.inFlight.delete(invocationId)
       clearedSub?.unsubscribe()
+      // The invocation settled (success OR failure) — the accepted-work quiesce
+      // blocker it registered is gone. Re-evaluate a pending transcript rebuild
+      // so an idle session whose only blocker was this command auto-fires promptly
+      // instead of waiting for the next unrelated lifecycle event (spec §8.1,
+      // Task 6 carried ruling). No-op when no rebuild is pending.
+      if (sessionId) this.sm.schedulePendingRebuilds(sessionId)
     }
+  }
+
+  /** Whether an accepted (in-flight) command invocation is registered for a
+   *  session. The SessionManager's quiesceEligible probe reads this (wired in
+   *  bootstrap) so an ordered rebuild never quiesces over accepted plugin work
+   *  (spec §8.1). Global commands (no sessionId) never block a specific session. */
+  hasInFlightInvocation(sessionId: string): boolean {
+    for (const entry of this.inFlight.values()) {
+      if (entry.sessionId === sessionId) return true
+    }
+    return false
   }
 
   /** Abort an in-flight command and notify the child to stop. Used by

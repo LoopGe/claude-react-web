@@ -199,6 +199,11 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
   })
   await appPluginManager.initialize()
   if (!appPluginsEnabled) log.info('app plugins disabled')
+  // Accepted plugin work is a quiesce blocker for the transcript auto-rebuild
+  // (spec §8.1): wire the SessionManager's probe to the plugin invocation registry
+  // so a rebuild never fires over an in-flight session-scoped plugin command.
+  // Wired even when plugins are disabled — the registry is then empty (no blocker).
+  sessionManager.setPluginInvocationProbe((id) => appPluginManager.hasInFlightInvocation(id))
 
   // The single default workspace for this process, resolved once. Every
   // surface that advertises or applies a default — GET /api/config,

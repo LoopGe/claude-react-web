@@ -29,6 +29,7 @@ import { useCountUp } from '../hooks/useCountUp'
 import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo } from './icons/ToolIcons'
 import type { ScheduledSendsApi } from '../hooks/useScheduledSends'
 import type { TranscriptRecovery } from '../session-sync/session-synchronizer'
+import type { RebuildWaitingState } from '../session-store/types'
 import { SchedulePicker } from './SchedulePicker'
 import { HoverHint } from './HoverHint'
 
@@ -74,6 +75,18 @@ interface Props {
   /** Retry the transcript rebuild (POST /transcript/reconcile). Wired when
    *  recovery is degraded. */
   onRetryReconcile?: () => void
+  /** Actionable rebuild-waiting status (spec §8.1): a pending rebuild is blocked
+   *  long-term (background task / plugin invocation / turn / client-upgrade).
+   *  Renders a banner above the editor with task-stop / Retry / defer actions.
+   *  Null when no rebuild is waiting. */
+  rebuildWaiting?: RebuildWaitingState | null
+  /** Defer the pending rebuild (POST /transcript/defer-rebuild): restore
+   *  admission, pause auto-scheduling, retain the payload. Wired with the
+   *  rebuild-waiting banner's Defer button. */
+  onDeferRebuild?: () => void
+  /** Stop the session's running background tasks (the rebuild-waiting banner's
+   *  task-stop action). Wired only when a background-task blocker is present. */
+  onStopBackgroundTasks?: () => void
   dragOver: boolean
   onFilesPicked: (files: File[]) => void
   onDragOver: (e: React.DragEvent) => void
@@ -191,6 +204,9 @@ export const Composer = memo(function Composer({
   onForkFromLastCompleted,
   recovery,
   onRetryReconcile,
+  rebuildWaiting,
+  onDeferRebuild,
+  onStopBackgroundTasks,
   dragOver,
   onFilesPicked,
   onDragOver,
@@ -787,6 +803,45 @@ export const Composer = memo(function Composer({
   // forgot one side made the wrapper either not open or never collapse. A
   // single array removes the chance to disagree.
   const composerRows: ReactNode[] = []
+  // Actionable rebuild-waiting banner (spec §8.1): a pending rebuild is blocked
+  // long-term, so offer task-stop / Retry / defer instead of an infinite load.
+  // The editor stays rendered (the host keeps send enabled; a send while admission
+  // is closed surfaces REBUILD_REQUIRED). Precedes the passive blocked notice.
+  if (rebuildWaiting && rebuildWaiting.blockers.length > 0) {
+    const blockerText = rebuildWaiting.blockers.map((b) =>
+      b === 'background-task' ? 'a running background task'
+      : b === 'plugin-invocation' ? 'a plugin command'
+      : b === 'turn' ? 'the current turn'
+      : 'an older tab to reload',
+    ).join(', ')
+    const hasBackgroundBlocker = rebuildWaiting.blockers.includes('background-task')
+    composerRows.push(
+      <div className="transcript-recovery transcript-recovery-waiting" key="rebuild-waiting" role="status">
+        <IconAlertTriangle size={12} aria-hidden />
+        <span>
+          Transcript rebuild is waiting for {blockerText}
+          {rebuildWaiting.pendingOperationCount > 1 ? ` (${rebuildWaiting.pendingOperationCount} operations pending)` : ''}.
+        </span>
+        <div className="session-ended-actions">
+          {hasBackgroundBlocker && onStopBackgroundTasks && (
+            <button type="button" className="chat-panel-resume-btn" onClick={onStopBackgroundTasks}>
+              Stop tasks
+            </button>
+          )}
+          {onRetryReconcile && (
+            <button type="button" className="chat-panel-resume-btn" onClick={onRetryReconcile}>
+              Retry rebuild
+            </button>
+          )}
+          {onDeferRebuild && (
+            <button type="button" className="chat-panel-resume-btn" onClick={onDeferRebuild}>
+              Defer
+            </button>
+          )}
+        </div>
+      </div>,
+    )
+  }
   // Capability-blocked rebuild (spec §8.3): a passive notice ABOVE the editor —
   // the editor stays rendered and enabled, capable tabs keep working on the
   // old generation while an incapable legacy tab blocks the rebuild.

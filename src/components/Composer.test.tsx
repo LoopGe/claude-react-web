@@ -1241,3 +1241,56 @@ describe('Composer transcript recovery banner (spec §10)', () => {
     expect(container.querySelector('.transcript-recovery')).toBeNull()
   })
 })
+
+describe('Composer rebuild-waiting banner (spec §8.1, Task 6)', () => {
+  it('renders the three actions (task-stop / Retry / defer) and each fires its handler', () => {
+    const onRetryReconcile = vi.fn()
+    const onDeferRebuild = vi.fn()
+    const onStopBackgroundTasks = vi.fn()
+    const { getByRole, container } = render(
+      <Composer
+        {...defaultProps}
+        rebuildWaiting={{ blockers: ['background-task'], pendingOperationCount: 1 }}
+        onRetryReconcile={onRetryReconcile}
+        onDeferRebuild={onDeferRebuild}
+        onStopBackgroundTasks={onStopBackgroundTasks}
+      />,
+    )
+    expect(container.querySelector('.transcript-recovery-waiting')).not.toBeNull()
+    fireEvent.click(getByRole('button', { name: 'Stop tasks' }))
+    expect(onStopBackgroundTasks).toHaveBeenCalledOnce()
+    fireEvent.click(getByRole('button', { name: 'Retry rebuild' }))
+    expect(onRetryReconcile).toHaveBeenCalledOnce()
+    fireEvent.click(getByRole('button', { name: 'Defer' }))
+    expect(onDeferRebuild).toHaveBeenCalledOnce()
+  })
+
+  it('hides Stop tasks when no background-task blocker is present', () => {
+    const { queryByRole, getByRole } = render(
+      <Composer
+        {...defaultProps}
+        rebuildWaiting={{ blockers: ['plugin-invocation'], pendingOperationCount: 1 }}
+        onRetryReconcile={vi.fn()}
+        onDeferRebuild={vi.fn()}
+        onStopBackgroundTasks={vi.fn()}
+      />,
+    )
+    expect(queryByRole('button', { name: 'Stop tasks' })).toBeNull()
+    expect(getByRole('button', { name: 'Retry rebuild' })).not.toBeNull()
+    expect(getByRole('button', { name: 'Defer' })).not.toBeNull()
+  })
+
+  it('keeps the editor enabled (waiting never disables send)', () => {
+    const { container } = render(
+      <Composer {...defaultProps} rebuildWaiting={{ blockers: ['turn'], pendingOperationCount: 1 }} onDeferRebuild={vi.fn()} />,
+    )
+    const editor = getEditor(container)
+    expect(editor).not.toBeNull()
+    expect(editor.getAttribute('contenteditable')).not.toBe('false')
+  })
+
+  it('no rebuild-waiting renders no waiting banner', () => {
+    const { container } = render(<Composer {...defaultProps} rebuildWaiting={null} />)
+    expect(container.querySelector('.transcript-recovery-waiting')).toBeNull()
+  })
+})

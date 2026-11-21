@@ -6,6 +6,7 @@
 import { randomUUID } from 'node:crypto'
 import { HttpError } from './errors.js'
 import type { ScheduledSend, ScheduledSendBody } from '../shared/scheduled-send.js'
+import { REBUILD_REQUIRED } from '../shared/ws-protocol.js'
 
 export const MIN_DELAY_MS = 5_000
 export const MAX_PENDING_PER_SESSION = 20
@@ -16,13 +17,31 @@ export interface ScheduledSendDeps {
   /** Session-removed feed (sm.subscribeGlobal). Each `removed` drops that
    *  session's schedules so deleted sessions can't leave garbage. */
   subscribeGlobal?(): { iterable: AsyncIterable<{ kind: string; id?: string }>; unsubscribe(): void }
+  /** True while a transcript rebuild is pending/in flight/user-deferred for
+   *  the session (sm.isRebuildPending). A due send refused with a transient
+   *  teardown status (404/409/410) while this holds is deferred, not failed
+   *  (spec §8.1, final review #2). */
+  isRebuildPending?(sessionId: string): boolean
   now?(): number
   tickMs?: number
 }
 
+/** The transcript-mutation admission refusal (spec §8.1): a due send that
+ *  hits it is DEFERRED (retried in order once admission restores), not failed
+ *  — REBUILD_REQUIRED is not a persistence failure and must not lose the
+ *  scheduled payload. Other errors keep the terminal-failure semantics
+ *  EXCEPT transient rebuild-teardown refusals while a rebuild is pending
+ *  (see fire's catch, final review #2). */
+const isRebuildRequired = (err: unknown): boolean =>
+  err instanceof HttpError && err.status === 409 && err.message === REBUILD_REQUIRED
+
 export class ScheduledSendManager {
   /** pending records by session — the only entries the ticker fires. */
   private active = new Map<string, Map<string, ScheduledSend>>()
+  /** Due sends refused with REBUILD_REQUIRED, per session in original attempt
+   *  order (FIFO). Retried at the head of every tick until admission restores;
+   *  NOT terminal — the payload is kept, not lost (spec §8.1). */
+  private deferred = new Map<string, ScheduledSend[]>()
   /** recent terminal (sent/failed/cancelled) by session, capped TERMINAL_KEEP. */
   private terminal = new Map<string, ScheduledSend[]>()
   private timer: ReturnType<typeof setInterval> | null = null
@@ -52,7 +71,11 @@ export class ScheduledSendManager {
       throw new HttpError(400, `fireAt must be a finite time at least ${MIN_DELAY_MS / 1000}s in the future`)
     }
     const pending = this.active.get(sessionId)
-    if ((pending?.size ?? 0) >= MAX_PENDING_PER_SESSION) {
+    // Deferred records keep their slot: during a long admission closure they
+    // cycle active→deferred, and counting only active would let the deferred
+    // FIFO grow unbounded past the per-session budget.
+    const deferredCount = this.deferred.get(sessionId)?.length ?? 0
+    if ((pending?.size ?? 0) + deferredCount >= MAX_PENDING_PER_SESSION) {
       throw new HttpError(400, `too many scheduled messages for session ${sessionId}`)
     }
     const rec: ScheduledSend = {
@@ -72,6 +95,7 @@ export class ScheduledSendManager {
   list(sessionId: string): ScheduledSend[] {
     return [
       ...(this.active.get(sessionId)?.values() ?? []),
+      ...(this.deferred.get(sessionId) ?? []),
       ...(this.terminal.get(sessionId) ?? []),
     ]
   }
@@ -82,6 +106,15 @@ export class ScheduledSendManager {
     if (rec) {
       pending!.delete(id)
       if (pending!.size === 0) this.active.delete(sessionId)
+      rec.status = 'cancelled'
+      this.pushTerminal(sessionId, rec)
+      return
+    }
+    const deferred = this.deferred.get(sessionId)
+    const di = deferred?.findIndex((r) => r.id === id) ?? -1
+    if (deferred && di >= 0) {
+      const [rec] = deferred.splice(di, 1)
+      if (deferred.length === 0) this.deferred.delete(sessionId)
       rec.status = 'cancelled'
       this.pushTerminal(sessionId, rec)
       return
@@ -97,25 +130,71 @@ export class ScheduledSendManager {
 
   cancelAll(sessionId: string): void {
     this.active.delete(sessionId)
+    this.deferred.delete(sessionId)
     this.terminal.delete(sessionId)
+  }
+
+  /** Attempt one due/deferred record. Returns true when it reached a terminal
+   *  state (sent/failed); false when it was refused with REBUILD_REQUIRED or a
+   *  transient rebuild-teardown refusal while a rebuild is pending, and must
+   *  stay deferred (payload retained, retried in order — spec §8.1). */
+  private async fire(sessionId: string, rec: ScheduledSend): Promise<boolean> {
+    try {
+      const { uuid } = await this.deps.send(sessionId, rec.body)
+      rec.status = 'sent'
+      rec.sentUuid = uuid
+      this.pushTerminal(sessionId, rec)
+      return true
+    } catch (err) {
+      // Transient rebuild-teardown refusals (spec §8.1, final review #2):
+      // during quiesceAndRebuild the session is terminated (410) then removed
+      // from the map (404), and a not-running session refuses 409 — all
+      // BEFORE the REBUILD_REQUIRED admission fence is reached. While a
+      // rebuild is pending/in flight these are not payload failures: defer
+      // and retry in order. Permanent payload errors (400 validation / 413
+      // too large) keep terminal-failure semantics even while pending.
+      const transientTeardown = err instanceof HttpError
+        && (err.status === 404 || err.status === 409 || err.status === 410)
+        && this.deps.isRebuildPending?.(sessionId) === true
+      if (isRebuildRequired(err) || transientTeardown) {
+        rec.status = 'deferred'
+        return false
+      }
+      rec.status = 'failed'
+      rec.error = err instanceof Error ? err.message : String(err)
+      this.pushTerminal(sessionId, rec)
+      return true
+    }
   }
 
   async tick(): Promise<void> {
     const nowMs = this.now()
+    // Deferred sends retry FIRST, in original attempt order — admission may
+    // have cleared since the last tick (rebuild commit / cancel). Claim the
+    // whole batch synchronously so an overlapping tick cannot double-fire a
+    // record while its send is in flight.
+    for (const [sessionId, batch] of [...this.deferred]) {
+      this.deferred.delete(sessionId)
+      const stillDeferred: ScheduledSend[] = []
+      for (const rec of batch) {
+        if (!(await this.fire(sessionId, rec))) stillDeferred.push(rec)
+      }
+      if (stillDeferred.length > 0) {
+        // Older attempts keep the head ahead of any deferral a concurrent
+        // tick appended while this batch was in flight.
+        this.deferred.set(sessionId, [...stillDeferred, ...(this.deferred.get(sessionId) ?? [])])
+      }
+    }
     for (const [sessionId, m] of [...this.active]) {
       for (const [id, rec] of [...m]) {
         if (rec.status !== 'pending' || rec.fireAt > nowMs) continue
         m.delete(id)
         if (m.size === 0) this.active.delete(sessionId)
-        try {
-          const { uuid } = await this.deps.send(sessionId, rec.body)
-          rec.status = 'sent'
-          rec.sentUuid = uuid
-        } catch (err) {
-          rec.status = 'failed'
-          rec.error = err instanceof Error ? err.message : String(err)
+        if (!(await this.fire(sessionId, rec))) {
+          const d = this.deferred.get(sessionId) ?? []
+          d.push(rec)
+          this.deferred.set(sessionId, d)
         }
-        this.pushTerminal(sessionId, rec)
       }
     }
   }

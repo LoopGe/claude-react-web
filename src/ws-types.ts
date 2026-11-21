@@ -35,7 +35,7 @@ export type WsPermissionRequest = shared.WsPermissionRequest<PermissionRequest>
 export type WsPermissionResolved = shared.WsPermissionResolved<shared.PermissionDecision>
 export type WsSessionRecapUpdate = shared.WsSessionRecapUpdate<SessionRecap>
 export type WsHookRunEvent = shared.WsHookRunEvent<HookRuntimeEvent>
-export type { WsContextUsage, WsPromptSuggestion, WsTasksSnapshot, WsTasklistSnapshot, WsGitSnapshot, WsMessageConsumed, WsTurnChanges, WsMessagesWithdrawn, WsAttached, WsMessagesEvicted, WsMessageSteered, WsMessageQueued, WsSessionCleared, WsCommandsChanged, WsPong, WsError, PermissionDecision, WsAppPluginsSnapshot, WsAppPluginStateChanged, WsAppPluginContributionsChanged, WsAppPluginEvent, WsWidgetPayload, WsCliNotification, CliNotification, WsSubagentTranscript, WsClientDebugRequest } from '../shared/ws-protocol.js'
+export type { WsContextUsage, WsPromptSuggestion, WsTasksSnapshot, WsTasklistSnapshot, WsGitSnapshot, WsMessageConsumed, WsTurnChanges, WsMessagesWithdrawn, WsAttached, WsTranscriptRebased, WsRebuildWaiting, RebuildBlocker, WsMessagesEvicted, WsMessageSteered, WsMessageQueued, WsSessionCleared, WsCommandsChanged, WsPong, WsError, PermissionDecision, WsAppPluginsSnapshot, WsAppPluginStateChanged, WsAppPluginContributionsChanged, WsAppPluginEvent, WsWidgetPayload, WsCliNotification, CliNotification, WsSubagentTranscript, WsClientDebugRequest } from '../shared/ws-protocol.js'
 
 export type WsServerFrame = shared.WsServerFrame<
   SessionInfo,
@@ -47,4 +47,4 @@ export type WsServerFrame = shared.WsServerFrame<
   HookRuntimeEvent
 >
 
-export { WS_PATH } from '../shared/ws-protocol.js'
+export { WS_PATH, REBUILD_REQUIRED } from '../shared/ws-protocol.js'

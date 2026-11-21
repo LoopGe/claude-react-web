@@ -140,6 +140,7 @@ export class SessionStore {
       apiRetry: mirror.apiRetry,
       thinkingTokens: mirror.thinkingTokens,
       sessionState: mirror.sessionState,
+      rebuildWaiting: mirror.rebuildWaiting,
       error: intent.error,
       planStatus: mirror.planStatus,
       planContent: mirror.planContent,

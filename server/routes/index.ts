@@ -128,6 +128,7 @@ export function buildApiRouter(
       return { uuid: sent.uuid }
     },
     subscribeGlobal: () => sm.subscribeGlobal(),
+    isRebuildPending: (sessionId) => sm.isRebuildPending(sessionId),
   })
   app.route('/', buildScheduledSendRouter(sm, scheduledSends))
 

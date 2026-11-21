@@ -30,6 +30,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { createLogger } from './log.js'
 import { assistantMessageShapeOf } from '../shared/assistant-message.js'
 import type { HydrateRow, TranscriptStore } from './transcript-store.js'
+import type { PendingOperation } from './transcript-reconcile.js'
 import { isRenderableSdkMessage } from './history-utils.js'
 
 const log = createLogger('transcript')
@@ -75,6 +76,16 @@ export interface TranscriptHolder {
    *  resume path materializes/re-dispatches `queued`/`notAttempted` and surfaces
    *  `dispatchUnknown` for manual recovery. Undefined until reconciled. */
   pendingRecovery?: PendingInputView
+  /** Set while a rebuild-pending operation awaits its committed generation
+   *  (spec §8.1): transcript-mutation admission is closed — send / scheduled
+   *  fire / fork / discard / Side Chat pre-seed answer 409 REBUILD_REQUIRED.
+   *  Distinct from `degraded` (the projection is intact, not broken) and from
+   *  `rebuildBlocked` (a capability refusal of the rebuild itself). OWNED BY
+   *  THE MANAGER: the writer's abortRebuild manages writer state only; the
+   *  manager's beginTranscriptRebuild / abortTranscriptRebuild / reconcile
+   *  paths are the flag's writers. Cleared when the pending operation enters
+   *  a committed generation, or on abortTranscriptRebuild(id, 'cancelled'). */
+  rebuildAdmissionPending?: boolean
 }
 
 export class TranscriptSidecar {
@@ -348,6 +359,28 @@ export function makeCommitV2(opts: {
   }
 }
 
+/** Durable row for one rebuild-pending operation (spec §8.1/§8.3), appended in
+ *  a non-public `recovery` batch. Carries the full wire payload (`op.entry.msg`)
+ *  PLUS the entry identity (occurrenceId/source/aliases/evicted): the pure
+ *  reader cannot re-derive the composition layer's disambiguated occurrenceId
+ *  (a content-hash ctx, see SessionManager.reconcileOrdered), so persisting it
+ *  is what makes crash recovery reconstruct the EXACT PendingOperation and the
+ *  rebuild include it exactly once. `dispatchOrdinal` orders recovered ops. */
+export function makeRebuildPendingRow(op: PendingOperation, batchId: string, dispatchOrdinal: number): SidecarRow {
+  return {
+    v: 2,
+    batchId,
+    kind: 'rebuild-pending',
+    operationId: op.operationId,
+    dispatchOrdinal,
+    payload: op.entry.msg,
+    occurrenceId: op.entry.occurrenceId,
+    source: op.entry.source,
+    aliases: op.entry.aliases,
+    evicted: op.entry.evicted,
+  }
+}
+
 interface ParsedBatch {
   batchId: string
   rows: SidecarRow[]
@@ -586,6 +619,11 @@ export interface PendingInputOp {
   /** The public wire payload stored on the first input row (D7); the
    *  materialize/re-dispatch path publishes + enqueues it. */
   payload: unknown
+  /** Dispatch route (spec §8.1 drain-preserve-replay). Only the
+   *  `drained-to-pending` bucket carries a non-user kind: a preserved
+   *  supplement replays as a normal queued user turn, a preserved control
+   *  seed replays via sendControlMessage. Defaults to 'user' when absent. */
+  kind?: 'user' | 'supplement' | 'control'
 }
 
 /** Crash-recovery classification of the durable dispatch states (spec §7.2/§8.1,
@@ -595,6 +633,11 @@ export interface PendingInputOp {
  *  - `notAttempted`: enqueue-not-attempted, no dispatch evidence → auto-retry.
  *  - `dispatchUnknown`: enqueue-attempted, NO evidence the provider took it →
  *    surface for manual recovery, NEVER auto re-dispatch (§7.2).
+ *  - `drainedToPending`: drained-to-pending (spec §8.1 quiesce drain-preserve) →
+ *    a rebuild quiesce preserved this entry's payload/ordinal/kind. It is a
+ *    READ-ONLY view: the generic crash-recovery path must NOT auto re-dispatch
+ *    it (the original batch is not a re-dispatch source); only the rebuild
+ *    executor's explicit resume replay consumes it, in dispatchOrdinal order.
  *  - `withdrawn`: a durable withdrawn state → exclude (already retracted).
  *  Evidence that resolves an op to dispatched (excluded from every pending list):
  *  a consumed lifecycle row, the prompt's own materialized message row, or its
@@ -603,6 +646,7 @@ export interface PendingInputView {
   queued: PendingInputOp[]
   notAttempted: PendingInputOp[]
   dispatchUnknown: PendingInputOp[]
+  drainedToPending: PendingInputOp[]
   withdrawn: string[]
 }
 
@@ -626,6 +670,7 @@ export function classifyPendingInputs(
     payload: unknown
     inputState?: string
     lifecycleState?: string
+    inputKind?: string
   }
   const byOp = new Map<string, Acc>()
   const accOf = (op: string, ordinal: number): Acc => {
@@ -643,16 +688,30 @@ export function classifyPendingInputs(
       const a = accOf(op, r.dispatchOrdinal)
       a.inputState = state
       if (r.payload !== undefined && a.payload === undefined) a.payload = r.payload
+      if (typeof r.inputKind === 'string') a.inputKind = r.inputKind
     } else {
       // Lifecycle row (consumed/steered/requeued): no dispatchOrdinal.
       accOf(op, byOp.get(op)?.dispatchOrdinal ?? 0).lifecycleState = state
     }
   }
 
-  const view: PendingInputView = { queued: [], notAttempted: [], dispatchUnknown: [], withdrawn: [] }
+  const view: PendingInputView = { queued: [], notAttempted: [], dispatchUnknown: [], drainedToPending: [], withdrawn: [] }
   for (const [operationId, a] of byOp) {
     if (a.inputState === undefined) continue
     if (a.inputState === 'withdrawn') { view.withdrawn.push(operationId); continue }
+    if (a.inputState === 'drained-to-pending') {
+      // Drain-preserve (spec §8.1): the entry was pulled from a live queue
+      // BEFORE the provider consumed it, so its prompt row being in the app
+      // projection (materializedUuids) is NOT dispatch evidence — only an
+      // actual consumed lifecycle or the provider log carrying the uuid
+      // resolves it. The executor's resume replay advances the state past
+      // drained-to-pending, so this bucket holds only UNREPLAYED entries.
+      const taken = a.lifecycleState === 'consumed' || canonicalUuids.has(operationId)
+      if (taken) continue
+      const kind = a.inputKind === 'supplement' || a.inputKind === 'control' ? a.inputKind : 'user'
+      view.drainedToPending.push({ operationId, dispatchOrdinal: a.dispatchOrdinal, payload: a.payload, kind })
+      continue
+    }
     const resolved =
       a.lifecycleState === 'consumed'
       || materializedUuids.has(operationId)
@@ -667,7 +726,60 @@ export function classifyPendingInputs(
   view.queued.sort(byOrdinal)
   view.notAttempted.sort(byOrdinal)
   view.dispatchUnknown.sort(byOrdinal)
+  view.drainedToPending.sort(byOrdinal)
   return view
+}
+
+/** Recover the durable rebuild-pending operations (spec §8.1/§8.3, Task 1).
+ *  Pure: extracts committed `rebuild-pending` recovery rows NOT superseded by a
+ *  later committed generation — a pending row written at generation G is
+ *  superseded once a generation/reset batch commits above G (the rebuild that
+ *  included it, or a clear/compact that wiped it). With no committed generation
+ *  batch every pending row survives (the gen-0 case). Uncommitted crash tails
+ *  and demoted corrupt commits are excluded by parseBatches. Dedups by
+ *  operationId (a retry re-persists the same op — last committed payload wins,
+ *  exactly once) and orders by dispatchOrdinal.
+ *
+ *  Same supersession concept as `unsupersededCorrupt`, but the comparison
+ *  direction is INVERTED: a corrupt batch declares the generation it was trying
+ *  to write (ahead of adopted, kept while `> adopted`), whereas a pending row
+ *  sits AT the current generation BEFORE the resolving rebuild commits above
+ *  it. So a pending row is kept while `batchGen >= adopted` and dropped only
+ *  when `adopted > batchGen` — do not "fix" this back to `> adopted`, which
+ *  would wrongly drop a still-pending op written at the current generation. */
+export function readPendingRebuilds(rows: readonly SidecarRow[]): PendingOperation[] {
+  const committed = parseBatches(rows).batches.filter((b) => b.commit !== null)
+  const genGens = committed
+    .filter((b) => b.commit!.batchType === 'generation' || b.commit!.batchType === 'reset')
+    .map((b) => Number(b.commit!.generation))
+  const adopted = genGens.length > 0 ? Math.max(...genGens) : null
+  const byOp = new Map<string, { ordinal: number; op: PendingOperation }>()
+  for (const b of committed) {
+    if (b.commit!.batchType !== 'recovery') continue
+    const batchGen = Number(b.commit!.generation)
+    if (adopted !== null && adopted > batchGen) continue // superseded by a later committed generation
+    for (const r of b.rows) {
+      if (r.kind !== 'rebuild-pending') continue
+      if (typeof r.operationId !== 'string' || typeof r.occurrenceId !== 'string') continue
+      const source = r.source
+      if (source !== 'provider' && source !== 'result' && source !== 'app') continue
+      const ordinal = typeof r.dispatchOrdinal === 'number' ? r.dispatchOrdinal : 0
+      byOp.set(r.operationId, {
+        ordinal,
+        op: {
+          operationId: r.operationId,
+          entry: {
+            occurrenceId: r.occurrenceId,
+            msg: r.payload,
+            source,
+            aliases: Array.isArray(r.aliases) ? r.aliases.filter((a): a is string => typeof a === 'string') : [],
+            evicted: r.evicted === true,
+          },
+        },
+      })
+    }
+  }
+  return [...byOp.values()].sort((a, b) => a.ordinal - b.ordinal).map((v) => v.op)
 }
 
 /** Truncate raw sidecar text to the last VALID commit record of ANY batchType
@@ -878,8 +990,15 @@ export function recordTranscriptMessage(t: TranscriptHolder, msg: unknown): numb
  * each carries its own block, so they must NOT be skipped — the store's
  * first block would otherwise hide every sibling. Returns the number of rows
  * appended.
+ *
+ * `excludeUuids` (spec §8.1, Task 5): uuids of durable rebuild-pending operations
+ * are SKIPPED by a passive back-fill. A held-back anomaly's canonical position is
+ * mid-history, but back-fill appends at the tail — recording it there would
+ * recreate the very inversion the rebuild exists to fix (and the live detector
+ * already suppressed it). Excluding it keeps the anomaly out of the projection
+ * until the executor's forced ordered rebuild places it correctly include-once.
  */
-export function backfillFromEntries(t: TranscriptHolder, entries: readonly unknown[]): number {
+export function backfillFromEntries(t: TranscriptHolder, entries: readonly unknown[], excludeUuids?: ReadonlySet<string>): number {
   let appended = 0
   for (let i = 0; i < entries.length; i++) {
     const msg = entries[i]
@@ -888,6 +1007,7 @@ export function backfillFromEntries(t: TranscriptHolder, entries: readonly unkno
       : null
     if (uuid !== null) {
       if (t.store.seqOf(uuid) !== undefined) continue
+      if (excludeUuids?.has(uuid)) continue
     } else if (i < t.store.headSeq) {
       continue
     }
