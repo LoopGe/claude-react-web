@@ -6,7 +6,10 @@
 // hand-match KeyboardEvent fields.
 //
 // "mod" means Ctrl on Linux/Windows and Meta (Cmd) on Mac — we accept
-// either so shortcuts feel native on both.
+// either so shortcuts feel native on both. "ctrl" and "meta" are the
+// platform-fixed tokens: "ctrl" matches ONLY Ctrl on every platform,
+// "meta" ONLY Cmd/Meta — for combos that must not follow the platform
+// convention (e.g. the terminal's Ctrl+` — Cmd+` is macOS window cycling).
 //
 // Input-safe: by default we SKIP the handler if the event target is a
 // text input (textarea / input / contenteditable), so typing a prompt
@@ -63,8 +66,16 @@ export function useKeyboardShortcuts(shortcuts: Shortcut[]): void {
       if (e.isComposing) return
       const combo = eventCombo(e)
       if (!combo) return
+      // A registered `mod` accepts either physical modifier, so the event's
+      // concrete combo (ctrl/meta tokens) is compared against its mod-collapsed
+      // variants too: ctrl→mod, meta→mod, and ctrl+meta→mod (both held).
+      // `ctrl`/`meta` registrations only ever equal the concrete form.
+      const candidates = [combo]
+      if (e.ctrlKey) candidates.push(combo.replace('ctrl+', 'mod+'))
+      if (e.metaKey) candidates.push(combo.replace('meta+', 'mod+'))
+      if (e.ctrlKey && e.metaKey) candidates.push(combo.replace('ctrl+meta+', 'mod+'))
       for (const s of shortcutsRef.current) {
-        if (s._normalisedCombo !== combo) continue
+        if (!candidates.includes(s._normalisedCombo)) continue
         if (!s.allowInInput && isInputTarget(e.target)) return
         // preventDefault: shortcuts like Alt+W / Ctrl+1 shouldn't trigger
         // browser default behaviour (open menu, switch tab). The handler
@@ -79,26 +90,32 @@ export function useKeyboardShortcuts(shortcuts: Shortcut[]): void {
   }, [])
 }
 
-/** Reduce a KeyboardEvent to its combo string in the same shape the
- *  caller used in `combo`. Modifier order is fixed: mod, alt, shift. */
+/** Reduce a KeyboardEvent to its combo string with the CONCRETE modifier
+ *  tokens (ctrl/meta stay distinct; the mod collapse happens at match time).
+ *  Modifier order is fixed: ctrl, meta, alt, shift. */
 function eventCombo(e: KeyboardEvent): string | null {
   const key = e.key.toLowerCase()
   // Ignore modifier-only presses.
   if (key === 'control' || key === 'meta' || key === 'alt' || key === 'shift') return null
   const parts: string[] = []
-  if (e.ctrlKey || e.metaKey) parts.push('mod')
+  if (e.ctrlKey) parts.push('ctrl')
+  if (e.metaKey) parts.push('meta')
   if (e.altKey) parts.push('alt')
   if (e.shiftKey) parts.push('shift')
   parts.push(key)
   return parts.join('+')
 }
 
-/** Canonicalise user-written combos: lowercase, sort modifier order. */
+/** Canonicalise user-written combos: lowercase, fixed modifier order
+ *  (ctrl, meta, mod, alt, shift). `ctrl`, `meta` and `mod` stay distinct
+ *  tokens; `cmd` aliases `meta`, `option` aliases `alt`. */
 function normalise(combo: string): string {
   const parts = combo.toLowerCase().split('+').map((p) => p.trim())
   const mods = new Set(parts.slice(0, -1))
   const out: string[] = []
-  if (mods.has('mod') || mods.has('ctrl') || mods.has('cmd') || mods.has('meta')) out.push('mod')
+  if (mods.has('ctrl')) out.push('ctrl')
+  if (mods.has('cmd') || mods.has('meta')) out.push('meta')
+  if (mods.has('mod')) out.push('mod')
   if (mods.has('alt') || mods.has('option')) out.push('alt')
   if (mods.has('shift')) out.push('shift')
   out.push(parts[parts.length - 1])
