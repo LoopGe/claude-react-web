@@ -29,17 +29,31 @@ import { NativeSessionStorageError } from './errors.js'
 import {
   NATIVE_SESSION_LOG_VERSION,
   NATIVE_SESSION_LOG_V2,
+  NATIVE_SESSION_LOG_V3,
   parseEventLine,
+  parseEventLineV3,
+  projectNeutralEventToLegacy,
   parseHeaderLine,
   serializeEvent,
   serializeHeader,
 } from './format.js'
 import type { NativeEventInput, NativeLogEvent, NativeSessionHeader } from './format.js'
+import type { NativeSessionEvent, SessionEvent, SessionEventMap } from '../vocabulary/session-event.js'
 import { nativeSessionDir, nativeSessionLogPath, nativeSessionMigrationTempPath } from './paths.js'
+
+/** A neutral v3 event input: the durable event minus its log-assigned seq.
+ *  Mapped key-by-key so `type` and `data` stay correlated (mirrors
+ *  NativeEventInput for the legacy union). */
+export type NativeNeutralEventInput = {
+  [T in keyof SessionEventMap]: Omit<SessionEvent<T>, 'seq'>
+}[keyof SessionEventMap]
 
 export interface NativeSessionLogSnapshot {
   header: NativeSessionHeader
   events: NativeLogEvent[]
+  /** Canonical neutral events for a v3 log (undefined for v1/v2). `events`
+   *  remains the legacy read view transitional consumers use until T13. */
+  neutralEvents?: NativeSessionEvent[]
   path: string
   /** Byte offset just past the last complete line; a torn tail starts here. */
   completeBytes: number
@@ -51,7 +65,8 @@ export interface NativeSessionLogSnapshot {
 }
 
 export interface NativeSeed {
-  events: NativeLogEvent[]
+  /** Legacy events for a v1/v2 seed; neutral events for a v3 seed. */
+  events: Array<NativeLogEvent | NativeSessionEvent>
   inheritedEventCount: number
   isSeeded: boolean
   /** A fork preserves its source version; ordinary fresh seeds remain v1. */
@@ -104,6 +119,15 @@ function parseLogBuffer(buffer: Buffer, sessionId: string, path: string): Native
   lines.pop() // the committed region ends with '\n', so split leaves a trailing ''
 
   const header = parseHeaderLine(parseLine(lines[0], 1, sessionId, path), sessionId, path)
+  if (header.v === NATIVE_SESSION_LOG_V3) {
+    const neutralEvents = lines
+      .slice(1)
+      .map((line, index) =>
+        parseEventLineV3(parseLine(line, index + 2, sessionId, path), index, sessionId, path),
+      )
+    const events = neutralEvents.map((event) => projectNeutralEventToLegacy(event, sessionId))
+    return { header, events, neutralEvents, path, completeBytes, totalBytes: buffer.length }
+  }
   const events = lines
     .slice(1)
     .map((line, index) =>
@@ -112,8 +136,14 @@ function parseLogBuffer(buffer: Buffer, sessionId: string, path: string): Native
   return { header, events, path, completeBytes, totalBytes: buffer.length }
 }
 
-function serializeLog(header: NativeSessionHeader, events: NativeLogEvent[]): string {
-  return serializeHeader(header) + '\n' + events.map((event) => serializeEvent(event) + '\n').join('')
+function serializeLog(
+  header: NativeSessionHeader,
+  events: NativeLogEvent[],
+  neutralEvents: NativeSessionEvent[] | null,
+): string {
+  const list: Array<NativeLogEvent | NativeSessionEvent> =
+    header.v === NATIVE_SESSION_LOG_V3 ? (neutralEvents ?? []) : events
+  return serializeHeader(header) + '\n' + list.map((event) => serializeEvent(event) + '\n').join('')
 }
 
 async function writeAll(handle: FileHandle, chunk: Buffer, path: string): Promise<void> {
@@ -193,7 +223,12 @@ export async function deleteNativeSessionLog(stateDir: string, id: string): Prom
 
 export class NativeSessionLog {
   readonly header: NativeSessionHeader
+  /** The legacy v1/v2 event view. For a v3 log this is the projection of
+   *  `neutralEvents` (transitional consumers read it until T13); for v1/v2 it
+   *  is the canonical event list. */
   readonly events: NativeLogEvent[]
+  /** Canonical neutral events for a v3 log; null for v1/v2. */
+  readonly neutralEvents: NativeSessionEvent[] | null
   readonly path: string
 
   private readonly registryKey: string
@@ -215,12 +250,14 @@ export class NativeSessionLog {
   private constructor(
     header: NativeSessionHeader,
     events: NativeLogEvent[],
+    neutralEvents: NativeSessionEvent[] | null,
     path: string,
     private readonly stateDir: string,
     registryKey: string,
   ) {
     this.header = header
     this.events = events
+    this.neutralEvents = neutralEvents
     this.path = path
     this.registryKey = registryKey
   }
@@ -231,6 +268,7 @@ export class NativeSessionLog {
 
     let header: NativeSessionHeader
     let events: NativeLogEvent[]
+    let neutralEvents: NativeSessionEvent[] | null
 
     if (resume) {
       const snapshot = loadNativeSessionLogSync(stateDir, id)
@@ -249,6 +287,7 @@ export class NativeSessionLog {
       if (snapshot.totalBytes > snapshot.completeBytes) truncateSync(path, snapshot.completeBytes)
       header = snapshot.header
       events = snapshot.events
+      neutralEvents = snapshot.neutralEvents ?? null
     } else {
       mkdirSync(nativeSessionDir(stateDir, id), { recursive: true })
       header = {
@@ -260,9 +299,15 @@ export class NativeSessionLog {
         isSeeded: seed?.isSeeded ?? false,
         inheritedEventCount: seed?.inheritedEventCount ?? 0,
       }
-      events = seed ? [...seed.events] : []
+      if (header.v === NATIVE_SESSION_LOG_V3) {
+        neutralEvents = (seed ? [...seed.events] : []) as NativeSessionEvent[]
+        events = neutralEvents.map((event) => projectNeutralEventToLegacy(event, id))
+      } else {
+        neutralEvents = null
+        events = (seed ? [...seed.events] : []) as NativeLogEvent[]
+      }
       try {
-        writeFileSync(path, serializeLog(header, events), { flag: 'wx' })
+        writeFileSync(path, serializeLog(header, events, neutralEvents), { flag: 'wx' })
       } catch (err) {
         if (isErrno(err, 'EEXIST')) {
           throw new NativeSessionStorageError(
@@ -279,24 +324,48 @@ export class NativeSessionLog {
     const registryKey = resolve(path)
     const previous = writers.get(registryKey)
     if (previous) previous.markSuperseded()
-    const log = new NativeSessionLog(header, events, path, stateDir, registryKey)
+    const log = new NativeSessionLog(header, events, neutralEvents, path, stateDir, registryKey)
     writers.set(registryKey, log)
     return log
   }
 
-  append(input: NativeEventInput): NativeLogEvent {
+  append(input: NativeEventInput | NativeNeutralEventInput): NativeLogEvent {
     if (this.migrationFatal) {
       throw new Error(`session log writer is closed after a failed migration: ${this.path}`, { cause: this.migrationFatal })
     }
-    const event = { ...input, seq: this.events.length } as NativeLogEvent
-    this.events.push(event)
+    const seq = this.events.length
+    // Neutral v3 inputs carry a `data` envelope; legacy v1/v2 inputs never do.
+    const isNeutral = 'data' in input
+    let legacy: NativeLogEvent
+    let neutral: NativeSessionEvent | null = null
+    if (this.header.v === NATIVE_SESSION_LOG_V3) {
+      if (!isNeutral) throw new Error(`v3 session log requires neutral event inputs: ${this.path}`)
+      neutral = { ...input, seq } as NativeSessionEvent
+      legacy = projectNeutralEventToLegacy(neutral, this.header.id)
+    } else if (isNeutral) {
+      // A neutral append into a not-yet-migrated v1/v2 log: project to the
+      // legacy shape (version compat lives here, not in the core). v3-only
+      // facts are dropped; T12 migrates the log eager-at-open to preserve them.
+      legacy = projectNeutralEventToLegacy({ ...input, seq } as NativeSessionEvent, this.header.id)
+    } else {
+      legacy = { ...input, seq } as NativeLogEvent
+    }
+    this.events.push(legacy)
+    if (this.neutralEvents && neutral) this.neutralEvents.push(neutral)
     // A superseded or closed writer must never buffer again: its file belongs
     // to another writer, or its own handle is about to be destroyed.
     if (!this.superseded && !this.closed) {
-      if (this.migrationAppends) this.migrationAppends.push(event)
-      else this.pending.push(Buffer.from(serializeEvent(event) + '\n', 'utf8'))
+      if (this.migrationAppends) this.migrationAppends.push(legacy)
+      else this.bufferEvent(legacy, neutral)
     }
-    return event
+    return legacy
+  }
+
+  /** Buffer one event's serialized bytes: neutral for a v3 log, legacy for
+   *  v1/v2. The on-disk format follows the header version, never the input. */
+  private bufferEvent(legacy: NativeLogEvent, neutral: NativeSessionEvent | null): void {
+    const event = this.header.v === NATIVE_SESSION_LOG_V3 ? neutral! : legacy
+    this.pending.push(Buffer.from(serializeEvent(event) + '\n', 'utf8'))
   }
 
   /** Atomically upgrade this writer's v1 log in place. The gate is installed
@@ -305,7 +374,8 @@ export class NativeSessionLog {
   migrateToV2(): Promise<void> {
     if (this.migrationPromise) return this.migrationPromise
     this.assertDurableWriterActive()
-    if (this.header.v === NATIVE_SESSION_LOG_V2) return Promise.resolve()
+    // Already v2 or v3: nothing to upgrade (v3 migration is T12's migrateToV3).
+    if (this.header.v >= NATIVE_SESSION_LOG_V2) return Promise.resolve()
     this.migrationAppends = []
     const run = this.enqueueWriterOperation(() => this.performMigration())
     const tracked = run.finally(() => {
@@ -429,13 +499,13 @@ export class NativeSessionLog {
    *  selections that must not become visible in memory OR replay after a
    *  genuine write failure. Every non-rejected event appended after the prior
    *  flush is preserved with a fresh contiguous seq on rollback. */
-  appendDurable(input: NativeEventInput): Promise<NativeLogEvent> {
+  appendDurable(input: NativeEventInput | NativeNeutralEventInput): Promise<NativeLogEvent> {
     // The reservation AND any rollback share the writer-operation queue with
     // migration. No stat/truncate/restore step can interleave with its copy.
     return this.enqueueWriterOperation(() => this.performAppendDurable(input))
   }
 
-  private async performAppendDurable(input: NativeEventInput): Promise<NativeLogEvent> {
+  private async performAppendDurable(input: NativeEventInput | NativeNeutralEventInput): Promise<NativeLogEvent> {
     this.assertDurableReservationNotGated()
     // A resolved flush can still leave pending bytes: its captured chunk may
     // have excluded an ordinary append that landed while the write was in
@@ -468,6 +538,7 @@ export class NativeSessionLog {
       // allowClosed flush still owns the ordinary pending bytes.
       if (flushSucceeded && this.closed && !this.superseded) throw err
       const appended = this.events.splice(preEventCount)
+      const appendedNeutral = this.neutralEvents ? this.neutralEvents.splice(preEventCount) : null
       this.pending = []
       if (this.migrationAppends) {
         const rolledBack = new Set(appended)
@@ -478,9 +549,10 @@ export class NativeSessionLog {
       if (this.superseded) throw err
       try {
         truncateSync(this.path, preSize)
-        for (const event of appended) {
+        for (let i = 0; i < appended.length; i++) {
+          const event = appended[i]
           if (event === reservation) continue
-          this.restoreAfterDurableRollback(event)
+          this.restoreAfterDurableRollback(event, appendedNeutral ? appendedNeutral[i] : null)
         }
       } catch (rollbackErr) {
         throw new AggregateError([err, rollbackErr], `failed to roll back durable append: ${this.path}`)
@@ -489,16 +561,21 @@ export class NativeSessionLog {
     }
   }
 
-  private restoreAfterDurableRollback(event: NativeLogEvent): void {
+  private restoreAfterDurableRollback(event: NativeLogEvent, neutral: NativeSessionEvent | null): void {
     const { seq: _seq, ...rest } = event
     const restored = { ...rest, seq: this.events.length } as NativeLogEvent
     this.events.push(restored)
+    let restoredNeutral: NativeSessionEvent | null = null
+    if (this.neutralEvents && neutral) {
+      restoredNeutral = { ...neutral, seq: restored.seq } as NativeSessionEvent
+      this.neutralEvents.push(restoredNeutral)
+    }
     // Restoration belongs to the durable operation, not the public append
     // contract. It re-enters the active migration gate when one exists, so a
     // restored structured event cannot be drained into the v1 source copy.
     // Otherwise a racing close's queued allowClosed flush owns these bytes.
     if (this.migrationAppends) this.migrationAppends.push(restored)
-    else this.pending.push(Buffer.from(serializeEvent(restored) + '\n', 'utf8'))
+    else this.bufferEvent(restored, restoredNeutral)
   }
 
   private assertDurableReservationNotGated(): void {

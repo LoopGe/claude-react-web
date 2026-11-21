@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { StoredAgentDefinition } from '../../../agent-definition-store.js'
-import { NATIVE_SESSION_LOG_VERSION, parseEventLine, parseHeaderLine, serializeEvent, serializeHeader } from './format.js'
+import { NATIVE_SESSION_LOG_VERSION, NATIVE_SESSION_LOG_V3, eventRequiresV3, parseEventLine, parseEventLineV3, parseHeaderLine, projectNeutralEventToLegacy, serializeEvent, serializeHeader } from './format.js'
 import type { NativeEventInput, NativeLogEvent, NativeSkillInvocationEvent } from './format.js'
+import type { NativeSessionEvent } from '../vocabulary/session-event.js'
 import { NativeSessionStorageError } from './errors.js'
 
 const header = { type: 'session/header', v: 1, id: 's1', cwd: '/repo', createdAt: 1, isSeeded: false, inheritedEventCount: 0 } as const
@@ -93,10 +94,13 @@ describe('session log format', () => {
     expect(parseHeaderLine({ ...header, v: 2 }, 's1', 'p')).toEqual({ ...header, v: 2 })
   })
   it('rejects an unknown version', () => {
-    expect(() => parseHeaderLine({ ...header, v: 3 }, 's1', 'p')).toThrow(NativeSessionStorageError)
-    try { parseHeaderLine({ ...header, v: 3 }, 's1', 'p') } catch (e) {
+    expect(() => parseHeaderLine({ ...header, v: 99 }, 's1', 'p')).toThrow(NativeSessionStorageError)
+    try { parseHeaderLine({ ...header, v: 99 }, 's1', 'p') } catch (e) {
       expect((e as NativeSessionStorageError).kind).toBe('unsupported-version')
     }
+  })
+  it('accepts a v3 header', () => {
+    expect(parseHeaderLine({ ...header, v: 3 }, 's1', 'p')).toEqual({ ...header, v: 3 })
   })
   it('keeps the legacy v1-only parser closed to v2 logs', () => {
     try { parseHeaderLine({ ...header, v: 2 }, 's1', 'p', [1]) } catch (e) {
@@ -412,5 +416,155 @@ describe('session log format', () => {
       { ...valid, attachments: [{ ...nativeAttachment, modelForm: 'pdf-document' }] },
       { ...valid, timestamp: '' },
     ]) expectCorruptV2(raw)
+  })
+})
+
+describe('session log format v3 (neutral)', () => {
+  const v3Attachment = {
+    id: 'upload-1', name: 'notes.txt', size: 123, digest: 'a'.repeat(64),
+    path: '/state/notes.txt', mediaType: 'text/plain', modelForm: 'handle',
+  }
+  const assistantMessage = {
+    id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'reply' }],
+    source: { kind: 'model', provider: 'anthropic', model: 'm' },
+  }
+  const neutralEvents: NativeSessionEvent[] = [
+    { type: 'user/message', seq: 0, time: 1000, parentToolUseId: null, data: { id: 'u1', role: 'user', content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 1, time: 1001, parentToolUseId: null, data: { message: assistantMessage, stream: [{ type: 'text-chunks', time0: 1000, index: 0, dt: [0], texts: ['reply'] }, { type: 'chunk', time: 1001, chunk: { type: 'finish', reason: { kind: 'stop' } } }], usage: { inputTokens: 10, outputTokens: 5 } } },
+    { type: 'tool/result', seq: 2, time: 1002, parentToolUseId: null, data: { message: { id: 't1', role: 'tool', content: [{ type: 'text', text: 'ok' }], source: { kind: 'tool', callId: 'call-1' }, toolCallId: 'call-1', isError: false } } },
+    { type: 'session/context', seq: 3, time: 1003, data: { text: 'ctx' } },
+    { type: 'turn/end', seq: 4, time: 1004, data: { reason: 'completed', usage: { inputTokens: 1, outputTokens: 2 } } },
+    { type: 'session/end-seed', seq: 5, time: 1005, data: { inherited: true } },
+    { type: 'session/compact', seq: 6, time: 1006, data: { text: 'SUM', context: 'CTX', uuid: 'c1', timestamp: 't' } },
+    { type: 'session/supplement', seq: 7, time: 1007, data: { uuid: 'sp1', text: 'WRAP', timestamp: 't' } },
+    { type: 'session/skill', seq: 8, time: 1008, data: { name: 'alpha', body: 'BODY', timestamp: 't' } },
+    { type: 'subagent/descriptor', seq: 9, time: 1009, data: { toolUseId: 'task-1', parentToolUseId: null, kind: 'agent', toolName: 'Task', label: 'L', depth: 1, profile: null, timestamp: 't' } },
+    { type: 'session/attachments', seq: 10, time: 1010, data: { attachments: [v3Attachment], timestamp: 't' } },
+    { type: 'session/agent', seq: 11, time: 1011, data: { name: null, base: { model: 'm', permissionMode: 'default' }, timestamp: 't' } },
+  ] as unknown as NativeSessionEvent[]
+
+  const expectCorruptV3 = (raw: unknown, seq = 0) => {
+    try { parseEventLineV3(raw, seq, 's1', 'p') } catch (error) {
+      expect((error as NativeSessionStorageError).kind).toBe('corrupt')
+      return
+    }
+    throw new Error('expected corrupt v3 event')
+  }
+
+  it('exposes v3 as a supported version', () => {
+    expect(NATIVE_SESSION_LOG_V3).toBe(3)
+  })
+
+  it('round-trips each neutral event losslessly', () => {
+    for (const event of neutralEvents) {
+      const parsed = parseEventLineV3(JSON.parse(serializeEvent(event)), event.seq, 's1', 'p')
+      expect(parsed).toEqual(event)
+    }
+  })
+
+  it('enforces contiguous seq', () => {
+    expect(() => parseEventLineV3(neutralEvents[1], 0, 's1', 'p')).toThrow(/seq/)
+    expect(() => parseEventLineV3({ ...neutralEvents[0], seq: 5 }, 0, 's1', 'p')).toThrow(/seq/)
+  })
+
+  it('preserves the parent null-vs-string distinction on message events', () => {
+    for (const type of ['user/message', 'assistant/message', 'tool/result'] as const) {
+      const base = neutralEvents.find((e) => e.type === type)!
+      expect(parseEventLineV3({ ...base, parentToolUseId: null }, base.seq, 's1', 'p')).toMatchObject({ parentToolUseId: null })
+      expect(parseEventLineV3({ ...base, parentToolUseId: 'tu1' }, base.seq, 's1', 'p')).toMatchObject({ parentToolUseId: 'tu1' })
+    }
+  })
+
+  it('rejects a MISSING parent on message events as corrupt (not null)', () => {
+    for (const type of ['user/message', 'assistant/message', 'tool/result'] as const) {
+      const base = neutralEvents.find((e) => e.type === type)! as Record<string, unknown>
+      const missing = { ...base }
+      delete missing.parentToolUseId
+      expectCorruptV3(missing, base.seq as number)
+    }
+  })
+
+  it('rejects a non-string, non-null parent on message events', () => {
+    const base = neutralEvents[0]
+    for (const bad of [3, {}, true]) expectCorruptV3({ ...base, parentToolUseId: bad })
+  })
+
+  it('allows an absent parent on operational events', () => {
+    const context = neutralEvents[3]
+    expect(parseEventLineV3(context, context.seq, 's1', 'p')).toEqual(context)
+    expect(parseEventLineV3({ ...context, parentToolUseId: null }, context.seq, 's1', 'p')).toMatchObject({ parentToolUseId: null })
+  })
+
+  it('rejects unknown event types and unknown envelope keys', () => {
+    expectCorruptV3({ seq: 0, type: 'mystery', time: 1, data: {} })
+    expectCorruptV3({ ...neutralEvents[3], injected: true })
+    expectCorruptV3({ ...neutralEvents[0], uuid: 'legacy-field' })
+  })
+
+  it('rejects a missing or non-finite time and a non-object data', () => {
+    const noTime = { ...neutralEvents[3] } as Record<string, unknown>
+    delete noTime.time
+    expectCorruptV3(noTime, 3)
+    expectCorruptV3({ ...neutralEvents[3], time: Number.NaN }, 3)
+    expectCorruptV3({ ...neutralEvents[3], data: 'ctx' }, 3)
+  })
+
+  it('validates the ignorable flag', () => {
+    expectCorruptV3({ ...neutralEvents[3], ignorable: false }, 3)
+    const flagged = { ...neutralEvents[3], ignorable: true }
+    expect(parseEventLineV3(flagged, 3, 's1', 'p')).toEqual(flagged)
+  })
+
+  it('enforces the dt[0]=0 inter-arrival convention and texts/dt alignment', () => {
+    const assistant = neutralEvents[1] as Record<string, unknown>
+    const data = assistant.data as { stream: unknown[] }
+    expectCorruptV3({ ...assistant, data: { ...data, stream: [{ type: 'text-chunks', time0: 1, index: 0, dt: [5], texts: ['x'] }] } }, 1)
+    expectCorruptV3({ ...assistant, data: { ...data, stream: [{ type: 'text-chunks', time0: 1, index: 0, dt: [0, 1], texts: ['x'] }] } }, 1)
+    expectCorruptV3({ ...assistant, data: { ...data, stream: [{ type: 'bogus', time0: 1, index: 0, dt: [0], texts: ['x'] }] } }, 1)
+  })
+
+  it('detects events that require v3', () => {
+    expect(eventRequiresV3(neutralEvents[1])).toBe(true) // packed stream
+    expect(eventRequiresV3(neutralEvents[2])).toBe(false) // plain tool result
+    expect(eventRequiresV3(neutralEvents[5])).toBe(true) // inherited end-seed
+    expect(eventRequiresV3(neutralEvents[3])).toBe(false) // plain context
+    expect(eventRequiresV3({ ...neutralEvents[3], ignorable: true } as NativeSessionEvent)).toBe(true)
+    const noStream = { ...neutralEvents[1], data: { ...(neutralEvents[1] as { data: object }).data, stream: [] } } as unknown as NativeSessionEvent
+    expect(eventRequiresV3(noStream)).toBe(false)
+    const toolError = { ...neutralEvents[2], data: { ...(neutralEvents[2] as { data: object }).data, error: { name: 'E', code: 'C' } } } as unknown as NativeSessionEvent
+    expect(eventRequiresV3(toolError)).toBe(true)
+  })
+
+  it('projects a neutral assistant event to the legacy assistant shape', () => {
+    const legacy = projectNeutralEventToLegacy(neutralEvents[1], 's1')
+    expect(legacy).toMatchObject({
+      seq: 1, type: 'assistant', uuid: 'a1', session_id: 's1', parent_tool_use_id: null,
+      message: { role: 'assistant', id: 'msg_a1', model: 'm', stop_reason: 'end_turn', content: [{ type: 'text', text: 'reply' }], usage: { input_tokens: 10, output_tokens: 5 } },
+    })
+    // The legacy parser accepts the projection (v2).
+    expect(parseEventLine(JSON.parse(serializeEvent(legacy)), 1, 's1', 'p', 2)).toEqual(legacy)
+  })
+
+  it('projects a neutral tool result to the legacy user tool_result shape', () => {
+    const legacy = projectNeutralEventToLegacy(neutralEvents[2], 's1')
+    expect(legacy).toMatchObject({
+      seq: 2, type: 'user', uuid: 't1', session_id: 's1', parent_tool_use_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call-1', content: [{ type: 'text', text: 'ok' }], is_error: false }] },
+    })
+  })
+
+  it('reconstructs tool_use / max_tokens / interrupted stop reasons from the finish record', () => {
+    const withFinish = (reason: { kind: string } | null) => {
+      const stream = reason === null ? [] : [{ type: 'chunk', time: 1, chunk: { type: 'finish', reason } }]
+      return { ...neutralEvents[1], data: { ...(neutralEvents[1] as { data: object }).data, stream } } as NativeSessionEvent
+    }
+    expect(projectNeutralEventToLegacy(withFinish({ kind: 'tool-calls' }), 's1')).toMatchObject({ message: { stop_reason: 'tool_use' } })
+    expect(projectNeutralEventToLegacy(withFinish({ kind: 'max-tokens' }), 's1')).toMatchObject({ message: { stop_reason: 'max_tokens' } })
+    expect(projectNeutralEventToLegacy(withFinish(null), 's1')).toMatchObject({ message: { stop_reason: null } })
+  })
+
+  it('routes the legacy parseEventLine dispatcher through the v3 projection', () => {
+    const legacy = parseEventLine(JSON.parse(serializeEvent(neutralEvents[1])), 1, 's1', 'p', 3)
+    expect(legacy).toMatchObject({ type: 'assistant', uuid: 'a1', message: { id: 'msg_a1' } })
   })
 })

@@ -12,10 +12,22 @@ import type { SessionToolProfile } from '../../../../shared/tool-profile.js'
 import { NATIVE_AGENT_EFFORT_LEVELS } from '../agent-profile.js'
 import type { NativeAgentBase, NativeAgentProfile, NativeAgentSelectionEvent } from '../agent-profile.js'
 import type { NativeFileAttachment, NativeFileBlock } from '../../attachment-types.js'
+import type {
+  AssistantStreamRecord,
+  NativeSessionEvent,
+  SessionEventMap,
+} from '../vocabulary/session-event.js'
+import type { ContentBlock, TokenUsage } from '../vocabulary/types.js'
+import type { AssistantMessage, ToolResultMessage, UserMessage } from '../vocabulary/message.js'
 
 export const NATIVE_SESSION_LOG_VERSION = 1
 export const NATIVE_SESSION_LOG_V2 = 2
-const SUPPORTED_NATIVE_SESSION_LOG_VERSIONS = [NATIVE_SESSION_LOG_VERSION, NATIVE_SESSION_LOG_V2] as const
+export const NATIVE_SESSION_LOG_V3 = 3
+const SUPPORTED_NATIVE_SESSION_LOG_VERSIONS = [
+  NATIVE_SESSION_LOG_VERSION,
+  NATIVE_SESSION_LOG_V2,
+  NATIVE_SESSION_LOG_V3,
+] as const
 
 /** Execution values shared by descriptor persistence and Agent admission:
  *  only a positive integer can bound a nested run. */
@@ -33,7 +45,11 @@ export interface NativeSessionHeader {
   inheritedEventCount: number
 }
 
-export type NativeTurnEndReason = 'completed' | 'interrupted' | 'error' | 'forked'
+/** Consolidated in the neutral vocabulary (T11): the v1/v2 log and the v3
+ *  neutral events share ONE definition. Re-exported here so existing
+ *  `session-log/format.js` importers keep resolving the same type. */
+export type { NativeTurnEndReason } from '../vocabulary/session-event.js'
+import type { NativeTurnEndReason } from '../vocabulary/session-event.js'
 
 export interface NativeUsage {
   input_tokens: number
@@ -704,6 +720,13 @@ export function parseEventLine(
   path: string,
   version: number = NATIVE_SESSION_LOG_VERSION,
 ): NativeLogEvent {
+  // v3 lines are neutral NativeSessionEvents. The legacy-typed readers
+  // (cache/reader) consume the legacy projection so the host history path is
+  // unchanged until T13 migrates them to neutral; the canonical neutral parse
+  // is `parseEventLineV3` (used by the v3 writer/loader).
+  if (version === NATIVE_SESSION_LOG_V3) {
+    return projectNeutralEventToLegacy(parseEventLineV3(raw, expectedSeq, sessionId, path), sessionId)
+  }
   if (!isObject(raw)) corrupt(sessionId, path, 'event must be an object')
   if (typeof raw.seq !== 'number') corrupt(sessionId, path, 'event seq must be a number')
   if (raw.seq !== expectedSeq) {
@@ -824,6 +847,432 @@ export function serializeHeader(header: NativeSessionHeader): string {
   return JSON.stringify(header)
 }
 
-export function serializeEvent(event: NativeLogEvent): string {
+/** Lossless JSONL serialization for both the legacy v1/v2 event union and the
+ *  neutral v3 NativeSessionEvent. JSON.stringify preserves every field of
+ *  either shape verbatim (the round-trip contract). */
+export function serializeEvent(event: NativeLogEvent | NativeSessionEvent): string {
   return JSON.stringify(event)
+}
+
+/** The v3 header line type (literal `v: 3`), owned by the neutral vocabulary. */
+export type { NativeSessionHeader as NativeSessionHeaderV3 } from '../vocabulary/session-event.js'
+
+// ── v3: the neutral durable event language ──────────────────────────────────
+// v3 stores the vocabulary's NativeSessionEvent (envelope: seq/time/data, plus
+// the sidechain parentToolUseId axis and an optional ignorable flag). The 12
+// SessionEventMap keys are the durable counterparts of the v1/v2 union, with
+// tool results split into a first-class `tool/result` event. Live-only frames
+// (init / api_retry / informational / task_* / result / stream_event) are NOT
+// durable and never appear here (design R6).
+
+/** Envelope keys every v3 event may carry. Anything else is corruption. */
+const V3_ENVELOPE_KEYS = new Set(['seq', 'type', 'time', 'data', 'ignorable', 'parentToolUseId'])
+/** Message events MUST carry parentToolUseId (null = main thread, string =
+ *  sidechain). A missing field is corruption, not "null" — the same contract
+ *  requireParentToolUseId enforces for v1/v2 (T5 carried pointer). */
+const V3_MESSAGE_TYPES = new Set<keyof SessionEventMap>(['user/message', 'assistant/message', 'tool/result'])
+const V3_EVENT_TYPES = new Set<keyof SessionEventMap>([
+  'user/message', 'assistant/message', 'tool/result', 'session/context', 'turn/end',
+  'session/end-seed', 'session/compact', 'session/supplement', 'session/skill',
+  'subagent/descriptor', 'session/attachments', 'session/agent',
+])
+
+function requireV3Parent(raw: JsonObject, type: keyof SessionEventMap, sessionId: string, path: string): string | null | undefined {
+  const value = raw.parentToolUseId
+  if (value === undefined) {
+    if (V3_MESSAGE_TYPES.has(type)) {
+      corrupt(sessionId, path, `${type} event parentToolUseId is required (null or a string)`)
+    }
+    return undefined
+  }
+  if (value === null) return null
+  if (typeof value !== 'string') corrupt(sessionId, path, `${type} event parentToolUseId must be a string or null`)
+  return value
+}
+
+function requireV3String(data: JsonObject, field: string, type: string, sessionId: string, path: string): string {
+  const value = data[field]
+  if (typeof value !== 'string') corrupt(sessionId, path, `${type} data.${field} must be a string`)
+  return value
+}
+
+function requireV3NonEmptyString(data: JsonObject, field: string, type: string, sessionId: string, path: string): string {
+  const value = requireV3String(data, field, type, sessionId, path)
+  if (value.length === 0) corrupt(sessionId, path, `${type} data.${field} must be a non-empty string`)
+  return value
+}
+
+function requireV3Message(data: JsonObject, role: string, type: string, sessionId: string, path: string): void {
+  if (data.role !== role) corrupt(sessionId, path, `${type} data.role must be '${role}'`)
+  requireV3String(data, 'id', type, sessionId, path)
+  if (!Array.isArray(data.content)) corrupt(sessionId, path, `${type} data.content must be an array`)
+  if (!isObject(data.source)) corrupt(sessionId, path, `${type} data.source must be an object`)
+}
+
+function requireV3Usage(value: unknown, type: string, sessionId: string, path: string): TokenUsage {
+  if (!isObject(value)) corrupt(sessionId, path, `${type} data.usage must be an object`)
+  if (typeof value.inputTokens !== 'number' || typeof value.outputTokens !== 'number') {
+    corrupt(sessionId, path, `${type} data.usage must have numeric inputTokens and outputTokens`)
+  }
+  return value as unknown as TokenUsage
+}
+
+/** Validate one packed AssistantStreamRecord. Run records honor the inter-arrival
+ *  convention dt[0] === 0 (chunk i lands at time0 + sum(dt[0..i])); texts/args
+ *  align 1:1 with dt. The single-chunk `chunk` variant carries a StreamChunk
+ *  verbatim at its absolute time. */
+function requireV3StreamRecord(raw: unknown, sessionId: string, path: string): AssistantStreamRecord {
+  if (!isObject(raw)) corrupt(sessionId, path, 'assistant stream record must be an object')
+  const type = raw.type
+  if (type === 'chunk') {
+    if (typeof raw.time !== 'number') corrupt(sessionId, path, 'stream chunk record time must be a number')
+    if (!isObject(raw.chunk) || typeof raw.chunk.type !== 'string') {
+      corrupt(sessionId, path, 'stream chunk record chunk must be a StreamChunk object')
+    }
+    return raw as unknown as AssistantStreamRecord
+  }
+  if (type !== 'text-chunks' && type !== 'reasoning-chunks' && type !== 'tool-call-chunks') {
+    corrupt(sessionId, path, `unknown assistant stream record type '${String(type)}'`)
+  }
+  if (typeof raw.time0 !== 'number') corrupt(sessionId, path, `${type} record time0 must be a number`)
+  if (typeof raw.index !== 'number') corrupt(sessionId, path, `${type} record index must be a number`)
+  if (!Array.isArray(raw.dt) || raw.dt.length === 0 || raw.dt.some((d) => typeof d !== 'number')) {
+    corrupt(sessionId, path, `${type} record dt must be a non-empty array of numbers`)
+  }
+  if (raw.dt[0] !== 0) corrupt(sessionId, path, `${type} record dt[0] must be 0 (inter-arrival convention)`)
+  const items = type === 'tool-call-chunks' ? raw.args : raw.texts
+  if (!Array.isArray(items) || items.length !== raw.dt.length || items.some((t) => typeof t !== 'string')) {
+    corrupt(sessionId, path, `${type} record ${type === 'tool-call-chunks' ? 'args' : 'texts'} must align 1:1 with dt`)
+  }
+  if (type === 'tool-call-chunks') {
+    requireV3String(raw, 'id', type, sessionId, path)
+    if (raw.name !== undefined && typeof raw.name !== 'string') {
+      corrupt(sessionId, path, 'tool-call-chunks record name must be a string')
+    }
+  }
+  return raw as unknown as AssistantStreamRecord
+}
+
+function parseV3AssistantMessage(data: JsonObject, sessionId: string, path: string): SessionEventMap['assistant/message'] {
+  if (!isObject(data.message)) corrupt(sessionId, path, 'assistant/message data.message must be an object')
+  requireV3Message(data.message, 'assistant', 'assistant/message', sessionId, path)
+  if (!Array.isArray(data.stream)) corrupt(sessionId, path, 'assistant/message data.stream must be an array')
+  const stream = data.stream.map((record) => requireV3StreamRecord(record, sessionId, path))
+  const out: SessionEventMap['assistant/message'] = {
+    message: data.message as unknown as AssistantMessage,
+    stream,
+  }
+  if (data.usage !== undefined) out.usage = requireV3Usage(data.usage, 'assistant/message', sessionId, path)
+  if (data.interrupted !== undefined) {
+    if (data.interrupted !== true) corrupt(sessionId, path, 'assistant/message data.interrupted must be true')
+    out.interrupted = true
+  }
+  return out
+}
+
+function parseV3ToolResult(data: JsonObject, sessionId: string, path: string): SessionEventMap['tool/result'] {
+  if (!isObject(data.message)) corrupt(sessionId, path, 'tool/result data.message must be an object')
+  requireV3Message(data.message, 'tool', 'tool/result', sessionId, path)
+  requireV3String(data.message, 'toolCallId', 'tool/result', sessionId, path)
+  const out: SessionEventMap['tool/result'] = { message: data.message as unknown as ToolResultMessage }
+  if (data.error !== undefined) {
+    if (!isObject(data.error)) corrupt(sessionId, path, 'tool/result data.error must be an object')
+    requireV3String(data.error, 'name', 'tool/result error', sessionId, path)
+    requireV3String(data.error, 'code', 'tool/result error', sessionId, path)
+    if (data.error.reason !== undefined && typeof data.error.reason !== 'string') {
+      corrupt(sessionId, path, 'tool/result data.error.reason must be a string')
+    }
+    out.error = data.error as { name: string; code: string; reason?: string }
+  }
+  if (data.meta !== undefined) out.meta = data.meta as SessionEventMap['tool/result']['meta']
+  return out
+}
+
+/** Parse one v3 line into the canonical neutral NativeSessionEvent. Enforces
+ *  contiguous seq, the parent null-vs-string contract on message events, and
+ *  rejects unknown event types / envelope keys as corruption. */
+export function parseEventLineV3(
+  raw: unknown,
+  expectedSeq: number,
+  sessionId: string,
+  path: string,
+): NativeSessionEvent {
+  if (!isObject(raw)) corrupt(sessionId, path, 'event must be an object')
+  if (typeof raw.seq !== 'number') corrupt(sessionId, path, 'event seq must be a number')
+  if (raw.seq !== expectedSeq) corrupt(sessionId, path, `event seq mismatch: expected ${expectedSeq}, got ${raw.seq}`)
+  if (typeof raw.type !== 'string' || !V3_EVENT_TYPES.has(raw.type as keyof SessionEventMap)) {
+    corrupt(sessionId, path, `unknown event type '${String(raw.type)}'`)
+  }
+  const type = raw.type as keyof SessionEventMap
+  if (typeof raw.time !== 'number' || !Number.isFinite(raw.time)) {
+    corrupt(sessionId, path, `${type} event time must be a finite number`)
+  }
+  if (!isObject(raw.data)) corrupt(sessionId, path, `${type} event data must be an object`)
+  for (const key of Object.keys(raw)) {
+    if (!V3_ENVELOPE_KEYS.has(key)) corrupt(sessionId, path, `${type} event has unknown field '${key}'`)
+  }
+  if (raw.ignorable !== undefined && raw.ignorable !== true) {
+    corrupt(sessionId, path, `${type} event ignorable must be true`)
+  }
+  const parentToolUseId = requireV3Parent(raw, type, sessionId, path)
+  const data = raw.data
+  const envelope = {
+    seq: raw.seq,
+    time: raw.time,
+    ...(raw.ignorable === true ? { ignorable: true as const } : {}),
+    ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
+  }
+
+  switch (type) {
+    case 'user/message':
+      requireV3Message(data, 'user', type, sessionId, path)
+      return { type, ...envelope, data: data as unknown as UserMessage } as NativeSessionEvent
+    case 'assistant/message':
+      return { type, ...envelope, data: parseV3AssistantMessage(data, sessionId, path) } as NativeSessionEvent
+    case 'tool/result':
+      return { type, ...envelope, data: parseV3ToolResult(data, sessionId, path) } as NativeSessionEvent
+    case 'session/context':
+      requireV3String(data, 'text', type, sessionId, path)
+      return { type, ...envelope, data: { text: data.text as string } } as NativeSessionEvent
+    case 'turn/end': {
+      if (!TURN_END_REASONS.includes(data.reason as NativeTurnEndReason)) {
+        corrupt(sessionId, path, `turn/end data.reason must be one of ${TURN_END_REASONS.join(', ')}`)
+      }
+      const payload: SessionEventMap['turn/end'] = { reason: data.reason as NativeTurnEndReason }
+      if (data.usage !== undefined) payload.usage = requireV3Usage(data.usage, type, sessionId, path)
+      return { type, ...envelope, data: payload } as NativeSessionEvent
+    }
+    case 'session/end-seed': {
+      const payload: SessionEventMap['session/end-seed'] = {}
+      if (data.inherited !== undefined) {
+        if (data.inherited !== true) corrupt(sessionId, path, 'session/end-seed data.inherited must be true')
+        payload.inherited = true
+      }
+      return { type, ...envelope, data: payload } as NativeSessionEvent
+    }
+    case 'session/compact':
+      return {
+        type, ...envelope,
+        data: {
+          text: requireV3NonEmptyString(data, 'text', type, sessionId, path),
+          context: requireV3NonEmptyString(data, 'context', type, sessionId, path),
+          uuid: requireV3NonEmptyString(data, 'uuid', type, sessionId, path),
+          timestamp: requireV3NonEmptyString(data, 'timestamp', type, sessionId, path),
+        },
+      } as NativeSessionEvent
+    case 'session/supplement':
+      return {
+        type, ...envelope,
+        data: {
+          uuid: requireV3NonEmptyString(data, 'uuid', type, sessionId, path),
+          text: requireV3NonEmptyString(data, 'text', type, sessionId, path),
+          timestamp: requireV3NonEmptyString(data, 'timestamp', type, sessionId, path),
+        },
+      } as NativeSessionEvent
+    case 'session/skill':
+      return {
+        type, ...envelope,
+        data: {
+          name: requireV3String(data, 'name', type, sessionId, path),
+          body: requireV3NonEmptyString(data, 'body', type, sessionId, path),
+          timestamp: requireV3String(data, 'timestamp', type, sessionId, path),
+        },
+      } as NativeSessionEvent
+    case 'subagent/descriptor': {
+      // Reuse the strict v1/v2 descriptor validator (identical field rules).
+      const legacy = parseSubagentDescriptor({ ...data, seq: raw.seq, type }, raw.seq, sessionId, path)
+      return {
+        type, ...envelope,
+        data: {
+          toolUseId: legacy.toolUseId, parentToolUseId: legacy.parentToolUseId, kind: legacy.kind,
+          toolName: legacy.toolName, label: legacy.label, depth: legacy.depth,
+          profile: legacy.profile, timestamp: legacy.timestamp,
+        },
+      } as NativeSessionEvent
+    }
+    case 'session/attachments': {
+      const legacy = parseAttachmentCatalog({ ...data, seq: raw.seq, type }, raw.seq, NATIVE_SESSION_LOG_V2, sessionId, path)
+      return { type, ...envelope, data: { attachments: legacy.attachments, timestamp: legacy.timestamp } } as NativeSessionEvent
+    }
+    case 'session/agent': {
+      const legacy = parseAgentSelection({ ...data, seq: raw.seq, type }, raw.seq, sessionId, path)
+      return {
+        type, ...envelope,
+        data: {
+          name: legacy.name,
+          ...(legacy.definition === undefined ? {} : { definition: legacy.definition }),
+          base: legacy.base,
+          ...(legacy.droppedAgent === undefined ? {} : { droppedAgent: legacy.droppedAgent }),
+          timestamp: legacy.timestamp,
+        },
+      } as NativeSessionEvent
+    }
+    default:
+      return corrupt(sessionId, path, `unknown event type '${String(type)}'`)
+  }
+}
+
+/** True when a neutral event carries facts only v3 can store losslessly (packed
+ *  assistant stream records, a structured tool error / opaque meta, the
+ *  inherited end-seed marker, or an ignorable flag). The v1/v2 compat projection
+ *  drops these; T12's eager-at-open migrateToV3 uses this detector to upgrade a
+ *  log before such an event is appended. */
+export function eventRequiresV3(event: NativeSessionEvent): boolean {
+  if (event.ignorable === true) return true
+  switch (event.type) {
+    case 'assistant/message': return event.data.stream.length > 0
+    case 'tool/result': return event.data.error !== undefined || event.data.meta !== undefined
+    case 'session/end-seed': return event.data.inherited === true
+    default: return false
+  }
+}
+
+// ── neutral → legacy projection (v1/v2 compat + the v3 legacy read view) ─────
+// The live log stays v1/v2 until T12 migrates it and T13 migrates the readers,
+// so a neutral event appended to a v1/v2 log is projected to the legacy event
+// shape here (the session-log layer owns version compat — the CORE no longer
+// projects). v3-only facts (stream records, tool error/meta) are dropped by
+// this projection; the assistant stop_reason is reconstructed from the packed
+// finish record so the legacy turn-boundary signal survives.
+
+function parseToolInput(json: string): Record<string, unknown> {
+  if (!json) return {}
+  try {
+    const parsed = JSON.parse(json)
+    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function sdkUsageOf(usage: TokenUsage): NativeUsage & { cache_read_input_tokens?: number; cache_creation_input_tokens?: number } {
+  return {
+    input_tokens: usage.inputTokens,
+    output_tokens: usage.outputTokens,
+    ...(usage.cacheReadTokens !== undefined ? { cache_read_input_tokens: usage.cacheReadTokens } : {}),
+    ...(usage.cacheWriteTokens !== undefined ? { cache_creation_input_tokens: usage.cacheWriteTokens } : {}),
+  }
+}
+
+function neutralAssistantBlockToSdk(block: ContentBlock): Record<string, unknown> {
+  switch (block.type) {
+    case 'text': return { type: 'text', text: block.text }
+    case 'reasoning':
+      if (block.redacted === true) return { type: 'redacted_thinking', data: block.data }
+      return {
+        type: 'thinking',
+        thinking: block.text,
+        ...(typeof block.signature === 'string' && block.signature !== '' ? { signature: block.signature } : {}),
+      }
+    case 'tool-call': return { type: 'tool_use', id: block.id, name: block.name, input: parseToolInput(block.arguments) }
+    default: throw new Error(`native v3 compat: block kind "${(block as { type: string }).type}" is not an assistant emission`)
+  }
+}
+
+function neutralInputBlockToSdk(block: ContentBlock): Record<string, unknown> {
+  switch (block.type) {
+    case 'text': return { type: 'text', text: block.text }
+    case 'image': return 'attachment' in block ? { type: 'image', attachment: block.attachment } : { type: 'image', source: block.source }
+    case 'file': return { type: 'file', attachment: block.attachment }
+    default: throw new Error(`native v3 compat: block kind "${(block as { type: string }).type}" is not input content`)
+  }
+}
+
+/** Reconstruct the legacy assistant stop_reason from the packed finish record.
+ *  The neutral durable event carries the finish reason as a stream `chunk`
+ *  (FinishReason), not a raw string; the common API reasons round-trip exactly
+ *  (end_turn / tool_use / max_tokens). No finish record = an interrupted turn
+ *  (null), matching the live AssistantFrame.stopReason. */
+function stopReasonOfStream(stream: readonly AssistantStreamRecord[]): string | null {
+  for (const record of stream) {
+    if (record.type !== 'chunk') continue
+    const chunk = record.chunk as { type?: unknown; reason?: { kind?: unknown } }
+    if (chunk.type !== 'finish') continue
+    switch (chunk.reason?.kind) {
+      case 'tool-calls': return 'tool_use'
+      case 'max-tokens': return 'max_tokens'
+      case 'stop': return 'end_turn'
+      default: return null
+    }
+  }
+  return null
+}
+
+/** Project a neutral v3 event to the legacy v1/v2 NativeLogEvent shape. Used
+ *  both to write neutral appends into a not-yet-migrated v1/v2 log and to expose
+ *  a legacy read view of a v3 log for the transitional consumers (T13 removes
+ *  the latter). `sessionId` stamps the legacy event-level session_id. */
+export function projectNeutralEventToLegacy(event: NativeSessionEvent, sessionId: string): NativeLogEvent {
+  const seq = event.seq
+  const timestamp = new Date(event.time).toISOString()
+  const parent = event.parentToolUseId ?? null
+  switch (event.type) {
+    case 'user/message':
+      return {
+        seq, type: 'user', uuid: event.data.id, session_id: sessionId,
+        parent_tool_use_id: parent, timestamp,
+        message: { role: 'user', content: event.data.content.map(neutralInputBlockToSdk) },
+      }
+    case 'assistant/message': {
+      const message = event.data.message
+      return {
+        seq, type: 'assistant', uuid: message.id, session_id: sessionId,
+        parent_tool_use_id: parent, timestamp,
+        message: {
+          // `type` mirrors the live SDK assistant message (frames.ts / host
+          // adapter) and the former core bridge, keeping the persisted line
+          // byte-compatible.
+          type: 'assistant',
+          role: 'assistant',
+          content: message.content.map(neutralAssistantBlockToSdk),
+          id: `msg_${message.id}`,
+          model: message.source.model,
+          stop_reason: stopReasonOfStream(event.data.stream),
+          ...(event.data.usage !== undefined ? { usage: sdkUsageOf(event.data.usage) } : {}),
+        } as NativeAssistantEvent['message'],
+      }
+    }
+    case 'tool/result': {
+      const message = event.data.message
+      return {
+        seq, type: 'user', uuid: message.id, session_id: sessionId,
+        parent_tool_use_id: parent, timestamp,
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: message.toolCallId,
+            content: message.content.map(neutralInputBlockToSdk),
+            is_error: message.isError ?? false,
+          }],
+        },
+      }
+    }
+    case 'session/context':
+      return { seq, type: 'session/context', text: event.data.text }
+    case 'turn/end':
+      return {
+        seq, type: 'turn/end', reason: event.data.reason,
+        ...(event.data.usage !== undefined ? { usage: sdkUsageOf(event.data.usage) } : {}),
+      }
+    case 'session/end-seed':
+      return { seq, type: 'session/end-seed' }
+    case 'session/compact':
+      return { seq, type: 'session/compact', ...event.data }
+    case 'session/supplement':
+      return { seq, type: 'session/supplement', ...event.data }
+    case 'session/skill':
+      return { seq, type: 'session/skill', ...event.data }
+    case 'subagent/descriptor':
+      return {
+        seq, type: 'subagent/descriptor', ...event.data,
+        toolName: event.data.toolName as NativeSubagentDescriptorEvent['toolName'],
+      }
+    case 'session/attachments':
+      return { seq, type: 'session/attachments', ...event.data }
+    case 'session/agent':
+      return { seq, type: 'session/agent', ...event.data }
+    default:
+      throw new Error(`native v3 compat: unknown neutral event type '${(event as { type: string }).type}'`)
+  }
 }

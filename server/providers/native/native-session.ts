@@ -40,7 +40,8 @@ import type {
 import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
 import { createAssistantMessage, createToolResultMessage, createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
-import type { ContentBlock, TokenUsage } from './vocabulary/types.js'
+import type { ContentBlock, FinishReason, TokenUsage } from './vocabulary/types.js'
+import type { AssistantStreamRecord } from './vocabulary/session-event.js'
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
 import type { NativeHostPorts } from './ports.js'
@@ -209,63 +210,61 @@ function neutralUsageOf(usage: Usage): TokenUsage {
   }
 }
 
-// ── Temporary neutral→legacy persistence projection (T9; T11 removes) ────────
-// The v1/v2 durable log stores SDK-shaped assistant events. Until the v3
-// neutral format lands (T11), persistFrame projects the neutral AssistantFrame
-// to that legacy event shape CORE-LOCALLY (the core may not import the host
-// adapter). This mirrors the adapter's sdkAssistantBlock / parseToolInput /
-// sdkUsage exactly so the log stays byte-compatible; the wire round-trip pin
-// and the native e2e guard against drift.
+// ── Assistant stream-record packing (T11) ───────────────────────────────────
+// The v3 durable assistant/message event carries the settled message PLUS its
+// packed streaming history (AssistantStreamRecord). The core packs each settled
+// content block into a single-chunk run honoring the inter-arrival convention
+// dt[0] === 0 (T5): the run's first-chunk time is the round's first observed
+// raw-stream-event arrival. Finer per-delta cadence packing awaits the loop
+// exposing timed neutral chunks; the settled-content granularity is lossless
+// for the message and is the builder-sanctioned packing granularity. A finish
+// `chunk` record carries the stop reason so the legacy compat projection can
+// reconstruct the turn-boundary signal. The neutral→legacy projection itself
+// lives in session-log/format.ts (version compat), never in the core.
 
-/** Parse a tool-call's raw-JSON arguments into the legacy tool_use.input.
- *  Empty/invalid/non-object JSON becomes {} (mirrors the loop + wire adapter). */
-function parseToolInput(json: string): Record<string, unknown> {
-  if (!json) return {}
-  try {
-    const parsed = JSON.parse(json)
-    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
-  } catch {
-    return {}
+/** Map the API stop reason to the neutral FinishReason the packed finish record
+ *  carries (mirrors the loop's settlement mapping). */
+function finishReasonOf(stopReason: string): FinishReason {
+  switch (stopReason) {
+    case 'tool_use': return { kind: 'tool-calls' }
+    case 'max_tokens': return { kind: 'max-tokens' }
+    default: return { kind: 'stop' }
   }
 }
 
-/** One neutral assistant content block → the legacy SDK block shape. */
-function legacyAssistantBlock(block: ContentBlock): Record<string, unknown> {
-  switch (block.type) {
-    case 'text': return { type: 'text', text: block.text }
-    case 'reasoning':
-      if (block.redacted === true) return { type: 'redacted_thinking', data: block.data }
-      return {
-        type: 'thinking',
-        thinking: block.text,
-        ...(typeof block.signature === 'string' && block.signature !== '' ? { signature: block.signature } : {}),
-      }
-    case 'tool-call': return { type: 'tool_use', id: block.id, name: block.name, input: parseToolInput(block.arguments) }
-    default: throw new Error(`native persistence bridge: block kind "${(block as { type: string }).type}" is not an assistant emission`)
+/** Pack the settled assistant content into AssistantStreamRecord runs. Each
+ *  block becomes one run with dt=[0] (inter-arrival convention); redacted
+ *  reasoning rides a verbatim block-end `chunk` (it has no text delta).
+ *  Exported for the packing unit pin. */
+export function packAssistantStream(
+  content: readonly ContentBlock[],
+  time0: number,
+  stopReason: string | null,
+): AssistantStreamRecord[] {
+  const records: AssistantStreamRecord[] = []
+  for (const [index, block] of content.entries()) {
+    switch (block.type) {
+      case 'text':
+        records.push({ type: 'text-chunks', time0, index, dt: [0], texts: [block.text] })
+        break
+      case 'reasoning':
+        if (block.redacted === true) {
+          records.push({ type: 'chunk', time: time0, chunk: { type: 'block-end', index, block } })
+        } else {
+          records.push({ type: 'reasoning-chunks', time0, index, dt: [0], texts: [block.text] })
+        }
+        break
+      case 'tool-call':
+        records.push({ type: 'tool-call-chunks', time0, index, dt: [0], id: block.id, name: block.name, args: [block.arguments] })
+        break
+      default:
+        throw new Error(`native stream packing: block kind "${(block as { type: string }).type}" is not an assistant emission`)
+    }
   }
-}
-
-/** The legacy SDK assistant message body for a neutral AssistantFrame (the
- *  v1/v2 log event's `message`). uuid = the neutral message id; the `msg_` id
- *  prefix and stop_reason/usage projection match the host adapter verbatim. */
-function legacyAssistantMessageOf(frame: AssistantFrame): {
-  type: 'assistant'
-  role: 'assistant'
-  content: unknown[]
-  id: string
-  model: string
-  stop_reason: string | null
-  usage: Usage
-} {
-  return {
-    id: `msg_${frame.message.id}`,
-    type: 'assistant',
-    role: 'assistant',
-    model: frame.model,
-    content: frame.message.content.map(legacyAssistantBlock),
-    stop_reason: frame.stopReason,
-    usage: sdkUsageOf(frame.usage),
+  if (stopReason !== null) {
+    records.push({ type: 'chunk', time: time0, chunk: { type: 'finish', reason: finishReasonOf(stopReason) } })
   }
+  return records
 }
 
 // ── Temporary task-frame bridge (T16 removes) ───────────────────────────────
@@ -515,6 +514,10 @@ export class NativeSession implements NativeSessionCore {
    *  before any tool runs, so a crash is always recoverable as "call sent,
    *  result unknown" — never "tool ran but its call was never durable". */
   private assistantFlush: Promise<void> | null = null
+  /** Arrival time of the current API round's first raw stream event — the
+   *  time0 for the packed AssistantStreamRecord runs. Reset when the round's
+   *  assistant frame is persisted. */
+  private roundFirstChunkAt: number | null = null
   /** Session-level abort (abort()/destroy()). Never aborted by a mere interrupt. */
   private readonly sessionAbort = new AbortController()
   /** Per-turn abort, replaced by pumpLoop for every turn. */
@@ -1266,22 +1269,33 @@ export class NativeSession implements NativeSessionCore {
     this.output.push({ type: 'enveloped-conversation', frame: conversation, parentToolUseId })
   }
 
-  /** Persist a neutral assistant frame. The v3 durable format is T11; until
-   *  then the frame is projected to the current SDK assistant event shape
-   *  CORE-LOCALLY (legacyAssistantMessageOf), so the log stays byte-compatible
-   *  without importing the host adapter. Canonical tool results use
-   *  `persistToolResult` below instead: their structured content is not present
-   *  on the deliberately text-only UI frame. */
+  /** Persist a neutral assistant frame as a v3 `assistant/message` event: the
+   *  settled message plus its packed streaming history (dt[0]=0). The core
+   *  writes NEUTRAL — the session-log writer owns the neutral→legacy version
+   *  compat for a not-yet-migrated v1/v2 log (T12 migrates eager-at-open). Raw
+   *  passthrough frames only arm the round's first-chunk time; canonical tool
+   *  results use `persistToolResult` below (their structured content is not on
+   *  the deliberately text-only UI frame). */
   private persistFrame(frame: NativeLoopFrame, parentToolUseId: string | null): void {
-    if (!('type' in frame) || frame.type !== 'assistant-frame') return
-    const message = legacyAssistantMessageOf(frame)
+    if (!('type' in frame)) return
+    if (frame.type === 'raw-stream-event') {
+      // Arrival timing only — the core never inspects the raw payload (R2).
+      if (this.roundFirstChunkAt === null) this.roundFirstChunkAt = Date.now()
+      return
+    }
+    if (frame.type !== 'assistant-frame') return
+    const time = Date.now()
+    const time0 = this.roundFirstChunkAt ?? time
+    this.roundFirstChunkAt = null
     this.log.append({
-      type: 'assistant',
-      uuid: frame.message.id,
-      session_id: this.opts.id,
-      parent_tool_use_id: parentToolUseId,
-      timestamp: new Date().toISOString(),
-      message,
+      type: 'assistant/message',
+      time,
+      parentToolUseId,
+      data: {
+        message: frame.message,
+        stream: packAssistantStream(frame.message.content, time0, frame.stopReason),
+        usage: frame.usage,
+      },
     })
     // Keep the flush promise so `requestPermission` can await it before any
     // tool executes. The catch keeps a text-only turn (which never reaches
@@ -1293,14 +1307,11 @@ export class NativeSession implements NativeSessionCore {
     // One assistant frame = one API round. Summing here (rather than from
     // the turn's final usage) keeps the live per-model totals identical to
     // what `restoreUsage` rebuilds from the log.
-    const usage = usageOf(message.usage)
-    if (usage) {
-      const model = message.model || this.model
-      this.usageByModel.set(
-        model,
-        addUsage(this.usageByModel.get(model) ?? { input_tokens: 0, output_tokens: 0 }, usage),
-      )
-    }
+    const model = frame.model || this.model
+    this.usageByModel.set(
+      model,
+      addUsage(this.usageByModel.get(model) ?? { input_tokens: 0, output_tokens: 0 }, sdkUsageOf(frame.usage)),
+    )
   }
 
   private syncAttachmentReferences(): void {
@@ -1308,27 +1319,16 @@ export class NativeSession implements NativeSessionCore {
   }
 
   private persistToolResult(record: PersistedToolResult, parentToolUseId: string | null): void {
-    // Project the neutral first-class tool message back to the legacy canonical
-    // tool_result event shape (T11 owns the v3 durable form). The full content
-    // (text + structured files) is persisted; the live UI frame stays text-only.
-    const message = record.message
-    const result = {
-      type: 'tool_result',
-      tool_use_id: message.toolCallId,
-      content: message.content.map((block) => {
-        if (block.type === 'text') return { type: 'text', text: block.text }
-        if (block.type === 'file') return { type: 'file', attachment: block.attachment }
-        throw new Error(`native session: tool-result block kind "${block.type}" is not canonical content`)
-      }),
-      is_error: message.isError ?? false,
-    }
+    // Write the neutral first-class `tool/result` event. The durable identity is
+    // record.uuid (shared with the live UI frame), so re-key the loop's history
+    // message onto it; the full canonical content (text + structured files) is
+    // persisted while the live UI frame stays text-only.
+    const message = freezeMessage({ ...record.message, id: brandString<'MessageId'>(record.uuid) })
     this.log.append({
-      type: 'user',
-      uuid: record.uuid,
-      session_id: this.opts.id,
-      parent_tool_use_id: parentToolUseId,
-      timestamp: new Date().toISOString(),
-      message: { role: 'user', content: [result] },
+      type: 'tool/result',
+      time: Date.now(),
+      parentToolUseId,
+      data: { message },
     })
     this.preparedPdfs.confirmPersisted(message.toolCallId)
     this.syncAttachmentReferences()
@@ -1472,6 +1472,10 @@ export class NativeSession implements NativeSessionCore {
       // turn's write is in flight (the session survives for the next message).
       const turnAbort = new AbortController()
       this.turnAbort = turnAbort
+      // Fresh stream-packing clock per turn: a turn interrupted mid-stream
+      // never persists an assistant frame, so its first-chunk time must not
+      // leak into the next turn's packed records.
+      this.roundFirstChunkAt = null
       const turnSignal = AbortSignal.any([this.sessionAbort.signal, turnAbort.signal])
       let endReason: NativeTurnEndReason = 'error'
       // Only a completed turn carries this turn's usage. An interrupted /

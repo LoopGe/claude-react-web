@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NativeSessionLog, deleteNativeSessionLog, hasNativeSessionLog, loadNativeSessionLogSync } from './log.js'
+import { brandString } from '../vocabulary/brand.js'
 import { NativeSessionStorageError } from './errors.js'
 import { nativeSessionDir, nativeSessionLogPath, nativeSessionMigrationTempPath } from './paths.js'
 
@@ -833,8 +834,129 @@ describe('NativeSessionLog', () => {
     log.append(userEvent('u1')); await log.flush(); await log.close()
     const path = nativeSessionLogPath(stateDir, 's1')
     const lines = (await readFile(path, 'utf8')).split('\n')
-    lines[0] = lines[0].replace('"v":1', '"v":3')
+    lines[0] = lines[0].replace('"v":1', '"v":99')
     await writeFile(path, lines.join('\n'))
     expect(() => loadNativeSessionLogSync(stateDir, 's1')).toThrow(/unsupported|version/i)
+  })
+})
+
+describe('NativeSessionLog v3 (neutral writer)', () => {
+  const neutralUser = (uuid: string, seq: number) => ({
+    type: 'user/message' as const, seq, time: 1000 + seq, parentToolUseId: null,
+    data: { id: brandString<'MessageId'>(uuid), role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }], source: { kind: 'user' as const } },
+  })
+  const neutralAssistantInput = {
+    type: 'assistant/message' as const, time: 2000, parentToolUseId: null,
+    data: {
+      message: { id: brandString<'MessageId'>('a1'), role: 'assistant' as const, content: [{ type: 'text' as const, text: 'reply' }], source: { kind: 'model' as const, provider: 'anthropic', model: 'm' } },
+      stream: [{ type: 'text-chunks' as const, time0: 2000, index: 0, dt: [0], texts: ['reply'] }, { type: 'chunk' as const, time: 2000, chunk: { type: 'finish' as const, reason: { kind: 'stop' as const } } }],
+      usage: { inputTokens: 10, outputTokens: 5 },
+    },
+  }
+  const neutralAgentInput = {
+    type: 'session/agent' as const, time: 3000,
+    data: { name: null, base: { model: 'base-model', permissionMode: 'default' }, timestamp: '2026-11-11T00:00:00.000Z' },
+  }
+
+  it('writes neutral v3 events to disk and reloads them losslessly', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({
+      stateDir, id: 's1', cwd: '/repo', resume: false,
+      seed: { events: [neutralUser('u1', 0)], inheritedEventCount: 0, isSeeded: false, version: 3 },
+    })
+    expect(log.header.v).toBe(3)
+    log.append(neutralAssistantInput)
+    await log.flush()
+    await log.close()
+
+    const path = nativeSessionLogPath(stateDir, 's1')
+    expect(await readFile(path, 'utf8')).toContain('"type":"assistant/message"')
+    const snap = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(snap.header.v).toBe(3)
+    expect(snap.neutralEvents!.map((e) => e.type)).toEqual(['user/message', 'assistant/message'])
+    expect(snap.neutralEvents!.map((e) => e.seq)).toEqual([0, 1])
+    expect(snap.neutralEvents![1]).toEqual({ ...neutralAssistantInput, seq: 1 })
+    // The legacy read view stays available for transitional consumers.
+    expect(snap.events.map((e) => e.type)).toEqual(['user', 'assistant'])
+    expect(snap.events[1]).toMatchObject({ type: 'assistant', uuid: 'a1', message: { id: 'msg_a1', stop_reason: 'end_turn' } })
+  })
+
+  it('resumes a v3 log and appends more neutral events with contiguous seq', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({
+      stateDir, id: 's1', cwd: '/repo', resume: false,
+      seed: { events: [neutralUser('u1', 0)], inheritedEventCount: 0, isSeeded: false, version: 3 },
+    })
+    await log.flush(); await log.close()
+    const resumed = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: true })
+    expect(resumed.header.v).toBe(3)
+    expect(resumed.neutralEvents).toHaveLength(1)
+    resumed.append(neutralAssistantInput)
+    await resumed.flush()
+    const snap = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(snap.neutralEvents!.map((e) => e.seq)).toEqual([0, 1])
+    await resumed.close()
+  })
+
+  it('rejects legacy event inputs on a v3 log', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({
+      stateDir, id: 's1', cwd: '/repo', resume: false,
+      seed: { events: [], inheritedEventCount: 0, isSeeded: false, version: 3 },
+    })
+    expect(() => log.append({ type: 'turn/end', reason: 'completed' })).toThrow(/neutral/)
+    await log.close()
+  })
+
+  it('migrateToV2 is a no-op on a v3 log', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({
+      stateDir, id: 's1', cwd: '/repo', resume: false,
+      seed: { events: [neutralUser('u1', 0)], inheritedEventCount: 0, isSeeded: false, version: 3 },
+    })
+    await log.migrateToV2()
+    expect(log.header.v).toBe(3)
+    await log.close()
+  })
+
+  it('appendDurable rolls back a neutral v3 reservation and resequences later neutral appends', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({
+      stateDir, id: 's1', cwd: '/repo', resume: false,
+      seed: { events: [neutralUser('committed', 0)], inheritedEventCount: 0, isSeeded: false, version: 3 },
+    })
+    await log.flush()
+    log.append(neutralUser('prior-pending', 1))
+    const path = nativeSessionLogPath(stateDir, 's1')
+    let selectionStartSize = 0
+    let selectionWrites = 0
+    const handle = {
+      write: async (chunk: Buffer, offset: number, length: number) => {
+        if (chunk.toString('utf8').includes('"type":"session/agent"')) {
+          selectionWrites++
+          if (selectionWrites === 1) selectionStartSize = (await stat(path)).size
+          const bytes = chunk.subarray(offset, offset + Math.min(5, length))
+          await writeFile(path, bytes, { flag: 'a' })
+          if (selectionWrites === 1) return { bytesWritten: bytes.length, buffer: chunk }
+          log.append({ type: 'turn/end', time: 4000, data: { reason: 'completed' } } as never)
+          throw new Error('partial selection write')
+        }
+        await writeFile(path, chunk.subarray(offset, offset + length), { flag: 'a' })
+        return { bytesWritten: length, buffer: chunk }
+      },
+      sync: async () => undefined,
+    }
+    ;(log as unknown as { ensureHandle: () => Promise<unknown> }).ensureHandle = async () => handle
+
+    await expect(log.appendDurable(neutralAgentInput)).rejects.toThrow('partial selection write')
+    expect((await stat(path)).size).toBe(selectionStartSize)
+    expect(log.neutralEvents!.map((e) => e.type)).toEqual(['user/message', 'user/message', 'turn/end'])
+    expect(log.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2])
+    expect(log.events.map((e) => e.seq)).toEqual([0, 1, 2])
+    await log.flush()
+    const snap = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(snap.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2])
+    expect(snap.neutralEvents!.some((e) => e.type === 'session/agent')).toBe(false)
+    await log.close()
   })
 })

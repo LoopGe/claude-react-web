@@ -38,9 +38,9 @@ export type SessionSeq = number
  *  and deliberately do not belong here. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 
-/** Why a turn ended. Field-identical to session-log/format.ts's
- *  NativeTurnEndReason (the v1/v2 log keeps its own copy until the v3 format
- *  lands). */
+/** Why a turn ended. The SINGLE definition (T11 consolidation): the v1/v2 log
+ *  format (session-log/format.ts) imports and re-exports this type rather than
+ *  keeping its own copy. */
 export type NativeTurnEndReason = 'completed' | 'interrupted' | 'error' | 'forked'
 
 /** Packed timed runs of assistant streaming chunks, persisted alongside the
