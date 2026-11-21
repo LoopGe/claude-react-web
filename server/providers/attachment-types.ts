@@ -1,16 +1,8 @@
 // server/providers/attachment-types.ts
 //
-// Neutral attachment contract shared by the provider seam and the native
-// session log. Imports nothing provider-specific.
+// Provider-seam alias for the neutral attachment contract. The shapes live in
+// shared/attachment-types.ts (host-free, imports nothing) so the native
+// vocabulary can import them directly; this module re-exports them so seam
+// consumers keep their import path.
 
-import type { ResolvedFileAttachment } from '../../shared/attachment-types.js'
-
-export interface NativeFileAttachment extends ResolvedFileAttachment {
-  /** Assigned once before the occurrence is first persisted; never rewritten. */
-  modelForm: 'handle' | 'pdf-document'
-}
-
-export interface NativeFileBlock {
-  type: 'file'
-  attachment: NativeFileAttachment
-}
+export type { NativeFileAttachment, NativeFileBlock } from '../../shared/attachment-types.js'

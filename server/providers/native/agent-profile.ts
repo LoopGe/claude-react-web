@@ -1,29 +1,23 @@
 import type { StoredAgentDefinition } from '../../agent-definition-store.js'
-import type { SessionToolProfile } from '../../../shared/tool-profile.js'
 import type { NativeLogEvent } from './session-log/format.js'
+import type { NativeAgentBase, NativeAgentEffortLevel, NativeAgentProfile } from './vocabulary/agent-profile.js'
 
-export const NATIVE_AGENT_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+// The pure profile types live in the neutral vocabulary (host-free) so the
+// durable SessionEvent language can speak them without a host import; this
+// module re-exports them so existing consumers keep their import path.
+export type { NativeAgentBase, NativeAgentProfile, NativeAgentEffortLevel } from './vocabulary/agent-profile.js'
 
-export interface NativeAgentProfile {
-  name: string | null
-  instruction?: string
-  model?: StoredAgentDefinition['model']
-  tools?: StoredAgentDefinition['tools']
-  disallowedTools?: StoredAgentDefinition['disallowedTools']
-  mcpServers?: StoredAgentDefinition['mcpServers']
-  skills?: StoredAgentDefinition['skills']
-  permissionMode?: StoredAgentDefinition['permissionMode']
-  maxTurns?: StoredAgentDefinition['maxTurns']
-  effort?: (typeof NATIVE_AGENT_EFFORT_LEVELS)[number]
-}
+export const NATIVE_AGENT_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const satisfies readonly NativeAgentEffortLevel[]
 
-export interface NativeAgentBase {
-  model: string
-  permissionMode: string
-  effortLevel?: string
-  skillPolicy?: readonly string[] | 'all'
-  toolProfile?: SessionToolProfile
-}
+// Reverse lockstep: every level the neutral vocabulary may persist must be
+// accepted by the runtime validation list above (the `satisfies` covers the
+// other direction), so the parser and the vocabulary cannot diverge.
+// Type-only pin; exported so it is a used declaration (drift breaks the
+// Assert constraint here, loudly).
+type Assert<T extends true> = T
+export type NativeAgentEffortLevelsCovered = Assert<
+  NativeAgentEffortLevel extends (typeof NATIVE_AGENT_EFFORT_LEVELS)[number] ? true : false
+>
 
 /** History-only state: the agent and base configuration used to restore the
  *  next turn. It is deliberately not a model or transcript message. */

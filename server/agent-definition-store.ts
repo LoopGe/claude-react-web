@@ -5,6 +5,7 @@ import {
   isSdkAgentPermissionMode,
   AGENT_FIELDS,
 } from '../shared/agent-definitions.js'
+import type { StoredAgentDefinition } from '../shared/agent-definitions.js'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
 import { createLogger } from './log.js'
@@ -17,13 +18,29 @@ const log = createLogger('agent-definitions')
 export { AGENT_FIELDS, agentUnusableReason } from '../shared/agent-definitions.js'
 export type { AgentField } from '../shared/agent-definitions.js'
 
-/** A stored definition: the SDK AgentDefinition plus app bookkeeping. */
-export interface StoredAgentDefinition extends AgentDefinition {
-  name: string
-  enabled: boolean
-  createdAt: number
-  updatedAt: number
-}
+/** A stored definition: the SDK AgentDefinition field surface plus app
+ *  bookkeeping. The shape itself lives in shared/agent-definitions.ts
+ *  (neutral, host-free) so the native vocabulary can speak it without an SDK
+ *  or host import; this module re-exports it as the canonical host type. */
+export type { StoredAgentDefinition } from '../shared/agent-definitions.js'
+
+/** Compile-time lockstep between the neutral stored-definition mirror and the
+ *  SDK AgentDefinition (the shared/permission-modes.ts `satisfies` pattern,
+ *  extended to a whole shape): mutual assignability AND key-set equality in
+ *  both directions, so an SDK field addition/removal/rename fails typecheck
+ *  here and forces the neutral mirror to be updated in the same change.
+ *  Type-only (erased at runtime); exported so the pin is a used declaration.
+ *  Resolves to `true` while the shapes match — any drift breaks the Assert
+ *  constraint at this declaration instead of silently resolving to false. */
+type AgentBookkeeping = { name: string; enabled: boolean; createdAt: number; updatedAt: number }
+type SdkStoredShape = AgentDefinition & AgentBookkeeping
+type Assert<T extends true> = T
+export type StoredAgentDefinitionSdkLockstep = Assert<[
+  StoredAgentDefinition extends SdkStoredShape ? true : false,
+  SdkStoredShape extends StoredAgentDefinition ? true : false,
+  keyof StoredAgentDefinition extends keyof SdkStoredShape ? true : false,
+  keyof SdkStoredShape extends keyof StoredAgentDefinition ? true : false,
+] extends [true, true, true, true] ? true : false>
 
 export type AgentDefinitionStoreOptions = JsonFileStoreOptions
 
