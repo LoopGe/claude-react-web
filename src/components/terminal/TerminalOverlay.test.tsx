@@ -19,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { TerminalChannel } from '../../hooks/useTerminalChannel'
 import type { TerminalSnapshot, TerminalState } from '../../../shared/terminal.js'
-import { __resetFloatingSurfacesForTests } from '../../hooks/floating-surface-registry'
+import { __resetFloatingSurfacesForTests, getEscapeStackCount } from '../../hooks/floating-surface-registry'
 import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../../test/resize-observer-stub'
 import { TerminalOverlay } from './TerminalOverlay'
 
@@ -262,12 +262,46 @@ describe('TerminalOverlay — escape region (case c)', () => {
     const body = document.querySelector('.terminal-body') as HTMLElement
     body.tabIndex = -1
     body.focus()
+    // Focused → the terminal is Esc-capable (present in the stack).
+    await waitFor(() => expect(getEscapeStackCount()).toBe(1))
     fireEvent.keyDown(body, { key: 'Escape' })
 
     expect(mock.input).toHaveBeenCalledWith('\x1b')
     expect(onClose).not.toHaveBeenCalled()
     expect(globalEscape).not.toHaveBeenCalled()
     window.removeEventListener('keydown', globalEscape)
+  })
+
+  it('Esc with focus OUTSIDE the terminal falls through to the global handler (no stray ^[)', async () => {
+    const { mock, onClose } = await renderOverlay({ open: true })
+    await waitForBody()
+
+    // Focus a SIBLING panel's composer. The trap's focusEscapeSelector
+    // ('.chat-panel') releases focus there — exactly like clicking panel B's
+    // composer while panel A's terminal stays open.
+    const siblingPanel = document.createElement('div')
+    siblingPanel.className = 'chat-panel'
+    const composer = document.createElement('textarea')
+    siblingPanel.appendChild(composer)
+    document.body.appendChild(siblingPanel)
+    composer.focus()
+
+    // Unfocused → the terminal opts out of the Esc-capable set entirely, so the
+    // registry's topmost-fallback cannot pick it for an Esc aimed elsewhere.
+    await waitFor(() => expect(getEscapeStackCount()).toBe(0))
+
+    const globalEscape = vi.fn()
+    window.addEventListener('keydown', globalEscape)
+    fireEvent.keyDown(composer, { key: 'Escape' })
+
+    // No stray ^[ into panel A's shell, no close…
+    expect(mock.input).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+    // …and the key is NOT consumed by the terminal surface: it falls through to
+    // the global interrupt handler (bubble-phase listener observes it).
+    expect(globalEscape).toHaveBeenCalledTimes(1)
+    window.removeEventListener('keydown', globalEscape)
+    siblingPanel.remove()
   })
 })
 

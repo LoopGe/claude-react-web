@@ -63,6 +63,7 @@ export function TerminalOverlay({ sessionId, open, onClose, supported, channel }
       focusEscapeSelector=".chat-panel"
       escapeBehavior="custom"
       onEscape={handleEscape}
+      escapeRequiresFocus
       keepMounted
     >
       <aside className="terminal-panel" data-session-id={sessionId}>
