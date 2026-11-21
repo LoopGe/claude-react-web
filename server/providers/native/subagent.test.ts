@@ -124,7 +124,7 @@ function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
     emit: () => {},
     persistToolResult: () => {},
     attachmentProjection: {},
-    appendDescriptor: async (input) => ({ ...input, seq: 0, timestamp: 't' }),
+    appendDescriptor: async (input) => ({ ...input, seq: 0 }),
     ...over,
   }
 }
@@ -224,7 +224,7 @@ describe('createAgentTool', () => {
     const gate = new Promise<void>((resolve) => { releaseDescriptor = resolve })
     const appendDescriptor = vi.fn(async (input: Parameters<AgentToolDeps['appendDescriptor']>[0]) => {
       await gate
-      return { ...input, seq: 4, timestamp: 't' }
+      return { ...input, seq: 4 }
     })
     const agent = createAgentTool(baseDeps({
       streamFor: s.streamFor.bind(s),
@@ -234,16 +234,27 @@ describe('createAgentTool', () => {
     const pending = runAgent(agent, { description: '  inspect logs  ', prompt: 'p' })
     await vi.waitFor(() => expect(appendDescriptor).toHaveBeenCalledOnce())
     expect(s.calls).toHaveLength(0)
+    // T15: the descriptor is a NEUTRAL v3 subagent/descriptor event — identity
+    // rides the `data` envelope, the ms-epoch `time` is consistent with the ISO
+    // `data.timestamp`, and no legacy flat fields leak onto the envelope.
     expect(appendDescriptor).toHaveBeenCalledWith({
       type: 'subagent/descriptor',
-      toolUseId: 'tu-parent',
-      parentToolUseId: null,
-      kind: 'agent',
-      toolName: 'Agent',
-      label: 'inspect logs',
-      depth: 1,
-      profile: null,
+      time: expect.any(Number),
+      data: {
+        toolUseId: 'tu-parent',
+        parentToolUseId: null,
+        kind: 'agent',
+        toolName: 'Agent',
+        label: 'inspect logs',
+        depth: 1,
+        profile: null,
+        timestamp: expect.any(String),
+      },
     })
+    const descriptorInput = appendDescriptor.mock.calls[0][0]
+    expect(descriptorInput.time).toBe(Date.parse(descriptorInput.data.timestamp))
+    expect(descriptorInput).not.toHaveProperty('toolUseId')
+    expect(descriptorInput).not.toHaveProperty('label')
 
     releaseDescriptor()
     expect(await pending).toEqual({ text: 'done' })
@@ -256,7 +267,7 @@ describe('createAgentTool', () => {
     const gate = new Promise<void>((resolve) => { releaseDescriptor = resolve })
     const appendDescriptor = vi.fn(async (input: Parameters<AgentToolDeps['appendDescriptor']>[0]) => {
       await gate
-      return { ...input, seq: 4, timestamp: 't' }
+      return { ...input, seq: 4 }
     })
     const emitted: Frame[] = []
     const agent = createAgentTool(baseDeps({
@@ -310,13 +321,13 @@ describe('createAgentTool', () => {
       description: '', prompt: 'p', subagent_type: 'reviewer',
     })).toEqual({ text: 'done' })
     const descriptor = appendDescriptor.mock.calls[0][0]
-    expect(descriptor).toMatchObject({
+    expect(descriptor.data).toMatchObject({
       toolName: 'Task',
       label: 'reviewer',
       profile: { name: 'reviewer', instruction: 'REVIEW', tools: ['Read'], skills: [] },
     })
-    expect(descriptor.profile?.tools).not.toBe(definition.tools)
-    expect(descriptor.profile?.skills).not.toBe(definition.skills)
+    expect(descriptor.data.profile?.tools).not.toBe(definition.tools)
+    expect(descriptor.data.profile?.skills).not.toBe(definition.skills)
   })
 
   it('falls back to the generic descriptor label', async () => {
@@ -326,7 +337,7 @@ describe('createAgentTool', () => {
 
     await runAgent(agent, { description: 7, prompt: 'p' })
 
-    expect(appendDescriptor.mock.calls[0][0].label).toBe('Subagent')
+    expect(appendDescriptor.mock.calls[0][0].data.label).toBe('Subagent')
   })
 
   it('forwards nested frames with the parent tool_use id and no result frame', async () => {
@@ -412,7 +423,7 @@ describe('createAgentTool', () => {
     expect(s.calls[0].system).not.toContain('STORE-OVERRIDE')
     expect((s.calls[0].tools as Array<{ name: string }>).map((tool) => tool.name))
       .toEqual(['Read', 'Skill', 'mcp__a__read'])
-    expect(appendDescriptor.mock.calls[0][0].profile).toEqual({
+    expect(appendDescriptor.mock.calls[0][0].data.profile).toEqual({
       name: 'Explore',
       instruction: 'Explore the codebase read-only. Use available read-only tools to answer with concrete file references; do not modify files or run state-changing tools.',
     })

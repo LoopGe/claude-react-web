@@ -11,7 +11,7 @@ import { filterToolsForProfile } from './agent-tools.js'
 import type { NativeSkillView } from './skills.js'
 import type { NativeProjectionOptions } from './attachment-projection.js'
 import { isValidNativeMaxTurns } from './session-log/format.js'
-import type { NativeSubagentDescriptorEvent } from './session-log/format.js'
+import type { SessionEvent } from './vocabulary/session-event.js'
 import {
   EXPLORE_AGENT_INSTRUCTION,
   EXPLORE_AGENT_NAME,
@@ -64,11 +64,12 @@ export interface AgentToolDeps {
    * shared session log also persists main-thread results. */
   persistToolResult(result: PersistedToolResult, parentToolUseId: string | null): void
   attachmentProjection: NativeProjectionOptions
-  /** Durable catalog identity. Descriptors deliberately bypass emit and model
-   *  history; a nested request may start only after this append resolves. */
+  /** Durable catalog identity as a NEUTRAL v3 `subagent/descriptor` event (the
+   *  log assigns `seq`). Descriptors deliberately bypass emit and model history;
+   *  a nested request may start only after this append resolves. */
   appendDescriptor(
-    input: Omit<NativeSubagentDescriptorEvent, 'seq' | 'timestamp'>,
-  ): Promise<NativeSubagentDescriptorEvent>
+    input: Omit<SessionEvent<'subagent/descriptor'>, 'seq'>,
+  ): Promise<SessionEvent<'subagent/descriptor'>>
   agentStore?: AgentDefinitionStore
 }
 
@@ -183,15 +184,24 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
       let turn: Awaited<ReturnType<typeof runTurn>>
       try {
         const description = typeof input.description === 'string' ? input.description.trim() : ''
+        // Neutral v3 descriptor: the identity rides `data`, the envelope `time`
+        // is the ms-epoch of the ISO `data.timestamp` (the same pairing the
+        // lossless v1/v2→v3 migration produces), and the sidechain parent is the
+        // data fact (the descriptor envelope carries no parent axis).
+        const timestamp = new Date().toISOString()
         await deps.appendDescriptor({
           type: 'subagent/descriptor',
-          toolUseId: ctx.toolUseId,
-          parentToolUseId: deps.frameCtx.parentToolUseId ?? null,
-          kind: 'agent',
-          toolName,
-          label: description || requested || 'Subagent',
-          depth: 1,
-          profile: profile ? structuredClone(profile) : null,
+          time: Date.parse(timestamp),
+          data: {
+            toolUseId: ctx.toolUseId,
+            parentToolUseId: deps.frameCtx.parentToolUseId ?? null,
+            kind: 'agent',
+            toolName,
+            label: description || requested || 'Subagent',
+            depth: 1,
+            profile: profile ? structuredClone(profile) : null,
+            timestamp,
+          },
         })
         if (ctx.signal.aborted) return { text: 'aborted', isError: true }
         turn = await runTurn(

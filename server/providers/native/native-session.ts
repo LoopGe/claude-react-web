@@ -41,7 +41,7 @@ import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult 
 import { createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
 import type { ContentBlock, FinishReason, TokenUsage } from './vocabulary/types.js'
-import type { AssistantStreamRecord, NativeSessionEvent } from './vocabulary/session-event.js'
+import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './vocabulary/session-event.js'
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
 import type { NativeHostPorts } from './ports.js'
@@ -54,7 +54,7 @@ import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './ses
 import { migrateEventToV3 } from './session-log/migration.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
-import type { NativeFileAttachment, NativeLogEvent, NativeSubagentDescriptorEvent, NativeTurnEndReason } from './session-log/format.js'
+import type { NativeFileAttachment, NativeLogEvent, NativeTurnEndReason } from './session-log/format.js'
 import { nativeAttachmentOccurrences } from './attachment-reference-index.js'
 import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
@@ -630,10 +630,14 @@ export class NativeSession implements NativeSessionCore {
         attachmentPort: opts.uploadStore ? opts.ports.attachment : undefined,
         preparedPdfs: this.preparedPdfs,
       },
-      appendDescriptor: async (input) => await this.log.appendDurable({
-        ...input,
-        timestamp: new Date().toISOString(),
-      }) as NativeSubagentDescriptorEvent,
+      appendDescriptor: async (input) => {
+        // The runner builds the neutral v3 descriptor (identity in `data`, time
+        // paired with data.timestamp); the log assigns seq. Return the neutral
+        // event with that seq — for a v3 log this is exactly the stored canonical
+        // form (the legacy read view is reconstructed by the log, not here).
+        const appended = await this.log.appendDurable(input)
+        return { ...input, seq: appended.seq } as SessionEvent<'subagent/descriptor'>
+      },
       agentStore: opts.agentStore,
     }
     this.agentTool = createAgentTool(agentDeps)

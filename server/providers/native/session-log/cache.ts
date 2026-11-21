@@ -21,9 +21,9 @@
 //     transcript UI renders under their Agent card but the main history/search
 //     exclude. That is the exact input `normalize` / `paginateRenderable`
 //     expect. The `session/header` line is validated but not stored. The same
-//     entry also holds the all-event subagent catalog (still legacy-shaped,
-//     phase 4): a descriptor-only append can replace the catalog while
-//     retaining the identical `lines` array.
+//     entry also holds the all-event subagent catalog, folded from the SAME
+//     canonical neutral events (T15): a descriptor-only append can replace the
+//     catalog while retaining the identical `lines` array.
 //   - Only COMPLETE lines (up to the last '\n') are parsed. A torn final line
 //     (the writer is mid-append) stays unparsed until the file grows past it.
 //   - Every parsed line is validated with the same header/event validators the
@@ -40,8 +40,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { isRenderableSdkMessage, type RawLine } from '../../../../shared/transcript-format.js'
 import { projectNativeEventToSdkLine } from '../../native-host-frame-adapter.js'
 import { NativeSessionStorageError } from './errors.js'
-import { isSidechainEvent, NATIVE_SESSION_LOG_V3, parseEventLine, parseEventLineV3, projectNeutralEventToLegacy } from './format.js'
-import type { NativeLogEvent } from './format.js'
+import { isSidechainEvent, NATIVE_SESSION_LOG_V3, parseEventLine, parseEventLineV3 } from './format.js'
 import { migrateEventToV3 } from './migration.js'
 import type { NativeSessionEvent } from '../vocabulary/session-event.js'
 import { loadNativeSessionLog } from './log.js'
@@ -184,9 +183,9 @@ async function fullParse(
   return touch(key, {
     id,
     lines: collectRenderable(neutralEvents, id),
-    // The subagent catalog still folds legacy-shaped events (phase 4
-    // neutralizes it); the loader's legacy read view feeds it unchanged.
-    subagents: buildNativeSubagentCatalog(snapshot.events),
+    // The subagent catalog folds the same canonical neutral events (T15); no
+    // legacy read-view projection is needed for it.
+    subagents: buildNativeSubagentCatalog(neutralEvents, id),
     version: snapshot.header.v,
     parsedBytes: snapshot.completeBytes,
     nextSeq: snapshot.events.length,
@@ -227,23 +226,17 @@ async function appendParse(
   rawLines.pop() // the chunk ends with '\n', so split leaves a trailing ''
 
   // Parse each appended line into the canonical neutral event (v3 directly;
-  // v1/v2 through the lossless migration). The renderable lines project from
-  // neutral through the adapter seam; the subagent catalog keeps folding
-  // legacy-shaped events (phase 4 neutralizes it), so v3 appends also project
-  // back to the legacy view for that one consumer.
+  // v1/v2 through the lossless migration). Both the renderable lines (via the
+  // adapter seam) and the subagent catalog (T15) consume these neutral events;
+  // no legacy read-view projection remains on the append path.
   const neutralEvents: NativeSessionEvent[] = []
-  const legacyEvents: NativeLogEvent[] = []
   let nextSeq = cached.nextSeq
   for (const line of rawLines) {
     const raw = parseLine(line, id, path)
     if (cached.version === NATIVE_SESSION_LOG_V3) {
-      const neutral = parseEventLineV3(raw, nextSeq, id, path)
-      neutralEvents.push(neutral)
-      legacyEvents.push(projectNeutralEventToLegacy(neutral, id))
+      neutralEvents.push(parseEventLineV3(raw, nextSeq, id, path))
     } else {
-      const legacy = parseEventLine(raw, nextSeq, id, path, cached.version)
-      legacyEvents.push(legacy)
-      neutralEvents.push(migrateEventToV3(legacy))
+      neutralEvents.push(migrateEventToV3(parseEventLine(raw, nextSeq, id, path, cached.version)))
     }
     nextSeq++
   }
@@ -252,7 +245,7 @@ async function appendParse(
   return touch(key, {
     id,
     lines: lines.length > 0 ? cached.lines.concat(lines) : cached.lines,
-    subagents: extendNativeSubagentCatalog(cached.subagents, legacyEvents),
+    subagents: extendNativeSubagentCatalog(cached.subagents, neutralEvents),
     version: cached.version,
     parsedBytes: cached.parsedBytes + lastNewline + 1,
     nextSeq,

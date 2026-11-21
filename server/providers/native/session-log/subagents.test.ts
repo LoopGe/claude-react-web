@@ -6,10 +6,21 @@ import type {
   NativeSubagentDescriptorEvent,
   NativeUserEvent,
 } from './format.js'
+import { migrateEventToV3 } from './migration.js'
+import type { NativeSessionEvent } from '../vocabulary/session-event.js'
+import { brandString } from '../vocabulary/brand.js'
 import {
   buildNativeSubagentCatalog,
   extendNativeSubagentCatalog,
 } from './subagents.js'
+
+// T15: the catalog folds NEUTRAL v3 events. The helpers below describe each
+// scenario in the readable legacy shape and migrate it losslessly to neutral
+// (the same migrateEventToV3 the cache runs for a not-yet-migrated v1/v2 log),
+// so every assertion pins the neutral fold's output against the exact catalog
+// the legacy fold produced. `SID` is the originating session id the fold needs
+// for its corruption diagnostics (neutral events carry no session_id).
+const SID = 's1'
 
 interface OriginOptions {
   parent?: string | null
@@ -22,12 +33,12 @@ function origin(
   seq: number,
   id: string,
   options: OriginOptions = {},
-): NativeAssistantEvent {
-  return {
+): NativeSessionEvent {
+  const legacy: NativeAssistantEvent = {
     seq,
     type: 'assistant',
     uuid: `origin-${id}`,
-    session_id: 's1',
+    session_id: SID,
     parent_tool_use_id: options.parent ?? null,
     timestamp: options.timestamp ?? `2026-11-12T00:00:${String(seq).padStart(2, '0')}.000Z`,
     message: {
@@ -40,43 +51,44 @@ function origin(
       }],
     },
   }
+  return migrateEventToV3(legacy)
 }
 
 function sidechain(
   seq: number,
   parent: string,
   type: 'user' | 'assistant' = 'assistant',
-): NativeUserEvent | NativeAssistantEvent {
+): NativeSessionEvent {
   const base = {
     seq,
     uuid: `side-${seq}`,
-    session_id: 's1',
+    session_id: SID,
     parent_tool_use_id: parent,
     timestamp: `2026-11-12T00:01:${String(seq).padStart(2, '0')}.000Z`,
   }
-  if (type === 'user') {
-    return {
-      ...base,
-      type,
-      message: {
-        role: type,
-        content: [{ type: 'tool_result', tool_use_id: `inner-${seq}`, content: 'done' }],
-      },
-    }
-  }
-  return {
-    ...base,
-    type,
-    message: { role: type, content: [{ type: 'text', text: `output ${parent}` }] },
-  }
+  const legacy: NativeUserEvent | NativeAssistantEvent = type === 'user'
+    ? {
+        ...base,
+        type,
+        message: {
+          role: type,
+          content: [{ type: 'tool_result', tool_use_id: `inner-${seq}`, content: 'done' }],
+        },
+      }
+    : {
+        ...base,
+        type,
+        message: { role: type, content: [{ type: 'text', text: `output ${parent}` }] },
+      }
+  return migrateEventToV3(legacy)
 }
 
 function descriptor(
   seq: number,
   id: string,
   overrides: Partial<NativeSubagentDescriptorEvent> = {},
-): NativeSubagentDescriptorEvent {
-  return {
+): NativeSessionEvent {
+  const legacy: NativeSubagentDescriptorEvent = {
     seq,
     type: 'subagent/descriptor',
     toolUseId: id,
@@ -89,10 +101,11 @@ function descriptor(
     timestamp: `2026-11-12T00:02:${String(seq).padStart(2, '0')}.000Z`,
     ...overrides,
   }
+  return migrateEventToV3(legacy)
 }
 
-function compact(seq: number): NativeLogEvent {
-  return {
+function compact(seq: number): NativeSessionEvent {
+  const legacy: NativeLogEvent = {
     seq,
     type: 'session/compact',
     text: 'summary',
@@ -100,6 +113,7 @@ function compact(seq: number): NativeLogEvent {
     uuid: `compact-${seq}`,
     timestamp: '2026-11-12T00:03:00.000Z',
   }
+  return migrateEventToV3(legacy)
 }
 
 function expectCatalogCorrupt(run: () => unknown): void {
@@ -133,7 +147,7 @@ describe('native subagent catalog', () => {
         profile,
         timestamp: '2026-11-12T04:05:06.000Z',
       }),
-    ])
+    ], SID)
 
     expect(catalog.entries.map((entry) => entry.agentId)).toEqual(['b', 'a'])
     expect(catalog.entries[0]).toMatchObject({
@@ -177,7 +191,7 @@ describe('native subagent catalog', () => {
       sidechain(7, 'skill'),
       origin(8, 'not-run', { toolName: 'Task' }),
       sidechain(9, 'orphan'),
-    ])
+    ], SID)
 
     expect(catalog.entries.map((entry) => entry.agentId)).toEqual(['agent', 'task', 'explore'])
     expect(catalog.entries.map((entry) => entry.label)).toEqual([
@@ -211,7 +225,7 @@ describe('native subagent catalog', () => {
       origin(1, 'second', { toolName: 'Task' }),
       sidechain(2, 'second'),
       sidechain(3, 'first'),
-    ])
+    ], SID)
 
     expect(catalog.entries.map((entry) => entry.agentId)).toEqual(['first', 'second'])
     expect(catalog.entries.every((entry) => !entry.metadataComplete)).toBe(true)
@@ -228,7 +242,7 @@ describe('native subagent catalog', () => {
         depth: 4,
         profile,
       }),
-    ])
+    ], SID)
 
     expect(catalog.entries).toHaveLength(1)
     expect(catalog.entries[0]).toMatchObject({
@@ -249,7 +263,7 @@ describe('native subagent catalog', () => {
       buildNativeSubagentCatalog([
         origin(0, 'mismatch', { toolName: 'Agent' }),
         descriptor(1, 'mismatch', { toolName: 'Task' }),
-      ])
+      ], SID)
     } catch (error) {
       thrown = error
     }
@@ -263,13 +277,13 @@ describe('native subagent catalog', () => {
     expectCatalogCorrupt(() => buildNativeSubagentCatalog([
       origin(0, 'mismatch', { toolName: 'Bash' }),
       descriptor(1, 'mismatch', { toolName: 'Agent' }),
-    ]))
+    ], SID))
   })
 
   it('rejects a non-subagent origin appended after its descriptor', () => {
     const initial = buildNativeSubagentCatalog([
       descriptor(0, 'mismatch', { toolName: 'Agent' }),
-    ])
+    ], SID)
     expect(initial.entries).toHaveLength(1)
 
     expectCatalogCorrupt(() => extendNativeSubagentCatalog(initial, [
@@ -280,7 +294,7 @@ describe('native subagent catalog', () => {
   it('rejects a descriptor appended after a same-id non-subagent origin', () => {
     const initial = buildNativeSubagentCatalog([
       origin(0, 'mismatch', { toolName: 'Skill' }),
-    ])
+    ], SID)
     expect(initial.entries).toEqual([])
 
     expectCatalogCorrupt(() => extendNativeSubagentCatalog(initial, [
@@ -302,7 +316,7 @@ describe('native subagent catalog', () => {
       sidechain(9, 'broken-child'),
       sidechain(10, 'cycle-a'),
       sidechain(11, 'cycle-b'),
-    ])
+    ], SID)
 
     expect(catalog.entries.map((entry) => [entry.agentId, entry.depth])).toEqual([
       ['root', 1],
@@ -321,7 +335,7 @@ describe('native subagent catalog', () => {
       compact(2),
       origin(3, 'after'),
       sidechain(4, 'after'),
-    ])
+    ], SID)
 
     expect(catalog.entries.map((entry) => entry.agentId)).toEqual(['before', 'after'])
   })
@@ -329,7 +343,7 @@ describe('native subagent catalog', () => {
   it('extends a previous fold when evidence and descriptors arrive later', () => {
     const initial = buildNativeSubagentCatalog([
       origin(0, 'incremental', { input: { description: 'legacy', prompt: 'prompt' } }),
-    ])
+    ], SID)
     expect(initial.entries).toEqual([])
 
     const withEvidence = extendNativeSubagentCatalog(initial, [sidechain(1, 'incremental')])
@@ -351,7 +365,7 @@ describe('native subagent catalog', () => {
   })
 
   it('fills a descriptor prompt when its originating tool_use arrives in a later append', () => {
-    const initial = buildNativeSubagentCatalog([descriptor(0, 'late-origin')])
+    const initial = buildNativeSubagentCatalog([descriptor(0, 'late-origin')], SID)
     expect(initial.entries[0].prompt).toBeUndefined()
 
     const extended = extendNativeSubagentCatalog(initial, [
@@ -361,6 +375,75 @@ describe('native subagent catalog', () => {
     expect(extended.entries[0]).toMatchObject({
       metadataComplete: true,
       prompt: 'recovered prompt',
+    })
+  })
+
+  it('folds hand-written neutral v3 events natively (tool-call arguments + descriptor data)', () => {
+    // A direct neutral pin independent of migrateEventToV3: the origin is a
+    // neutral assistant/message whose tool-call carries RAW-JSON arguments, and
+    // the descriptor carries its identity in `data`. The fold must parse the
+    // arguments for the prompt and read the descriptor's data fields.
+    const originEvent = {
+      type: 'assistant/message',
+      seq: 0,
+      time: Date.parse('2026-11-12T00:00:00.000Z'),
+      parentToolUseId: null,
+      data: {
+        message: {
+          role: 'assistant',
+          id: brandString<'MessageId'>('origin-native'),
+          content: [{
+            type: 'tool-call',
+            id: brandString<'ToolCallId'>('native-agent'),
+            name: 'Agent',
+            arguments: JSON.stringify({ description: 'native label', prompt: 'native prompt' }),
+          }],
+          source: { kind: 'model', provider: 'anthropic', model: 'm' },
+        },
+        stream: [],
+      },
+    } satisfies NativeSessionEvent
+    const evidence = {
+      type: 'tool/result',
+      seq: 1,
+      time: Date.parse('2026-11-12T00:01:00.000Z'),
+      parentToolUseId: 'native-agent',
+      data: {
+        message: {
+          role: 'tool',
+          id: brandString<'MessageId'>('result-native'),
+          source: { kind: 'tool', callId: brandString<'ToolCallId'>('inner') },
+          toolCallId: brandString<'ToolCallId'>('inner'),
+          content: [{ type: 'text', text: 'done' }],
+          isError: false,
+        },
+      },
+    } satisfies NativeSessionEvent
+    const descriptorEvent = {
+      type: 'subagent/descriptor',
+      seq: 2,
+      time: Date.parse('2026-11-12T00:02:00.000Z'),
+      data: {
+        toolUseId: 'native-agent',
+        parentToolUseId: null,
+        kind: 'agent',
+        toolName: 'Agent',
+        label: 'durable native label',
+        depth: 1,
+        profile: null,
+        timestamp: '2026-11-12T00:02:00.000Z',
+      },
+    } satisfies NativeSessionEvent
+
+    const catalog = buildNativeSubagentCatalog([originEvent, evidence, descriptorEvent], SID)
+    expect(catalog.entries).toHaveLength(1)
+    expect(catalog.entries[0]).toMatchObject({
+      agentId: 'native-agent',
+      toolName: 'Agent',
+      label: 'durable native label',
+      metadataComplete: true,
+      prompt: 'native prompt',
+      timestamp: '2026-11-12T00:02:00.000Z',
     })
   })
 })
