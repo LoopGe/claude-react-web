@@ -150,7 +150,7 @@
    `.panel-overlay` is NOT part of this group: its consumers are palette-style
    pickers (InputHistoryPanel, ResumeSessionDialog), which keep the narrow
    560px CommandPalette width instead of a reading column. */
-.git-overlay, .tasks-overlay, .search-overlay {
+.git-overlay, .tasks-overlay, .search-overlay, .terminal-overlay {
   padding-block: var(--space-4);
   padding-inline: var(--chat-reading-inset);
 }

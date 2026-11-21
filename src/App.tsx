@@ -414,10 +414,13 @@ export function App() {
     handleOpenTasksPanel,
     worktreeOpenFor,
     searchOpenFor,
+    terminalOpenFor,
     handleOpenWorktree,
     handleCloseWorktree,
     handleOpenSearch,
     handleCloseSearch,
+    handleOpenTerminal,
+    handleCloseTerminal,
     helpOpen,
     setHelpOpen,
     helpCommands,
@@ -5513,6 +5516,9 @@ export function App() {
                       searchOpen={searchOpenFor === s.id}
                       onOpenSearch={openSearchPanel}
                       onCloseSearch={handleCloseSearch}
+                      terminalOpen={terminalOpenFor === s.id}
+                      onOpenTerminal={handleOpenTerminal}
+                      onCloseTerminal={handleCloseTerminal}
                       onRegisterInterrupt={registerInterrupt}
                       onRegisterRecap={registerRecap}
                       onRegisterBackground={registerBackground}

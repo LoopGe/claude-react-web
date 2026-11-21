@@ -1,0 +1,221 @@
+/* Embedded terminal — body-only in-panel overlay, same chrome as
+   GitPanel/SearchPanel. The child <aside className="terminal-panel"> IS the
+   card (Overlay renderCard={false}); the shared reading-column padding lives
+   in overlays.css's grouped backdrop rule.
+
+   Keep-alive: Chat mounts the overlay once (after first open) and toggles
+   `open`, so the backdrop persists hidden via `.terminal-overlay.hidden`
+   (display:none) and the xterm body inside it NEVER remounts on open/close.
+   The xterm renderer stylesheet (@xterm/xterm/css/xterm.css) is imported by
+   the lazy TerminalBody chunk, not here, so startup CSS carries only these
+   theme tokens + chrome rules. */
+
+/* ── xterm theme tokens ────────────────────────────────────────────────
+   Read by TerminalBody via getComputedStyle into xterm's ITheme. bg/fg/
+   cursor/selection alias the app tokens so the terminal follows the active
+   theme + accent automatically; the 16 ANSI colours are terminal-specific
+   and defined in BOTH themes (repo rule). */
+:root {
+  --term-bg: var(--bg);
+  --term-fg: var(--fg);
+  --term-cursor: var(--accent);
+  --term-cursor-accent: var(--bg);
+  --term-selection: color-mix(in srgb, var(--accent) 35%, transparent);
+  --term-black: #1c2029;
+  --term-red: #e07080;
+  --term-green: #6cc88b;
+  --term-yellow: #e6b450;
+  --term-blue: #7b8cde;
+  --term-magenta: #a87bde;
+  --term-cyan: #5ec4d4;
+  --term-white: #e6e8eb;
+  --term-bright-black: #6e7685;
+  --term-bright-red: #f08a97;
+  --term-bright-green: #84dca0;
+  --term-bright-yellow: #f0c66a;
+  --term-bright-blue: #93a0e8;
+  --term-bright-magenta: #bd93e8;
+  --term-bright-cyan: #76d4e2;
+  --term-bright-white: #ffffff;
+}
+[data-theme='light'] {
+  --term-black: #2a2f3a;
+  --term-red: #c45465;
+  --term-green: #2e9e56;
+  --term-yellow: #c79518;
+  --term-blue: #4f62c8;
+  --term-magenta: #8a5fc7;
+  --term-cyan: #3ea8b8;
+  --term-white: #f5f6f8;
+  --term-bright-black: #6e7685;
+  --term-bright-red: #d4687a;
+  --term-bright-green: #4db89e;
+  --term-bright-yellow: #e6b450;
+  --term-bright-blue: #7b8cde;
+  --term-bright-magenta: #a87bde;
+  --term-bright-cyan: #5ec4d4;
+  --term-bright-white: #ffffff;
+}
+
+/* ── Backdrop + card (mirrors search-panel.css) ─────────────────────── */
+.terminal-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  z-index: 5;
+  /* Deliberately NOT a scroll container — same invariant as .git-overlay /
+     .tasks-overlay (the card is capped by max-height:100%). Canonical comment:
+     src/utils/overlay-scrollbar.ts. */
+}
+/* The keep-alive hide: closed (or replaced by a sibling overlay) the backdrop
+   stays mounted but collapses to display:none so the xterm body survives. */
+.terminal-overlay.hidden {
+  display: none;
+}
+.terminal-overlay[data-state='open'] {
+  animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) both;
+}
+.terminal-overlay[data-state='closing'] {
+  pointer-events: none;
+  animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+}
+.terminal-overlay > .terminal-panel {
+  width: 100%;
+  max-width: var(--chat-reading-max-width);
+  /* A definite height: xterm's renderer measures its container, so the body
+     must resolve to a real box (same reason as .search-panel.has-preview). */
+  height: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--overlay-shadow);
+}
+.terminal-overlay[data-state='open'] > .terminal-panel {
+  animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both;
+}
+.terminal-overlay[data-state='closing'] > .terminal-panel {
+  animation: overlay-panel-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+}
+.terminal-overlay > .terminal-panel:focus {
+  outline: none;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────── */
+.terminal-panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--bg-elev);
+}
+.terminal-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: var(--fs-base);
+  color: var(--fg);
+}
+.terminal-panel-title svg {
+  color: var(--fg-muted);
+}
+.terminal-panel-cwd {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.terminal-panel-status {
+  flex-shrink: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.terminal-panel-status[data-status='running'] {
+  color: var(--ok);
+}
+.terminal-panel-status[data-status='exited'] {
+  color: var(--warn);
+}
+/* Persistent restored-history indicator (Task 6 carry): win32's restart
+   divider lands in scrollback above the fold, so this header badge is what
+   makes the restart boundary unmistakable. Cleared when a fresh non-restored
+   generation's snapshot arrives. */
+.terminal-restored-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  font-size: var(--fs-sm);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+}
+.terminal-panel-close {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* ── State banners ──────────────────────────────────────────────────── */
+.terminal-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.terminal-banner-message {
+  min-width: 0;
+}
+.terminal-banner .btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.terminal-unavailable {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--fg-muted);
+}
+
+/* ── xterm body ─────────────────────────────────────────────────────── */
+.terminal-body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-2);
+  background: var(--term-bg);
+  overflow: hidden;
+}
+.terminal-body .xterm {
+  height: 100%;
+  width: 100%;
+}

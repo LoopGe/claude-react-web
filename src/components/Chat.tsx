@@ -19,6 +19,11 @@ import { shouldMountRecapWindow } from '../utils/recap-visibility'
 // gate its first mount on `settingsEverOpened` rather than `settingsOpen`.
 const SettingsPanel = lazy(() => import('./SettingsPanel').then((m) => ({ default: m.SettingsPanel })))
 const GitPanel = lazy(() => import('./GitPanel').then((m) => ({ default: m.GitPanel })))
+// The terminal overlay chrome is lazy; its xterm renderer is a NESTED lazy
+// chunk (TerminalBody) so startup loads neither. Like SettingsPanel it stays
+// mounted once opened (keep-alive) so the xterm body never remounts on
+// open/close — first mount is gated on `terminalEverOpened`.
+const TerminalOverlay = lazy(() => import('./terminal/TerminalOverlay').then((m) => ({ default: m.TerminalOverlay })))
 const TurnChangesPanel = lazy(() => import('./TurnChangesPanel').then((m) => ({ default: m.TurnChangesPanel })))
 const TasksPanel = lazy(() => import('./TasksPanel').then((m) => ({ default: m.TasksPanel })))
 // ResumeSessionDialog is also a per-panel overlay (its 'panel' variant,
@@ -49,6 +54,7 @@ import { useFileDrafts } from '../hooks/useFileDrafts'
 import { useDraftImages } from '../hooks/useDraftImages'
 import { usePastedTexts } from '../hooks/usePastedTexts'
 import { useInputHistory } from '../hooks/useInputHistory'
+import { useTerminalChannel } from '../hooks/useTerminalChannel'
 import { useHistoryImageRecall } from '../hooks/useHistoryImageRecall'
 import type { HistoryPanelEntry } from '../hooks/useInputHistoryPanel'
 import { toPersistedImage, deleteDraftImages } from '../state/inputHistoryImages'
@@ -277,6 +283,15 @@ interface Props {
   searchOpen?: boolean
   onOpenSearch: (sessionId: string) => void
   onCloseSearch: () => void
+  /** When true, reveal the terminal overlay over this chat panel. Mutually
+   *  exclusive with the other panel overlays (App enforces via the union).
+   *  The overlay body is keep-alive: Chat mounts it once after first open. */
+  terminalOpen?: boolean
+  onCloseTerminal?: () => void
+  /** Open this panel's terminal overlay. Consumed by the composer terminal
+   *  button + Ctrl+` shortcut (wired in Task 11); declared here so the
+   *  App → ChatPanel → Chat seam is complete. */
+  onOpenTerminal?: (sessionId: string) => void
   /** When true, render the Settings overlay on top of this chat panel. */
   settingsOpen?: boolean
   onCloseSettings?: () => void
@@ -474,7 +489,7 @@ export const Chat = memo(function Chat({
   worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, onCancelHandoff, handoffing, settingsTabRequest, messageJumpTarget, searchOpen, onOpenSearch, onCloseSearch, focused, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, composerControls, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, onCancelHandoff, handoffing, settingsTabRequest, messageJumpTarget, searchOpen, onOpenSearch, onCloseSearch, terminalOpen, onCloseTerminal, focused, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, composerControls, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -497,6 +512,26 @@ export const Chat = memo(function Chat({
   const openResource = useOptionalOpenResource()
   const [settingsEverOpened, setSettingsEverOpened] = useState(false)
   if (settingsOpen && !settingsEverOpened) setSettingsEverOpened(true)
+  // Terminal keep-alive latch (same pattern as settings): the overlay chrome +
+  // xterm body mount once on first open and stay mounted for this Chat's life,
+  // hidden via the union when closed. The channel subscription is gated on the
+  // latch so panels that never open a terminal carry no terminal WS traffic.
+  const [terminalEverOpened, setTerminalEverOpened] = useState(false)
+  if (terminalOpen && !terminalEverOpened) setTerminalEverOpened(true)
+  const terminalSupported = session.terminalSupported === true
+  const terminalChannel = useTerminalChannel(session.id, terminalSupported && terminalEverOpened)
+  // Closing the terminal (X / backdrop / replaced by a sibling overlay) returns
+  // focus to the composer. Keyed on the open prop — not onClose — so a sibling
+  // overlay replacing the terminal also restores focus. The focus trap cannot
+  // do this itself: the body focuses xterm on open, so the trap's saved focus
+  // is the (now hidden) xterm textarea.
+  const prevTerminalOpenRef = useRef(false)
+  useEffect(() => {
+    if (prevTerminalOpenRef.current && !terminalOpen) {
+      setComposerFocusSignal((n) => n + 1)
+    }
+    prevTerminalOpenRef.current = !!terminalOpen
+  }, [terminalOpen])
   // In-chat quick search was replaced by the full-history search dialog in
   // ChatPanel; the transcript no longer owns a search bar.
   // Effective UI prefs: a per-session override (session.<field>) wins,
@@ -2641,6 +2676,23 @@ export const Chat = memo(function Chat({
           </ErrorBoundary>
         </Suspense>
       </Overlay>
+
+      {/* Embedded terminal — keep-alive. Mounted once after first open and
+          kept mounted (the Overlay's keepMounted hides the backdrop via
+          .terminal-overlay.hidden when closed), so the xterm body inside never
+          remounts on open/close and the channel subscription stays live. The
+          body unmounts only when this Chat unmounts (panel cache eviction). */}
+      {terminalEverOpened && (
+        <Suspense fallback={null}>
+          <TerminalOverlay
+            sessionId={session.id}
+            open={!!terminalOpen}
+            onClose={() => onCloseTerminal?.()}
+            supported={terminalSupported}
+            channel={terminalChannel}
+          />
+        </Suspense>
+      )}
 
       <Overlay
         variant="git"

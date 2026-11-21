@@ -5,7 +5,7 @@ import type { SlashCommand } from '../types'
 /** The four panel overlays that share one mutual-exclusion group: opening any
  *  one of them closes the rest. Modeled as a discriminated union so the type
  *  system makes the "two overlays open at once" state unrepresentable. */
-export type PanelOverlayKind = 'settings' | 'git' | 'tasks' | 'worktree' | 'search'
+export type PanelOverlayKind = 'settings' | 'git' | 'tasks' | 'worktree' | 'search' | 'terminal'
 
 /** The single source of truth for which panel overlay (if any) is open. `null`
  *  means no overlay is rendered. The `sessionId` identifies the chat panel the
@@ -63,6 +63,7 @@ export function useAppOverlays() {
   const worktreeOpenFor =
     panelOverlay?.kind === 'worktree' ? panelOverlay.sessionId : null
   const searchOpenFor = panelOverlay?.kind === 'search' ? panelOverlay.sessionId : null
+  const terminalOpenFor = panelOverlay?.kind === 'terminal' ? panelOverlay.sessionId : null
 
   // ── Adapter handlers ───────────────────────────────────────────────
   // The existing open/close handler names App already destructures, kept as
@@ -98,6 +99,14 @@ export function useAppOverlays() {
     [openPanelOverlay],
   )
   const handleCloseSearch = useCallback(() => closePanelOverlay('search'), [closePanelOverlay])
+  /** The embedded terminal joins the same mutual-exclusion group. Its body is
+   *  keep-alive (Chat keeps it mounted once opened), so "closing" only hides the
+   *  chrome — the union still treats it as the one active overlay. */
+  const handleOpenTerminal = useCallback(
+    (id: string) => openPanelOverlay('terminal', id),
+    [openPanelOverlay],
+  )
+  const handleCloseTerminal = useCallback(() => closePanelOverlay('terminal'), [closePanelOverlay])
 
   const settingsTabNonceRef = useRef(0)
   /** Open the settings overlay AND emit a fresh `{sessionId, tab, nonce}`
@@ -136,6 +145,9 @@ export function useAppOverlays() {
     handleOpenTasksPanel,
     worktreeOpenFor,
     searchOpenFor,
+    terminalOpenFor,
+    handleOpenTerminal,
+    handleCloseTerminal,
     handleOpenWorktree,
     handleCloseWorktree,
     handleOpenSearch,

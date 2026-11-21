@@ -55,6 +55,11 @@ const VARIANT_CLASSES = {
   // Full-history session search: a body-only panel overlay, same pattern as
   // git/tasks (the child <aside className="search-panel"> IS the card).
   search: { backdrop: 'search-overlay', card: null, roleOn: 'backdrop', ariaModal: 'true' },
+  // Embedded terminal: a body-only panel overlay like git/tasks/search (the
+  // child <aside className="terminal-panel"> IS the card). Keep-alive — Chat
+  // mounts it once and toggles `open`, so the backdrop persists hidden via
+  // `.terminal-overlay.hidden` and the xterm body never remounts.
+  terminal: { backdrop: 'terminal-overlay', card: null, roleOn: 'backdrop', ariaModal: 'true' },
   marketplace: { backdrop: 'marketplace-overlay', card: 'marketplace-card', roleOn: 'card', ariaModal: 'true' },
   globalSettings: { backdrop: 'modal-backdrop', card: 'global-settings-modal', roleOn: 'card', ariaModal: 'true' },
   // Full-viewport image viewer (Lightbox). card: null like settings/git — the

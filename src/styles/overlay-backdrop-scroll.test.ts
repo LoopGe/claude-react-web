@@ -28,6 +28,7 @@ const BACKDROPS = [
   { backdrop: '.tasks-overlay', panel: '.tasks-overlay > .tasks-panel', file: 'tasks-panel.css' },
   { backdrop: '.git-overlay', panel: '.git-overlay > .git-panel', file: 'git-panel.css' },
   { backdrop: '.settings-overlay', panel: '.settings-overlay > .settings-panel', file: 'layout.css' },
+  { backdrop: '.terminal-overlay', panel: '.terminal-overlay > .terminal-panel', file: 'terminal.css' },
   { backdrop: '.panel-overlay', panel: '.panel-overlay > .panel-overlay-card', file: 'overlays.css' },
 ] as const
 

@@ -153,6 +153,7 @@ const LOAD_ORDER = [
   'turn-changes.css',
   'tasks-panel.css',
   'search-panel.css',
+  'terminal.css',
   'usage-panel.css',
   'uploads-manager.css',
   'update-dialog.css',
