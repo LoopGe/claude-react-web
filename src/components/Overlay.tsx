@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { PORTAL_MARKER } from '../theme'
 import { motion, useIsPresent } from 'motion/react'
@@ -255,6 +255,16 @@ export function Overlay(props: OverlayProps) {
   // target sits outside the container.
   const [focusInside, setFocusInside] = useState(false)
   const escapeCapable = !escapeRequiresFocus || focusInside
+  // Live `open` for the focus handlers below. The listeners stay installed
+  // across close (so a reopen's focusin is never missed), and the handlers read
+  // this ref to ignore focus moves while closed — keeping the effect's deps
+  // independent of `open` (no reinstall) and avoiding closed-state re-renders.
+  // A layout effect updates it before any passive effect (the terminal body's
+  // reveal term.focus()) runs on reopen.
+  const openRef = useRef(open)
+  useLayoutEffect(() => {
+    openRef.current = open
+  })
 
   // Register in the Escape stack while open. The getContainer is the backdrop
   // (it contains the card + focus), so the stack's containment scan resolves
@@ -288,18 +298,32 @@ export function Overlay(props: OverlayProps) {
     canCloseOnEscape,
   })
 
-  // Focus containment for escapeRequiresFocus. Declared BEFORE the focus trap
-  // so these listeners are installed before the trap moves focus into the
-  // container — the trap's focusin (and the terminal body's own term.focus())
-  // then flips focusInside true through the handler, no synchronous setState in
-  // the effect body. focusin is authoritative for focus moves; focusout clears
-  // on blur to outside / to nothing (body), where no focusin fires.
-  useEffect(() => {
-    if (!escapeRequiresFocus || !open || !mounted) return
+  // Focus containment for escapeRequiresFocus. Two properties make keep-alive
+  // reopen correct:
+  //   1. A LAYOUT effect installs the listeners. The terminal body's reveal
+  //      term.focus() is a CHILD PASSIVE effect, which runs before any parent
+  //      passive effect — and the trap then skips its own focus move because
+  //      focus is already inside. A passive listener here would therefore miss
+  //      that focusin (on first open AND on reopen). Layout effects run before
+  //      all passive effects, so the listeners are present when term.focus()
+  //      fires and the focusin is observed.
+  //   2. The listeners stay installed across close — deps deliberately exclude
+  //      `open` — so a reopen never has a window without them. The handlers gate
+  //      on openRef so focus moves while closed neither update state nor
+  //      re-render.
+  // focusin is authoritative for moves; focusout clears on blur to outside / to
+  // nothing (body), where no focusin fires. No synchronous setState in the
+  // effect body — state only changes inside the subscribed handlers (lint-clean).
+  useLayoutEffect(() => {
+    if (!escapeRequiresFocus || !mounted) return
     const container = backdropElRef.current
     if (!container) return
-    const onFocusIn = (e: FocusEvent) => setFocusInside(container.contains(e.target as Node))
+    const onFocusIn = (e: FocusEvent) => {
+      if (!openRef.current) return
+      setFocusInside(container.contains(e.target as Node))
+    }
     const onFocusOut = (e: FocusEvent) => {
+      if (!openRef.current) return
       const next = e.relatedTarget as Node | null
       if (!next || !container.contains(next)) setFocusInside(false)
     }
@@ -309,7 +333,7 @@ export function Overlay(props: OverlayProps) {
       document.removeEventListener('focusin', onFocusIn)
       document.removeEventListener('focusout', onFocusOut)
     }
-  }, [escapeRequiresFocus, open, mounted])
+  }, [escapeRequiresFocus, mounted])
 
   // `mounted` (not just `open`) gates the trap so it only engages once the
   // overlay is actually in the DOM: useExitPresence flips shouldRender one

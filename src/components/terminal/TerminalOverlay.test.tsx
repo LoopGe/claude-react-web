@@ -46,6 +46,10 @@ const xterm = vi.hoisted(() => {
     }
     open(el: HTMLElement) {
       this.openedInto = el
+      // Real xterm opens a focusable textarea inside the container; make the
+      // container focusable so focus() can move DOM focus into it (the timing
+      // the escape focus-containment gate depends on).
+      el.tabIndex = -1
     }
     write(data: string) {
       this.written.push(data)
@@ -62,6 +66,10 @@ const xterm = vi.hoisted(() => {
     }
     focus() {
       this.focusCount += 1
+      // Faithfully move DOM focus inside the container, like xterm focusing its
+      // textarea. This fires a real focusin from the child reveal effect — the
+      // event the parent's focus-containment listeners must observe.
+      this.openedInto?.focus()
     }
     blur() {}
     dispose() {
@@ -300,6 +308,41 @@ describe('TerminalOverlay — escape region (case c)', () => {
     // …and the key is NOT consumed by the terminal surface: it falls through to
     // the global interrupt handler (bubble-phase listener observes it).
     expect(globalEscape).toHaveBeenCalledTimes(1)
+    window.removeEventListener('keydown', globalEscape)
+    siblingPanel.remove()
+  })
+
+  it('close while unfocused then reopen → focus lands inside xterm and Esc routes to the PTY (stale-focusInside regression)', async () => {
+    const { mock, onClose, view } = await renderOverlay({ open: true })
+    await waitForBody()
+
+    // Focus OUTSIDE the terminal (sibling composer) so focusInside is false…
+    const siblingPanel = document.createElement('div')
+    siblingPanel.className = 'chat-panel'
+    const composer = document.createElement('textarea')
+    siblingPanel.appendChild(composer)
+    document.body.appendChild(siblingPanel)
+    composer.focus()
+    await waitFor(() => expect(getEscapeStackCount()).toBe(0))
+
+    // …then close PROGRAMMATICALLY (no pointer re-guard) and reopen. The body's
+    // reveal term.focus() (a child passive effect) moves focus back inside the
+    // container before the parent could reinstall any torn-down listener.
+    view.rerender(
+      <TerminalOverlay sessionId="s1" open={false} onClose={onClose} supported channel={mock.channel} />,
+    )
+    composer.focus() // focus stays outside while closed
+    view.rerender(<TerminalOverlay sessionId="s1" open onClose={onClose} supported channel={mock.channel} />)
+
+    // Reopened with focus inside xterm → Esc-capable again (not stale false).
+    await waitFor(() => expect(getEscapeStackCount()).toBe(1))
+    const globalEscape = vi.fn()
+    window.addEventListener('keydown', globalEscape)
+    const body = document.querySelector('.terminal-body') as HTMLElement
+    fireEvent.keyDown(body, { key: 'Escape' })
+
+    expect(mock.input).toHaveBeenCalledWith('\x1b')
+    expect(globalEscape).not.toHaveBeenCalled()
     window.removeEventListener('keydown', globalEscape)
     siblingPanel.remove()
   })
