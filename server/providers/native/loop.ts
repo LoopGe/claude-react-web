@@ -28,7 +28,6 @@ import type { FrameContext } from './frames.js'
 import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
 import type { NativeProjectionOptions } from './attachment-projection.js'
-import type { NativeFileBlock } from './session-log/format.js'
 
 /** The loop's live emission union: the core frame language plus a first-class
  *  tool result. Tool results travel as a ToolResultMessage (the host adapter's
@@ -249,7 +248,10 @@ export async function runTurn(
             }, execute, signal, ctx.parentToolUseId ?? undefined)
           : await execute(signal)
         text = outcome.text
-        resultContent = outcome.content ? neutralToolContent(outcome.content) : undefined
+        // Tools already emit neutral vocabulary content (text blocks + file
+        // occurrences keeping their full resolved attachment), so it travels
+        // into the tool-result message unchanged.
+        resultContent = outcome.content
         runFailed = outcome.isError ?? false
       } catch (err) {
         text = err instanceof Error ? err.message : String(err)
@@ -309,16 +311,6 @@ export async function runTurn(
 /** Concatenate the text blocks of an assembled round (the turn's final text). */
 function textOf(blocks: readonly ContentBlock[]): string {
   return blocks.filter((b): b is { type: 'text'; text: string } => b.type === 'text').map((b) => b.text).join('')
-}
-
-/** Map a tool outcome's canonical content (text / structured file) to neutral
- *  content blocks. A file occurrence keeps its FULL resolved attachment (a
- *  structural superset of the public FileAttachmentRef) so the wire adapter's
- *  delegated projectNativeMessages can still read modelForm/path. */
-function neutralToolContent(content: Array<{ type: 'text'; text: string } | NativeFileBlock>): ContentBlock[] {
-  return content.map((block) => block.type === 'text'
-    ? { type: 'text', text: block.text }
-    : { type: 'file', attachment: block.attachment })
 }
 
 /** Parse a tool-call's raw-JSON arguments into the tool input. Mirrors the wire

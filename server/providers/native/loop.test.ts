@@ -742,6 +742,43 @@ describe('live pin — neutral frames project to the legacy SDK frames', () => {
     expect(projected).toEqual(legacy)
   })
 
+  it('structured tool content: the live SDK tool_result frame matches frames.ts while the file rides persistence', async () => {
+    // Handle form (the AttachmentRead same-partition duplicate result): the
+    // wire projection needs no registry port, so the pin stays loop-scoped.
+    const attachment = { id: 'upload-1', name: 'document.pdf', size: 4, digest: 'a'.repeat(64), path: '/registry/document.pdf', mediaType: 'application/pdf', modelForm: 'handle' as const }
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 't1', 'AttachmentRead', '{"id":"upload-1"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const emitted: NativeLoopFrame[] = []
+    const persisted: Array<{ uuid: string; message: ToolResultMessage }> = []
+    const ctx = defaultFrameContext('sess-1')
+    const tool: ToolDef = {
+      name: 'AttachmentRead', description: 'd', guidance: 'g', promptOrder: 1, schema: {},
+      async run() { return { text: 'Read PDF document.pdf', content: [{ type: 'text', text: 'Read PDF document.pdf' }, { type: 'file', attachment }] } },
+    }
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s), tools: [tool], emit: (f) => emitted.push(f), persistToolResult: (record) => persisted.push(record) }),
+      ctx, [], userText('hi'), 'm1', new AbortController().signal,
+    )
+
+    const conversation = emitted.filter((f) => !isRaw(f))
+    const projected = conversation.map((f) => normalizeIds(projectToSdk(f, ctx)))
+    const usage = { input_tokens: 10, output_tokens: 5 }
+    const toolUuid = (conversation.find(isToolResult) as ToolResultMessage).id
+    const legacy = [
+      assistantFrame(ctx, { model: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'AttachmentRead', input: { id: 'upload-1' } }], stopReason: 'tool_use', usage }),
+      toolResultFrame(ctx, 't1', 'Read PDF document.pdf', false, toolUuid),
+      assistantFrame(ctx, { model: 'm1', content: [{ type: 'text', text: 'done' }], stopReason: 'end_turn', usage }),
+      resultFrame(ctx, { result: 'done', usage, numTurns: 2, durationMs: 0, isError: false }),
+    ].map((f) => normalizeIds(f))
+    expect(projected).toEqual(legacy)
+    // The structured file never enters the live SDK frame; the persisted
+    // neutral tool message keeps the full canonical content (file included).
+    expect(JSON.stringify(projected)).not.toContain('"type":"file"')
+    expect(persisted[0].message.content).toEqual([{ type: 'text', text: 'Read PDF document.pdf' }, { type: 'file', attachment }])
+  })
+
   it('sidechain parent is preserved on every projected conversation frame', async () => {
     const s = scriptedStreamer([[startStop, ...textBlock(0, 'inner'), deltaStop('end_turn')]])
     const emitted: NativeLoopFrame[] = []

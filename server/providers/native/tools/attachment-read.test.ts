@@ -14,7 +14,9 @@ import { aliasPathOf, attachmentRoot } from '../../../attachment-paths.js'
 import { UploadStore } from '../../../upload-store.js'
 import { createReadTool } from './read.js'
 import { NativeReadState } from '../read-state.js'
-import type { NativeFileAttachment } from '../session-log/format.js'
+import type { NativeFileAttachment } from '../../../../shared/attachment-types.js'
+import { createToolResultMessage } from '../vocabulary/message.js'
+import { brandString } from '../vocabulary/brand.js'
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
@@ -315,6 +317,32 @@ describe('AttachmentRead', () => {
     }, new AbortController().signal).catch((err: unknown) => err)
     expect((failure as Error).message).toMatch(/integrity/i)
     expect((failure as Error).message).not.toContain(fx.path)
+  })
+
+  it('returns neutral vocabulary content that wraps into a tool-result message losslessly', async () => {
+    const bytes = Buffer.from('%PDF-1.4\nneutral body')
+    const fx = await fixture({ bytes, name: 'document.pdf', mediaType: 'application/pdf' })
+    const outcome = await run(fx, { id: 'upload-1' })
+    // Neutral blocks only: a text summary plus a file occurrence. No SDK
+    // tool_result wrapper and no document/base64 payload at execution time.
+    expect(outcome.content?.map((block) => block.type)).toEqual(['text', 'file'])
+    const message = createToolResultMessage({
+      callId: brandString<'ToolCallId'>('tool-1'),
+      content: outcome.content!,
+      isError: outcome.isError ?? false,
+    })
+    expect(message.role).toBe('tool')
+    expect(message.toolCallId).toBe('tool-1')
+    expect(message.isError).toBe(false)
+    // Lossless: the FULL resolved attachment (registry path, observed media
+    // type, assigned model form) survives the wrap verbatim, so a later API
+    // round can still project it to a PDF document.
+    expect(message.content).toEqual([
+      { type: 'text', text: 'Read PDF document.pdf' },
+      { type: 'file', attachment: { ...fx.occurrence, modelForm: 'pdf-document' } },
+    ])
+    expect(Object.isFrozen(message)).toBe(true)
+    expect(JSON.stringify(message)).not.toContain(bytes.toString('base64'))
   })
 
   it('allows the same digest in main and agent partitions but returns a handle for a same-partition duplicate', async () => {

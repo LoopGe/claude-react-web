@@ -6,7 +6,7 @@ import { TextDecoder } from 'node:util'
 import { HttpError } from '../../../errors.js'
 import { createLogger } from '../../../log.js'
 import { AttachmentStoreError } from '../../../../shared/attachment-store-error.js'
-import type { ResolvedFileAttachment } from '../../../../shared/attachment-types.js'
+import type { NativeFileAttachment, ResolvedFileAttachment } from '../../../../shared/attachment-types.js'
 import type { NativeAttachmentReferenceIndex } from '../attachment-reference-index.js'
 import type { NativeAttachmentPort } from '../ports.js'
 import {
@@ -18,7 +18,6 @@ import {
   type PdfBudgetLedger,
   type PreparedPdfStore,
 } from '../pdf-documents.js'
-import type { NativeFileAttachment } from '../session-log/format.js'
 import type { ToolDef, ToolOutcome } from './types.js'
 
 const MAX_LINES = 2000

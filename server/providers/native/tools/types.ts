@@ -1,5 +1,6 @@
 // server/providers/native/tools/types.ts
-import type { NativeFileBlock } from '../session-log/format.js'
+import type { NativeFileAttachment } from '../../../../shared/attachment-types.js'
+import type { FileBlock, TextBlock } from '../vocabulary/types.js'
 
 export class ToolInputError extends Error {}
 
@@ -21,11 +22,23 @@ export interface ToolContext {
   toolUseId?: string
 }
 
+/** A neutral file occurrence in a tool result: a vocabulary FileBlock whose
+ *  attachment keeps the FULL resolved registry facts (path / mediaType /
+ *  modelForm) — a structural superset of the public FileAttachmentRef — so the
+ *  wire adapter can still project it to handle text or a PDF document on every
+ *  later API round. */
+export interface ToolFileBlock extends FileBlock {
+  attachment: NativeFileAttachment
+}
+
 export interface ToolOutcome {
   /** Text-only UI summary. Structured content, when present, is the canonical
    * model/log result and normally starts with the same summary TextBlock. */
   text: string
-  content?: Array<{ type: 'text'; text: string } | NativeFileBlock>
+  /** Neutral vocabulary content — text blocks plus file occurrences. The loop
+   * wraps it into createToolResultMessage unchanged; no SDK tool_result shape
+   * is built here. */
+  content?: Array<TextBlock | ToolFileBlock>
   isError?: boolean
 }
 
