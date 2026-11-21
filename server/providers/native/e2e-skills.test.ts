@@ -277,7 +277,7 @@ describe('native skills end to end through SessionManager', () => {
     fx.scripts.push(textTurn('expanded'))
     await sendAndWait(fx, id, frames, '/demo do X', 2)
     expect(fx.requests[2].messages.slice(-2)).toEqual([
-      { role: 'user', content: '/demo do X' },
+      { role: 'user', content: [{ type: 'text', text: '/demo do X' }] },
       { role: 'user', content: [{ type: 'text', text: canonicalDemoBody(project) }] },
     ])
     // ...while the manager's ring keeps the text the user typed.
@@ -405,7 +405,9 @@ describe('native skills end to end through SessionManager', () => {
     expect(live).toBeDefined()
     const modelHistory = live!.handle.history as Array<{ role: string; content: unknown }>
     expect(modelHistory).toHaveLength(4)
-    expect(modelHistory.slice(1)).toEqual([
+    // Neutral messages carry minted id/source; compare the conversation shape.
+    const shape = (ms: unknown[]) => (ms as Array<Record<string, unknown>>).map(({ id: _id, source: _source, ...rest }) => rest)
+    expect(shape(modelHistory.slice(1))).toEqual([
       { role: 'user', content: [{ type: 'text', text: '/demo do X' }] },
       { role: 'user', content: [{ type: 'text', text: canonicalDemoBody(project) }] },
       { role: 'assistant', content: [{ type: 'text', text: 'expanded' }] },

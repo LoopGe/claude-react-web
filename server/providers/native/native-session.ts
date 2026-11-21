@@ -23,7 +23,12 @@ import type { ProviderProfile } from '../../../shared/profile.js'
 import { effortLevelsForModel, supportsFastModeForModel } from '../../../shared/model-capability.js'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { ProviderAttachmentOccurrence, ProviderInterruptReceipt, ProviderResetBaseSettings, ProviderSessionHandle } from '../types.js'
-import { runTurn, type LoopDeps, type PersistedToolResult } from './loop.js'
+import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
+import { projectNativeFrameToSdk, projectNativeEventToSdk, type NativeFrameEnvelope, type NativeHostFrame } from '../native-host-frame-adapter.js'
+import { createAssistantMessage, createToolResultMessage, createUserMessage, type RequestMessage } from './vocabulary/message.js'
+import { brandString } from './vocabulary/brand.js'
+import type { ContentBlock, TokenUsage } from './vocabulary/types.js'
+import type { OperationalFrame } from './vocabulary/live-frame.js'
 import type { NativeHostPorts } from './ports.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -119,6 +124,83 @@ function nativeUserMessage(message: { content: unknown }): { role: 'user'; conte
 function containsStructuredFile(content: unknown[]): boolean {
   return content.some((block) => typeof block === 'object' && block !== null
     && (block as { type?: unknown }).type === 'file')
+}
+
+// ── Temporary legacy→neutral history bridge (T9; superseded by T13) ─────────
+// The durable log + replay still produce API-shaped messages (historyFromEvents,
+// the inline user pushes). The turn loop now consumes NEUTRAL RequestMessage[],
+// so these producers are bridged at the history boundary. The wire adapter
+// (projectNativeHistoryToWire) is the exact inverse: it regroups consecutive
+// first-class tool results, parses raw-JSON arguments and re-applies the
+// signed-thinking filter, so a bridged history projects to the identical API
+// request the legacy path sent (pinned by wire-projection.test.ts's round-trip).
+// T13 replaces this bridge with a native neutral replay that folds events
+// directly; until then this is the one legacy→neutral seam.
+
+/** One API-shaped assistant block → neutral. Reasoning keeps signature/redacted
+ *  data verbatim (the wire adapter owns retention); tool_use.input becomes RAW
+ *  JSON arguments (the wire adapter owns parsing). */
+function neutralAssistantBlock(block: Record<string, any>): ContentBlock {
+  switch (block.type) {
+    case 'text': return { type: 'text', text: block.text }
+    case 'thinking': return { type: 'reasoning', text: block.thinking, ...(block.signature !== undefined ? { signature: block.signature } : {}) }
+    case 'redacted_thinking': return { type: 'reasoning', text: '', redacted: true, data: block.data }
+    case 'tool_use': return { type: 'tool-call', id: brandString<'ToolCallId'>(block.id), name: block.name, arguments: JSON.stringify(block.input ?? {}) }
+    default: throw new Error(`native history bridge: unsupported assistant block type "${block.type}"`)
+  }
+}
+
+/** One API-shaped user/tool input block → neutral. Images discriminate
+ *  attachment-first (store-backed ref) vs source (legacy base64) — T8 F1. A file
+ *  occurrence keeps its FULL resolved attachment for the wire adapter. */
+function neutralInputBlock(block: Record<string, any>): ContentBlock {
+  switch (block.type) {
+    case 'text': return { type: 'text', text: block.text }
+    case 'image': return 'attachment' in block ? { type: 'image', attachment: block.attachment } : { type: 'image', source: block.source }
+    case 'file': return { type: 'file', attachment: block.attachment }
+    default: throw new Error(`native history bridge: unsupported input block type "${block.type}"`)
+  }
+}
+
+/** Bridge an API-shaped model-history array (historyFromEvents output or an
+ *  inline user push) to neutral RequestMessage[]. A user message whose content
+ *  is tool_result blocks splits into FIRST-CLASS role-tool messages (ungrouped);
+ *  the wire adapter regroups consecutive ones into one request user message. */
+export function legacyMessagesToNeutral(messages: readonly unknown[]): RequestMessage[] {
+  const out: RequestMessage[] = []
+  for (const message of messages as Array<{ role: string; content: unknown }>) {
+    if (message.role === 'assistant') {
+      const content = (message.content as Record<string, any>[]).map(neutralAssistantBlock)
+      out.push(createAssistantMessage({ content, source: { provider: 'anthropic', model: '' } }))
+    } else if (message.role === 'user') {
+      const blocks = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : (message.content as Record<string, any>[])
+      if (blocks.length > 0 && blocks[0].type === 'tool_result') {
+        for (const block of blocks) {
+          out.push(createToolResultMessage({
+            callId: brandString<'ToolCallId'>(block.tool_use_id),
+            content: ((block.content ?? []) as Record<string, any>[]).map(neutralInputBlock),
+            isError: block.is_error ?? false,
+          }))
+        }
+      } else {
+        out.push(createUserMessage({ content: blocks.map(neutralInputBlock), source: { kind: 'user' } }))
+      }
+    } else {
+      throw new Error(`native history bridge: unsupported message role "${message.role}"`)
+    }
+  }
+  return out
+}
+
+/** Neutral disjoint TokenUsage → the SDK Usage shape the session's live
+ *  lastUsage / turn-end accounting and the legacy result frame carry. */
+function sdkUsageOf(usage: TokenUsage): Usage {
+  return {
+    input_tokens: usage.inputTokens,
+    output_tokens: usage.outputTokens,
+    ...(usage.cacheReadTokens !== undefined ? { cache_read_input_tokens: usage.cacheReadTokens } : {}),
+    ...(usage.cacheWriteTokens !== undefined ? { cache_creation_input_tokens: usage.cacheWriteTokens } : {}),
+  }
 }
 
 /** `/name args` — the composer's slash-command shape for a user-invoked skill.
@@ -331,8 +413,9 @@ export class NativeSession implements ProviderSessionHandle {
   private readonly sessionAbort = new AbortController()
   /** Per-turn abort, replaced by pumpLoop for every turn. */
   private turnAbort: AbortController | null = null
-  /** Conversation state sent to the API on every turn (mutated in place by runTurn). */
-  private readonly history: unknown[] = []
+  /** Neutral conversation state sent to the API on every turn (mutated in place
+   *  by runTurn; projected to the wire request by projectNativeHistoryToWire). */
+  private readonly history: RequestMessage[] = []
   private readonly pdfBudgets: PdfBudgetLedger
   private readonly preparedPdfs: PreparedPdfStore
   /** Builtins plus the MCP tools discovered as of the last rebuild. Replaced
@@ -484,9 +567,9 @@ export class NativeSession implements ProviderSessionHandle {
         suppressRetryFrames: true,
       }),
       requestPermission: this.requestPermission,
-      emit: (frame) => {
-        this.persistFrame(frame)
-        this.output.push(frame)
+      emit: (frame, parentToolUseId) => {
+        this.persistFrame(frame, parentToolUseId)
+        this.output.push(this.projectFrame(frame, parentToolUseId))
       },
       persistToolResult: (result, parentToolUseId) => this.persistToolResult(result, parentToolUseId),
       attachmentProjection: {
@@ -731,7 +814,7 @@ export class NativeSession implements ProviderSessionHandle {
       resume: false,
       seed: { events: selection ? [context, selection] : [context], inheritedEventCount: 0, isSeeded: false },
     })
-    this.history.push(...historyFromEvents([context]))
+    this.history.push(...legacyMessagesToNeutral(historyFromEvents([context])))
     if (selection) {
       // Context and selection share the initial synchronous seed write: the
       // next-turn profile is durable before createSession returns.
@@ -756,7 +839,7 @@ export class NativeSession implements ProviderSessionHandle {
     // `append` mutated log.events, so this is the original prefix plus the
     // synthetic results (now seq-numbered). `turn/end` is bookkeeping and is
     // skipped by `historyFromEvents`.
-    this.history.push(...historyFromEvents(log.events))
+    this.history.push(...legacyMessagesToNeutral(historyFromEvents(log.events)))
     this.restoreAgentSelection(log.events, log)
     this.restoreUsage(events)
     return log
@@ -804,7 +887,7 @@ export class NativeSession implements ProviderSessionHandle {
       resume: false,
       seed,
     })
-    this.history.push(...historyFromEvents(seed.events))
+    this.history.push(...legacyMessagesToNeutral(historyFromEvents(seed.events)))
     this.restoreAgentSelection(seed.events, log)
     // Match what a restart of this child would see: its copied prefix's
     // usage-bearing `turn/end` events define last/total (the `{forked}` close
@@ -1030,12 +1113,58 @@ export class NativeSession implements ProviderSessionHandle {
     return testStream ? testStream(req) : this.defaultStream(req, opts)
   }
 
-  /** Persist an assistant UI frame. Canonical tool results use
-   * `persistToolResult` below instead: their structured content is not present
-   * on the deliberately text-only UI frame. */
-  private persistFrame(frame: AgentMessage): void {
-    const f = frame as Frame
-    if (f.type !== 'assistant') return
+  /** The operational live-frame discriminants (the system/result surface).
+   *  Everything else in the loop emission union is a conversation frame. */
+  private isOperationalFrame(frame: NativeLoopFrame): frame is OperationalFrame {
+    if (!('type' in frame)) return false
+    switch (frame.type) {
+      case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/notification': case 'result':
+        return true
+      default:
+        return false
+    }
+  }
+
+  /** Envelope for a conversation frame: the assistant bundle carries its own
+   *  neutral uuid (message.id); a first-class tool result carries its minted id
+   *  (shared with the persisted result); raw passthrough mints a fresh frame
+   *  uuid (the legacy streamEventFrame mints ctx.uuid() likewise). The sidechain
+   *  parent is supplied by the caller's emission context. */
+  private frameEnv(frame: NativeHostFrame, parentToolUseId: string | null): NativeFrameEnvelope {
+    let uuid: string
+    if ('role' in frame && frame.role === 'tool') {
+      uuid = frame.id
+    } else if ('type' in frame && frame.type === 'assistant-frame') {
+      uuid = frame.message.id
+    } else {
+      uuid = this.ctx.uuid()
+    }
+    return { sessionId: this.opts.id, uuid, parentToolUseId }
+  }
+
+  /** Project one neutral loop emission to the SDK AgentMessage the host pump
+   *  consumes (T6 adapter). Operational frames carry their envelope inline;
+   *  conversation frames derive it from the caller's parent context. This is
+   *  the T9 neutral→SDK emission boundary: the output channel stays SDK-shaped
+   *  (the messages getter returns it verbatim); T10 makes core.messages neutral
+   *  and relocates this projection into wrapNativeCore. */
+  private projectFrame(frame: NativeLoopFrame, parentToolUseId: string | null): AgentMessage {
+    if (this.isOperationalFrame(frame)) {
+      const projected = projectNativeEventToSdk(frame)
+      if (projected === null) throw new Error(`native session: operational frame "${frame.type}" projected to null`)
+      return projected
+    }
+    return projectNativeFrameToSdk(frame, this.frameEnv(frame, parentToolUseId))
+  }
+
+  /** Persist a neutral assistant frame. The v3 durable format is T11; until
+   *  then the frame is projected to the current SDK assistant event shape (the
+   *  same projection the live output uses), so the log stays byte-compatible.
+   *  Canonical tool results use `persistToolResult` below instead: their
+   *  structured content is not present on the deliberately text-only UI frame. */
+  private persistFrame(frame: NativeLoopFrame, parentToolUseId: string | null): void {
+    if (!('type' in frame) || frame.type !== 'assistant-frame') return
+    const f = this.projectFrame(frame, parentToolUseId) as Frame
     this.log.append({
       type: 'assistant',
       uuid: f.uuid!,
@@ -1069,15 +1198,29 @@ export class NativeSession implements ProviderSessionHandle {
   }
 
   private persistToolResult(record: PersistedToolResult, parentToolUseId: string | null): void {
+    // Project the neutral first-class tool message back to the legacy canonical
+    // tool_result event shape (T11 owns the v3 durable form). The full content
+    // (text + structured files) is persisted; the live UI frame stays text-only.
+    const message = record.message
+    const result = {
+      type: 'tool_result',
+      tool_use_id: message.toolCallId,
+      content: message.content.map((block) => {
+        if (block.type === 'text') return { type: 'text', text: block.text }
+        if (block.type === 'file') return { type: 'file', attachment: block.attachment }
+        throw new Error(`native session: tool-result block kind "${block.type}" is not canonical content`)
+      }),
+      is_error: message.isError ?? false,
+    }
     this.log.append({
       type: 'user',
       uuid: record.uuid,
       session_id: this.opts.id,
       parent_tool_use_id: parentToolUseId,
       timestamp: new Date().toISOString(),
-      message: { role: 'user', content: [record.result] },
+      message: { role: 'user', content: [result] },
     })
-    this.preparedPdfs.confirmPersisted(record.result.tool_use_id)
+    this.preparedPdfs.confirmPersisted(message.toolCallId)
     this.syncAttachmentReferences()
     flushInBackground(this.log, this.opts.id, 'tool result')
   }
@@ -1107,10 +1250,10 @@ export class NativeSession implements ProviderSessionHandle {
         message: event.message,
       } as unknown as AgentMessage)
     }
-    this.history.push({
+    this.history.push(...legacyMessagesToNeutral([{
       role: 'user',
       content: synthetic.flatMap((event) => event.message.content),
-    })
+    }]))
   }
 
   /** Start a discovery pass and return it as the current `skillsReady`.
@@ -1217,8 +1360,8 @@ export class NativeSession implements ProviderSessionHandle {
       // errored turn has no usage of its own — stamping the PREVIOUS turn's
       // `lastUsage` here would make `restoreUsage` sum it again after restart.
       let endUsage: Usage | undefined
-      let initialMessages: Array<{ role: 'user'; content: unknown[] }> = []
-      let appendedInitialMessages: Array<{ role: 'user'; content: unknown[] }> = []
+      let initialMessages: RequestMessage[] = []
+      let appendedInitialMessages: RequestMessage[] = []
       let initialMessagesOwned = false
       let rawAppended = false
       let pauseForDurableRetry = false
@@ -1278,7 +1421,7 @@ export class NativeSession implements ProviderSessionHandle {
           role: 'user',
           content: typeof next.message.content === 'string' ? next.message.content : persisted.content,
         } as { role: 'user'; content: unknown[] }
-        initialMessages = [rawMessage]
+        initialMessages = legacyMessagesToNeutral([rawMessage])
         this.log.append({
           type: 'user',
           uuid: next.uuid!,
@@ -1292,12 +1435,9 @@ export class NativeSession implements ProviderSessionHandle {
         rawAppended = true
         this.syncAttachmentReferences()
         this.opts.onUserMessagePersistence?.(next, 'appended')
-        appendedInitialMessages = [rawMessage]
+        appendedInitialMessages = [...initialMessages]
         if (invocation) {
-          const instruction = {
-            role: 'user',
-            content: [{ type: 'text', text: invocation.body }],
-          } as { role: 'user'; content: unknown[] }
+          const instruction = createUserMessage({ content: [{ type: 'text', text: invocation.body }], source: { kind: 'user' } })
           initialMessages.push(instruction)
           this.log.append({
             type: 'session/skill',
@@ -1343,8 +1483,9 @@ export class NativeSession implements ProviderSessionHandle {
             requestPermission: (toolName, input, toolUseId, signal) =>
               this.requestPermission(toolName, input, toolUseId, signal, turnPermissionMode),
             emit: (frame) => {
-              this.persistFrame(frame)
-              this.output.push(frame)
+              const parent = this.ctx.parentToolUseId ?? null
+              this.persistFrame(frame, parent)
+              this.output.push(this.projectFrame(frame, parent))
             },
             persistToolResult: (result) => this.persistToolResult(result, null),
             attachmentProjection: {
@@ -1366,9 +1507,9 @@ export class NativeSession implements ProviderSessionHandle {
         // LAST-reading accounting happens here. Per-model totals are summed
         // from the persisted assistant frames in `persistFrame`, so the live
         // value and a restart's rebuild are identical.
-        this.lastUsage = res.usage
+        this.lastUsage = sdkUsageOf(res.usage)
         endReason = res.isError ? 'error' : 'completed'
-        if (!res.isError) endUsage = res.usage
+        if (!res.isError) endUsage = sdkUsageOf(res.usage)
       } catch (err) {
         // A pre-append failure stays leased while the same pending prompt can
         // be retried. Only withdrawal or another abandonment releases it.
@@ -1474,7 +1615,7 @@ export class NativeSession implements ProviderSessionHandle {
     })
     this.syncAttachmentReferences()
     flushInBackground(this.log, this.opts.id, 'compact summary')
-    this.history.push({ role: 'user', content: message.message.content })
+    this.history.push(...legacyMessagesToNeutral([{ role: 'user', content: message.message.content }]))
   }
 
   getAttachmentOccurrences(): readonly ProviderAttachmentOccurrence[] {
@@ -1552,7 +1693,7 @@ export class NativeSession implements ProviderSessionHandle {
     })
     await this.log.flush()
     this.syncAttachmentReferences()
-    this.history.push({ role: 'user', content: [{ type: 'text', text: summary }] })
+    this.history.push(...legacyMessagesToNeutral([{ role: 'user', content: [{ type: 'text', text: summary }] }]))
   }
 
   /** Compaction-only projection of the durable raw-user → instruction pairs.
@@ -1607,8 +1748,10 @@ export class NativeSession implements ProviderSessionHandle {
     this.history.splice(
       0,
       this.history.length,
-      { role: 'user', content: [{ type: 'text', text: context }] },
-      { role: 'user', content: [{ type: 'text', text: summary }] },
+      ...legacyMessagesToNeutral([
+        { role: 'user', content: [{ type: 'text', text: context }] },
+        { role: 'user', content: [{ type: 'text', text: summary }] },
+      ]),
     )
     this.lastUsage = { input_tokens: 0, output_tokens: 0 }
   }

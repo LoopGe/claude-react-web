@@ -255,7 +255,10 @@ function projectMessages(messages: readonly ModelMessage[]): Array<{ role: strin
 }
 
 function userMessage(text: string): ModelMessage {
-  return { role: 'user', content: text }
+  // The neutral vocabulary carries user content as blocks; the wire request
+  // normalizes a bare-string prompt to a text block (the model-facing text is
+  // unchanged). Expected request messages therefore use the block form.
+  return { role: 'user', content: [{ type: 'text', text }] }
 }
 
 function assistantMessage(text: string): ModelMessage {

@@ -1,9 +1,8 @@
 // server/providers/native/subagent.ts
-import type { AgentMessage } from '../../agent-message.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
-import { runTurn, type LoopDeps, type PersistedToolResult } from './loop.js'
+import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
-import type { Frame, FrameContext } from './frames.js'
+import type { FrameContext } from './frames.js'
 import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
 import type { EffortLevel } from './anthropic-stream.js'
@@ -57,9 +56,10 @@ export interface AgentToolDeps {
     signal: AbortSignal,
     permissionMode?: string,
   ): ReturnType<LoopDeps['requestPermission']>
-  /** The session's persist+push path. Parentage comes from the nested frame
-   *  context, so this is forwarded unchanged. */
-  emit(frame: AgentMessage): void
+  /** The session's persist+push path. The neutral frame carries no envelope
+   *  identity, so the nested runner forwards its sidechain parent explicitly;
+   *  the session projects the frame to SDK with that parent. */
+  emit(frame: NativeLoopFrame, parentToolUseId: string | null): void
   /** Canonical nested result persistence; parentage is explicit because the
    * shared session log also persists main-thread results. */
   persistToolResult(result: PersistedToolResult, parentToolUseId: string | null): void
@@ -207,12 +207,11 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
             requestPermission: (toolName, toolInput, toolUseId, signal) =>
               deps.requestPermission(toolName, toolInput, toolUseId, signal, nestedPermissionMode),
             emit: (frame) => {
-              const f = frame as Frame
-              if (f.type === 'assistant') {
-                const content = f.message.content as Array<{ type: string; text: string }>
-                assistantTexts.push(content.filter((b) => b.type === 'text').map((b) => b.text).join(''))
+              if ('type' in frame && frame.type === 'assistant-frame') {
+                const content = frame.message.content
+                assistantTexts.push(content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join(''))
               }
-              deps.emit(frame)
+              deps.emit(frame, nestedCtx.parentToolUseId ?? null)
             },
             persistToolResult: (result) => deps.persistToolResult(result, nestedCtx.parentToolUseId ?? null),
             attachmentProjection: deps.attachmentProjection,

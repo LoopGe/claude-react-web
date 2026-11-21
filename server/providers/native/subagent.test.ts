@@ -1,9 +1,11 @@
 // server/providers/native/subagent.test.ts
 import { describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { createAgentTool, type AgentToolDeps } from './subagent.js'
+import type { NativeLoopFrame } from './loop.js'
+import { projectNativeFrameToSdk, projectNativeEventToSdk } from '../native-host-frame-adapter.js'
 import { defaultFrameContext, type Frame } from './frames.js'
 import type { CanonicalEvent } from './canonical.js'
-import type { AgentMessage } from '../../agent-message.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
@@ -79,6 +81,28 @@ function skillView(policy?: readonly string[] | 'all'): NativeSkillView {
     section: () => '',
     bodyOf: (name) => ({ text: `${Array.isArray(policy) ? policy.join(',') : policy}: ${name}` }),
     commands: () => [],
+  }
+}
+
+/** The nested runner now emits NEUTRAL frames plus an explicit sidechain parent.
+ *  These tests assert the SDK frames the host ultimately sees, so the capture
+ *  emit projects each neutral frame through the T6 adapter exactly as
+ *  native-session's emission boundary does (parent supplied by the runner). */
+function sdkEmit(emitted: Frame[]): AgentToolDeps['emit'] {
+  return (frame: NativeLoopFrame, parent: string | null) => {
+    if ('type' in frame) {
+      switch (frame.type) {
+        case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/notification': case 'result':
+          emitted.push(projectNativeEventToSdk(frame) as Frame)
+          return
+      }
+    }
+    const uuid = 'role' in frame && frame.role === 'tool'
+      ? frame.id
+      : 'type' in frame && frame.type === 'assistant-frame'
+        ? frame.message.id
+        : randomUUID()
+    emitted.push(projectNativeFrameToSdk(frame as never, { sessionId: 'sess-1', uuid, parentToolUseId: parent }) as Frame)
   }
 }
 
@@ -238,7 +262,7 @@ describe('createAgentTool', () => {
     const agent = createAgentTool(baseDeps({
       streamFor: s.streamFor.bind(s),
       appendDescriptor,
-      emit: (frame) => emitted.push(frame as Frame),
+      emit: sdkEmit(emitted),
     }))
     const ac = new AbortController()
 
@@ -257,7 +281,7 @@ describe('createAgentTool', () => {
     const emitted: Frame[] = []
     const agent = createAgentTool(baseDeps({
       streamFor: s.streamFor.bind(s),
-      emit: (frame) => emitted.push(frame as Frame),
+      emit: sdkEmit(emitted),
       appendDescriptor: async () => { throw new Error('disk full') },
     }))
 
@@ -308,7 +332,7 @@ describe('createAgentTool', () => {
   it('forwards nested frames with the parent tool_use id and no result frame', async () => {
     const s = scriptedStreamer([[startStop, ...textBlock(0, 'nested answer'), deltaStop('end_turn')]])
     const emitted: Frame[] = []
-    const agent = createAgentTool(baseDeps({ streamFor: s.streamFor.bind(s), emit: (f) => emitted.push(f as Frame) }))
+    const agent = createAgentTool(baseDeps({ streamFor: s.streamFor.bind(s), emit: sdkEmit(emitted) }))
 
     const outcome = await runAgent(agent, { description: 'd', prompt: 'do the thing' })
 
@@ -480,7 +504,7 @@ describe('createAgentTool', () => {
     const agent = createAgentTool(baseDeps({
       tools: () => [createReadTool(new NativeReadState())],
       streamFor: s.streamFor.bind(s),
-      emit: (f) => emitted.push(f as Frame),
+      emit: sdkEmit(emitted),
       requestPermission: async (name, input, toolUseId) => {
         permitted.push({ name, toolUseId })
         return { allowed: true, input }
@@ -505,7 +529,7 @@ describe('createAgentTool', () => {
     const agent = createAgentTool(baseDeps({
       tools: () => [bashTool],
       streamFor: s.streamFor.bind(s),
-      emit: (f) => emitted.push(f as Frame),
+      emit: sdkEmit(emitted),
     }))
 
     const outcome = await runAgent(agent, { description: 'd', prompt: 'p' })
@@ -666,7 +690,7 @@ describe('createAgentTool', () => {
     const persisted: Array<{ uuid: string; parent: string | null }> = []
     const agent = createAgentTool(baseDeps({
       streamFor: s.streamFor.bind(s),
-      emit: (frame) => emitted.push(frame as Frame),
+      emit: sdkEmit(emitted),
       persistToolResult: (record, parent) => persisted.push({ uuid: record.uuid, parent }),
     }))
 
@@ -822,14 +846,14 @@ describe('createAgentTool', () => {
 
   it('does not fail the tool when the nested result frame is suppressed', async () => {
     const s = scriptedStreamer([[startStop, ...textBlock(0, 'inner'), deltaStop('end_turn')]])
-    const emitted: AgentMessage[] = []
+    const emitted: NativeLoopFrame[] = []
     const agent = createAgentTool(baseDeps({ streamFor: s.streamFor.bind(s), emit: (f) => emitted.push(f) }))
 
     const outcome = await runAgent(agent, { description: 'd', prompt: 'p' })
 
     expect(outcome.isError).toBeUndefined()
     expect(outcome.text).toBe('inner')
-    expect(emitted.some((f) => (f as Frame).type === 'result')).toBe(false)
+    expect(emitted.some((f) => 'type' in f && f.type === 'result')).toBe(false)
   })
 
   it('throws when the tool_use id is missing', async () => {

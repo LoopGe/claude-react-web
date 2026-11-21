@@ -765,7 +765,7 @@ describe('native attachment fidelity end to end', () => {
     fx.scripts.push(textTurn('X STILL WORKS'))
     const result = await sendAndWait(fx, id, seen.frames, 'after failed seed')
     expect(result.is_error).not.toBe(true)
-    expect(fx.requests.at(-1)!.messages.at(-1)).toEqual({ role: 'user', content: 'after failed seed' })
+    expect(fx.requests.at(-1)!.messages.at(-1)).toEqual({ role: 'user', content: [{ type: 'text', text: 'after failed seed' }] })
     seen.unsubscribe()
   }, 30000)
 })

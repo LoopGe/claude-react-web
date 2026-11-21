@@ -15,6 +15,9 @@ import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
 import { historyFromEvents } from './session-log/replay.js'
+import { legacyMessagesToNeutral } from './native-session.js'
+import { createToolResultMessage } from './vocabulary/message.js'
+import { brandString } from './vocabulary/brand.js'
 import { readNativeHistoryEntries } from './session-log/reader.js'
 import type { NativeEventInput, NativeFileAttachment, NativeLogEvent } from './session-log/format.js'
 import { formatSupplementInstruction } from '../steering-format.js'
@@ -505,6 +508,16 @@ function capturingStreamer(
 function sentUserContent(request: { messages: unknown[] }): unknown {
   const messages = request.messages as Array<{ role: string; content: unknown }>
   return [...messages].reverse().find((message) => message.role === 'user')!.content
+}
+
+/** Neutral messages carry independent minted ids + producer source; two
+ *  histories built from the same conversation compare on role/content (and the
+ *  tool-message facts), not on identity. Strips id/source for shape equality. */
+function neutralShape(messages: unknown[]): unknown[] {
+  return (messages as Array<Record<string, unknown>>).map((message) => {
+    const { id: _id, source: _source, ...rest } = message
+    return rest
+  })
 }
 
 describe('NativeSession', () => {
@@ -3247,7 +3260,7 @@ describe('NativeSession', () => {
 
     await session.destroy()
     const resumed = provider.createSession({ id: 'skill-expand-fail', cwd: dir, resume: 'skill-expand-fail' })
-    expect((resumed as unknown as { history: unknown[] }).history).toEqual(replayed)
+    expect(neutralShape((resumed as unknown as { history: unknown[] }).history)).toEqual(neutralShape(legacyMessagesToNeutral(replayed)))
     await resumed.destroy()
   })
 
@@ -3373,7 +3386,7 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
-  it('keeps a string-content `/name` turn raw and normalizes only its log event to blocks', async () => {
+  it('normalizes a string-content `/name` turn to blocks in the neutral history and the log', async () => {
     const dir = await tempDir('native-skill-string-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
     const body = canonicalSkillBody(dir, 'demo', '# demo body')
@@ -3389,14 +3402,16 @@ describe('NativeSession', () => {
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
 
     const expected = body
-    // The in-memory history keeps the caller's raw string shape, followed by
-    // the instruction's block array...
+    // The neutral history carries blocks (the vocabulary has no bare-string
+    // content form), so the wire request normalizes the string prompt to a text
+    // block followed by the instruction's text block. The model-facing text is
+    // unchanged; the Anthropic API accepts both representations equivalently.
     expect(requests[0].messages.slice(-2)).toEqual([
-      { role: 'user', content: '/demo from string' },
+      { role: 'user', content: [{ type: 'text', text: '/demo from string' }] },
       { role: 'user', content: [{ type: 'text', text: expected }] },
     ])
-    // ...while the log normalizes only the raw user event to blocks (the
-    // parser rejects a bare string).
+    // The log normalizes the raw user event to blocks (the parser rejects a
+    // bare string).
     expect(logOf(session).events.find((e) => e.type === 'user')?.message?.content)
       .toEqual([{ type: 'text', text: '/demo from string' }])
     await session.destroy()
@@ -3756,12 +3771,12 @@ describe('NativeSession', () => {
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'side-persist', cwd: dir })
     const internals = session as unknown as {
-      persistToolResult(record: { uuid: string; result: { type: 'tool_result'; tool_use_id: string; content: Array<{ type: 'text'; text: string }>; is_error: boolean } }, parent: string | null): void
+      persistToolResult(record: { uuid: string; message: ReturnType<typeof createToolResultMessage> }, parent: string | null): void
       log: { flush: () => Promise<void> }
     }
     internals.persistToolResult({
       uuid: 'side-result',
-      result: { type: 'tool_result', tool_use_id: 'inner-tool', content: [{ type: 'text', text: 'ok' }], is_error: false },
+      message: createToolResultMessage({ callId: brandString<'ToolCallId'>('inner-tool'), content: [{ type: 'text', text: 'ok' }], isError: false }),
     }, 'tu-agent')
     await internals.log.flush()
     const eventOf = (events: Array<{ type: string }>) =>
@@ -3836,7 +3851,7 @@ describe('NativeSession', () => {
 
     await session.destroy()
     const resumed = provider.createSession({ id: 'flush', cwd: dir, resume: 'flush' })
-    expect((resumed as unknown as { history: unknown[] }).history).toEqual(replayed)
+    expect(neutralShape((resumed as unknown as { history: unknown[] }).history)).toEqual(neutralShape(legacyMessagesToNeutral(replayed)))
     await resumed.destroy()
   })
 
@@ -4940,10 +4955,10 @@ describe('NativeSession', () => {
     // The model history now starts from the captured context + summary; the
     // pre-compact conversation is gone from what the next request sends.
     const history = (session as unknown as { history: unknown[] }).history
-    expect(history).toEqual([
+    expect(neutralShape(history)).toEqual(neutralShape(legacyMessagesToNeutral([
       { role: 'user', content: [{ type: 'text', text: compactEvent.context }] },
       { role: 'user', content: [{ type: 'text', text: 'SUMMARY' }] },
-    ])
+    ])))
     expect(JSON.stringify(history)).not.toContain('OLD-PROMPT')
     // The context bar resets; the per-model billing totals do not.
     const usage = (await session.getContextUsage?.()) as { totalTokens: number }
