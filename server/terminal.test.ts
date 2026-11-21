@@ -262,12 +262,17 @@ describe('TerminalSession', () => {
     // as the store's debounce timer), so the failure must be caught and logged,
     // never thrown into the emitter — a throw would crash the server and suppress
     // the exited state event.
-    mkdirSync(fileFor(), { recursive: true })
     const prevLog: LogConfigSnapshot = getLogConfig()
     setLogConfig({ level: 'info', scopes: null })
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
       const { ts, rec, id } = await startSession()
+      // The directory-target is established AFTER construction: the constructor's
+      // restore-load reads the canonical path, and a directory there is this
+      // test's artificial rename-failure trick, not a real boot state. The
+      // debounced running-state write has not fired yet (<2s), so the exit-path
+      // flush is the first write to hit the directory target.
+      mkdirSync(fileFor(), { recursive: true })
       ts.input(id, 'exit\r')
       // Reaching the exited state proves both that no uncaught throw crashed the
       // emitter and that onState fired despite the persistence failure.

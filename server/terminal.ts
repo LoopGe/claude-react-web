@@ -25,6 +25,7 @@ import { terminalCapability } from './terminal-capability.js'
 import { captureBirthTime, killTreeWin32 } from './win32-job.js'
 import type { TerminalScreenStore } from './terminal-store.js'
 import {
+  TERMINAL_DIVIDER_TEXT,
   TERMINAL_MAX_COLS,
   TERMINAL_MAX_INPUT_BYTES,
   TERMINAL_MAX_ROWS,
@@ -145,6 +146,10 @@ export class TerminalSession {
   private birthTime: string | null = null
   private headless: HeadlessTerminal | null = null
   private serializer: SerializeAddonLike | null = null
+  /** The current screen contains pre-restart persisted history. True from a
+   *  restoring constructor until the history is discarded (a non-restoring
+   *  create, close, or dispose). */
+  private restored = false
 
   constructor(opts: TerminalSessionOptions) {
     this.sessionId = opts.sessionId
@@ -152,6 +157,37 @@ export class TerminalSession {
     this.store = opts.store
     this.events = opts.events
     this.shell = resolveShell()
+    // Restart restore: a persisted screen means a previous server lifetime's
+    // shell died with the server. Seed it into a headless so snapshot() serves
+    // the history before any create; nothing auto-spawns here — the remembered
+    // tab's create() drives the fresh shell. Persisted 'exited' keeps its exit
+    // code (the exit banner is part of the screen); 'running' becomes idle
+    // because the process is gone. SerializeAddon output re-parses byte-
+    // identically at the same dimensions, so the seeded snapshot's screen
+    // equals the persisted string.
+    const persisted = this.store.load(this.sessionId)
+    if (persisted) {
+      const { cols, rows } = persisted.state
+      const term = new headlessPkg.Terminal({
+        cols,
+        rows,
+        scrollback: TERMINAL_SCROLLBACK,
+        allowProposedApi: true,
+      })
+      const ser = new (loadSerialize().SerializeAddon)()
+      term.loadAddon(ser)
+      // Synchronous parse (the module-header trick) so the very first
+      // snapshot already reflects the full persisted screen.
+      term.input('')
+      term.write(persisted.screen)
+      this.headless = term
+      this.serializer = ser
+      this.cols = cols
+      this.rows = rows
+      this.status = persisted.state.status === 'exited' ? 'exited' : 'idle'
+      this.exitCode = persisted.state.exitCode
+      this.restored = true
+    }
   }
 
   /** The sleep-guard signal: a live shell blocks session sleep. */
@@ -169,6 +205,14 @@ export class TerminalSession {
     if (!cap.supported) {
       throw new HttpError(400, `terminal not supported: ${cap.reason ?? 'node-pty unavailable'}`)
     }
+
+    // Restore handoff: the constructor-seeded pre-restart history is carried
+    // into the first new generation exactly once, with the divider as that
+    // generation's first output chunk. terminalId === '' distinguishes the
+    // pending restore from a later manual restart (exited → create starts
+    // fresh, like any non-restored session — one divider per server restart).
+    const restoring = this.restored && this.terminalId === ''
+    const carry = restoring ? this.serializer!.serialize() : ''
 
     const id = randomUUID()
     const term = new headlessPkg.Terminal({
@@ -188,6 +232,10 @@ export class TerminalSession {
       name: 'xterm-256color',
     })
 
+    // Spawn succeeded: release the previous screen (the restored seed or an
+    // exited generation's) before replacing it. A failed spawn above leaves
+    // the old headless and restored state untouched.
+    this.headless?.dispose()
     this.pty = pty
     this.headless = term
     this.serializer = ser
@@ -198,6 +246,35 @@ export class TerminalSession {
     this.rows = rows
     this.status = 'running'
     this.birthTime = null
+    this.restored = restoring
+
+    if (restoring) {
+      // The history is the attach seed (not a counted chunk); the divider IS
+      // the new generation's first output chunk, so live viewers see the
+      // boundary too. One synchronous parse keeps screen == seq (the module
+      // header invariant): the snapshot at seq 1 already contains both.
+      const divider = `\r\n\x1b[2m${TERMINAL_DIVIDER_TEXT}\x1b[0m\r\n`
+      // win32 ConPTY emits a startup screen-clear (CSI 2J + CSI H, probe-
+      // verified) that erases the viewport WITHOUT saving to scrollback — it
+      // would wipe the restored history + divider ~100ms after spawn. Scroll
+      // them into scrollback first so the clear only hits an empty viewport.
+      // Newline-driven scroll saves to scrollback (CSI S discards — probe-
+      // verified); `rows` newlines push the whole viewport out regardless of
+      // cursor position, then home. The scroll rides IN the fanned-out chunk
+      // so a live viewer's xterm scrolls identically (screen == seq parity).
+      // posix shells do not clear on startup, so the divider stays visible in
+      // the viewport there — the design's unmistakable boundary.
+      const chunk = process.platform === 'win32' ? `${divider}${'\r\n'.repeat(rows)}\x1b[H` : divider
+      term.input('')
+      term.write(carry + chunk)
+      const s = ++this.seq
+      this.store.schedule(this.sessionId, {
+        screen: ser.serialize(),
+        state: this.state(),
+        savedAt: Date.now(),
+      })
+      this.events.onOutput(id, s, chunk)
+    }
 
     pty.onData((data) => {
       // Late frames from a dead generation (close/dispose/respawn) are dropped.
@@ -274,9 +351,12 @@ export class TerminalSession {
     this.rows = rows
   }
 
-  /** Explicit close: kill the tree, remove persistence, return to idle. */
+  /** Explicit close: kill the tree, remove persistence, return to idle. A
+   *  restored-but-never-created slot is idle yet holds a seeded headless, so
+   *  the no-op guard requires BOTH idle and no screen — closing it clears the
+   *  restored history like any other close. */
   close(): void {
-    if (this.status === 'idle') return
+    if (this.status === 'idle' && this.headless === null) return
     this.killAndClear()
     this.status = 'idle'
     this.exitCode = undefined
@@ -286,9 +366,10 @@ export class TerminalSession {
 
   /** Unload/shutdown path: kill the tree but KEEP persistence (a later restart
    *  restores the screen). No state event — the holder is discarding this slot.
-   *  flush() writes any pending screen afterwards. */
+   *  flush() writes any pending screen afterwards. Same restored-seed guard as
+   *  close(): a never-created restored slot still releases its headless. */
   dispose(): void {
-    if (this.status === 'idle') return
+    if (this.status === 'idle' && this.headless === null) return
     this.killAndClear()
     this.status = 'idle'
     this.exitCode = undefined
@@ -308,7 +389,7 @@ export class TerminalSession {
       seq: this.seq,
       screen: this.serializer ? this.serializer.serialize() : '',
       state: this.state(),
-      restored: false,
+      restored: this.restored,
     }
   }
 
@@ -347,6 +428,7 @@ export class TerminalSession {
     this.headless?.dispose()
     this.headless = null
     this.serializer = null
+    this.restored = false
     if (!running || !pty) return
     if (process.platform === 'win32') {
       // Guarded tree kill first (while the pid is still identity-verifiable),
