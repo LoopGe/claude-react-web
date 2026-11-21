@@ -176,6 +176,12 @@ describe('createAssistantMessage', () => {
     // @ts-expect-error — source kind is fixed to model by the constructor
     const withKind = createAssistantMessage({ content: [], source: { kind: 'tool', provider: 'p', model: 'm' } })
     expect(withKind.role).toBe('assistant')
+    expect(withKind.source.kind).toBe('model')
+    // `kind?: never` admits an explicit `kind: undefined` (no
+    // exactOptionalPropertyTypes); the forced value must spread LAST so it
+    // cannot be overridden back to undefined.
+    const withUndefinedKind = createAssistantMessage({ content: [], source: { provider: 'p', model: 'm', kind: undefined } })
+    expect(withUndefinedKind.source.kind).toBe('model')
     const withId = createAssistantMessage({
       content: [],
       source: { provider: 'p', model: 'm' },

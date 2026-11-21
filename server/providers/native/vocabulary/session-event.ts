@@ -1,7 +1,7 @@
 // Neutral durable session-event vocabulary for the native provider core: the
 // v3 native log language. Imports ONLY neutral shared/* refs + sibling
 // vocabulary modules — zero SDK or host-domain imports (the neutrality pin in
-// ../host-free.test.ts covers this directory).
+// ./neutrality.test.ts covers this directory).
 //
 // Scope (design resolution R6): SessionEventMap holds the durable counterparts
 // of TODAY's 11-event v1/v2 union (session-log/format.ts), with tool results

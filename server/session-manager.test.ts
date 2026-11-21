@@ -396,6 +396,7 @@ import { ResetJournal } from './reset-journal.js'
 import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
 import { NativeProvider } from './providers/native/native-provider.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './providers/native/session-log/log.js'
+import { nativeCoreOf } from './providers/native-host-frame-adapter.js'
 import type { CanonicalEvent } from './providers/native/canonical.js'
 import { AttachmentObjectStore } from './attachment-object-store.js'
 import { attachmentRoot, imageObjectPathOf } from './attachment-paths.js'
@@ -8090,7 +8091,7 @@ describe('SessionManager', () => {
       provider: 'native', cwd: TEST_CWD, agent: 'reviewer', permissionMode: initial,
     })
     const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
-    const log = (live.handle as unknown as { log: NativeSessionLog }).log
+    const log = (nativeCoreOf(live.handle) as unknown as { log: NativeSessionLog }).log
     const original = (log as unknown as { appendDurable?: unknown }).appendDurable
     ;(log as unknown as { appendDurable?: unknown }).appendDurable = async () => {
       throw new Error('selection durable failed')
@@ -8138,7 +8139,7 @@ describe('SessionManager', () => {
       provider: 'native', cwd: TEST_CWD, agent: 'reviewer', permissionMode: 'default',
     })
     const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
-    const log = (live.handle as unknown as { log: NativeSessionLog }).log
+    const log = (nativeCoreOf(live.handle) as unknown as { log: NativeSessionLog }).log
     const original = log.appendDurable.bind(log)
     log.appendDurable = async () => { throw new Error('base permission write failed') }
     try {

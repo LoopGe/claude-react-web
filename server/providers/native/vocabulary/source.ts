@@ -2,7 +2,7 @@
 // came from (MessageSource), what shape of context it carries (ContextForm),
 // and the opaque adapter-owned replay blob (ReplayEnvelope). Imports ONLY the
 // sibling brand helper — zero SDK or host-domain imports (the neutrality pin
-// in ../host-free.test.ts covers this directory). Mirrors DSH dsh-llm's
+// in ./neutrality.test.ts covers this directory). Mirrors DSH dsh-llm's
 // provenance model, native-tailored.
 
 import type { ToolCallId } from './brand.js'

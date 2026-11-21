@@ -4132,6 +4132,10 @@ describe('NativeSession', () => {
       expect(requests).toEqual([])
       expect(JSON.stringify((coreOf(session) as unknown as { history: unknown[] }).history)).not.toContain('upload-1')
       expect(logOf(session).events.some((event) => event.type === 'user')).toBe(false)
+      // The parked head keeps its arrival entry across the durable retry (the
+      // retry re-reads it for the durable timestamp).
+      const receivedAt = (coreOf(session) as unknown as { receivedAt: Map<string, number> }).receivedAt
+      expect(receivedAt.size).toBe(1)
 
       session.enqueueUserMessage({ ...userMsg('later input'), uuid: 'later' } as never)
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(3))
@@ -4141,6 +4145,9 @@ describe('NativeSession', () => {
       expect(JSON.stringify(requests[0].messages)).not.toContain('later input')
       expect(logOf(session).events.filter((event) => event.type === 'user').map((event) =>
         (event as unknown as { uuid: string }).uuid)).toEqual(['first-attachment', 'later'])
+      // Consumption is terminal for the arrival entry: the strong Map must not
+      // retain one uuid→timestamp per consumed turn for the session lifetime.
+      expect(receivedAt.size).toBe(0)
     } finally {
       await session.destroy()
       __setConfigForTest(previous)

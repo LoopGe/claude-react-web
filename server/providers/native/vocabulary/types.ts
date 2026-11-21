@@ -1,6 +1,6 @@
 // Neutral content-block vocabulary for the native provider core. Imports
 // ONLY neutral shared/* refs and the local brand helper — zero SDK or
-// host-domain imports (the neutrality pin in ../host-free.test.ts covers
+// host-domain imports (the neutrality pin in ./neutrality.test.ts covers
 // this directory). Mirrors DSH dsh-llm's block shapes, native-tailored:
 // reasoning blocks keep the thinking signature / redacted data the
 // Anthropic API needs on replay, and tool-call arguments stay RAW JSON

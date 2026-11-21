@@ -677,12 +677,16 @@ describe('wrapNativeCore — input identity + drain', () => {
     expect(handle.drainQueuedInput!()).toEqual([])
   })
 
-  it('sendControlMessage delegates to core.enqueueControl (no visible user turn)', () => {
+  it('sendControlMessage delegates to core.enqueueControl (no visible user turn, no pairing)', () => {
     const { core, control, queued } = makeFakeCore()
     const handle = wrapNativeCore(core, {})
     handle.sendControlMessage(hostUserMsg('seed', 'ctrl-1'))
     expect(control).toHaveLength(1)
     expect(queued).toHaveLength(0)
+    // A control seed never fires an outcome and is never drained, so it must
+    // NOT be paired — a pairing entry would be immortal (full host message +
+    // arrival retained for the wrapper lifetime). An outcome for it is loud.
+    expect(() => core.onUserMessageConsumed!(control[0])).toThrow(/unpaired/)
   })
 
   it('queueDepth mirrors the core queue depth', () => {

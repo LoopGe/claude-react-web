@@ -396,10 +396,12 @@ export class NativeSession implements NativeSessionCore {
    *  (fresh create, resume, or fork-seeded) before `system/init` is pushed. */
   private readonly log: NativeSessionLog
   /** Arrival time per queued turn, keyed by the neutral message id — recorded
-   *  at enqueue and written to the log when the pump consumes the message (a
-   *  drained turn must not persist). The host adapter separately re-keys the
-   *  HOST receivedAt onto the uuid for the lease-callback projections; this map
-   *  is the core's own enqueue-time arrival for the durable timestamp. */
+   *  at enqueue, written to the log when the pump consumes the message (a
+   *  drained turn must not persist), and deleted on that consumption or on
+   *  drain, so the map holds only in-flight prompts. The host adapter
+   *  separately re-keys the HOST receivedAt onto the uuid for the lease-callback
+   *  projections; this map is the core's own enqueue-time arrival for the
+   *  durable timestamp. */
   private readonly receivedAt = new Map<string, number>()
   /** Neutral persistence-outcome slots (NativeSessionCore). The host adapter
    *  assigns translating functions that look up the paired host message and
@@ -1475,6 +1477,11 @@ export class NativeSession implements NativeSessionCore {
         }
         this.pendingDurableInitial = null
         this.onUserMessageConsumed?.(next)
+        // Terminal: the durable timestamp is written and the consume ack fired,
+        // so the arrival entry is dead. Delete it here (drainQueued deletes its
+        // own) or the strong Map grows one entry per turn for the session
+        // lifetime — the legacy WeakMap<AgentUserMessage> released on GC.
+        this.receivedAt.delete(next.id!)
         // The prompt is now durable in the writer's event stream, so steering
         // admission may open. It closes when the manager settles the turn.
         this.steeringOpen = true

@@ -2,7 +2,7 @@
 // closed role union, one-request user input, and immutable constructors.
 // Imports ONLY node:crypto and sibling vocabulary modules (./brand, ./types,
 // ./source, ./values) — zero SDK or host-domain imports (the neutrality pin
-// in ../host-free.test.ts covers this directory). Mirrors DSH dsh-llm's
+// in ./neutrality.test.ts covers this directory). Mirrors DSH dsh-llm's
 // message.ts, native-tailored: tool results are FIRST-CLASS role-'tool'
 // messages, never content blocks; every constructor detaches
 // (structuredClone) and deep-freezes before publication, minting a branded
@@ -133,7 +133,7 @@ export function createAssistantMessage(
   return createMessage({
     role: 'assistant',
     content: input.content,
-    source: { kind: 'model', ...input.source },
+    source: { ...input.source, kind: 'model' },
   })
 }
 

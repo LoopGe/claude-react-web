@@ -15,7 +15,8 @@
 //   - a tool_result user frame becomes a first-class `tool/result` event;
 //   - inline base64 image content stays a LegacyImageBlock (R5: NO store offload,
 //     no host-service side effect inside a neutral migration);
-//   - `isCompactSummary` rides the `compact-summary` message source kind;
+//   - `isCompactSummary` rides an event-level `data.isCompactSummary` marker
+//     (the closed MessageSource union stays the four core kinds);
 //   - the raw API stop_reason rides `rawStopReason` so rare reasons the closed
 //     FinishReason union cannot express survive (T11 minor 1);
 //   - compact text+context, skill body, supplement, descriptor, attachment

@@ -643,7 +643,9 @@ export function wrapNativeCore(
     },
     sendControlMessage(host: AgentUserMessage): void {
       const neutral = projectSdkInputToNative(projectInput(host))
-      rememberHost(neutral, host)
+      // No rememberHost: a control seed (compact hand-off) never fires a
+      // persistence/consumption outcome and is never drained, so a pairing
+      // entry would be immortal. It needs neither lease callbacks nor drain.
       core.enqueueControl(neutral)
     },
     clearQueuedInput(): number {
