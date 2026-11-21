@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import type { SettingsTabName } from '../local-commands'
 import type { SlashCommand } from '../types'
 
-/** The four panel overlays that share one mutual-exclusion group: opening any
+/** The six panel overlays that share one mutual-exclusion group: opening any
  *  one of them closes the rest. Modeled as a discriminated union so the type
  *  system makes the "two overlays open at once" state unrepresentable. */
 export type PanelOverlayKind = 'settings' | 'git' | 'tasks' | 'worktree' | 'search' | 'terminal'
@@ -53,7 +53,7 @@ export function useAppOverlays() {
   }, [])
 
   // ── Derived compatibility fields ───────────────────────────────────
-  // One source of truth (panelOverlay) drives all four `*OpenFor` reads so App
+  // One source of truth (panelOverlay) drives all six `*OpenFor` reads so App
   // and ChatPanel props stay unchanged. These are plain per-render derivations
   // (string | null), so referential identity is value identity — no memo needed.
   const settingsOpenFor =
