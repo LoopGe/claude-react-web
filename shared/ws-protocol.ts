@@ -11,6 +11,7 @@
 // - Outbound: self-describing frames with no stream-order dependency.
 
 import type { GitStatusResponse, GitBranch, GitStashEntry } from './git-types.js'
+import type { TerminalSnapshot, TerminalState } from './terminal.js'
 import type { WsTurnChanges } from './turn-changes.js'
 
 export type { WsTurnChanges } from './turn-changes.js'
@@ -68,6 +69,71 @@ export interface WsSubagentTranscriptUnsubscribe {
   agentId: string
 }
 
+/** Ask the server to stream this session's terminal channel (output, state,
+ *  snapshots) on this connection. Ref-counted like the other per-session
+ *  channels, with the same `subscribe-result` semantics; the server seeds the
+ *  channel with a `terminal-snapshot`. Independent of the session's message
+ *  channel — the terminal overlay subscribes without attaching the transcript. */
+export interface WsTerminalSubscribe {
+  kind: 'terminal-subscribe'
+  sessionId: string
+}
+
+/** Stop streaming the terminal channel. Safe to call when not subscribed.
+ *  Does NOT close the terminal — the shell outlives its viewers;
+ *  `terminal-close` is the explicit kill. */
+export interface WsTerminalUnsubscribe {
+  kind: 'terminal-unsubscribe'
+  sessionId: string
+}
+
+/** Spawn the session's shell at the given size, or attach to the running one
+ *  (idempotent — one terminal per session, `create` while running is an
+ *  attach, not a second spawn). The server answers with a `terminal-snapshot`. */
+export interface WsTerminalCreate {
+  kind: 'terminal-create'
+  sessionId: string
+  cols: number
+  rows: number
+}
+
+/** Raw keystroke/paste data for the live generation. `terminalId` fences
+ *  input addressed to a dead generation; `data` is capped at
+ *  TERMINAL_MAX_INPUT_BYTES per frame (oversize rejects loudly). */
+export interface WsTerminalInput {
+  kind: 'terminal-input'
+  sessionId: string
+  terminalId: string
+  data: string
+}
+
+/** Resize the PTY and the headless screen. Bounded by TERMINAL_MAX_COLS /
+ *  TERMINAL_MAX_ROWS. */
+export interface WsTerminalResize {
+  kind: 'terminal-resize'
+  sessionId: string
+  terminalId: string
+  cols: number
+  rows: number
+}
+
+/** A viewer detected an output seq gap and asks for a fresh
+ *  `terminal-snapshot` — the recovery path in place of raw-output replay
+ *  (trimming the scrollback would split escape sequences). */
+export interface WsTerminalResync {
+  kind: 'terminal-resync'
+  sessionId: string
+  terminalId: string
+}
+
+/** Kill the process tree and clear the terminal to idle (the persisted
+ *  screen is removed). Distinct from unsubscribe, which keeps the shell
+ *  alive for the next attach. */
+export interface WsTerminalClose {
+  kind: 'terminal-close'
+  sessionId: string
+}
+
 export type WsClientFrame =
   | WsHello
   | WsSubscribe
@@ -75,6 +141,13 @@ export type WsClientFrame =
   | WsPing
   | WsSubagentTranscriptSubscribe
   | WsSubagentTranscriptUnsubscribe
+  | WsTerminalSubscribe
+  | WsTerminalUnsubscribe
+  | WsTerminalCreate
+  | WsTerminalInput
+  | WsTerminalResize
+  | WsTerminalResync
+  | WsTerminalClose
 
 // --- outbound (server → client) ----------------------------------------------
 
@@ -703,6 +776,36 @@ export interface WsSubagentTranscript {
   frames: unknown[]
 }
 
+/** Full terminal seed, sent on subscribe and on resync: the serialized
+ *  headless screen plus the generation, seq, and state it reflects.
+ *  `snapshot.terminalId` is a fresh uuid per spawn — clients drop frames
+ *  from a dead generation. */
+export interface WsTerminalSnapshot {
+  kind: 'terminal-snapshot'
+  sessionId: string
+  snapshot: TerminalSnapshot
+}
+
+/** One raw PTY output chunk. `seq` is monotonic per generation; a viewer
+ *  that detects a gap requests a `terminal-resync` rather than guessing.
+ *  Ephemeral — never enters the history ring or the message channel. */
+export interface WsTerminalOutput {
+  kind: 'terminal-output'
+  sessionId: string
+  terminalId: string
+  seq: number
+  data: string
+}
+
+/** Terminal lifecycle transition (spawn / exit / close), carrying the full
+ *  post-transition state. */
+export interface WsTerminalState {
+  kind: 'terminal-state'
+  sessionId: string
+  terminalId: string
+  state: TerminalState
+}
+
 export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, HookEvent = never> =
   | WsSessionsSnapshot<Session>
   | WsSessionUpdate<Session>
@@ -742,6 +845,9 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsAppPluginContributionsChanged
   | WsAppPluginEvent
   | WsSubagentTranscript
+  | WsTerminalSnapshot
+  | WsTerminalOutput
+  | WsTerminalState
   | WsClientDebugRequest
   | WsPong
   | WsError
