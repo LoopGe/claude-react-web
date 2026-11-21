@@ -8,7 +8,7 @@
 
 **Tech Stack:** node-pty@1.2.0-beta.15 (N-API prebuilds), @xterm/headless + @xterm/addon-serialize (server, bundled), @xterm/xterm + @xterm/addon-fit (client, lazy), patch-package (Windows ConPTY drain fix, production dep + shipped patches/), vitest + Playwright.
 
-**Spec:** `docs/superpowers/specs/2026-11-21-embedded-terminal-design.md` (read it fully before starting; the agent note `.agents/notes/proposed/feature/2026-11-21-embedded-terminal.md` carries the decision rationale).
+**Spec:** `docs/superpowers/specs/2026-11-21-embedded-terminal-design.md` (read it fully before starting; the agent note `.agents/notes/implemented/feature/2026-11-21-embedded-terminal.md` carries the decision rationale).
 
 ## Global Constraints
 

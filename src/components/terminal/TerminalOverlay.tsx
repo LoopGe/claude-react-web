@@ -46,9 +46,12 @@ export function TerminalOverlay({ sessionId, open, onClose, supported, channel }
   }, [channel])
 
   // Spawn at the last known size; the body refits and resizes once revealed.
+  // `||`, not `??`: a never-created slot's state reports cols/rows 0 (the
+  // server's idle seed — WS-probe-verified), and 0 must fall through to the
+  // default, not ride into terminal-create where bounds reject it (E2E catch).
   const handleCreate = useCallback(() => {
-    const cols = state?.cols ?? snapshot?.state.cols ?? 80
-    const rows = state?.rows ?? snapshot?.state.rows ?? 24
+    const cols = state?.cols || snapshot?.state.cols || 80
+    const rows = state?.rows || snapshot?.state.rows || 24
     channel.create(cols, rows)
   }, [channel, state, snapshot])
 

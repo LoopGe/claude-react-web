@@ -363,6 +363,24 @@ describe('TerminalOverlay — exited state (case d)', () => {
   })
 })
 
+describe('TerminalOverlay — idle create dimensions (E2E catch)', () => {
+  it('a never-created slot (cols/rows 0) spawns at the 80x24 default, not 0x0', async () => {
+    // The server's idle seed reports cols:0 rows:0 (WS-probe-verified). `??`
+    // would ride the 0 into terminal-create and the server's bounds check
+    // rejects it, leaving the slot idle forever — the "New terminal" button
+    // was dead on a fresh session. `||` falls through to the default.
+    const mock = makeChannel({
+      state: state({ status: 'idle', cols: 0, rows: 0 }),
+      snapshot: snapshot({ terminalId: '', seq: 0, screen: '', state: state({ status: 'idle', cols: 0, rows: 0 }) }),
+    })
+    await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    fireEvent.click(screen.getByRole('button', { name: /new terminal/i }))
+    expect(mock.create).toHaveBeenCalledTimes(1)
+    expect(mock.create).toHaveBeenCalledWith(80, 24)
+  })
+})
+
 describe('TerminalOverlay — unavailable (case e)', () => {
   it('supported=false renders the unavailable panel and never instantiates xterm', async () => {
     const mock = makeChannel({ supported: false, state: null, snapshot: null })

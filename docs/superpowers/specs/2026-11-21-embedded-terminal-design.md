@@ -1,8 +1,8 @@
 # Embedded Terminal — Phase 1 Design (User Terminal)
 
 Date: 2026-11-21
-Status: proposed (awaiting approval)
-Agent Note: [.agents/notes/proposed/feature/2026-11-21-embedded-terminal.md](../../../.agents/notes/proposed/feature/2026-11-21-embedded-terminal.md)
+Status: implemented
+Agent Note: [.agents/notes/implemented/feature/2026-11-21-embedded-terminal.md](../../../.agents/notes/implemented/feature/2026-11-21-embedded-terminal.md)
 
 ## Intent
 

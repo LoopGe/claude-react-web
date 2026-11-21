@@ -2,7 +2,10 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './tests/browser',
-  testMatch: 'app-panel-reshow.spec.ts',
+  // Both specs drive the real App against the same fixture server (real Hono
+  // REST/WS + SessionManager; only the provider process boundary is faked).
+  // The terminal spec's PTY is provider-independent, so it shares the harness.
+  testMatch: ['app-panel-reshow.spec.ts', 'terminal.spec.ts'],
   timeout: 90_000,
   workers: 1,
   use: {
