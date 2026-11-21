@@ -65,6 +65,19 @@ asarUnpack:
   - node_modules/@koromix/**
   - node_modules/node-pty/**
 
+# Skip @electron/rebuild's native source rebuild. Both native deps are N-API
+# with shipped prebuilds that load under Electron's Node unchanged (N-API is
+# ABI-stable across Node/Electron majors): node-pty's prebuilds/<platform>/*.node
+# (probe-verified loading + ConPTY round-trip on Electron 33.4.11) and koffi's
+# @koromix platform .node. node-pty is the ONLY production module with a
+# binding.gyp, so @electron/rebuild classifies it as node-gyp and tries to
+# rebuild it from source — which fails on hosts without the VS/node-gyp
+# toolchain even though the rebuild is unnecessary. koffi has no binding.gyp and
+# is already skipped by @electron/rebuild, so disabling the rebuild step leaves
+# koffi's prebuild handling exactly as before. The prebuilds are shipped as-is
+# and asarUnpack'd above so they can be dlopen'd / LoadLibrary'd.
+npmRebuild: false
+
 mac:
   category: public.app-category.developer-tools
   target: [dmg, zip]

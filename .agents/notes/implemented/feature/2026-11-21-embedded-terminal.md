@@ -110,12 +110,14 @@ escape 序列）。
 无 prebuild 平台（Alpine musl 等）回落 node-gyp，由 optionalDependencies + 能力
 探测降级。终端输出不进模型上下文（与 DSH 同样的分离），`!`/`!!`、Esc-interrupt
 决策表、非终端 escape 栈零回归。xterm 保持 lazy chunk，启动 bundle 不增长。
-慢终端消费者经每订阅者队列隔离，不阻塞 pump 或其他通道。**打包遗留**：
-`desktop:package`（electron-builder）的 `@electron/rebuild` 步骤会试图用 node-gyp
-从源码重编 node-pty，在无 Visual Studio 工具链的 Windows 主机上失败——而 node-pty
-是 N-API、其 prebuild 已实测在 Electron 33 加载（dev 模式终端 spawn 通过），该重编
-本属多余；跳过该 N-API 模块重编的打包配置是后续项，asarUnpack 在**已打包**应用
-中的生效验证因此顺延（asarUnpack 配置条目本身已按 koffi 先例就位）。
+慢终端消费者经每订阅者队列隔离，不阻塞 pump 或其他通道。**打包**：
+`desktop/electron-builder.yml` 设 `npmRebuild: false` 跳过 `@electron/rebuild` 的源码
+重编——node-pty 是唯一带 `binding.gyp` 的生产模块，会被当作 node-gyp 模块从源码重编
+（无 Visual Studio 工具链的主机失败），而它是 N-API、prebuild 已实测在 Electron 33.4.11
+加载，重编本属多余；koffi 无 `binding.gyp`、本就被 `@electron/rebuild` 跳过，故该开关
+不改变 koffi 的 prebuild 处理。asarUnpack 在**已打包**布局已实测：koffi 3.1.1 与 node-pty
+均从 `app.asar.unpacked` 加载（packaged exe + `ELECTRON_RUN_AS_NODE`，Electron 33.4.11 /
+node 20.18.3），node-pty ConPTY 往返通过。
 
 ## Testing
 
