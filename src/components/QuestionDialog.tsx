@@ -303,6 +303,9 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
       )}
 
       <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+        <span className="hint" style={{ textAlign: 'center' }}>
+          {clarifying ? 'Your message is sent back to the model as context.' : 'Your answers are sent back to the model as the tool result.'}
+        </span>
         <div className="question-actions decision-actions">
           <button
             className="btn btn-primary"
@@ -325,9 +328,6 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
             {clarifying ? 'Back' : 'Skip all'}
           </button>
         </div>
-        <span className="hint" style={{ textAlign: 'center' }}>
-          {clarifying ? 'Your message is sent back to the model as context.' : 'Your answers are sent back to the model as the tool result.'}
-        </span>
       </div>
     </Overlay>
   )
