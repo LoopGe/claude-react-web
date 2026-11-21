@@ -76,6 +76,18 @@ interface WsHubApi {
    *  snapshot frame then increments — no `live` bookkeeping needed: a
    *  duplicate subscribe only re-pushes an idempotent snapshot. */
   subscribeSubagentTranscript: (sessionId: string, agentId: string) => () => void
+  /** Hold the session's terminal channel (terminal overlay). Ref-counted
+   *  like `subscribeSubagentTranscript` and resent on every (re)open. No
+   *  `subscribe-result` bookkeeping: the server seeds a `terminal-snapshot`
+   *  FIRST, and that seed IS the subscription ack — a duplicate subscribe
+   *  only re-pushes an idempotent snapshot. */
+  subscribeTerminal: (sessionId: string) => () => void
+  /** Send one client frame on the current connection. Silent no-op while
+   *  the socket isn't open (same contract as the internal subscribe sends;
+   *  held channels are re-subscribed on reopen). For consumer hooks that
+   *  own a control surface — the terminal's create/input/resize/resync/close
+   *  frames — while the hub remains the sole connection owner. */
+  send: (frame: WsClientFrame) => void
 }
 
 const WsHubContext = createContext<WsHubApi | null>(null)
@@ -137,6 +149,10 @@ export function WsHubProvider({ children, url }: ProviderProps) {
    *  key = `${sessionId}::${agentId}`. Deliberately NO `live` bookkeeping:
    *  a duplicate subscribe's only cost is an idempotent snapshot re-push. */
   const subagentChannelsRef = useRef(new Map<string, number>())
+  /** Ref-counted terminal channels, parallel to `subagentChannelsRef` —
+   *  key = sessionId. Same snapshot-seed-is-the-ack semantics: no `live`
+   *  bookkeeping, a duplicate subscribe only re-pushes the snapshot. */
+  const terminalChannelsRef = useRef(new Map<string, number>())
   const connRef = useRef<TransportConnection | null>(null)
   /** Monotonic id for the current connection: a later connect() bumps it, so
    *  a stale connection's late open/close events are ignored (the equivalent
@@ -248,6 +264,9 @@ export function WsHubProvider({ children, url }: ProviderProps) {
           // ids are server-minted uuid/hex — no '::' inside them.
           const sep = key.indexOf('::')
           sendOn(conn, { kind: 'subagent-transcript-subscribe', sessionId: key.slice(0, sep), agentId: key.slice(sep + 2) })
+        }
+        for (const sessionId of terminalChannelsRef.current.keys()) {
+          sendOn(conn, { kind: 'terminal-subscribe', sessionId })
         }
         // App-level heartbeat — some reverse proxies close idle WS
         // after 30-60s. A 25s app-level ping is safely below that, and
@@ -501,6 +520,34 @@ export function WsHubProvider({ children, url }: ProviderProps) {
     [safeSend],
   )
 
+  const subscribeTerminal = useCallback(
+    (sessionId: string) => {
+      const prev = terminalChannelsRef.current.get(sessionId) ?? 0
+      terminalChannelsRef.current.set(sessionId, prev + 1)
+      // Only the first holder asks: the server seeds a terminal-snapshot
+      // first (that seed IS the ack — no subscribe-result for this channel),
+      // and a duplicate frame only re-pushes an idempotent snapshot. The
+      // onOpen resend above re-asks for every held key after a drop.
+      if (prev === 0) {
+        safeSend({ kind: 'terminal-subscribe', sessionId })
+      }
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        const count = terminalChannelsRef.current.get(sessionId)
+        if (count === undefined) return
+        if (count > 1) {
+          terminalChannelsRef.current.set(sessionId, count - 1)
+          return
+        }
+        terminalChannelsRef.current.delete(sessionId)
+        safeSend({ kind: 'terminal-unsubscribe', sessionId })
+      }
+    },
+    [safeSend],
+  )
+
   // Memoize so the controls part (addListener/subscribe) has stable
   // identity across re-renders. Status is deliberately excluded — it
   // lives in its own WsStatusContext so status flips (connecting →
@@ -508,8 +555,8 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   // This prevents effect teardown/rebuild in consumers like
   // useSessionSynchronizer that have `[hub]` in their dependency arrays.
   const api = useMemo<WsHubApi>(
-    () => ({ addListener, addSessionListener, subscribe, subscribeSubagentTranscript }),
-    [addListener, addSessionListener, subscribe, subscribeSubagentTranscript],
+    () => ({ addListener, addSessionListener, subscribe, subscribeSubagentTranscript, subscribeTerminal, send: safeSend }),
+    [addListener, addSessionListener, subscribe, subscribeSubagentTranscript, subscribeTerminal, safeSend],
   )
   return createElement(
     WsHubContext.Provider,
