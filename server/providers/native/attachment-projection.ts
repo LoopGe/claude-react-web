@@ -83,7 +83,14 @@ async function modelBlock(
   throw new Error(`unsupported native attachment model form: ${String(attachment.modelForm)}`)
 }
 
-/** Build an independent request copy on EVERY API round. Canonical history,
+/** The file/PDF projection stage of the native WIRE boundary (design R3): turn
+ * structured file occurrences in an SDK-shaped history into handle text / PDF
+ * document blocks for one API request. Consumed by the legacy live loop directly
+ * and by wire/wire-projection.ts after it maps neutral history to the SDK shape
+ * (grouping / parsed input / thinking filter), so both paths share this exact
+ * attachment logic and cannot diverge.
+ *
+ * Build an independent request copy on EVERY API round. Canonical history,
  * the native log and the public UI transcript are never mutated. */
 export async function projectNativeMessages(
   history: readonly unknown[],
