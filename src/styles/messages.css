@@ -3179,6 +3179,14 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   font-weight: 600;
 }
 .decision-actions {
+  /* Definite width, not just stretch: Chrome computes an auto-height
+     wrapping flex item's content height at its intrinsic (fit-content)
+     width, not the final stretched width. A row whose buttons combine a
+     flex-basis with wrappable text (e.g. .question-actions .btn's
+     flex: 1 1 120px + white-space: normal) then wraps at that narrower
+     width and the row gets a phantom two-line height with the actual
+     single-line buttons centered inside it (~22px blank above/below). */
+  width: 100%;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
