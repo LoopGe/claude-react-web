@@ -61,6 +61,7 @@
     "release": "node scripts/release.mjs",
     "commitlint": "commitlint",
     "prepare": "node scripts/setup-hooks.mjs",
+    "postinstall": "patch-package",
     "prepublishOnly": "npm run build",
     "analyze:bundle": "npm run build:client && node scripts/analyze-bundle.mjs"
   },
@@ -74,6 +75,9 @@
     "@hono/node-server": "^1.13.7",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/diff": "^7.0.2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
     "ansicolor": "^2.0.3",
     "busboy": "^1.6.0",
     "diff": "^9.0.0",
@@ -100,6 +104,7 @@
     "remark-rehype": "^11.1.2",
     "unified": "^11.0.5",
     "ws": "^8.20.0",
+    "xterm": "^5.3.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -128,6 +133,7 @@
     "fake-indexeddb": "^6.2.5",
     "happy-dom": "20.14.5",
     "jsdom": "^29.1.1",
+    "patch-package": "^8.0.1",
     "png-to-ico": "^3.0.2",
     "prettier": "^3.8.3",
     "sharp": "^0.35.5",
@@ -145,6 +151,7 @@
     "electron@33.4.11": true
   },
   "optionalDependencies": {
-    "koffi": "3.1.1"
+    "koffi": "3.1.1",
+    "node-pty": "1.2.0-beta.15"
   }
 }

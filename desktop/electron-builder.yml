@@ -53,11 +53,17 @@ extraMetadata:
 # Unpacking only node_modules/koffi/** would leave the actual .node inside
 # app.asar, so the packaged win32 host would silently degrade to the taskkill
 # fallback and lose the kernel kill-on-close guarantee. Both trees are unpacked.
+# node-pty (embedded terminal, optional dep) needs the same treatment: its
+# N-API prebuilds (prebuilds/<platform>/*.node) cannot be dlopen'd out of asar,
+# and its JS lib forks helper processes (conpty_console_list_agent on win32,
+# spawn-helper on unix) that must exist as real files. The whole tree is
+# unpacked.
 asar: true
 asarUnpack:
   - node_modules/@anthropic-ai/**
   - node_modules/koffi/**
   - node_modules/@koromix/**
+  - node_modules/node-pty/**
 
 mac:
   category: public.app-category.developer-tools

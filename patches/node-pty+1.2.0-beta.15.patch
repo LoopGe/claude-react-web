@@ -1,0 +1,13 @@
+diff --git a/node_modules/node-pty/lib/windowsPtyAgent.js b/node_modules/node-pty/lib/windowsPtyAgent.js
+index 90ffd8f..399861d 100644
+--- a/node_modules/node-pty/lib/windowsPtyAgent.js
++++ b/node_modules/node-pty/lib/windowsPtyAgent.js
+@@ -207,6 +207,8 @@ var WindowsPtyAgent = /** @class */ (function () {
+             // Close the input write handle to signal the end of session.
+             this._inSocket.destroy();
+             this._ptyNative.kill(this._pty, this._useConptyDll);
++            // Start draining even when the exited process has no more output.
++            this._conoutSocketWorker.dispose();
+             this._outSocket.on('data', function () {
+                 _this._conoutSocketWorker.dispose();
+             });
