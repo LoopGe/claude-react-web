@@ -149,4 +149,26 @@ describe('CommandPalette', () => {
       expect(rows[0].textContent).not.toContain('Toggle terminal')
     })
   })
+
+  it('prefers paletteAction over the gated handler when present', async () => {
+    // The terminal toggle's keydown handler is modal-gated; the palette must
+    // invoke the unguarded paletteAction override so the row is not dead.
+    const handler = vi.fn()
+    const paletteAction = vi.fn()
+    const toggle: Shortcut = { ...shortcut('Toggle terminal', 'ctrl+`'), handler, paletteAction }
+    render(
+      <CommandPalette
+        open
+        onClose={vi.fn()}
+        shortcuts={[toggle]}
+        sessions={[]}
+        onSelectSession={vi.fn()}
+        onSelectMessage={vi.fn()}
+      />,
+    )
+    await waitFor(() => expect(document.querySelectorAll('[data-palette-option]')).toHaveLength(1))
+    fireEvent.click(document.querySelector('[data-palette-option]')!)
+    expect(paletteAction).toHaveBeenCalledOnce()
+    expect(handler).not.toHaveBeenCalled()
+  })
 })

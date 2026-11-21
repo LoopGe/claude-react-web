@@ -39,6 +39,13 @@ export interface Shortcut {
    *  (e.g. the terminal toggle where node-pty is unavailable). The shortcut
    *  itself stays registered so a keypress can still surface a notice. */
   paletteHidden?: boolean
+  /** Optional unguarded action the command palette invokes INSTEAD of
+   *  `handler`. The keydown `handler` may carry invocation-context gates (e.g.
+   *  modal suppression) that must not apply to an explicit palette activation —
+   *  the palette being open is itself a modal, so a modal-gated handler would
+   *  no-op on every palette click. The dispatcher always uses `handler`; only
+   *  the palette prefers this override. */
+  paletteAction?: () => void
 }
 
 export function useKeyboardShortcuts(shortcuts: Shortcut[]): void {

@@ -88,8 +88,13 @@ vi.mock('./components/session-list/NewSessionDialog', () => ({
 }))
 
 vi.mock('./components/ChatPanel', () => ({
-  ChatPanel: ({ session, focused }: { session: SessionInfo; focused: boolean }) => (
-    <div data-testid="chat-panel" data-session-id={session.id} data-focused={String(focused)} />
+  ChatPanel: ({ session, focused, terminalOpen }: { session: SessionInfo; focused: boolean; terminalOpen?: boolean }) => (
+    <div
+      data-testid="chat-panel"
+      data-session-id={session.id}
+      data-focused={String(focused)}
+      data-terminal-open={String(!!terminalOpen)}
+    />
   ),
 }))
 
@@ -715,6 +720,22 @@ describe('terminal shortcut capability gating', () => {
   }
 
   const paletteRows = () => Array.from(document.querySelectorAll('[data-palette-option]'))
+  const terminalRow = () => paletteRows().find((row) => row.textContent?.includes('Toggle terminal'))
+  const panelTerminalOpen = (id: string) =>
+    document.querySelector(`[data-testid="chat-panel"][data-session-id="${id}"]`)?.getAttribute('data-terminal-open')
+
+  async function openPalette() {
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    await waitFor(() => expect(document.querySelector('.palette-input')).not.toBeNull())
+  }
+
+  async function findTerminalRow() {
+    return waitFor(() => {
+      const row = terminalRow()
+      expect(row).toBeTruthy()
+      return row!
+    })
+  }
 
   beforeEach(() => {
     h.config = config(true)
@@ -743,5 +764,47 @@ describe('terminal shortcut capability gating', () => {
     await waitFor(() => {
       expect(paletteRows().some((row) => row.textContent?.includes('Toggle terminal'))).toBe(true)
     })
+  })
+
+  // Regression for the Critical: the palette row must ACTUALLY open the
+  // terminal on a supported host. The palette being open flips terminalModalOpen
+  // true, so the row must use the unguarded paletteAction — not the modal-gated
+  // keydown handler (which would no-op). Asserted via the union's terminalOpen
+  // prop reaching the focused panel.
+  it('opens the terminal overlay when the palette row is clicked (supported host)', async () => {
+    renderApp()
+    emitSnapshot([{ ...session('s-pty', { provider: 'claude' }), terminalSupported: true }])
+    await focusSession('s-pty')
+    await openPalette()
+
+    fireEvent.click(await findTerminalRow())
+
+    await waitFor(() => expect(panelTerminalOpen('s-pty')).toBe('true'))
+  })
+
+  it('opens the terminal overlay when the palette row is activated with Enter (supported host)', async () => {
+    renderApp()
+    emitSnapshot([{ ...session('s-pty', { provider: 'claude' }), terminalSupported: true }])
+    await focusSession('s-pty')
+    await openPalette()
+
+    const row = await findTerminalRow()
+    fireEvent.mouseEnter(row) // move the palette selection onto the terminal row
+    fireEvent.keyDown(document.querySelector('.palette-input')!, { key: 'Enter' })
+
+    await waitFor(() => expect(panelTerminalOpen('s-pty')).toBe('true'))
+  })
+
+  it('still suppresses Ctrl+` keydown while the palette is open (supported host)', async () => {
+    renderApp()
+    emitSnapshot([{ ...session('s-pty', { provider: 'claude' }), terminalSupported: true }])
+    await focusSession('s-pty')
+    await openPalette()
+
+    fireEvent.keyDown(window, { key: '`', ctrlKey: true })
+
+    // Spec-required: the keydown context stays modal-gated even though the
+    // palette action override is unguarded.
+    expect(panelTerminalOpen('s-pty')).toBe('false')
   })
 })

@@ -178,14 +178,19 @@ describe('terminalToggleShortcut', () => {
     expect(onOpen).toHaveBeenCalledWith('s2')
   })
 
-  it('works when invoked directly with a synthetic event (the palette action path)', () => {
+  // The palette action is a SEPARATE invocation context from keydown: the
+  // palette being open implies modalOpen=true, so the gated keydown handler
+  // would no-op. The palette must use the unguarded paletteAction override.
+  // These tests build with modalOpen:true — the ONLY combination reachable
+  // through the real palette (the old modalOpen:false palette test was dead).
+  it('palette action toggles even while a modal (the palette itself) is open', () => {
     const onOpen = vi.fn()
     const onClose = vi.fn()
     const shortcut = terminalToggleShortcut({
       focusedId: 's1',
       supported: true,
       terminalOpenFor: null,
-      modalOpen: false,
+      modalOpen: true,
       onOpen,
       onClose,
       onUnsupported: vi.fn(),
@@ -193,8 +198,65 @@ describe('terminalToggleShortcut', () => {
     expect(shortcut.combo).toBe('ctrl+`')
     expect(shortcut.allowInInput).toBe(true)
     expect(shortcut.description).toBe('Toggle terminal')
-    // CommandPalette invokes handlers with a synthetic KeyboardEvent.
-    shortcut.handler(new KeyboardEvent('keydown'))
+    expect(typeof shortcut.paletteAction).toBe('function')
+    // CommandPalette prefers paletteAction over the gated handler.
+    shortcut.paletteAction!()
     expect(onOpen).toHaveBeenCalledWith('s1')
+    // The keydown handler stays suppressed under the modal (spec-required).
+    shortcut.handler(new KeyboardEvent('keydown'))
+    expect(onOpen).toHaveBeenCalledOnce()
+  })
+
+  it('palette action closes an already-open terminal (modal open)', () => {
+    const onOpen = vi.fn()
+    const onClose = vi.fn()
+    const shortcut = terminalToggleShortcut({
+      focusedId: 's1',
+      supported: true,
+      terminalOpenFor: 's1',
+      modalOpen: true,
+      onOpen,
+      onClose,
+      onUnsupported: vi.fn(),
+    })
+    shortcut.paletteAction!()
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(onOpen).not.toHaveBeenCalled()
+  })
+
+  it('palette action toasts on an unsupported host if ever invoked', () => {
+    const onOpen = vi.fn()
+    const onUnsupported = vi.fn()
+    const shortcut = terminalToggleShortcut({
+      focusedId: 's1',
+      supported: false,
+      terminalOpenFor: null,
+      modalOpen: true,
+      onOpen,
+      onClose: vi.fn(),
+      onUnsupported,
+    })
+    // Row is hidden (paletteHidden), but the override still degrades correctly.
+    expect(shortcut.paletteHidden).toBe(true)
+    shortcut.paletteAction!()
+    expect(onUnsupported).toHaveBeenCalledOnce()
+    expect(onOpen).not.toHaveBeenCalled()
+  })
+
+  it('palette action no-ops with no focused panel', () => {
+    const onOpen = vi.fn()
+    const onUnsupported = vi.fn()
+    const shortcut = terminalToggleShortcut({
+      focusedId: null,
+      supported: true,
+      terminalOpenFor: null,
+      modalOpen: true,
+      onOpen,
+      onClose: vi.fn(),
+      onUnsupported,
+    })
+    shortcut.paletteAction!()
+    expect(onOpen).not.toHaveBeenCalled()
+    expect(onUnsupported).not.toHaveBeenCalled()
   })
 })

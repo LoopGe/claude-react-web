@@ -49,22 +49,33 @@ export interface TerminalToggleInput {
 }
 
 export function terminalToggleShortcut(input: TerminalToggleInput): Shortcut {
+  // The toggle itself, WITHOUT the modal gate. Shared by the keydown handler
+  // (which adds the gate) and the palette action (which must not carry it —
+  // the palette being open implies modalOpen=true, so a gated palette action
+  // would be dead on every supported host). Focus/support gates and the
+  // unsupported toast apply on BOTH invocation paths.
+  const toggle = () => {
+    const fid = input.focusedId
+    if (fid == null) return
+    if (!input.supported) {
+      input.onUnsupported()
+      return
+    }
+    if (input.terminalOpenFor === fid) input.onClose()
+    else input.onOpen(fid)
+  }
   return {
     combo: 'ctrl+`',
     allowInInput: true,
     description: 'Toggle terminal',
     // Same capability fact gates the toggle, the toast, and palette visibility.
     paletteHidden: !input.supported,
+    paletteAction: toggle,
     handler: () => {
+      // Modal suppression belongs to the KEYDOWN context only: Ctrl+` while a
+      // true modal (incl. the palette) is open must not toggle.
       if (input.modalOpen) return
-      const fid = input.focusedId
-      if (fid == null) return
-      if (!input.supported) {
-        input.onUnsupported()
-        return
-      }
-      if (input.terminalOpenFor === fid) input.onClose()
-      else input.onOpen(fid)
+      toggle()
     },
   }
 }

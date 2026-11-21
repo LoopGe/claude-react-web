@@ -64,7 +64,12 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
         section: 'Commands',
         label: shortcut.description,
         hint: formatCombo(shortcut.combo),
-        action: () => shortcut.handler(new KeyboardEvent('keydown')),
+        // Prefer the unguarded palette action: the keydown handler may carry
+        // modal-suppression gates that would no-op here (the palette is itself
+        // a modal). Falls back to the handler for ordinary shortcuts.
+        action: shortcut.paletteAction
+          ? () => shortcut.paletteAction!()
+          : () => shortcut.handler(new KeyboardEvent('keydown')),
       })
     }
     for (const session of sessions) {
