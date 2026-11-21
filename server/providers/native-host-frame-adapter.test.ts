@@ -11,7 +11,7 @@
 // crypto.randomUUID()); it is pinned by shape + derivation and normalized out of
 // the deep-equality so every other field is compared verbatim.
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   apiRetryFrame,
   assistantFrame,
@@ -29,12 +29,16 @@ import { brandString } from './native/vocabulary/brand.js'
 import { createAssistantMessage, createToolResultMessage } from './native/vocabulary/message.js'
 import type { ContentBlock, TokenUsage } from './native/vocabulary/types.js'
 import type { NativeSessionEvent } from './native/vocabulary/session-event.js'
+import type { AssistantFrame, OperationalFrame, NativeCoreFrame } from './native/vocabulary/live-frame.js'
+import type { RequestMessage } from './native/vocabulary/message.js'
+import type { NativeSessionCore } from './native/core-contract.js'
+import type { AgentMessage, AgentUserMessage, ProviderContentBlock } from '../agent-message.js'
 import {
   projectNativeFrameToSdk,
   projectNativeEventToSdk,
-  type NativeAssistantFrame,
+  projectSdkInputToNative,
+  wrapNativeCore,
   type NativeFrameEnvelope,
-  type NativeOperationalEvent,
 } from './native-host-frame-adapter.js'
 
 const SESSION = 'sess-1'
@@ -80,12 +84,16 @@ function assistantFrameInput(
   usage: TokenUsage,
   stopReason: string | null,
   model = 'claude-test',
-): NativeAssistantFrame {
+): AssistantFrame {
+  const replayState = { response: { stop_reason: stopReason } }
   const message = createAssistantMessage({
     content,
-    source: { provider: 'anthropic', model, replayState: { response: { stop_reason: stopReason } } },
+    source: { provider: 'anthropic', model, replayState },
   })
-  return { type: 'assistant-frame', message, usage }
+  // F2: stopReason / model are FIRST-CLASS frame fields (the core populates
+  // stopReason from the finish reason). The replay envelope rides along but the
+  // projection must not source stop_reason from it.
+  return { type: 'assistant-frame', message, usage, stopReason, model, replayState }
 }
 
 describe('projectNativeFrameToSdk — assistant reconstruction', () => {
@@ -253,14 +261,14 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
       type: 'system', subtype: 'init', session_id: SESSION, uuid: UUID,
       parent_tool_use_id: null, fast_mode_state: 'on',
     }
-    const event: NativeOperationalEvent = { type: 'init', sessionId: SESSION, uuid: UUID, parentToolUseId: null, fastMode: true }
+    const event: OperationalFrame = { type: 'init', sessionId: SESSION, uuid: UUID, parentToolUseId: null, fastMode: true }
     expect(projectNativeEventToSdk(event)).toEqual(golden)
     expect(projectNativeEventToSdk({ ...event, fastMode: false })).toEqual({ ...golden, fast_mode_state: 'off' })
   })
 
   it('api_retry: attempt / max_retries / retry_delay_ms + envelope', () => {
     const golden = apiRetryFrame(ctx(), { attempt: 3, maxRetries: 10, delayMs: 26_000 })
-    const event: NativeOperationalEvent = {
+    const event: OperationalFrame = {
       type: 'api/retry', sessionId: SESSION, uuid: UUID, parentToolUseId: null,
       attempt: 3, maxRetries: 10, delayMs: 26_000,
     }
@@ -269,7 +277,7 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
 
   it('informational: content + warning level + envelope', () => {
     const golden = informationalFrame(ctx(), 'agent selection dropped')
-    const event: NativeOperationalEvent = {
+    const event: OperationalFrame = {
       type: 'informational', sessionId: SESSION, uuid: UUID, parentToolUseId: null, text: 'agent selection dropped',
     }
     expect(projectNativeEventToSdk(event)).toEqual(golden)
@@ -280,7 +288,7 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
       taskId: 'task-1', toolUseId: 'tu-1', taskType: 'local_agent',
       description: 'inspect the repo', subagentType: 'Explore', receivedAt: 1234,
     })
-    const event: NativeOperationalEvent = {
+    const event: OperationalFrame = {
       type: 'task/started', taskId: 'task-1', toolUseId: 'tu-1', taskType: 'local_agent',
       description: 'inspect the repo', subagentType: 'Explore', time: 1234,
     }
@@ -295,7 +303,7 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
     const golden = taskStartedFrame({
       taskId: 'task-2', toolUseId: 'tu-2', taskType: 'local_bash', description: 'run a shell', receivedAt: 99,
     })
-    const event: NativeOperationalEvent = {
+    const event: OperationalFrame = {
       type: 'task/started', taskId: 'task-2', toolUseId: 'tu-2', taskType: 'local_bash', description: 'run a shell', time: 99,
     }
     expect(projectNativeEventToSdk(event)).toEqual(golden)
@@ -306,7 +314,7 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
       taskId: 'task-1', toolUseId: 'tu-1', description: 'inspect the repo',
       status: 'completed', result: 'final report', receivedAt: 5678,
     })
-    const event: NativeOperationalEvent = {
+    const event: OperationalFrame = {
       type: 'task/notification', taskId: 'task-1', toolUseId: 'tu-1', description: 'inspect the repo',
       status: 'completed', result: 'final report', time: 5678,
     }
@@ -318,7 +326,7 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
       taskId: 'task-3', toolUseId: 'tu-3', description: 'empty output',
       status: 'stopped', result: '', reason: 'worker_restart', receivedAt: 9999,
     })
-    const event: NativeOperationalEvent = {
+    const event: OperationalFrame = {
       type: 'task/notification', taskId: 'task-3', toolUseId: 'tu-3', description: 'empty output',
       status: 'stopped', result: '', reason: 'worker_restart', time: 9999,
     }
@@ -332,7 +340,7 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
     const golden = resultFrame(ctx(), {
       result: 'done', usage: SDK_USAGE, numTurns: 2, durationMs: 100, isError: false, fastModeState: 'on',
     })
-    const event: NativeOperationalEvent = {
+    const event: OperationalFrame = {
       type: 'result', sessionId: SESSION, uuid: UUID, parentToolUseId: null,
       result: 'done', usage: NEUTRAL_USAGE, numTurns: 2, durationMs: 100, isError: false, fastMode: true,
     }
@@ -343,7 +351,7 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
     const golden = resultFrame(ctx(), {
       result: 'boom', usage: { input_tokens: 1, output_tokens: 0 }, numTurns: 0, durationMs: 0, isError: true,
     })
-    const event: NativeOperationalEvent = {
+    const event: OperationalFrame = {
       type: 'result', sessionId: SESSION, uuid: UUID, parentToolUseId: null,
       result: 'boom', usage: { inputTokens: 1, outputTokens: 0 }, numTurns: 0, durationMs: 0, isError: true,
     }
@@ -357,7 +365,7 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
     const golden = resultFrame(ctx(PARENT), {
       result: 'nested', usage: { input_tokens: 0, output_tokens: 0 }, numTurns: 1, durationMs: 0, isError: false,
     })
-    const event: NativeOperationalEvent = {
+    const event: OperationalFrame = {
       type: 'result', sessionId: SESSION, uuid: UUID, parentToolUseId: PARENT,
       result: 'nested', usage: { inputTokens: 0, outputTokens: 0 }, numTurns: 1, durationMs: 0, isError: false,
     }
@@ -373,6 +381,345 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
 describe('projectNativeFrameToSdk — assembler chunks are not host frames', () => {
   it('throws on a StreamChunk (assembler-internal, never projected to the host)', () => {
     expect(() => projectNativeFrameToSdk({ type: 'text-delta', index: 0, text: 'x' }, env())).toThrow()
+  })
+})
+
+describe('projectNativeFrameToSdk — stopReason is first-class (F2)', () => {
+  it('sources stop_reason from the frame field, NOT the replay envelope', () => {
+    const message = createAssistantMessage({
+      content: [{ type: 'text', text: 'partial' }],
+      // The envelope carries a DIFFERENT stop reason; the projection must ignore it.
+      source: { provider: 'anthropic', model: 'claude-test', replayState: { response: { stop_reason: 'end_turn' } } },
+    })
+    const frame: AssistantFrame = {
+      type: 'assistant-frame', message, usage: { inputTokens: 1, outputTokens: 1 },
+      stopReason: 'tool_use', model: 'claude-test',
+      replayState: { response: { stop_reason: 'end_turn' } },
+    }
+    const projected = projectNativeFrameToSdk(frame, env()) as Record<string, any>
+    expect(projected.message.stop_reason).toBe('tool_use')
+  })
+
+  it('projects a stopReason with no replay envelope present', () => {
+    const message = createAssistantMessage({
+      content: [{ type: 'text', text: 'x' }],
+      source: { provider: 'anthropic', model: 'claude-test' },
+    })
+    const frame: AssistantFrame = { type: 'assistant-frame', message, usage: { inputTokens: 0, outputTokens: 0 }, stopReason: 'max_tokens', model: 'claude-test' }
+    const projected = projectNativeFrameToSdk(frame, env()) as Record<string, any>
+    expect(projected.message.stop_reason).toBe('max_tokens')
+  })
+})
+
+// ── Task 7: SDK input → neutral projection ──────────────────────────────
+
+const FILE_REF = { id: 'upload-1', name: 'notes.txt', size: 4, digest: 'a'.repeat(64) }
+const IMAGE_REF = { id: `sha256:${'b'.repeat(64)}`, mediaType: 'image/png' as const, bytes: 10, width: 2, height: 3 }
+
+function hostUserMsg(content: AgentUserMessage['message']['content'], uuid = 'host-uuid-1'): AgentUserMessage {
+  return {
+    type: 'user',
+    message: { role: 'user', content },
+    parent_tool_use_id: null,
+    session_id: SESSION,
+    uuid,
+  } as AgentUserMessage
+}
+
+describe('projectSdkInputToNative — lossless content projection', () => {
+  it('projects a bare string content to a single neutral TextBlock', () => {
+    const neutral = projectSdkInputToNative(hostUserMsg('hello'))
+    expect(neutral.role).toBe('user')
+    expect(neutral.content).toEqual([{ type: 'text', text: 'hello' }])
+  })
+
+  it('projects text blocks to neutral TextBlocks', () => {
+    const neutral = projectSdkInputToNative(hostUserMsg([{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }]))
+    expect(neutral.content).toEqual([{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }])
+  })
+
+  it('projects a resolved file block to a neutral FileBlock ref (public identity, no registry path)', () => {
+    const resolved = { type: 'file' as const, attachment: { ...FILE_REF, path: '/registry/notes.txt', mediaType: 'text/plain' } }
+    const neutral = projectSdkInputToNative(hostUserMsg([resolved, { type: 'text', text: 'inspect' }]))
+    expect(neutral.content[0]).toEqual({ type: 'file', attachment: FILE_REF })
+    expect(neutral.content[1]).toEqual({ type: 'text', text: 'inspect' })
+    // The registry path / observed media type are server-only and never enter the vocabulary.
+    expect(neutral.content[0]).not.toHaveProperty('attachment.path')
+  })
+
+  it('projects a base64 image to a LegacyImageBlock verbatim', () => {
+    const base64 = { type: 'image' as const, source: { type: 'base64' as const, data: 'AAAA', media_type: 'image/png' } }
+    const neutral = projectSdkInputToNative(hostUserMsg([base64]))
+    expect(neutral.content[0]).toEqual({ type: 'image', source: { type: 'base64', data: 'AAAA', media_type: 'image/png' } })
+  })
+
+  it('projects a store-backed image ref to an ImageRefBlock', () => {
+    // The host input union carries base64 images today; the R5 mixed model also
+    // admits store-backed refs, which the projection handles structurally.
+    const ref = { type: 'image' as const, attachment: IMAGE_REF } as unknown as ProviderContentBlock
+    const neutral = projectSdkInputToNative(hostUserMsg([ref]))
+    expect(neutral.content[0]).toEqual({ type: 'image', attachment: IMAGE_REF })
+  })
+
+  it('mints a fresh neutral uuid distinct from the host uuid (identity re-key)', () => {
+    const neutral = projectSdkInputToNative(hostUserMsg('hi', 'host-uuid-xyz'))
+    expect(typeof neutral.id).toBe('string')
+    expect(neutral.id).not.toBe('host-uuid-xyz')
+    expect(neutral.source).toEqual({ kind: 'user' })
+  })
+
+  it('preserves block order across a mixed text/image/file batch', () => {
+    const neutral = projectSdkInputToNative(hostUserMsg([
+      { type: 'text', text: 'before' },
+      { type: 'image', source: { type: 'base64', data: 'AA', media_type: 'image/jpeg' } },
+      { type: 'file', attachment: { ...FILE_REF, path: '/registry/notes.txt' } },
+      { type: 'text', text: 'after' },
+    ]))
+    expect(neutral.content.map((b) => b.type)).toEqual(['text', 'image', 'file', 'text'])
+  })
+})
+
+// ── Task 7: wrapNativeCore handle translation ───────────────────────────
+
+interface FakeCore {
+  core: NativeSessionCore
+  queued: RequestMessage[]
+  control: RequestMessage[]
+  enqueued: RequestMessage[]
+}
+
+function makeFakeCore(opts: { sessionId?: string; frames?: NativeCoreFrame[] } = {}): FakeCore {
+  const queued: RequestMessage[] = []
+  const control: RequestMessage[] = []
+  const enqueued: RequestMessage[] = []
+  const frames = opts.frames ?? []
+  const core: NativeSessionCore = {
+    sessionId: opts.sessionId ?? SESSION,
+    messages: (async function* () { for (const f of frames) yield f })(),
+    enqueue(msg) { queued.push(msg); enqueued.push(msg) },
+    enqueueControl(msg) { control.push(msg) },
+    drainQueued() { return queued.splice(0) },
+    clearQueued() { const n = queued.length; queued.length = 0; return n },
+    get queueDepth() { return queued.length },
+    closed: false,
+    abortSignal: new AbortController().signal,
+    processExited: Promise.resolve(),
+    abort() {},
+    destroy() {},
+    reloadSkills: async () => ({}),
+  }
+  return { core, queued, control, enqueued }
+}
+
+async function collect(iterable: AsyncIterable<AgentMessage>): Promise<AgentMessage[]> {
+  const out: AgentMessage[] = []
+  for await (const m of iterable) out.push(m)
+  return out
+}
+
+describe('wrapNativeCore — input identity + drain', () => {
+  it('drainQueuedInput returns the original AgentUserMessage[] (equal to legacy), receivedAt preserved', () => {
+    const { core } = makeFakeCore()
+    const handle = wrapNativeCore(core, {})
+    const a = { ...hostUserMsg('one', 'uuid-a'), receivedAt: 1000 } as AgentUserMessage
+    const b = { ...hostUserMsg('two', 'uuid-b'), receivedAt: 2000 } as AgentUserMessage
+    handle.enqueueUserMessage(a)
+    handle.enqueueUserMessage(b)
+    const drained = handle.drainQueuedInput!()
+    expect(drained).toEqual([a, b])
+    expect(drained[0]).toBe(a)
+    expect(drained[1]).toBe(b)
+    expect((drained[0] as { receivedAt?: number }).receivedAt).toBe(1000)
+    expect((drained[1] as { receivedAt?: number }).receivedAt).toBe(2000)
+  })
+
+  it('re-keys receivedAt onto the neutral uuid (fresh id, host arrival preserved)', () => {
+    const { core, enqueued } = makeFakeCore()
+    const handle = wrapNativeCore(core, {})
+    const host = { ...hostUserMsg('hi', 'host-uuid-9'), receivedAt: 4242 } as AgentUserMessage
+    handle.enqueueUserMessage(host)
+    expect(enqueued).toHaveLength(1)
+    const neutral = enqueued[0] as { id: string }
+    expect(neutral.id).not.toBe('host-uuid-9')
+    // The host arrival time survives the round-trip keyed by the neutral identity.
+    const drained = handle.drainQueuedInput!()
+    expect((drained[0] as { receivedAt?: number }).receivedAt).toBe(4242)
+  })
+
+  it('clearQueuedInput delegates to core.clearQueued and returns the count', () => {
+    const { core } = makeFakeCore()
+    const handle = wrapNativeCore(core, {})
+    handle.enqueueUserMessage(hostUserMsg('one', 'u1'))
+    handle.enqueueUserMessage(hostUserMsg('two', 'u2'))
+    expect(handle.clearQueuedInput()).toBe(2)
+    expect(handle.drainQueuedInput!()).toEqual([])
+  })
+
+  it('sendControlMessage delegates to core.enqueueControl (no visible user turn)', () => {
+    const { core, control, queued } = makeFakeCore()
+    const handle = wrapNativeCore(core, {})
+    handle.sendControlMessage(hostUserMsg('seed', 'ctrl-1'))
+    expect(control).toHaveLength(1)
+    expect(queued).toHaveLength(0)
+  })
+
+  it('queueDepth mirrors the core queue depth', () => {
+    const { core } = makeFakeCore()
+    const handle = wrapNativeCore(core, {})
+    expect(handle.queueDepth).toBe(0)
+    handle.enqueueUserMessage(hostUserMsg('one', 'u1'))
+    expect(handle.queueDepth).toBe(1)
+  })
+})
+
+describe('wrapNativeCore — lease callbacks wrap core neutral outcomes', () => {
+  it('fires onUserMessageConsumed with the host uuid when the core consumes a neutral prompt', () => {
+    const { core, enqueued } = makeFakeCore()
+    const consumed: AgentUserMessage[] = []
+    const handle = wrapNativeCore(core, { onUserMessageConsumed: (m) => consumed.push(m) })
+    const host = { ...hostUserMsg('go', 'host-uuid-consume'), receivedAt: 7777 } as AgentUserMessage
+    handle.enqueueUserMessage(host)
+    core.onUserMessageConsumed!(enqueued[0])
+    expect(consumed).toHaveLength(1)
+    expect(consumed[0].uuid).toBe('host-uuid-consume')
+    // The re-keyed arrival time (keyed by neutral uuid) feeds the host projection.
+    expect((consumed[0] as { receivedAt?: number }).receivedAt).toBe(7777)
+  })
+
+  it('fires onUserMessagePersistence with the host uuid and the neutral outcome', () => {
+    const { core, enqueued } = makeFakeCore()
+    const persisted: Array<{ uuid: string | undefined; outcome: string }> = []
+    const handle = wrapNativeCore(core, {
+      onUserMessagePersistence: (m, outcome) => persisted.push({ uuid: m.uuid, outcome }),
+    })
+    handle.enqueueUserMessage(hostUserMsg('go', 'host-uuid-persist'))
+    core.onUserMessagePersistence!(enqueued[0], 'appended')
+    core.onUserMessagePersistence!(enqueued[0], 'failed')
+    expect(persisted).toEqual([
+      { uuid: 'host-uuid-persist', outcome: 'appended' },
+      { uuid: 'host-uuid-persist', outcome: 'failed' },
+    ])
+  })
+
+  it('preserves copyConsumedAt: a stamp on the projected outcome reaches the original host message', () => {
+    const { core, enqueued } = makeFakeCore()
+    // Simulate the manager: stamp consumedAt on the message the callback receives.
+    const handle = wrapNativeCore(core, {
+      onUserMessageConsumed: (m) => { (m as { consumedAt?: number }).consumedAt = 9999 },
+    })
+    const host = hostUserMsg('go', 'host-uuid-copy')
+    handle.enqueueUserMessage(host)
+    core.onUserMessageConsumed!(enqueued[0])
+    expect((host as { consumedAt?: number }).consumedAt).toBe(9999)
+  })
+
+  it('releases the host pairing on consumption (no unbounded growth; a repeat outcome is loud)', () => {
+    const { core, enqueued } = makeFakeCore()
+    const handle = wrapNativeCore(core, { onUserMessageConsumed: () => {} })
+    handle.enqueueUserMessage(hostUserMsg('go', 'host-uuid-release'))
+    core.onUserMessageConsumed!(enqueued[0])
+    // A consumed prompt is durable + no longer withdrawable; its pairing is gone,
+    // so a second outcome for the same neutral id surfaces loudly rather than
+    // silently re-firing (and the strong Map does not retain it for the session).
+    expect(() => core.onUserMessageConsumed!(enqueued[0])).toThrow(/unpaired/)
+  })
+
+  it('forwards onSupplementDelivered unchanged (uuid + outcome are already neutral)', () => {
+    const { core } = makeFakeCore()
+    core.enqueueSupplement = () => false
+    const delivered: Array<{ uuid: string; outcome: unknown }> = []
+    const handle = wrapNativeCore(core, { onSupplementDelivered: (uuid, outcome) => delivered.push({ uuid, outcome }) })
+    core.onSupplementDelivered!('sup-1', { ok: true, boundary: 'PreToolUse' })
+    expect(delivered).toEqual([{ uuid: 'sup-1', outcome: { ok: true, boundary: 'PreToolUse' } }])
+    expect(handle.enqueueSupplement!({ uuid: 'sup-2', text: 'pivot' })).toBe(false)
+  })
+})
+
+describe('wrapNativeCore — messages projects NativeCoreFrame → SDK (identical to legacy)', () => {
+  it('projects an assistant frame via projectNativeFrameToSdk with the frame-derived envelope', async () => {
+    const af = assistantFrameInput([{ type: 'text', text: 'hello' }], NEUTRAL_USAGE, 'end_turn')
+    const { core } = makeFakeCore({ frames: [af] })
+    const handle = wrapNativeCore(core, {})
+    const [projected] = await collect(handle.messages) as Record<string, any>[]
+    const expected = projectNativeFrameToSdk(af, { sessionId: SESSION, uuid: af.message.id, parentToolUseId: null }) as Record<string, any>
+    expect(projected).toEqual(expected)
+    expect(projected.uuid).toBe(af.message.id)
+    expect(projected.session_id).toBe(SESSION)
+    expect(projected.parent_tool_use_id).toBeNull()
+  })
+
+  it('projects an operational frame via projectNativeEventToSdk (inline envelope)', async () => {
+    const init: OperationalFrame = { type: 'init', sessionId: SESSION, uuid: UUID, parentToolUseId: null, fastMode: true }
+    const { core } = makeFakeCore({ frames: [init] })
+    const handle = wrapNativeCore(core, {})
+    const [projected] = await collect(handle.messages)
+    expect(projected).toEqual(projectNativeEventToSdk(init))
+  })
+
+  it('passes a raw stream event through verbatim on the message channel', async () => {
+    const event = { type: 'message_stop' }
+    const raw: NativeCoreFrame = { type: 'raw-stream-event', event }
+    const { core } = makeFakeCore({ frames: [raw] })
+    const handle = wrapNativeCore(core, {})
+    const [projected] = await collect(handle.messages) as Record<string, any>[]
+    expect(projected.type).toBe('stream_event')
+    expect(projected.event).toBe(event)
+    expect(projected.session_id).toBe(SESSION)
+    expect(projected.parent_tool_use_id).toBeNull()
+  })
+
+  it('projects a mixed frame stream in order', async () => {
+    const af = assistantFrameInput([{ type: 'text', text: 'x' }], { inputTokens: 0, outputTokens: 0 }, null)
+    const result: OperationalFrame = { type: 'result', sessionId: SESSION, uuid: UUID, parentToolUseId: null, result: 'done', usage: { inputTokens: 0, outputTokens: 0 }, numTurns: 1, durationMs: 0, isError: false }
+    const { core } = makeFakeCore({ frames: [af, result] })
+    const handle = wrapNativeCore(core, {})
+    const projected = await collect(handle.messages) as Record<string, any>[]
+    expect(projected.map((m) => m.type)).toEqual(['assistant', 'result'])
+  })
+})
+
+describe('wrapNativeCore — control delegation', () => {
+  it('delegates interrupt / abort / destroy to the core, mapping neutral cancelled uuids to host uuids', async () => {
+    const { core, enqueued } = makeFakeCore()
+    const interrupt = vi.fn(async () => ({ cancelledQueued: [] as string[] }))
+    const abort = vi.fn()
+    const destroy = vi.fn(async () => {})
+    core.interrupt = interrupt
+    core.abort = abort
+    core.destroy = destroy
+    const handle = wrapNativeCore(core, {})
+    handle.enqueueUserMessage(hostUserMsg('queued', 'host-uuid-cancel'))
+    const neutralId = (enqueued[0] as { id: string }).id
+    interrupt.mockResolvedValue({ cancelledQueued: [neutralId] })
+    const receipt = await handle.interrupt!({ cancelQueued: true })
+    expect(interrupt).toHaveBeenCalledWith({ cancelQueued: true })
+    expect(receipt).toEqual({ cancelledQueued: ['host-uuid-cancel'] })
+    handle.abort()
+    expect(abort).toHaveBeenCalled()
+    await handle.destroy('reason')
+    expect(destroy).toHaveBeenCalledWith('reason')
+  })
+
+  it('exposes core lifecycle reads (closed / abortSignal / processExited / echoesUserPrompts)', () => {
+    const { core } = makeFakeCore()
+    const handle = wrapNativeCore(core, {})
+    expect(handle.closed).toBe(false)
+    expect(handle.abortSignal).toBe(core.abortSignal)
+    expect(handle.processExited).toBe(core.processExited)
+    expect(handle.echoesUserPrompts).toBe(false)
+    expect(handle.provider).toBe('native')
+  })
+
+  it('delegates getEffectiveSettings / getContextUsage / compactInPlace neutrally', async () => {
+    const { core } = makeFakeCore()
+    core.getEffectiveSettings = () => ({ model: 'claude-test', agent: null })
+    core.getContextUsage = async () => ({ totalTokens: 5 })
+    core.compactInPlace = vi.fn(async () => {})
+    const handle = wrapNativeCore(core, {})
+    expect(handle.getEffectiveSettings!()).toEqual({ model: 'claude-test', agent: null })
+    expect(await handle.getContextUsage!()).toEqual({ totalTokens: 5 })
+    await handle.compactInPlace!('summary', { uuid: 'c1', timestamp: 't' })
+    expect(core.compactInPlace).toHaveBeenCalledWith('summary', { uuid: 'c1', timestamp: 't' })
   })
 })
 

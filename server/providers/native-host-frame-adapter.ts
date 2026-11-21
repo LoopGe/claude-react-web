@@ -1,37 +1,79 @@
-// Host adapter: neutral native vocabulary → SDK AgentMessage (design R1/R2/R3,
-// R6-scoped). This module is a BOUNDARY importer — it lives OUTSIDE native/ and
-// is the sole place that knows SDK field names. The neutral vocabulary carries
-// the facts; SDK-only representation (snake_case field names, the `msg_` id
-// prefix, stop_reason, the `runtime`/`is_backgrounded`/`level` constants, the
-// success/error subtype split) is owned here. The core neutrality pin (T18)
-// excludes this file; the vocabulary it imports stays pure.
+// Host adapter: neutral native vocabulary ↔ SDK AgentMessage / AgentUserMessage
+// (design R1/R2/R3/R6). This module is a BOUNDARY importer — it lives OUTSIDE
+// native/ and is the sole place that knows SDK field names. The neutral
+// vocabulary carries the facts; SDK-only representation (snake_case field names,
+// the `msg_` id prefix, stop_reason, the `runtime`/`is_backgrounded`/`level`
+// constants, the success/error subtype split) is owned here. The core neutrality
+// pin (T18) excludes this file; the vocabulary it imports stays pure.
 //
-// Two projections, two read paths (design "Architecture"):
+// Three projections, two read paths (design "Architecture"):
 //   • projectNativeFrameToSdk — LIVE conversation output: a settled assistant
-//     message (+ its turn usage), a first-class tool result, or the opaque
+//     frame (+ its turn usage), a first-class tool result, or the opaque
 //     RawStreamEvent passthrough (R2: the Anthropic event travels VERBATIM so
 //     the client reads byte-identical raw fields). Envelope identity comes from
 //     the caller's env.
 //   • projectNativeEventToSdk — LIVE operational output: the exact system/result
 //     subtypes native emits (init / api_retry / informational / task_started /
 //     task_notification / result). These are live-only frames, NOT durable
-//     SessionEventMap keys (R6); their neutral shapes are defined here as the
-//     adapter's input contract until the core grows them in phase 3. Durable
-//     session events return null — their SDK-line projection is the history-read
-//     seam (T13), which supplies the host-envelope facts this env-less function
-//     lacks.
+//     SessionEventMap keys (R6). Durable session events return null — their
+//     SDK-line projection is the history-read seam (T13).
+//   • projectSdkInputToNative — LIVE input: a host AgentUserMessage → neutral
+//     RequestMessage (file → FileBlock ref, base64 image → LegacyImageBlock, ref
+//     image → ImageRefBlock, text → TextBlock). The neutral uuid is freshly
+//     minted; the adapter re-keys the host receivedAt identity onto it.
+//
+// F1 (Task 7): the assistant bundle (AssistantFrame) and the operational frame
+// shapes (OperationalFrame) now live in the NEUTRAL vocabulary
+// (native/vocabulary/live-frame.ts) so the core can emit them without importing
+// this adapter. The adapter imports them and owns only their SDK projection.
+//
+// R1: wrapNativeCore implements the SDK-shaped ProviderSessionHandle by wrapping
+// a neutral NativeSessionCore. The adapter owns host-input identity (the
+// receivedAt re-key + the host↔neutral pairing), the lease callbacks (which wrap
+// the core's neutral persistence outcomes), copyConsumedAt, and the handle
+// translation. The legacy handle-text file projection (projectFileBlocksForProvider)
+// stays adapter-side: the neutral input path keeps structured FileBlock refs (the
+// wire adapter projects them to handle text / PDF for the API request); the
+// handle-text form is re-exported here for the legacy text-only boundary.
 //
 // R6 scope: ONLY native's actual emissions are projected. The ~25 claude-only
 // subtypes (hook_*, plugin_install, memory_recall, elicitation_complete,
 // notification, thinking_tokens, prompt_suggestion, …) are NOT native emissions
 // and have no projection here.
 
-import type { AgentMessage } from '../agent-message.js'
-import type { AssistantMessage, ToolResultMessage } from './native/vocabulary/message.js'
+import { randomUUID } from 'node:crypto'
+import {
+  copyConsumedAt,
+  projectFileBlocksForProvider,
+  type AgentMessage,
+  type AgentUserMessage,
+  type ProviderContentBlock,
+} from '../agent-message.js'
+import type {
+  ProviderAttachmentOccurrence,
+  ProviderInterruptReceipt,
+  ProviderResetBaseSettings,
+  ProviderSessionHandle,
+} from './types.js'
+import type { SupplementOutcome } from './steering-format.js'
+import type { FileAttachmentRef } from '../../shared/attachments.js'
+import type { ImageAttachmentRef, LegacyImageBlock } from '../../shared/image-attachment.js'
+import { createUserMessage, type RequestMessage, type ToolResultMessage } from './native/vocabulary/message.js'
 import type { ContentBlock, TokenUsage } from './native/vocabulary/types.js'
 import type { NativeLiveFrame } from './native/vocabulary/stream.js'
-import type { ReplayEnvelope } from './native/vocabulary/source.js'
 import type { NativeSessionEvent } from './native/vocabulary/session-event.js'
+import type { AssistantFrame, OperationalFrame, NativeCoreFrame } from './native/vocabulary/live-frame.js'
+import type {
+  NativeSessionCore,
+  NativeAttachmentOccurrence,
+  NativeEffectiveSettings,
+  NativeResetBaseSettings,
+} from './native/core-contract.js'
+
+// The legacy handle-text file projection stays adapter-side (boundary home).
+// The neutral input path keeps FileBlock refs; this is the text-only boundary's
+// projection, re-exported so the provider seam imports it from the adapter.
+export { projectFileBlocksForProvider }
 
 /** Envelope identity stamped on every live conversation frame. `parentToolUseId`
  *  is null for the main thread, a string for a sidechain runner — the
@@ -44,80 +86,14 @@ export interface NativeFrameEnvelope {
   receivedAt?: number
 }
 
-/** The neutral live assistant emission: the settled message plus its round
- *  usage. The vocabulary's AssistantMessage carries content/model/provider
- *  facts; usage is the assembler's separate accessor (BlockAssembler.usage), so
- *  the live frame bundles both. `stop_reason` is an API-only string the neutral
- *  vocabulary deliberately does not type — it rides the adapter-owned replay
- *  envelope (message.source.replayState.response.stop_reason, R1) and is read
- *  back verbatim, so even an exotic API stop reason survives losslessly. */
-export interface NativeAssistantFrame {
-  type: 'assistant-frame'
-  message: AssistantMessage
-  usage: TokenUsage
-}
-
-/** Everything the live conversation projection consumes: the streaming-axis
+/** Everything the live CONVERSATION projection consumes: the streaming-axis
  *  NativeLiveFrame (assembler chunks + raw passthrough), the settled assistant
- *  bundle, and a first-class tool result. The vocabulary's NativeLiveFrame is
- *  StreamChunk | RawStreamEvent only; settled messages join the live output as
- *  themselves, so the adapter's input union is wider (phase 3 reconciles the
- *  core's emission union with this contract). */
-export type NativeHostFrame = NativeLiveFrame | NativeAssistantFrame | ToolResultMessage
-
-/** Neutral envelope facts carried inline by the enveloped operational events
- *  (projectNativeEventToSdk takes no env). Task events are envelope-less — they
- *  carry no session_id/uuid/parent on the SDK frame either. */
-interface OperationalEnvelope {
-  sessionId: string
-  uuid: string
-  parentToolUseId: string | null
-}
-
-/** The neutral live-operational event language (R6: live-only, never durable).
- *  Field names are neutral facts; the adapter maps them to the exact SDK
- *  system/result subtypes native emits. `time` is the ms-epoch fact the host
- *  reads as `receivedAt` on task frames. `fastMode` is the boolean intent the
- *  adapter encodes as the SDK's 'on'/'off' string. */
-export type NativeOperationalEvent =
-  | ({ type: 'init'; fastMode: boolean } & OperationalEnvelope)
-  | ({ type: 'api/retry'; attempt: number; maxRetries: number; delayMs: number } & OperationalEnvelope)
-  | ({ type: 'informational'; text: string } & OperationalEnvelope)
-  | {
-      type: 'task/started'
-      taskId: string
-      toolUseId: string
-      taskType: 'local_bash' | 'local_agent'
-      description: string
-      subagentType?: string
-      time: number
-    }
-  | {
-      type: 'task/notification'
-      taskId: string
-      toolUseId: string
-      description: string
-      status: 'completed' | 'failed' | 'stopped'
-      result?: string
-      reason?: 'worker_restart'
-      time: number
-    }
-  | ({
-      type: 'result'
-      result: string
-      usage: TokenUsage
-      numTurns: number
-      durationMs: number
-      isError: boolean
-      fastMode?: boolean
-    } & OperationalEnvelope)
-
-/** The adapter's view of the replay envelope's raw response: it reads only the
- *  API-only stop_reason. Absent envelope/response means no stop reason was
- *  received (an interrupted turn) → null, the SDK's representation. */
-interface NativeReplayResponse {
-  stop_reason?: string | null
-}
+ *  bundle, and a first-class tool result. Operational frames are projected by
+ *  projectNativeEventToSdk, not here. The core emission union (NativeCoreFrame)
+ *  is wider than this conversation-only input on the operational axis and
+ *  narrower on the tool-result axis (first-class tool results travel the
+ *  persistence path + this projection, not the core emission union). */
+export type NativeHostFrame = NativeLiveFrame | AssistantFrame | ToolResultMessage
 
 /** Mark an unreachable closed-union branch (mirrors the vocabulary assembler). */
 function assertNever(value: never, context: string): never {
@@ -186,7 +162,7 @@ function frameEnvelope(env: NativeFrameEnvelope, type: string): Record<string, u
 
 /** Envelope shared by the enveloped operational events (init / api_retry /
  *  informational / result). Task frames do not use it. */
-function operationalEnvelope(event: OperationalEnvelope, type: string, subtype: string): Record<string, unknown> {
+function operationalEnvelope(event: { sessionId: string; uuid: string; parentToolUseId: string | null }, type: string, subtype: string): Record<string, unknown> {
   return {
     type,
     subtype,
@@ -203,7 +179,7 @@ export function projectNativeFrameToSdk(frame: NativeHostFrame, env: NativeFrame
   if ('role' in frame && frame.role === 'tool') {
     return projectToolResult(frame, env)
   }
-  const live = frame as NativeLiveFrame | NativeAssistantFrame
+  const live = frame as NativeLiveFrame | AssistantFrame
   switch (live.type) {
     case 'raw-stream-event':
       return { ...frameEnvelope(env, 'stream_event'), event: live.event } as AgentMessage
@@ -225,18 +201,18 @@ export function projectNativeFrameToSdk(frame: NativeHostFrame, env: NativeFrame
   }
 }
 
-function projectAssistant(frame: NativeAssistantFrame, env: NativeFrameEnvelope): AgentMessage {
-  const message = frame.message
-  const response = (message.source.replayState as ReplayEnvelope | undefined)?.response as NativeReplayResponse | undefined
+function projectAssistant(frame: AssistantFrame, env: NativeFrameEnvelope): AgentMessage {
+  // F2: stop_reason / model are FIRST-CLASS frame fields (the core sources
+  // stopReason from the finish reason). The replay envelope is never read here.
   return {
     ...frameEnvelope(env, 'assistant'),
     message: {
       id: `msg_${env.uuid}`,
       type: 'assistant',
       role: 'assistant',
-      model: message.source.model,
-      content: message.content.map(sdkAssistantBlock),
-      stop_reason: response?.stop_reason ?? null,
+      model: frame.model,
+      content: frame.message.content.map(sdkAssistantBlock),
+      stop_reason: frame.stopReason,
       usage: sdkUsage(frame.usage),
     },
   } as unknown as AgentMessage
@@ -270,7 +246,7 @@ function projectToolResult(message: ToolResultMessage, env: NativeFrameEnvelope)
  *  native emits (R6). Durable SessionEventMap keys return null: their SDK-line
  *  projection belongs to the history-read seam (T13), which supplies the
  *  host-envelope facts (session_id / uuid) this env-less function does not have. */
-export function projectNativeEventToSdk(event: NativeSessionEvent | NativeOperationalEvent): AgentMessage | null {
+export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalFrame): AgentMessage | null {
   switch (event.type) {
     case 'init':
       return {
@@ -344,4 +320,320 @@ export function projectNativeEventToSdk(event: NativeSessionEvent | NativeOperat
     default:
       return assertNever(event, 'projectNativeEventToSdk')
   }
+}
+
+// ── Live input: SDK AgentUserMessage → neutral RequestMessage ─────────────
+
+/** One host input content block as the projection sees it. The SDK input union
+ *  carries text / base64-image / resolved-file blocks; the mixed image model
+ *  (R5) also admits store-backed image refs, so the image branch discriminates
+ *  `attachment` (ref) vs `source` (legacy base64). */
+type HostInputBlock = ProviderContentBlock
+
+/** Project a resolved file attachment to the public neutral FileAttachmentRef.
+ *  The registry path / observed media type are server-only metadata (the core
+ *  re-resolves bytes through its attachment port by id/digest); they never enter
+ *  the vocabulary. */
+function neutralFileRef(attachment: { id: string; name: string; size: number; digest?: string }): FileAttachmentRef {
+  return {
+    id: attachment.id,
+    name: attachment.name,
+    size: attachment.size,
+    ...(attachment.digest !== undefined ? { digest: attachment.digest } : {}),
+  }
+}
+
+/** Project one host input block to its neutral ContentBlock. Lossless on the
+ *  three real input shapes (text / image / file); any other kind is a contract
+ *  violation surfaced loudly (user input never carries assistant/tool blocks). */
+function neutralInputBlock(block: HostInputBlock): ContentBlock {
+  switch (block.type) {
+    case 'text':
+      return { type: 'text', text: block.text }
+    case 'file':
+      return { type: 'file', attachment: neutralFileRef(block.attachment) }
+    case 'image': {
+      const image = block as LegacyImageBlock | { type: 'image'; attachment: ImageAttachmentRef }
+      if ('attachment' in image) return { type: 'image', attachment: image.attachment }
+      return { type: 'image', source: image.source }
+    }
+    default:
+      throw new Error(`native host adapter: input block kind "${(block as { type: string }).type}" is not a user input emission`)
+  }
+}
+
+/** Project a host AgentUserMessage to a neutral RequestMessage (an identified,
+ *  immutable UserMessage). File blocks become neutral FileBlock refs (the
+ *  handle-text projection stays adapter-side via projectFileBlocksForProvider
+ *  for the legacy text-only boundary); base64 images become LegacyImageBlock;
+ *  store-backed image refs become ImageRefBlock; text becomes TextBlock. The
+ *  neutral uuid is freshly minted by createUserMessage — the adapter re-keys the
+ *  host receivedAt identity onto it (see wrapNativeCore), so the host uuid stays
+ *  on the paired host message while the core speaks the neutral identity. */
+export function projectSdkInputToNative(message: AgentUserMessage): RequestMessage {
+  const content = message.message.content
+  const blocks: ContentBlock[] = typeof content === 'string'
+    ? [{ type: 'text', text: content }]
+    : content.map(neutralInputBlock)
+  return createUserMessage({ content: blocks, source: { kind: 'user' } })
+}
+
+// ── wrapNativeCore: neutral core → SDK ProviderSessionHandle ──────────────
+
+/** The host lease callbacks the adapter wires to the core's neutral persistence
+ *  outcomes. Mirrors CreateSessionOptions' callback shapes (host-contract types
+ *  stay here on the wrapper, never on the neutral core). */
+export interface NativeHostCallbacks {
+  onUserMessageConsumed?: (message: AgentUserMessage) => void
+  onUserMessagePersistence?: (message: AgentUserMessage, outcome: 'appended' | 'failed') => void
+  onSupplementDelivered?: (uuid: string, outcome: SupplementOutcome) => void
+}
+
+/** The neutral uuid of an identified RequestMessage. The adapter always enqueues
+ *  identified UserMessages (projectSdkInputToNative mints the id), so a drained
+ *  or consumed neutral message carries one; a missing id is a contract violation
+ *  surfaced loudly rather than silently dropping the host pairing. */
+function neutralIdOf(msg: RequestMessage): string {
+  const id = (msg as { id?: string }).id
+  if (typeof id !== 'string') {
+    throw new Error('native host adapter: core emitted a RequestMessage without a neutral uuid identity')
+  }
+  return id
+}
+
+/** The operational frame discriminants (the live-only system/result surface).
+ *  Everything else in NativeCoreFrame is a conversation frame projected by
+ *  projectNativeFrameToSdk. */
+function isOperationalFrame(frame: NativeCoreFrame): frame is OperationalFrame {
+  switch (frame.type) {
+    case 'init':
+    case 'api/retry':
+    case 'informational':
+    case 'task/started':
+    case 'task/notification':
+    case 'result':
+      return true
+    default:
+      return false
+  }
+}
+
+/** Envelope for a conversation frame: the assistant bundle carries its own
+ *  neutral uuid (message.id); raw passthrough / assembler chunks mint a fresh
+ *  frame uuid (the legacy streamEventFrame mints ctx.uuid() likewise). The
+ *  sidechain parent axis is main-thread null here — sidechain envelope identity
+ *  is carried by the core's emission context (T10/T15). */
+function conversationEnv(frame: NativeLiveFrame | AssistantFrame, sessionId: string): NativeFrameEnvelope {
+  const uuid = frame.type === 'assistant-frame' ? frame.message.id : randomUUID()
+  return { sessionId, uuid, parentToolUseId: null }
+}
+
+/** Project one core emission frame to the SDK AgentMessage the pump consumes:
+ *  operational frames through projectNativeEventToSdk (inline envelope),
+ *  conversation frames through projectNativeFrameToSdk (derived envelope). */
+function projectCoreFrame(frame: NativeCoreFrame, sessionId: string): AgentMessage {
+  if (isOperationalFrame(frame)) {
+    const projected = projectNativeEventToSdk(frame)
+    if (projected === null) {
+      throw new Error(`native host adapter: operational frame "${frame.type}" projected to null`)
+    }
+    return projected
+  }
+  return projectNativeFrameToSdk(frame, conversationEnv(frame, sessionId))
+}
+
+/** Wrap a neutral NativeSessionCore into the SDK-shaped ProviderSessionHandle.
+ *  The adapter owns the host↔neutral translation: input projection + the
+ *  receivedAt re-key + the host pairing, the lease callbacks (wrapping the
+ *  core's neutral persistence outcomes with copyConsumedAt bridging), the live
+ *  frame projection, and the ~50-method handle delegation. */
+export function wrapNativeCore(core: NativeSessionCore, hostCallbacks: NativeHostCallbacks): ProviderSessionHandle {
+  // Host identity paired by neutral uuid: the original host AgentUserMessage
+  // (carrying the host uuid / receivedAt / resolved content) and its arrival
+  // time, re-keyed from the legacy WeakMap<AgentUserMessage> onto the neutral
+  // uuid. The pairing is the lossless back-projection — drainQueuedInput and the
+  // lease callbacks return the ORIGINAL host message, never a lossy rebuild.
+  const hostByNeutralId = new Map<string, AgentUserMessage>()
+  const receivedAtByNeutralId = new Map<string, number>()
+
+  const rememberHost = (neutral: RequestMessage, host: AgentUserMessage): void => {
+    const id = neutralIdOf(neutral)
+    hostByNeutralId.set(id, host)
+    const arrival = (host as { receivedAt?: number }).receivedAt
+    receivedAtByNeutralId.set(id, typeof arrival === 'number' ? arrival : Date.now())
+  }
+  const hostFor = (neutral: RequestMessage): AgentUserMessage => {
+    const host = hostByNeutralId.get(neutralIdOf(neutral))
+    if (!host) {
+      throw new Error('native host adapter: core reported an outcome for an unpaired neutral prompt')
+    }
+    return host
+  }
+  // Drop the pairing once a prompt is no longer withdrawable. The legacy
+  // provider keyed receivedAt by a WeakMap<AgentUserMessage> (GC-friendly); this
+  // strong Map must release consumed/dropped prompts explicitly or it grows for
+  // the session lifetime.
+  const forget = (id: string): void => {
+    hostByNeutralId.delete(id)
+    receivedAtByNeutralId.delete(id)
+  }
+
+  // Wire the core's neutral persistence-outcome callbacks to the host lease
+  // callbacks. The host callback fires on a shallow projection of the original
+  // host message (preserving uuid / content), stamped with the re-keyed arrival
+  // time; copyConsumedAt bridges the consumption stamp the manager writes on that
+  // projection back onto the original host message the manager reads after
+  // enqueueUserMessage returns. Outcome order is persistence('appended') BEFORE
+  // consumption (the durable append precedes the consume ack), so the pairing is
+  // still live for both; consumption releases it.
+  const projectHost = (neutral: RequestMessage): { id: string; original: AgentUserMessage; projected: AgentUserMessage } => {
+    const id = neutralIdOf(neutral)
+    const original = hostFor(neutral)
+    const projected = { ...original }
+    ;(projected as { receivedAt?: number }).receivedAt = receivedAtByNeutralId.get(id)
+    return { id, original, projected }
+  }
+  core.onUserMessageConsumed = (neutral) => {
+    const { id, original, projected } = projectHost(neutral)
+    hostCallbacks.onUserMessageConsumed?.(projected)
+    copyConsumedAt(projected, original)
+    forget(id)
+  }
+  core.onUserMessagePersistence = (neutral, outcome) => {
+    hostCallbacks.onUserMessagePersistence?.(projectHost(neutral).projected, outcome)
+  }
+  core.onSupplementDelivered = (uuid, outcome) => {
+    hostCallbacks.onSupplementDelivered?.(uuid, outcome)
+  }
+
+  const messages: AsyncIterable<AgentMessage> = (async function* () {
+    for await (const frame of core.messages) {
+      yield projectCoreFrame(frame, core.sessionId)
+    }
+  })()
+
+  const handle: ProviderSessionHandle = {
+    provider: 'native',
+    echoesUserPrompts: false,
+    messages,
+    enqueueUserMessage(host: AgentUserMessage): void {
+      const neutral = projectSdkInputToNative(host)
+      rememberHost(neutral, host)
+      core.enqueue(neutral)
+    },
+    sendControlMessage(host: AgentUserMessage): void {
+      const neutral = projectSdkInputToNative(host)
+      rememberHost(neutral, host)
+      core.enqueueControl(neutral)
+    },
+    clearQueuedInput(): number {
+      const dropped = core.drainQueued()
+      for (const neutral of dropped) forget(neutralIdOf(neutral))
+      return dropped.length
+    },
+    drainQueuedInput(): AgentUserMessage[] {
+      return core.drainQueued().map((neutral) => {
+        const host = hostFor(neutral)
+        forget(neutralIdOf(neutral))
+        return host
+      })
+    },
+    get queueDepth() { return core.queueDepth },
+    get closed() { return core.closed },
+    abortSignal: core.abortSignal,
+    processExited: core.processExited,
+    abort(): void { core.abort() },
+    destroy(reason?: string) { return core.destroy(reason) },
+    reloadSkills() { return core.reloadSkills() },
+  }
+
+  // Optional members: exposed only when the core implements them, so a core
+  // without steering / compaction / MCP simply omits the handle member (the
+  // manager capability-gates against the absent method).
+  if (core.awaitingDurableRetry !== undefined) {
+    Object.defineProperty(handle, 'awaitingDurableRetry', { get: () => core.awaitingDurableRetry })
+  }
+  if (core.processRealExit !== undefined) {
+    Object.defineProperty(handle, 'processRealExit', { value: core.processRealExit })
+  }
+  if (core.steeringActive !== undefined) {
+    Object.defineProperty(handle, 'steeringActive', { get: () => core.steeringActive })
+  }
+  if (core.enqueueSupplement) handle.enqueueSupplement = (entry) => core.enqueueSupplement!(entry)
+  if (core.drainSupplements) handle.drainSupplements = () => core.drainSupplements!()
+  if (core.noteTurnSettled) handle.noteTurnSettled = () => core.noteTurnSettled!()
+  if (core.interrupt) {
+    handle.interrupt = async (opts): Promise<ProviderInterruptReceipt | void> => {
+      const receipt = await core.interrupt!(opts)
+      if (!receipt || receipt.cancelledQueued === undefined) return receipt ?? undefined
+      // Map neutral cancelled uuids back to host uuids for the manager's
+      // withdrawal accounting (unknown ids are ignored by the host).
+      const cancelledQueued: string[] = []
+      for (const id of receipt.cancelledQueued) {
+        const uuid = hostByNeutralId.get(id)?.uuid
+        if (typeof uuid === 'string') cancelledQueued.push(uuid)
+      }
+      return { cancelledQueued }
+    }
+  }
+  if (core.compactInPlace) handle.compactInPlace = (summary, opts) => core.compactInPlace!(summary, opts)
+  if (core.seedCompactSummary) handle.seedCompactSummary = (summary, opts) => core.seedCompactSummary!(summary, opts)
+  if (core.getAttachmentOccurrences) {
+    handle.getAttachmentOccurrences = (): readonly ProviderAttachmentOccurrence[] =>
+      core.getAttachmentOccurrences!().map((occ: NativeAttachmentOccurrence) => ({
+        messageUuid: occ.messageUuid,
+        blockPath: occ.blockPath,
+        attachment: occ.attachment,
+      }))
+  }
+  if (core.getAttachmentCatalog) handle.getAttachmentCatalog = () => core.getAttachmentCatalog!()
+  if (core.getSkillCompactionEntries) handle.getSkillCompactionEntries = () => core.getSkillCompactionEntries!()
+  if (core.getContextUsage) handle.getContextUsage = (opts) => core.getContextUsage!(opts)
+  if (core.getEffectiveSettings) {
+    handle.getEffectiveSettings = (): { model: string; permissionMode?: string; effortLevel?: string; agent: string | null } => {
+      const settings: NativeEffectiveSettings = core.getEffectiveSettings!()
+      return {
+        model: settings.model,
+        ...(settings.permissionMode !== undefined ? { permissionMode: settings.permissionMode } : {}),
+        ...(settings.effortLevel !== undefined ? { effortLevel: settings.effortLevel } : {}),
+        agent: settings.agent,
+      }
+    }
+  }
+  if (core.getResetBaseSettings) {
+    handle.getResetBaseSettings = (): ProviderResetBaseSettings => {
+      const base: NativeResetBaseSettings = core.getResetBaseSettings!()
+      return {
+        model: base.model,
+        permissionMode: base.permissionMode,
+        effortLevel: base.effortLevel,
+        skills: base.skills,
+        toolProfile: base.toolProfile,
+      }
+    }
+  }
+  if (core.getUsage) handle.getUsage = () => core.getUsage!()
+  if (core.accountInfo) handle.accountInfo = () => core.accountInfo!()
+  if (core.generateTitle) handle.generateTitle = (description) => core.generateTitle!(description)
+  if (core.backgroundTasks) handle.backgroundTasks = (toolUseId) => core.backgroundTasks!(toolUseId)
+  if (core.stopTask) handle.stopTask = (taskId) => core.stopTask!(taskId)
+  if (core.setModel) handle.setModel = (model) => core.setModel!(model)
+  if (core.setPermissionMode) handle.setPermissionMode = (mode) => core.setPermissionMode!(mode)
+  if (core.applyFlagSettings) handle.applyFlagSettings = (settings) => core.applyFlagSettings!(settings)
+  if (core.setMaxThinkingTokens) handle.setMaxThinkingTokens = (tokens, display) => core.setMaxThinkingTokens!(tokens, display)
+  if (core.supportedModels) handle.supportedModels = () => core.supportedModels!()
+  if (core.supportedCommands) handle.supportedCommands = () => core.supportedCommands!()
+  if (core.supportedAgents) handle.supportedAgents = () => core.supportedAgents!()
+  if (core.mcpServerStatus) handle.mcpServerStatus = () => core.mcpServerStatus!()
+  if (core.readMcpResource) handle.readMcpResource = (serverName, uri) => core.readMcpResource!(serverName, uri)
+  if (core.reconnectMcpServer) handle.reconnectMcpServer = (name) => core.reconnectMcpServer!(name)
+  if (core.toggleMcpServer) handle.toggleMcpServer = (name, enabled) => core.toggleMcpServer!(name, enabled)
+  if (core.setMcpServers) handle.setMcpServers = (servers) => core.setMcpServers!(servers)
+  if (core.setMcpPermissionModeOverride) handle.setMcpPermissionModeOverride = (serverName, mode) => core.setMcpPermissionModeOverride!(serverName, mode)
+  if (core.reloadPlugins) handle.reloadPlugins = () => core.reloadPlugins!()
+  if (core.readFile) handle.readFile = (path, options) => core.readFile!(path, options)
+  if (core.seedReadState) handle.seedReadState = (path, mtime) => core.seedReadState!(path, mtime)
+  if (core.listSubagents) handle.listSubagents = () => core.listSubagents!()
+
+  return handle
 }
