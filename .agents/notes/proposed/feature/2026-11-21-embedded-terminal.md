@@ -29,6 +29,15 @@ tarball 自带 6 平台 N-API prebuilds，零编译、`--ignore-scripts` 可用�
 external + createRequire（koffi 同款）打包后 ConPTY 往返通过，不 external
 则运行时崩溃。成本重心在 WS attach 协议、headless 快照、生命周期与 UI 席位。
 
+WS 通道按 subagent-transcript 模式独立于消息通道（frame-bridge 自持
+`terminalSubs`，不挂 startSession 的驱动/清理数组）：`terminal-subscribe`
+**不发 `subscribe-result`**，快照帧本身就是 seed/ack——设计文档
+"subscribe-result semantics identical to existing channels" 按此解读，因为
+hub 把 subscribe-result 按 sessionId 折叠进**消息通道**的 live 状态，终端
+发同型帧会污染它（subagent 通道同样不发）。驱动循环结束（manager
+unload/sleep 结束 pushable）或出错时按身份释放订阅条目——死通道不得锁死
+重复订阅守卫（subagent 模板未做此释放，终端通道是整条订阅，照搬会滞留）。
+
 完整协议、客户端保活/键盘语义、打包与验收见[内嵌终端设计](../../../../docs/superpowers/specs/2026-11-21-embedded-terminal-design.md)。
 
 ## Alternatives considered
