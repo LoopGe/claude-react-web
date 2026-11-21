@@ -268,6 +268,12 @@ export interface SessionInfoBase<PM = string> {
    *  UI; explicit false hides mutation controls. Not persisted — re-derived
    *  from the provider registry on every live and dormant projection. */
   taskControlSupported?: boolean
+  /** Whether the embedded terminal is available on this server (the
+   *  node-pty capability probe — a host property, not a provider one).
+   *  Undefined on legacy frames retains the Claude-compatible UI; explicit
+   *  false hides the terminal entry points. Not persisted — re-derived from
+   *  the cached probe on every live and dormant projection. */
+  terminalSupported?: boolean
   /** Whether this session's provider implements mid-run steering (the
    *  claude provider does; runtime degradation on old CLIs is handled inside
    *  the handle, so this is the provider mechanism flag — spec §9). Drives

@@ -59,7 +59,7 @@ import {
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
 import { imagePayloadOfContent, taskNotificationToolUseId } from '../shared/user-frames.js'
-import type { WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased, WsRebuildWaiting, RebuildBlocker } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased, WsRebuildWaiting, RebuildBlocker, WsTerminalSnapshot, WsTerminalOutput, WsTerminalState } from './ws-protocol.js'
 import type { TurnChangesPayload, TurnDiffOptions, TurnDiffPayload, WsTurnChanges } from '../shared/turn-changes.js'
 import { toolTargetPaths } from './snapshot/tool-targets.js'
 import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
@@ -69,6 +69,11 @@ import { metrics } from './metrics.js'
 import { ringImagePayload } from './ring-metrics.js'
 import { jsonlSizeSummary } from './jsonl-metrics.js'
 import { execCommand, escapeXml } from './exec.js'
+import { TerminalSession } from './terminal.js'
+import { TerminalScreenStore } from './terminal-store.js'
+import { terminalCapability } from './terminal-capability.js'
+import { createPushable, type Pushable } from './pushable.js'
+import type { TerminalSnapshot } from '../shared/terminal.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
@@ -762,6 +767,14 @@ function debugContextUsageMismatch(
 }
 
 const log = createLogger('session')
+// Terminal-specific diagnostics ride the terminal scope (the terminal core
+// and store log there too), not the manager's session scope.
+const termLog = createLogger('terminal')
+
+/** One frame on the per-session terminal channel. Ephemeral: never enters
+ *  the history ring or the message channel — the manager fans it out to the
+ *  terminal-channel pushables only. */
+type TerminalChannelFrame = WsTerminalSnapshot | WsTerminalOutput | WsTerminalState
 
 /** Cap on the per-session `withdrawnUuids` memory (replayed to late msgstat
  *  subscribers). Withdrawal eviction is idempotent client-side, so dropping
@@ -1087,6 +1100,21 @@ export class SessionManager {
    *  remove) and service-driven writes (capture / recordAnchor /
    *  appendPatch) share one writer per session. */
   private snapshots: SnapshotService
+  /** Embedded terminal: one PTY shell slot per session, keyed by session id
+   *  — deliberately NOT on the live Session: terminal ops serve dormant
+   *  sessions too (meta.cwd), without ever waking the SDK. Lazy: materialized
+   *  on the first terminal op (terminalSlot); dropped on unload/shutdown
+   *  (dispose + flush KEEPS the persisted screen for restart restore);
+   *  delete additionally removes the file. */
+  private terminals = new Map<string, TerminalSession>()
+  /** Durable screen persistence: <stateDir>/terminal-screens/<id>.json. */
+  private terminalStore: TerminalScreenStore
+  /** Per-session terminal-channel subscribers (snapshot/output/state frames).
+   *  Manager-owned like `terminals` — the channel serves dormant sessions, so
+   *  it cannot live on the live Session or the SessionEventBroadcaster. Each
+   *  WS subscriber gets its own pushable so a slow viewer never blocks the
+   *  producer or another tab; a viewer that detects a seq gap resyncs. */
+  private terminalSubscribers = new Map<string, Set<Pushable<TerminalChannelFrame>>>()
   private mcpStore?: McpConfigStore
   /** Global marketplace plugin store. Held for togglePlugin's materialization
    *  (resolving the session's spawn set when enabledPlugins is undefined) —
@@ -1247,6 +1275,7 @@ export class SessionManager {
     this.turnAnchorStore = new TurnAnchorStore(this.store.getDir(), this.historyCap)
     this.resultFrameStore = new ResultFrameStore(this.store.getDir(), this.historyCap)
     this.taskResultStore = new TaskResultStore(this.store.getDir())
+    this.terminalStore = new TerminalScreenStore(this.store.getDir())
     this.forkSeedStore = new ForkSeedStore(this.store.getDir())
     // Shadow-repo file snapshots: build the store and service against the
     // same stateDir so direct copyForFork/remove and service-driven capture
@@ -1283,7 +1312,7 @@ export class SessionManager {
       workingStuckMs: opts.workingStuckMs ?? defaultConfig.workingStuckMs,
       unload: (id, opts) => this.unload(id, opts),
       sweepOrphanWorktrees: () => this.sweepOrphansTick(),
-      onGcTick: () => { void this.recordRetentionMetrics(); reapRetiredJobs() },
+      onGcTick: () => { void this.recordRetentionMetrics(); reapRetiredJobs(); this.recordTerminalActive() },
     })
 
     // RecapManager — owns the lifecycle (pending — ready/error) for the
@@ -5288,6 +5317,160 @@ export class SessionManager {
     s?.execAbort?.abort()
   }
 
+  // --- embedded terminal (one PTY slot per session) -------------------------
+  //
+  // Every public op works on live AND dormant sessions: the slot resolves
+  // from the live map or the persisted meta (never requireLive/requireRunnable
+  // — a dormant session's terminal must not spawn a Query). The slot owns the
+  // shell, the headless screen and its persistence; the manager owns the
+  // channel fan-out. Output never enters the history ring or message channel.
+
+  /** The session's terminal slot, materialized lazily on first use. Single
+   *  capability gate for every public terminal op (HttpError 400 when the
+   *  node-pty probe failed); unknown session → 404; a session without a cwd
+   *  cannot host a shell (same contract as execInSession). The constructor
+   *  restores any persisted screen but never spawns — create() does. */
+  private terminalSlot(id: string): TerminalSession {
+    if (!terminalCapability().supported) throw new HttpError(400, 'terminal not supported')
+    const existing = this.terminals.get(id)
+    if (existing) return existing
+    const live = this.sessions.get(id)
+    const meta = live ?? this.store?.get(id)
+    if (!meta) throw new HttpError(404, `session ${id} not found`)
+    const cwd = meta.cwd
+    if (!cwd) throw new HttpError(400, 'session has no cwd — cannot open a terminal')
+    const slot = new TerminalSession({
+      sessionId: id,
+      cwd,
+      store: this.terminalStore,
+      events: {
+        onOutput: (terminalId, seq, data) => {
+          metrics.count('terminal_output_bytes', undefined, Buffer.byteLength(data, 'utf8'))
+          this.pushTerminalFrame(id, { kind: 'terminal-output', sessionId: id, terminalId, seq, data })
+        },
+        onState: (terminalId, state) => {
+          this.pushTerminalFrame(id, { kind: 'terminal-state', sessionId: id, terminalId, state })
+        },
+      },
+    })
+    this.terminals.set(id, slot)
+    return slot
+  }
+
+  /** Fan one frame out to the session's terminal-channel subscribers. */
+  private pushTerminalFrame(id: string, frame: TerminalChannelFrame): void {
+    const subs = this.terminalSubscribers.get(id)
+    if (!subs) return
+    for (const sub of subs) {
+      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
+    }
+  }
+
+  /** End every terminal-channel subscriber for a session and drop the set.
+   *  The channel is manager-owned (dormant-capable), so it is NOT part of
+   *  endAllSubscribers — unload/delete/shutdown call this explicitly. */
+  private endTerminalSubscribers(id: string): void {
+    const subs = this.terminalSubscribers.get(id)
+    if (!subs) return
+    for (const sub of subs) {
+      try { sub.end() } catch { /* subscriber dead — skip */ }
+    }
+    this.terminalSubscribers.delete(id)
+  }
+
+  /** Dispose one terminal slot on the unload/shutdown path: kill the tree,
+   *  flush pending persistence (KEEP the file — a later create restores it),
+   *  end its channel subscribers, drop the slot so the next terminal op
+   *  re-materializes from meta (a disposed slot would not re-load the file).
+   *  The flush is best-effort like the shell-exit path: unload runs from
+   *  caller-less contexts (GC force-unload, shutdown) where a write failure
+   *  (ENOSPC, Windows EPERM on a locked tmp) must log, never crash. */
+  private disposeTerminal(id: string): void {
+    const terminal = this.terminals.get(id)
+    if (terminal) {
+      terminal.dispose()
+      try {
+        terminal.flush()
+      } catch (err) {
+        termLog.error(`[${id}] terminal screen flush on unload failed: ${(err as Error).message}`)
+      }
+      this.terminals.delete(id)
+    }
+    this.endTerminalSubscribers(id)
+  }
+
+  /** terminal_active gauge — running PTY slots, sampled on the GC tick
+   *  where the other retention gauges ride. */
+  private recordTerminalActive(): void {
+    let n = 0
+    for (const terminal of this.terminals.values()) if (terminal.running) n++
+    metrics.gauge('terminal_active', n)
+  }
+
+  /** Spawn the session's shell (idle/exited) or attach to the live one
+   *  (running — idempotent, no second spawn). Works on dormant sessions. */
+  terminalCreate(id: string, cols: number, rows: number): TerminalSnapshot {
+    const slot = this.terminalSlot(id)
+    const wasRunning = slot.running
+    const snapshot = slot.create(cols, rows)
+    // spawn_total counts real spawns — create while running is an attach.
+    if (!wasRunning) metrics.count('terminal_spawn_total')
+    return snapshot
+  }
+
+  /** Raw keystroke/paste data for the live generation (stale/dead → 409). */
+  terminalInput(id: string, terminalId: string, data: string): void {
+    this.terminalSlot(id).input(terminalId, data)
+  }
+
+  /** Resize the live shell and its headless screen (stale/dead → 409). */
+  terminalResize(id: string, terminalId: string, cols: number, rows: number): void {
+    this.terminalSlot(id).resize(terminalId, cols, rows)
+  }
+
+  /** Explicit close: kill the tree, remove the persisted screen, idle. */
+  terminalClose(id: string): void {
+    this.terminalSlot(id).close()
+  }
+
+  /** The current attach/resync seed (serialized screen + generation + seq). */
+  terminalSnapshot(id: string): TerminalSnapshot {
+    return this.terminalSlot(id).snapshot()
+  }
+
+  /** Per-session terminal-channel subscription. Mirrors
+   *  subscribePromptSuggestion's shape: null when the session is unknown,
+   *  the current snapshot alongside the live iterable. Materializes the slot
+   *  so a dormant session's persisted screen seeds the snapshot (restart
+   *  restore) before any create. Each subscriber gets its own pushable. */
+  subscribeTerminal(id: string): {
+    iterable: AsyncIterable<TerminalChannelFrame>
+    snapshot: TerminalSnapshot | null
+    unsubscribe: () => void
+  } | null {
+    if (!terminalCapability().supported) throw new HttpError(400, 'terminal not supported')
+    if (!this.sessions.has(id) && !this.store?.get(id)) return null
+    const slot = this.terminalSlot(id)
+    let subs = this.terminalSubscribers.get(id)
+    if (!subs) {
+      subs = new Set()
+      this.terminalSubscribers.set(id, subs)
+    }
+    // Bounded drop-oldest queue: a slow viewer falls behind and resyncs
+    // (terminal-resync) rather than blocking the producer or growing RAM.
+    const pushable = createPushable<TerminalChannelFrame>(`term-${id.slice(0, 8)}`, 256)
+    subs.add(pushable)
+    return {
+      iterable: pushable.iterable,
+      snapshot: slot.snapshot(),
+      unsubscribe: () => {
+        subs.delete(pushable)
+        pushable.end()
+        if (subs.size === 0) this.terminalSubscribers.delete(id)
+      },
+    }
+  }
+
   /** `/clear` — non-destructive context reset.
    *
    *  The headless `claude` binary refuses the `/clear` slash command (it's a
@@ -6050,12 +6233,14 @@ export class SessionManager {
    *  Reuses the private `unload()` dormant path verbatim; the only added
    *  logic is the idle guard. `phaseOf` returns `'working'` for `clearing`,
    *  `handoffAbort` (an in-flight /handoff summarize), `pendingTurns > 0`,
-   *  `queueDepth > 0`, `pending.size > 0`, and a live background-subagent
-   *  watcher, so a single `!== 'idle'` check rejects every mid-turn race
-   *  (in-flight turn, queued input, unanswered permission prompt, still-running
-   *  async subagent, handoff summarize) — sleeping any of those would drop an
-   *  in-flight assistant response, strand a permission awaiter, or abandon a
-   *  background subagent's completion watcher.
+   *  `queueDepth > 0`, `pending.size > 0`, a live background-subagent
+   *  watcher, and a running embedded terminal, so a single `!== 'idle'` check
+   *  rejects every mid-turn race (in-flight turn, queued input, unanswered
+   *  permission prompt, still-running async subagent, handoff summarize, live
+   *  shell) — sleeping any of those would drop an in-flight assistant
+   *  response, strand a permission awaiter, abandon a background subagent's
+   *  completion watcher, or silently kill the user's shell (an ssh session
+   *  is never silently killed by sleep — close the terminal first).
    *  Terminated sessions fail `requireLive` (410); already-dormant sessions
    *  aren't in the live map, so `requireLive` → `require` throws 404. */
   async sleep(id: string): Promise<SessionInfo> {
@@ -6063,13 +6248,17 @@ export class SessionManager {
       const s = this.requireLive(id)
       if (this.phaseOf(s) !== 'idle') {
         // The parent turn may have already finished while a background
-        // subagent is still running — blame the real blocker, not the turn.
+        // subagent — or the embedded terminal — is still running; blame the
+        // real blocker, not the turn.
+        const terminalRunning = this.terminals.get(id)?.running === true
         const hasBackgroundSubagent = this.backgroundSubagentCount(s) > 0
         throw new HttpError(
           409,
-          hasBackgroundSubagent
-            ? `session ${id} has a background subagent still running — wait for it to finish before sleeping`
-            : `session ${id} is working — wait for the turn to finish before sleeping`,
+          terminalRunning
+            ? `session ${id} has a running terminal — close it before sleeping`
+            : hasBackgroundSubagent
+              ? `session ${id} has a background subagent still running — wait for it to finish before sleeping`
+              : `session ${id} is working — wait for the turn to finish before sleeping`,
         )
       }
       log.info(`[session ${id}] sleep: unloading to dormant (releasing SDK subprocess + subscribers)`)
@@ -10779,6 +10968,22 @@ export class SessionManager {
         await removeWorktreeForSession(this.store.getDir(), id, meta.worktree, log, meta.cwd)
       }
       this.store?.remove(id)
+      // Terminal delete semantics: kill the tree AND remove the persisted
+      // screen (close), unlike unload's keep-file dispose. Runs HERE — the
+      // point where the session's durable identity ends — not earlier: the
+      // failure/rollback paths above must leave a resumable session's
+      // terminal intact, and the meta removal + this teardown are one
+      // synchronous block, so no terminal op can re-materialize a slot for
+      // the deleted id afterwards (terminalSlot then 404s on the missing
+      // meta). A live session's slot was already disposed by unload(); a
+      // DORMANT session's slot (terminal ops never wake the SDK, so unload
+      // never saw it) is closed here, and a bare persisted file with no slot
+      // is removed directly. Every call is idempotent when its target is
+      // absent.
+      this.terminals.get(id)?.close()
+      this.terminals.delete(id)
+      this.endTerminalSubscribers(id)
+      this.terminalStore.remove(id)
       this.permanentClearReplacementIds.delete(id)
       if (!opts?.deleteTranscript) {
         void this.promptUuidStore.remove(id)
@@ -10860,6 +11065,10 @@ export class SessionManager {
     // fires the SIGKILL promptly rather than letting the orphan run to its
     // timeout / natural completion.
     s.execAbort?.abort()
+    // Embedded terminal: same lifecycle bound — kill the shell tree, but
+    // KEEP the persisted screen (unload is reversible; a later create
+    // restores it). Delete removes the file separately (doDeleteLocked).
+    this.disposeTerminal(id)
     // Abort an in-flight /handoff summarize on the same lifecycle bound: its
     // aux call must not keep burning tokens against a session being torn down
     // (the compact tail would 404 anyway once the store entry is gone).
@@ -11335,6 +11544,11 @@ export class SessionManager {
     // will want to resume on next launch. Only Query-ended sessions stay
     // terminated (that flag was already set by the pump's finally block).
     await Promise.all(ids.map((id) => this.unload(id)))
+    // Terminal slots outlive the live map: a dormant session's terminal is a
+    // real PTY too, and unload() only tears down live sessions. Sweep the
+    // remaining slots with the same dispose + flush (keep-file) contract so
+    // no shell outlives the server.
+    for (const id of [...this.terminals.keys()]) this.disposeTerminal(id)
     // Await the real CLI process exits before resolving. unload() registered
     // each handle's processRealExit into closingHandles; a pump ending only
     // proves the message stream closed, not that the subprocess is gone —
@@ -11592,6 +11806,9 @@ export class SessionManager {
       thinking: x.thinking,
       taskBudget: x.taskBudget,
       taskControlSupported: this.capsOf(x.provider ?? 'claude').supportsTaskControl,
+      // Host property (the cached node-pty probe), not a provider one — the
+      // same value for every session, live or dormant.
+      terminalSupported: terminalCapability().supported,
       terminated: x.terminated,
       terminatedReason: x.terminatedReason,
       canRetryResume: x.terminated && isTransientTerminatedReason(x.terminatedReason),
@@ -11719,6 +11936,9 @@ export class SessionManager {
     if (s.handle.queueDepth > 0) return 'working'
     if (s.pending.size > 0) return 'working'
     if (this.backgroundSubagentCount(s) > 0) return 'working'
+    // A running embedded terminal joins the idle guard exactly like a
+    // background subagent: sleep must not silently kill the user's shell.
+    if (this.terminals.get(s.id)?.running) return 'working'
     return 'idle'
   }
 

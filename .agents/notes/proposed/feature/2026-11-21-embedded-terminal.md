@@ -56,8 +56,9 @@ external + createRequire（koffi 同款）打包后 ConPTY 往返通过，不 ex
   而非关 overlay/停轮次）全部可用。
 - 关 overlay、切面板、刷新页面后重开，屏幕与进程恢复；seq 缺口触发快照
   resync，慢消费者不阻塞生产端。
-- 会话删除/unload 杀掉完整进程树（win32 birth-time 围栏）并清除屏幕持久化；
-  运行中的终端使 sleep 被拒（409），退出不阻止。
+- 会话删除杀完整进程树（win32 birth-time 围栏）并清除屏幕持久化；
+  unload/优雅退出同样杀树但**保留**持久化（重启恢复的前提，dispose+flush）；
+  运行中的终端使 sleep 被拒（409，blame 指向终端），退出不阻止。
 - 服务器重启后老 tab 自动新建 shell，恢复输出历史 + 分隔横幅（进程状态不
   恢复）；崩溃窗口 ≤ 防抖间隔的输出丢失是已声明的接受项；自然退出绝不
   自动 respawn。
