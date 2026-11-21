@@ -6,7 +6,7 @@
 
 **Architecture:** node-pty (external native dep, koffi pattern) spawns one shell per session into a server-side `TerminalSession` that also feeds a headless xterm for serialized screen snapshots. Frames ride a dedicated per-connection terminal channel (subagent-transcript-subscribe pattern) through `frame-bridge.ts`. The client keeps xterm in a lazy chunk inside a keep-alive overlay body that never remounts on open/close.
 
-**Tech Stack:** node-pty@1.2.0-beta.15 (N-API prebuilds), @xterm/headless + @xterm/addon-serialize (server, bundled), xterm + @xterm/addon-fit (client, lazy), patch-package (Windows ConPTY drain fix), vitest + Playwright.
+**Tech Stack:** node-pty@1.2.0-beta.15 (N-API prebuilds), @xterm/headless + @xterm/addon-serialize (server, bundled), @xterm/xterm + @xterm/addon-fit (client, lazy), patch-package (Windows ConPTY drain fix, production dep + shipped patches/), vitest + Playwright.
 
 **Spec:** `docs/superpowers/specs/2026-11-21-embedded-terminal-design.md` (read it fully before starting; the agent note `.agents/notes/proposed/feature/2026-11-21-embedded-terminal.md` carries the decision rationale).
 
@@ -51,8 +51,8 @@ Failure modes the spec implies but no happy-path test exercises — each is pinn
 **Interfaces:**
 - Produces: `terminalCapability(): { supported: boolean; reason?: string }` — cached, lazy `createRequire` load of node-pty; `reason` is a short human-readable failure cause when unsupported. Every later task gates on this.
 
-- [ ] **Step 1: Install deps.** `npm install --save-optional node-pty@1.2.0-beta.15` then `npm install --save @xterm/headless @xterm/addon-serialize xterm @xterm/addon-fit`. Verify `node_modules/node-pty/prebuilds/win32-x64/conpty.node` exists (zero compilation expected).
-- [ ] **Step 2: Windows drain patch.** Check newer 1.2.0-beta changelogs for the conout-dispose fix. If unfixed: apply the one-line fix from DSH's patch to `node_modules/node-pty/lib/windowsPtyAgent.js` (`this._conoutSocketWorker.dispose()` immediately after `this._ptyNative.kill(...)` in the kill path), run `npx patch-package node-pty`, add `patch-package` to devDependencies and `"postinstall": "patch-package"` to scripts (keep the existing `prepare` script untouched).
+- [ ] **Step 1: Install deps.** `npm install --save-optional node-pty@1.2.0-beta.15` then `npm install --save @xterm/headless @xterm/addon-serialize @xterm/xterm @xterm/addon-fit` (ruling: `@xterm/xterm`, NOT deprecated `xterm@5.3.0`; align the family to compatible versions and smoke headless+serialize). Verify `node_modules/node-pty/prebuilds/win32-x64/conpty.node` exists (zero compilation expected). Lockfile entries MUST resolve to registry.npmjs.org (no private mirror), and regeneration must not strip `libc`/`optional` fields from pre-existing entries.
+- [ ] **Step 2: Windows drain patch.** Check newer 1.2.0-beta changelogs for the conout-dispose fix. If unfixed: apply the one-line fix from DSH's patch to `node_modules/node-pty/lib/windowsPtyAgent.js` (`this._conoutSocketWorker.dispose()` immediately after `this._ptyNative.kill(...)` in the kill path), run `npx patch-package node-pty`, add `patch-package` to **dependencies** (ruling: production dep, so the patch applies on npx-consumer and desktop prod-deps installs too), add `"patches"` to the `files` array, and `"postinstall": "patch-package"` to scripts (keep the existing `prepare` script untouched). Patch filename uses patch-package's `+` separator.
 - [ ] **Step 3: build.mjs + electron-builder.** Add `'node-pty'` to both `external` arrays. Add `node_modules/node-pty/**` to `asarUnpack` in `desktop/electron-builder.yml` (follow the koffi entry's comment style).
 - [ ] **Step 4: Write the failing capability test.**
 

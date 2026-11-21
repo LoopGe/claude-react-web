@@ -27,7 +27,8 @@
     "claude-react-web": "dist/cli.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "patches"
   ],
   "scripts": {
     "dev:server": "tsx watch server/cli.ts --no-open",
@@ -78,6 +79,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
+    "@xterm/xterm": "^6.0.0",
     "ansicolor": "^2.0.3",
     "busboy": "^1.6.0",
     "diff": "^9.0.0",
@@ -91,6 +93,7 @@
     "mdast-util-to-hast": "^13.2.1",
     "motion": "^12.42.2",
     "open": "^10.1.0",
+    "patch-package": "^8.0.1",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -104,7 +107,6 @@
     "remark-rehype": "^11.1.2",
     "unified": "^11.0.5",
     "ws": "^8.20.0",
-    "xterm": "^5.3.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -133,7 +135,6 @@
     "fake-indexeddb": "^6.2.5",
     "happy-dom": "20.14.5",
     "jsdom": "^29.1.1",
-    "patch-package": "^8.0.1",
     "png-to-ico": "^3.0.2",
     "prettier": "^3.8.3",
     "sharp": "^0.35.5",
