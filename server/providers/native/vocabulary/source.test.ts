@@ -15,28 +15,21 @@ import {
   type ToolMessageSource,
 } from './source.js'
 
-// Producer-side declaration merging (the compile-time pin): a producer module
-// adds its OWN source kind to the merge-extensible map — there is no catch-all
-// kind in the core. The derived MessageSource union must widen to include it.
-interface TestProducerSource {
-  kind: 'test-producer'
-  label: string
-}
-declare module './source.js' {
-  interface MessageSourceMap {
-    'test-producer': TestProducerSource
-  }
-}
+// The merge-extensibility proof (a producer kind merged into MessageSourceMap)
+// lives in source.type-test.ts, which tsconfig.node.json EXCLUDES: declaration
+// merging is global to a compilation, and a fake test kind must never widen
+// the production MessageSource that exhaustive consumers switch over.
 
-/** Exhaustive switch over the core kinds; merged producer kinds fall through
- *  to default. Compiles only when each case narrows to its own shape. */
+/** Exhaustive switch over MessageSource with NO default: compiles only when
+ *  the union is exactly the four core kinds and each case narrows to its own
+ *  shape. A merged producer kind leaking into this production program would
+ *  leave the endpoint reachable (TS2366) — a permanent leak detector. */
 function sourceDetail(source: MessageSource): string {
   switch (source.kind) {
     case 'user': return 'user'
     case 'model': return `${source.provider}/${source.model}`
     case 'tool': return source.callId
     case 'system-prompt': return 'system-prompt'
-    default: return source.kind
   }
 }
 
@@ -98,13 +91,6 @@ describe('MessageSource', () => {
     // @ts-expect-error — no catch-all 'plugin' kind exists in the map
     const plugin: MessageSource = { kind: 'plugin' }
     expect(plugin.kind).toBe('plugin')
-  })
-
-  it('declaration merging widens MessageSource with a producer kind', () => {
-    expectTypeOf<MessageSourceMap['test-producer']>().toEqualTypeOf<TestProducerSource>()
-    expectTypeOf<TestProducerSource>().toMatchTypeOf<MessageSource>()
-    const producer: MessageSource = { kind: 'test-producer', label: 'compact-summary' }
-    expect(sourceDetail(producer)).toBe('test-producer')
   })
 })
 

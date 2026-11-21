@@ -15,5 +15,5 @@
     "types": ["node", "electron"]
   },
   "include": [".", "../server", "../shared", "../package.json"],
-  "exclude": ["**/*.test.ts", "**/*.test.tsx", "../server/**/*.test.ts"]
+  "exclude": ["**/*.test.ts", "**/*.test.tsx", "../server/**/*.test.ts", "**/*.type-test.ts", "../server/**/*.type-test.ts"]
 }

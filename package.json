@@ -47,7 +47,7 @@
     "preview": "npm run build && npm run start",
     "desktop": "npm run build:client && npm run build:desktop && electron dist/desktop/main.mjs",
     "desktop:package": "node desktop/package.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p desktop/tsconfig.json --noEmit && tsc -p tests/browser/tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p desktop/tsconfig.json --noEmit && tsc -p tests/browser/tsconfig.json --noEmit && tsc -p tsconfig.type-test.json --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
