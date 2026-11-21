@@ -694,3 +694,54 @@ describe('default session creation from the sidebar', () => {
     expect(panels.map((panel) => panel.dataset.sessionId)).toEqual(ids)
   })
 })
+
+describe('terminal shortcut capability gating', () => {
+  function emitSnapshot(sessions: SessionInfo[]) {
+    act(() => {
+      for (const listener of h.listeners) listener({ kind: 'sessions-snapshot', sessions })
+    })
+  }
+
+  async function focusSession(id: string) {
+    await waitFor(() => {
+      expect(document.querySelector(`[data-session-card-id="${id}"] .session-item`)).not.toBeNull()
+    })
+    fireEvent.click(document.querySelector(`[data-session-card-id="${id}"] .session-item`)!)
+    await screen.findByTestId('chat-panel')
+    await waitFor(() => {
+      const focused = document.querySelector('[data-testid="chat-panel"][data-focused="true"]')
+      expect(focused?.getAttribute('data-session-id')).toBe(id)
+    })
+  }
+
+  const paletteRows = () => Array.from(document.querySelectorAll('[data-palette-option]'))
+
+  beforeEach(() => {
+    h.config = config(true)
+    h.refreshedConfig = h.config
+  })
+
+  it('toasts on an unsupported host and hides the palette action', async () => {
+    renderApp()
+    emitSnapshot([{ ...session('s-nopty', { provider: 'claude' }), terminalSupported: false }])
+    await focusSession('s-nopty')
+
+    fireEvent.keyDown(window, { key: '`', ctrlKey: true })
+    expect(await screen.findByText('Terminal is unavailable on this host')).toBeTruthy()
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    await waitFor(() => expect(document.querySelector('.palette-input')).not.toBeNull())
+    expect(paletteRows().some((row) => row.textContent?.includes('Toggle terminal'))).toBe(false)
+  })
+
+  it('shows the palette action on a supported host', async () => {
+    renderApp()
+    emitSnapshot([{ ...session('s-pty', { provider: 'claude' }), terminalSupported: true }])
+    await focusSession('s-pty')
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    await waitFor(() => {
+      expect(paletteRows().some((row) => row.textContent?.includes('Toggle terminal'))).toBe(true)
+    })
+  })
+})

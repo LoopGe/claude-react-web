@@ -21,6 +21,7 @@ function press(key: string, opts: Partial<KeyboardEventInit> = {}) {
 function setup(overrides: Partial<TerminalToggleInput> = {}) {
   const onOpen = vi.fn()
   const onClose = vi.fn()
+  const onUnsupported = vi.fn()
   const input: TerminalToggleInput = {
     focusedId: 's1',
     supported: true,
@@ -28,6 +29,7 @@ function setup(overrides: Partial<TerminalToggleInput> = {}) {
     modalOpen: false,
     onOpen,
     onClose,
+    onUnsupported,
     ...overrides,
   }
   const { rerender } = renderHook(
@@ -37,6 +39,7 @@ function setup(overrides: Partial<TerminalToggleInput> = {}) {
   return {
     onOpen,
     onClose,
+    onUnsupported,
     rerender: (next: Partial<TerminalToggleInput>) => rerender({ ...input, ...next }),
   }
 }
@@ -125,11 +128,47 @@ describe('terminalToggleShortcut', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('does nothing when the focused session does not support terminals', () => {
-    const { onOpen, onClose } = setup({ supported: false })
+  it('fires the unavailable toast and does not toggle when the session is unsupported', () => {
+    const { onOpen, onClose, onUnsupported } = setup({ supported: false })
     press('`', { ctrlKey: true })
+    expect(onUnsupported).toHaveBeenCalledOnce()
     expect(onOpen).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('does not fire the unavailable toast on a supported press', () => {
+    const { onUnsupported } = setup()
+    press('`', { ctrlKey: true })
+    expect(onUnsupported).not.toHaveBeenCalled()
+  })
+
+  it('stays silent under a modal even when unsupported (the modal owns the keypress)', () => {
+    const { onOpen, onClose, onUnsupported } = setup({ supported: false, modalOpen: true })
+    press('`', { ctrlKey: true })
+    expect(onUnsupported).not.toHaveBeenCalled()
+    expect(onOpen).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('stays silent with no focused panel even when unsupported', () => {
+    const { onOpen, onClose, onUnsupported } = setup({ focusedId: null, supported: false })
+    press('`', { ctrlKey: true })
+    expect(onUnsupported).not.toHaveBeenCalled()
+    expect(onOpen).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('hides the palette entry when unsupported, shows it when supported', () => {
+    const base = {
+      focusedId: 's1',
+      terminalOpenFor: null,
+      modalOpen: false,
+      onOpen: vi.fn(),
+      onClose: vi.fn(),
+      onUnsupported: vi.fn(),
+    }
+    expect(terminalToggleShortcut({ ...base, supported: false }).paletteHidden).toBe(true)
+    expect(terminalToggleShortcut({ ...base, supported: true }).paletteHidden).toBe(false)
   })
 
   it('routes to the newly focused session after an App-style rebuild', () => {
@@ -149,6 +188,7 @@ describe('terminalToggleShortcut', () => {
       modalOpen: false,
       onOpen,
       onClose,
+      onUnsupported: vi.fn(),
     })
     expect(shortcut.combo).toBe('ctrl+`')
     expect(shortcut.allowInInput).toBe(true)

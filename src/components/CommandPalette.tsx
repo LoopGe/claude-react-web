@@ -58,7 +58,7 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
   const localItems: PaletteItem[] = useMemo(() => {
     const result: PaletteItem[] = []
     for (const shortcut of shortcuts) {
-      if (!shortcut.description) continue
+      if (!shortcut.description || shortcut.paletteHidden) continue
       result.push({
         id: `shortcut:${shortcut.combo}`,
         section: 'Commands',

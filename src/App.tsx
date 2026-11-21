@@ -3124,7 +3124,10 @@ export function App() {
   const stripPoppedIdsRef = useRef(new Set<string>())
 
   const focusedTaskControlSupported = sessions.find((session) => session.id === focusedId)?.taskControlSupported !== false
-  const focusedTerminalSupported = sessions.find((session) => session.id === focusedId)?.terminalSupported === true
+  // Three-state capability, same convention as taskControlSupported above:
+  // unknown/undefined is treated as supported; only an explicit false disables
+  // (hides the palette entry + toasts on keypress).
+  const focusedTerminalSupported = sessions.find((session) => session.id === focusedId)?.terminalSupported !== false
   // Ctrl+` belongs to the panel beneath, not to a blocking dialog: while any
   // App-hosted true modal is open the terminal toggle is suppressed. Sibling
   // panel overlays (settings/git/tasks/worktree/search/terminal) are NOT
@@ -3144,6 +3147,12 @@ export function App() {
     || pendingSnippetSave !== null
     || stripDialogs.confirm !== null
     || stripDialogs.prompt !== null
+  // Unsupported-host notice for the terminal toggle (design spec: the shortcut
+  // no-ops WITH a toast). Stable handle — useToast memoises, safe in deps.
+  const notifyTerminalUnsupported = useCallback(
+    () => toast.info('Terminal is unavailable on this host'),
+    [toast],
+  )
 
   const shortcuts = useMemo(
     () => [
@@ -3439,6 +3448,7 @@ export function App() {
           modalOpen: terminalModalOpen,
           onOpen: handleOpenTerminal,
           onClose: handleCloseTerminal,
+          onUnsupported: notifyTerminalUnsupported,
         }),
         {
           combo: 'escape',
@@ -3510,7 +3520,7 @@ export function App() {
       // [handleCloseSettings, handleCloseGitPanel]), so the omission only
       // affects eslint's static analysis, not runtime behaviour.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, handleCloseWorktree, toggleSidebarCollapsed, focusedId, focusedTaskControlSupported, scrollNavRegistry, sideChat, focusedTerminalSupported, terminalOpenFor, terminalModalOpen, handleOpenTerminal, handleCloseTerminal],
+      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, handleCloseWorktree, toggleSidebarCollapsed, focusedId, focusedTaskControlSupported, scrollNavRegistry, sideChat, focusedTerminalSupported, terminalOpenFor, terminalModalOpen, handleOpenTerminal, handleCloseTerminal, notifyTerminalUnsupported],
     )
   useKeyboardShortcuts(shortcuts)
 

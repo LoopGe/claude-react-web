@@ -20,13 +20,21 @@
 // do not suppress the toggle. `modalOpen` is App's disjunction of its hosted
 // true modals (palette, confirm/prompt hosts, pickers, settings/help dialogs):
 // while one is up the keypress belongs to the modal, not the panel beneath.
+//
+// Capability degradation (design spec): `supported` follows the three-state
+// taskControlSupported convention — App passes `terminalSupported !== false`,
+// so an unknown/undefined capability is treated as supported and only an
+// explicit false disables. On an unsupported host the toggle no-ops WITH a
+// toast (`onUnsupported`) and the palette entry is hidden (`paletteHidden`),
+// while the shortcut stays registered so the keypress can surface the notice.
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
 
 export interface TerminalToggleInput {
   /** Currently focused panel's session id, or null. */
   focusedId: string | null
-  /** The focused session's terminalSupported — false makes the toggle a no-op
-   *  (the overlay would only render the unavailable panel). */
+  /** The focused session's terminal capability, three-state collapsed by App
+   *  (`terminalSupported !== false`). False → toast + no toggle + hidden
+   *  palette entry; true (incl. unknown) → normal toggle. */
   supported: boolean
   /** Session whose terminal overlay is the open one (union), or null. Equal
    *  to focusedId → the toggle closes; anything else → it opens (replacing). */
@@ -35,6 +43,9 @@ export interface TerminalToggleInput {
   modalOpen: boolean
   onOpen: (sessionId: string) => void
   onClose: () => void
+  /** Fired when a focused, unsupported session's toggle is pressed — App
+   *  wires this to the toast hub. Not fired under a modal or with no focus. */
+  onUnsupported: () => void
 }
 
 export function terminalToggleShortcut(input: TerminalToggleInput): Shortcut {
@@ -42,10 +53,16 @@ export function terminalToggleShortcut(input: TerminalToggleInput): Shortcut {
     combo: 'ctrl+`',
     allowInInput: true,
     description: 'Toggle terminal',
+    // Same capability fact gates the toggle, the toast, and palette visibility.
+    paletteHidden: !input.supported,
     handler: () => {
       if (input.modalOpen) return
       const fid = input.focusedId
-      if (fid == null || !input.supported) return
+      if (fid == null) return
+      if (!input.supported) {
+        input.onUnsupported()
+        return
+      }
       if (input.terminalOpenFor === fid) input.onClose()
       else input.onOpen(fid)
     },

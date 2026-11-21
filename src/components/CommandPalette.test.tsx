@@ -126,4 +126,27 @@ describe('CommandPalette', () => {
       if (platformDescriptor) Object.defineProperty(navigator, 'platform', platformDescriptor)
     }
   })
+
+  it('omits a paletteHidden shortcut even when it has a description', async () => {
+    // Capability-gated actions (e.g. the terminal toggle on an unsupported
+    // host) stay registered but must not surface in the palette.
+    const hidden = { ...shortcut('Toggle terminal', 'ctrl+`'), paletteHidden: true }
+    const visible = shortcut('Command palette', 'mod+k')
+    render(
+      <CommandPalette
+        open
+        onClose={vi.fn()}
+        shortcuts={[hidden, visible]}
+        sessions={[]}
+        onSelectSession={vi.fn()}
+        onSelectMessage={vi.fn()}
+      />,
+    )
+    await waitFor(() => {
+      const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-palette-option]'))
+      expect(rows).toHaveLength(1)
+      expect(rows[0].textContent).toContain('Command palette')
+      expect(rows[0].textContent).not.toContain('Toggle terminal')
+    })
+  })
 })

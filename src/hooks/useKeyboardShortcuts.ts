@@ -34,6 +34,11 @@ export interface Shortcut {
   allowInInput?: boolean
   /** Description shown in any future UI that lists shortcuts. Optional. */
   description?: string
+  /** When true, the command palette omits this entry even though it carries a
+   *  description — for capability-gated actions hidden on unsupported hosts
+   *  (e.g. the terminal toggle where node-pty is unavailable). The shortcut
+   *  itself stays registered so a keypress can still surface a notice. */
+  paletteHidden?: boolean
 }
 
 export function useKeyboardShortcuts(shortcuts: Shortcut[]): void {
