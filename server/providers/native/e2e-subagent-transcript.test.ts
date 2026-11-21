@@ -26,6 +26,7 @@ import { makeNativePorts } from '../native-host-adapters.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import type { NativeEventInput } from './session-log/format.js'
 import { loadNativeSessionLogSync, NativeSessionLog } from './session-log/log.js'
+import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import { NativeSubagentTranscriptSource } from './subagent-transcript-source.js'
 
 type Frame = Record<string, any>
@@ -703,7 +704,7 @@ describe('native subagent transcripts end to end', () => {
         : { permissionMode: 'bypassPermissions' })
       const agentId = `agent-${failure}`
       if (failure === 'descriptor-write') {
-        const log = (liveSession(fx.sm, id).handle as unknown as { log: NativeSessionLog }).log
+        const log = (nativeCoreOf(liveSession(fx.sm, id).handle) as unknown as { log: NativeSessionLog }).log
         vi.spyOn(log, 'appendDurable').mockRejectedValueOnce(new Error('descriptor write failed'))
       }
       const seen = collect(fx.sm, id)

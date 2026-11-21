@@ -28,6 +28,8 @@ import { SessionManager } from '../../session-manager.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
+import { nativeCoreOf } from '../native-host-frame-adapter.js'
+import type { ProviderSessionHandle } from '../types.js'
 import type { CanonicalEvent } from './canonical.js'
 
 const AGENT_ID = 'agent-1'
@@ -132,6 +134,12 @@ interface LiveSession {
 /** Narrow read of the manager's live session map (private by design). */
 function liveSession(sm: SessionManager, id: string): LiveSession {
   return (sm as unknown as { sessions: Map<string, LiveSession> }).sessions.get(id)!
+}
+
+/** T10: the model history lives on the neutral core, reached through the
+ *  wrapped handle's core seam (the SDK handle itself exposes no history). */
+function coreHistory(handle: unknown): unknown[] {
+  return (nativeCoreOf(handle as ProviderSessionHandle) as unknown as { history: unknown[] }).history
 }
 
 type CreateOptions = Parameters<SessionManager['create']>[0]
@@ -301,13 +309,13 @@ describe('native subagents end to end through SessionManager', () => {
     //     ids never reach the next request (only the Agent tool_result text
     //     legitimately does).
     const resumedLive = liveSession(second.sm, info.id)
-    const modelHistory = JSON.stringify(resumedLive.handle.history)
+    const modelHistory = JSON.stringify(coreHistory(resumedLive.handle))
     expect(modelHistory).toContain(PROMPT)
     expect(modelHistory).toContain(PARENT_DONE)
     expect(modelHistory).not.toContain(NESTED_TOOL_PREFIX)
     // Structured twin of the string check: a leaked sidechain USER
     // tool_result frame (not just an assistant tool_use) must fail here too.
-    const leakedNestedResults = (resumedLive.handle.history as Array<{
+    const leakedNestedResults = (coreHistory(resumedLive.handle) as Array<{
       content?: Array<{ type?: string; tool_use_id?: string }>
     }>).flatMap((m) => (Array.isArray(m.content) ? m.content : []))
       .filter((b) => b.type === 'tool_result'

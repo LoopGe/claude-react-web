@@ -6,6 +6,7 @@ import { McpConfigStore } from '../mcp-config.js'
 import type { AgentDefinitionStore } from '../agent-definition-store.js'
 import { createDefaultProviders } from './default-providers.js'
 import type { NativeProvider } from './native/native-provider.js'
+import { nativeCoreOf } from './native-host-frame-adapter.js'
 
 function nativeProvider(opts: Parameters<typeof createDefaultProviders>[0]): NativeProvider {
   return createDefaultProviders(opts).get('native') as NativeProvider
@@ -63,7 +64,7 @@ describe('createDefaultProviders native agent store', () => {
       const provider = createDefaultProviders({ agentStore: store, stateDir: dir }).get('native') as NativeProvider
       expect(provider.agentStore).toBe(store)
       const session = provider.createSession({ id: 'agent-store', cwd: dir })
-      expect((session as unknown as { opts: { agentStore?: AgentDefinitionStore } }).opts.agentStore).toBe(store)
+      expect((nativeCoreOf(session) as unknown as { opts: { agentStore?: AgentDefinitionStore } }).opts.agentStore).toBe(store)
       await session.destroy()
     } finally {
       await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })

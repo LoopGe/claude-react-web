@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
+import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import type { CreateSessionOptions, ProviderSessionHandle } from '../types.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { FileReadResult } from '../../../shared/read-file.js'
@@ -259,7 +260,7 @@ describe('NativeSession host readFile', () => {
     await modelPermissionStarted.promise
 
     const pendingFlush = deferred<void>()
-    ;(session as unknown as { assistantFlush: Promise<void> }).assistantFlush = pendingFlush.promise
+    ;(nativeCoreOf(session) as unknown as { assistantFlush: Promise<void> }).assistantFlush = pendingFlush.promise
     const frameCount = frames.length
     await expect(hostRead(session)).resolves.toMatchObject({ available: true, contents: 'body' })
     expect(frames).toHaveLength(frameCount)

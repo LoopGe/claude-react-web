@@ -304,6 +304,11 @@ describe('native readFile and read-state through SessionManager', () => {
     const id = await createSession(fx)
     const stream = channel(fx.sm, id)
     const live = liveHandle(fx.sm, id)
+    // The wrapped handle projects neutral frames through an async generator, so
+    // the construction-time init frame lands in the ring a microtask after
+    // create resolves. Wait for it so the baseline counts are stable before the
+    // host read (the read itself must add nothing).
+    await vi.waitFor(() => expect(live.history.some((f) => f.type === 'system' && (f as { subtype?: string }).subtype === 'init')).toBe(true))
     const frameCount = stream.frames.length
     const historyCount = live.history.length
     const usage = live.lastContextUsage

@@ -15,6 +15,7 @@ import { SessionManager } from '../../session-manager.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
+import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import type { CanonicalEvent } from './canonical.js'
 import { loadNativeSessionLogSync, NativeSessionLog } from './session-log/log.js'
 import type { NativeLogEvent } from './session-log/format.js'
@@ -271,9 +272,11 @@ function skillEvents(events: readonly NativeLogEvent[]): Extract<NativeLogEvent,
 }
 
 function liveHandle(sm: SessionManager, id: string): { history: ModelMessage[]; log: NativeSessionLog } {
-  return (sm as unknown as {
-    sessions: Map<string, { handle: { history: ModelMessage[]; log: NativeSessionLog } }>
+  const handle = (sm as unknown as {
+    sessions: Map<string, { handle: unknown }>
   }).sessions.get(id)!.handle
+  // T10: history/log live on the neutral core, reached through the wrapped handle.
+  return nativeCoreOf(handle as Parameters<typeof nativeCoreOf>[0]) as unknown as { history: ModelMessage[]; log: NativeSessionLog }
 }
 
 function toolResultsOf(request: StreamRequest, toolUseId: string): Array<{

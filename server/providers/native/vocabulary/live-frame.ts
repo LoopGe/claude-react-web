@@ -16,7 +16,7 @@
 // source). `replayState` rides along for API replay but is not the stop-reason
 // authority.
 
-import type { AssistantMessage } from './message.js'
+import type { AssistantMessage, ToolResultMessage } from './message.js'
 import type { TokenUsage } from './types.js'
 import type { StreamChunk, RawStreamEvent } from './stream.js'
 import type { ReplayEnvelope } from './source.js'
@@ -86,13 +86,36 @@ export type OperationalFrame =
       fastMode?: boolean
     } & OperationalEnvelope)
 
+/** A conversation frame carrying its sidechain emission context (neutral).
+ *  The core stamps `parentToolUseId` at emission — null for the main thread,
+ *  the spawning `tool_use` id for a nested (Agent/Task) runner — because the
+ *  conversation frames themselves (assistant bundle / raw passthrough /
+ *  first-class tool result) carry no envelope identity. The host adapter
+ *  derives the SDK envelope from this context (T10; the nested runner's
+ *  neutral parent axis, T15). Operational frames are NOT wrapped: they carry
+ *  their envelope inline. */
+export interface EnvelopedConversationFrame {
+  type: 'enveloped-conversation'
+  frame: AssistantFrame | RawStreamEvent | ToolResultMessage
+  parentToolUseId: string | null
+}
+
 /** The core emission union: everything the neutral core pushes onto its live
  *  `messages` channel. StreamChunk is assembler-internal (the host adapter
  *  throws on it — the host reads raw Anthropic events and settled messages,
  *  never a neutral chunk); RawStreamEvent is the R2 verbatim passthrough;
  *  AssistantFrame is the settled assistant bundle; OperationalFrame is the
- *  live-only system/result surface. The host adapter projects each member to
- *  the SDK AgentMessage the pump consumes. First-class tool results travel the
- *  persistence path and the wider host projection union, not this emission
- *  union (see the adapter's NativeHostFrame). */
-export type NativeCoreFrame = StreamChunk | RawStreamEvent | AssistantFrame | OperationalFrame
+ *  live-only system/result surface; ToolResultMessage is a first-class live
+ *  tool result (T10 folds it into the emission union — the loop emits it via
+ *  the widened NativeLoopFrame). The core emits conversation frames wrapped
+ *  in EnvelopedConversationFrame so the sidechain parent travels neutrally;
+ *  the bare conversation variants remain for the projection contract and
+ *  main-thread convenience. The host adapter projects each member to the SDK
+ *  AgentMessage the pump consumes. */
+export type NativeCoreFrame =
+  | StreamChunk
+  | RawStreamEvent
+  | AssistantFrame
+  | OperationalFrame
+  | ToolResultMessage
+  | EnvelopedConversationFrame

@@ -1,9 +1,16 @@
 // server/providers/native/native-session.ts
 //
-// The native provider's session handle: owns the conversation history, the
-// serialized turn pump, and the frame output stream, and drives Task 9's
-// `runTurn` loop against Task 2's Anthropic streamer. No subprocess — the
-// "process" is this Node process, so processExited resolves immediately.
+// The native provider's NEUTRAL core session (design R1, Task 10): owns the
+// conversation history, the serialized turn pump, and the neutral frame output
+// stream, and drives Task 9's `runTurn` loop against Task 2's Anthropic
+// streamer. Implements NativeSessionCore — `messages` yields neutral
+// NativeCoreFrame, input arrives as neutral RequestMessage via enqueue /
+// enqueueControl, and the persistence-outcome callbacks are neutral assignable
+// slots. The host adapter (native-host-frame-adapter.ts wrapNativeCore) wraps
+// this core into the SDK-shaped ProviderSessionHandle: it owns the host-input
+// identity (receivedAt re-key), the lease callbacks, and the neutral→SDK frame
+// projection. No subprocess — the "process" is this Node process, so
+// processExited resolves immediately.
 //
 // Signal lifecycle is deliberately two-level:
 //   - sessionAbort: created once; aborted by abort()/destroy() only.
@@ -21,18 +28,24 @@ import { createPushable, type Pushable } from '../../pushable.js'
 import { createLogger } from '../../log.js'
 import type { ProviderProfile } from '../../../shared/profile.js'
 import { effortLevelsForModel, supportsFastModeForModel } from '../../../shared/model-capability.js'
-import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
-import type { ProviderAttachmentOccurrence, ProviderInterruptReceipt, ProviderResetBaseSettings, ProviderSessionHandle } from '../types.js'
+import type {
+  NativeSessionCore,
+  NativeAttachmentOccurrence,
+  NativeInterruptReceipt,
+  NativeResetBaseSettings,
+  NativeEffectiveSettings,
+  NativePersistenceOutcome,
+} from './core-contract.js'
 import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
-import { projectNativeFrameToSdk, projectNativeEventToSdk, type NativeFrameEnvelope, type NativeHostFrame } from '../native-host-frame-adapter.js'
-import { createAssistantMessage, createToolResultMessage, createUserMessage, type RequestMessage } from './vocabulary/message.js'
+import { createAssistantMessage, createToolResultMessage, createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
 import type { ContentBlock, TokenUsage } from './vocabulary/types.js'
-import type { OperationalFrame } from './vocabulary/live-frame.js'
+import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
+import type { RawStreamEvent } from './vocabulary/stream.js'
 import type { NativeHostPorts } from './ports.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
-import { apiRetryFrame, defaultFrameContext, informationalFrame, resultFrame, type Frame, type FrameContext, type Usage } from './frames.js'
+import { defaultFrameContext, type FrameContext, type Usage } from './frames.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import { buildForkSeed } from './session-log/fork.js'
 import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './session-log/replay.js'
@@ -87,7 +100,7 @@ import {
 } from './file-read.js'
 
 interface PendingDurableInitial {
-  message: AgentUserMessage
+  message: RequestMessage
   persisted?: { role: 'user'; content: unknown[] }
   pdfReservations?: PdfBudgetReservation[]
 }
@@ -101,25 +114,6 @@ const DEFAULT_MAX_TOKENS = 16384
  *  caller's first text block, so the model must answer with the title alone. */
 const TITLE_PROMPT =
   'Generate a concise session title in the same language as the request. Return only the title, without quotes, a prefix, or trailing punctuation.'
-
-/** The log format requires a persisted user event's content to be a block
- *  array (the parser rejects a bare string as corrupt). The manager's primary
- *  send path and `seedCompactSummary` both send `content: text` as a string,
- *  so normalize on the way to disk only — the in-memory history keeps the
- *  caller's shape. */
-function persistedUserMessage(message: { content: unknown }): { role: 'user'; content: unknown[] } {
-  const content = message.content
-  return {
-    role: 'user',
-    content: typeof content === 'string' ? [{ type: 'text', text: content }] : (content as unknown[]),
-  }
-}
-
-/** Normalize a raw prompt for persistence. PDF model forms are assigned once
- * at the pump's transactional budget boundary, never during request projection. */
-function nativeUserMessage(message: { content: unknown }): { role: 'user'; content: unknown[] } {
-  return persistedUserMessage(message)
-}
 
 function containsStructuredFile(content: unknown[]): boolean {
   return content.some((block) => typeof block === 'object' && block !== null
@@ -201,6 +195,123 @@ function sdkUsageOf(usage: TokenUsage): Usage {
     ...(usage.cacheReadTokens !== undefined ? { cache_read_input_tokens: usage.cacheReadTokens } : {}),
     ...(usage.cacheWriteTokens !== undefined ? { cache_creation_input_tokens: usage.cacheWriteTokens } : {}),
   }
+}
+
+/** SDK Usage counter pair → neutral disjoint TokenUsage (the inverse of
+ *  sdkUsageOf), for the neutral terminal result frame the pump catch emits. */
+function neutralUsageOf(usage: Usage): TokenUsage {
+  return {
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    ...(usage.cache_read_input_tokens !== undefined ? { cacheReadTokens: usage.cache_read_input_tokens } : {}),
+    ...(usage.cache_creation_input_tokens !== undefined ? { cacheWriteTokens: usage.cache_creation_input_tokens } : {}),
+  }
+}
+
+// ── Temporary neutral→legacy persistence projection (T9; T11 removes) ────────
+// The v1/v2 durable log stores SDK-shaped assistant events. Until the v3
+// neutral format lands (T11), persistFrame projects the neutral AssistantFrame
+// to that legacy event shape CORE-LOCALLY (the core may not import the host
+// adapter). This mirrors the adapter's sdkAssistantBlock / parseToolInput /
+// sdkUsage exactly so the log stays byte-compatible; the wire round-trip pin
+// and the native e2e guard against drift.
+
+/** Parse a tool-call's raw-JSON arguments into the legacy tool_use.input.
+ *  Empty/invalid/non-object JSON becomes {} (mirrors the loop + wire adapter). */
+function parseToolInput(json: string): Record<string, unknown> {
+  if (!json) return {}
+  try {
+    const parsed = JSON.parse(json)
+    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+/** One neutral assistant content block → the legacy SDK block shape. */
+function legacyAssistantBlock(block: ContentBlock): Record<string, unknown> {
+  switch (block.type) {
+    case 'text': return { type: 'text', text: block.text }
+    case 'reasoning':
+      if (block.redacted === true) return { type: 'redacted_thinking', data: block.data }
+      return {
+        type: 'thinking',
+        thinking: block.text,
+        ...(typeof block.signature === 'string' && block.signature !== '' ? { signature: block.signature } : {}),
+      }
+    case 'tool-call': return { type: 'tool_use', id: block.id, name: block.name, input: parseToolInput(block.arguments) }
+    default: throw new Error(`native persistence bridge: block kind "${(block as { type: string }).type}" is not an assistant emission`)
+  }
+}
+
+/** The legacy SDK assistant message body for a neutral AssistantFrame (the
+ *  v1/v2 log event's `message`). uuid = the neutral message id; the `msg_` id
+ *  prefix and stop_reason/usage projection match the host adapter verbatim. */
+function legacyAssistantMessageOf(frame: AssistantFrame): {
+  type: 'assistant'
+  role: 'assistant'
+  content: unknown[]
+  id: string
+  model: string
+  stop_reason: string | null
+  usage: Usage
+} {
+  return {
+    id: `msg_${frame.message.id}`,
+    type: 'assistant',
+    role: 'assistant',
+    model: frame.model,
+    content: frame.message.content.map(legacyAssistantBlock),
+    stop_reason: frame.stopReason,
+    usage: sdkUsageOf(frame.usage),
+  }
+}
+
+// ── Temporary task-frame bridge (T16 removes) ───────────────────────────────
+// NativeTaskManager still constructs SDK-shaped task frames (frames.ts). Until
+// T16 neutralizes the task manager, the core converts them to the neutral
+// operational task frames at the emission boundary; the host adapter projects
+// them back to the identical SDK task_started / task_notification frames.
+
+/** SDK task_started / task_notification frame → neutral operational frame. */
+function taskFrameToNeutral(frame: unknown): NativeCoreFrame {
+  const f = frame as {
+    subtype?: unknown
+    task_id?: unknown
+    tool_use_id?: unknown
+    task_type?: unknown
+    description?: unknown
+    subagent_type?: unknown
+    status?: unknown
+    result?: unknown
+    reason?: unknown
+    receivedAt?: unknown
+  }
+  const time = typeof f.receivedAt === 'number' ? f.receivedAt : Date.now()
+  if (f.subtype === 'task_started') {
+    return {
+      type: 'task/started',
+      taskId: f.task_id as string,
+      toolUseId: f.tool_use_id as string,
+      taskType: f.task_type as 'local_bash' | 'local_agent',
+      description: f.description as string,
+      ...(typeof f.subagent_type === 'string' ? { subagentType: f.subagent_type } : {}),
+      time,
+    }
+  }
+  if (f.subtype === 'task_notification') {
+    return {
+      type: 'task/notification',
+      taskId: f.task_id as string,
+      toolUseId: f.tool_use_id as string,
+      description: f.description as string,
+      status: f.status as 'completed' | 'failed' | 'stopped',
+      ...(typeof f.result === 'string' && f.result ? { result: f.result } : {}),
+      ...(f.reason !== undefined ? { reason: f.reason as 'worker_restart' } : {}),
+      time,
+    }
+  }
+  throw new Error(`native task bridge: unexpected task frame subtype "${String(f.subtype)}"`)
 }
 
 /** `/name args` — the composer's slash-command shape for a user-invoked skill.
@@ -355,33 +466,18 @@ export interface NativeSessionOptions {
   subagentSystem?: string
   /** Loose canUseTool from CreateSessionOptions — (toolName, input, {signal}) => PermissionResult. */
   canUseTool?: (...args: unknown[]) => Promise<unknown>
-  /** Manager-injected consumed stamp (CreateSessionOptions.onUserMessageConsumed):
-   *  called when a queued message is dequeued for a turn — without it the
-   *  client's send bubble stays 'queued' forever. */
-  onUserMessageConsumed?: (message: AgentUserMessage) => void
-  /** Raw persistence owns the send lease: appended converts it to a persisted
-   * reference; failed releases an abandoned prompt. A retryable pre-append
-   * failure emits no outcome and retains the lease until append or withdrawal. */
-  onUserMessagePersistence?: (message: AgentUserMessage, outcome: 'appended' | 'failed') => void
-  /** Mid-run steering delivery: fired per supplement once its
-   *  `session/supplement` event is durable, right before the next request
-   *  carries it. The manager stamps the bubble and the sidecar from it. */
-  onSupplementDelivered?: (uuid: string, outcome: SupplementOutcome) => void
   /** Test seam: evaluated PER TURN; a non-undefined return replaces the real
    *  network streamer for that turn. Per-turn evaluation lets tests swap the
    *  script between turns. */
   streamSupplier?: () => LoopDeps['stream'] | undefined
 }
 
-export class NativeSession implements ProviderSessionHandle {
-  readonly provider = 'native'
-  /** The native loop never replays a top-level user prompt through its message
-   *  stream (only tool_result user frames), so the manager pairs prompt uuids
-   *  at consumption instead of waiting for an SDK echo. */
-  readonly echoesUserPrompts = false
+export class NativeSession implements NativeSessionCore {
+  /** The session id stamped on every projected live frame envelope. */
+  readonly sessionId: string
 
-  private readonly output: Pushable<AgentMessage>
-  private readonly input: AgentUserMessage[] = []
+  private readonly output: Pushable<NativeCoreFrame>
+  private readonly input: RequestMessage[] = []
   /** Consumed from FIFO but not yet appended. It remains withdrawable and is
    * always retried before any later input after a migration/append failure. */
   private pendingDurableInitial: PendingDurableInitial | null = null
@@ -402,9 +498,18 @@ export class NativeSession implements ProviderSessionHandle {
   /** Append-only persistence for this session. Every constructor path opens it
    *  (fresh create, resume, or fork-seeded) before `system/init` is pushed. */
   private readonly log: NativeSessionLog
-  /** Arrival time per queued turn — written to the log when the pump consumes
-   *  the message, never at enqueue time (a drained turn must not persist). */
-  private readonly receivedAt = new WeakMap<AgentUserMessage, number>()
+  /** Arrival time per queued turn, keyed by the neutral message id — recorded
+   *  at enqueue and written to the log when the pump consumes the message (a
+   *  drained turn must not persist). The host adapter separately re-keys the
+   *  HOST receivedAt onto the uuid for the lease-callback projections; this map
+   *  is the core's own enqueue-time arrival for the durable timestamp. */
+  private readonly receivedAt = new Map<string, number>()
+  /** Neutral persistence-outcome slots (NativeSessionCore). The host adapter
+   *  assigns translating functions that look up the paired host message and
+   *  fire the host lease callbacks. Unassigned in a bare core (unit tests). */
+  onUserMessageConsumed?: (msg: RequestMessage) => void
+  onUserMessagePersistence?: (msg: RequestMessage, outcome: NativePersistenceOutcome) => void
+  onSupplementDelivered?: (uuid: string, outcome: SupplementOutcome) => void
   /** Flush of the most recent assistant event. `requestPermission` awaits it
    *  before any tool runs, so a crash is always recoverable as "call sent,
    *  result unknown" — never "tool ran but its call was never durable". */
@@ -509,7 +614,8 @@ export class NativeSession implements ProviderSessionHandle {
 
   constructor(private readonly opts: NativeSessionOptions) {
     // opts must be bound before these: output's label and ctx carry the id.
-    this.output = createPushable<AgentMessage>(`native-session[${opts.id}]`)
+    this.sessionId = opts.id
+    this.output = createPushable<NativeCoreFrame>(`native-session[${opts.id}]`)
     this.ctx = defaultFrameContext(opts.id)
     this.mcp = opts.mcp
     this.tools = [...opts.tools]
@@ -545,7 +651,7 @@ export class NativeSession implements ProviderSessionHandle {
     this.skills = new NativeSkillCatalog(opts.cwd, opts.ports.skill)
     this.skills.configure(opts.skills)
     this.skillsReady = this.startSkillReload()
-    this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
+    this.tasks = new NativeTaskManager((frame: unknown) => this.output.push(taskFrameToNeutral(frame)))
     this.taskOutputTool = createTaskOutputTool(this.tasks)
     // Every session can delegate, MCP or not: `tools` is a live getter and the
     // `emit` path is the session's own persist+push, so a nested run's frames
@@ -569,7 +675,7 @@ export class NativeSession implements ProviderSessionHandle {
       requestPermission: this.requestPermission,
       emit: (frame, parentToolUseId) => {
         this.persistFrame(frame, parentToolUseId)
-        this.output.push(this.projectFrame(frame, parentToolUseId))
+        this.emitFrame(frame, parentToolUseId)
       },
       persistToolResult: (result, parentToolUseId) => this.persistToolResult(result, parentToolUseId),
       attachmentProjection: {
@@ -602,15 +708,20 @@ export class NativeSession implements ProviderSessionHandle {
     // intent-based, so the client's chip is correct before the first turn
     // ends (the native provider has no CLI to report a runtime state).
     this.output.push({
-      type: 'system',
-      subtype: 'init',
-      session_id: opts.id,
+      type: 'init',
+      sessionId: opts.id,
       uuid: this.ctx.uuid(),
-      parent_tool_use_id: null,
-      fast_mode_state: this.fastMode ? 'on' : 'off',
-    } as unknown as AgentMessage)
+      parentToolUseId: null,
+      fastMode: this.fastMode,
+    })
     if (this.legacyAgentDropNotice !== undefined) {
-      this.output.push(informationalFrame(this.ctx, this.legacyAgentDropNotice))
+      this.output.push({
+        type: 'informational',
+        sessionId: opts.id,
+        uuid: this.ctx.uuid(),
+        parentToolUseId: null,
+        text: this.legacyAgentDropNotice,
+      })
     }
     // `tools` is now the effective list from birth, not builtins-only until
     // the first turn: the invariant tools = builtins + Agent + Task + MCP defs
@@ -754,7 +865,7 @@ export class NativeSession implements ProviderSessionHandle {
     )
   }
 
-  getEffectiveSettings(): { model: string; permissionMode?: string; effortLevel?: string; agent: string | null } {
+  getEffectiveSettings(): NativeEffectiveSettings {
     const permissionMode = this.currentProfile?.permissionMode ?? this.basePermissionMode
     return {
       model: this.model,
@@ -766,7 +877,7 @@ export class NativeSession implements ProviderSessionHandle {
     }
   }
 
-  getResetBaseSettings(): ProviderResetBaseSettings {
+  getResetBaseSettings(): NativeResetBaseSettings {
     return {
       model: this.baseModel,
       permissionMode: this.basePermissionMode,
@@ -957,7 +1068,7 @@ export class NativeSession implements ProviderSessionHandle {
     return this.durableRetryPaused
   }
 
-  get messages(): AsyncIterable<AgentMessage> {
+  get messages(): AsyncIterable<NativeCoreFrame> {
     return this.output.iterable
   }
 
@@ -1099,7 +1210,17 @@ export class NativeSession implements ProviderSessionHandle {
         signal: req.signal,
       },
       async (info) => {
-        if (!opts?.suppressRetryFrames) this.output.push(apiRetryFrame(this.ctx, info))
+        if (!opts?.suppressRetryFrames) {
+          this.output.push({
+            type: 'api/retry',
+            sessionId: this.opts.id,
+            uuid: this.ctx.uuid(),
+            parentToolUseId: this.ctx.parentToolUseId ?? null,
+            attempt: info.attempt,
+            maxRetries: info.maxRetries,
+            delayMs: info.delayMs,
+          })
+        }
       },
     )
   }
@@ -1125,53 +1246,41 @@ export class NativeSession implements ProviderSessionHandle {
     }
   }
 
-  /** Envelope for a conversation frame: the assistant bundle carries its own
-   *  neutral uuid (message.id); a first-class tool result carries its minted id
-   *  (shared with the persisted result); raw passthrough mints a fresh frame
-   *  uuid (the legacy streamEventFrame mints ctx.uuid() likewise). The sidechain
-   *  parent is supplied by the caller's emission context. */
-  private frameEnv(frame: NativeHostFrame, parentToolUseId: string | null): NativeFrameEnvelope {
-    let uuid: string
-    if ('role' in frame && frame.role === 'tool') {
-      uuid = frame.id
-    } else if ('type' in frame && frame.type === 'assistant-frame') {
-      uuid = frame.message.id
-    } else {
-      uuid = this.ctx.uuid()
-    }
-    return { sessionId: this.opts.id, uuid, parentToolUseId }
-  }
-
-  /** Project one neutral loop emission to the SDK AgentMessage the host pump
-   *  consumes (T6 adapter). Operational frames carry their envelope inline;
-   *  conversation frames derive it from the caller's parent context. This is
-   *  the T9 neutral→SDK emission boundary: the output channel stays SDK-shaped
-   *  (the messages getter returns it verbatim); T10 makes core.messages neutral
-   *  and relocates this projection into wrapNativeCore. */
-  private projectFrame(frame: NativeLoopFrame, parentToolUseId: string | null): AgentMessage {
+  /** Emit one neutral loop frame onto the live channel. Operational frames
+   *  carry their envelope inline (pushed verbatim); conversation frames
+   *  (assistant bundle / raw passthrough / first-class tool result) are wrapped
+   *  with the caller's sidechain parent so the host adapter can derive the SDK
+   *  envelope. This is the neutral core emission — the SDK projection lives in
+   *  wrapNativeCore, never here. */
+  private emitFrame(frame: NativeLoopFrame, parentToolUseId: string | null): void {
     if (this.isOperationalFrame(frame)) {
-      const projected = projectNativeEventToSdk(frame)
-      if (projected === null) throw new Error(`native session: operational frame "${frame.type}" projected to null`)
-      return projected
+      this.output.push(frame)
+      return
     }
-    return projectNativeFrameToSdk(frame, this.frameEnv(frame, parentToolUseId))
+    // runTurn only emits conversation frames here (assistant bundle / raw
+    // passthrough / first-class tool result); StreamChunk is assembler-internal
+    // and never reaches deps.emit. Narrow the widened loop union to the
+    // conversation subset the envelope wrapper carries.
+    const conversation = frame as AssistantFrame | RawStreamEvent | ToolResultMessage
+    this.output.push({ type: 'enveloped-conversation', frame: conversation, parentToolUseId })
   }
 
   /** Persist a neutral assistant frame. The v3 durable format is T11; until
-   *  then the frame is projected to the current SDK assistant event shape (the
-   *  same projection the live output uses), so the log stays byte-compatible.
-   *  Canonical tool results use `persistToolResult` below instead: their
-   *  structured content is not present on the deliberately text-only UI frame. */
+   *  then the frame is projected to the current SDK assistant event shape
+   *  CORE-LOCALLY (legacyAssistantMessageOf), so the log stays byte-compatible
+   *  without importing the host adapter. Canonical tool results use
+   *  `persistToolResult` below instead: their structured content is not present
+   *  on the deliberately text-only UI frame. */
   private persistFrame(frame: NativeLoopFrame, parentToolUseId: string | null): void {
     if (!('type' in frame) || frame.type !== 'assistant-frame') return
-    const f = this.projectFrame(frame, parentToolUseId) as Frame
+    const message = legacyAssistantMessageOf(frame)
     this.log.append({
       type: 'assistant',
-      uuid: f.uuid!,
+      uuid: frame.message.id,
       session_id: this.opts.id,
-      parent_tool_use_id: f.parent_tool_use_id ?? null,
+      parent_tool_use_id: parentToolUseId,
       timestamp: new Date().toISOString(),
-      message: f.message,
+      message,
     })
     // Keep the flush promise so `requestPermission` can await it before any
     // tool executes. The catch keeps a text-only turn (which never reaches
@@ -1183,9 +1292,9 @@ export class NativeSession implements ProviderSessionHandle {
     // One assistant frame = one API round. Summing here (rather than from
     // the turn's final usage) keeps the live per-model totals identical to
     // what `restoreUsage` rebuilds from the log.
-    const usage = usageOf(f.message.usage)
+    const usage = usageOf(message.usage)
     if (usage) {
-      const model = typeof f.message.model === 'string' && f.message.model ? f.message.model : this.model
+      const model = message.model || this.model
       this.usageByModel.set(
         model,
         addUsage(this.usageByModel.get(model) ?? { input_tokens: 0, output_tokens: 0 }, usage),
@@ -1238,17 +1347,25 @@ export class NativeSession implements ProviderSessionHandle {
       this.log.append(event)
       // The live ring/UI must see the same synthetic result the disk replay
       // will show, with the SAME uuid so the seq store and a later restart do
-      // not render it twice. Push directly (not through emit: the log append
-      // above already happened).
-      // Reuse the persisted event's message verbatim so the live frame and
-      // the disk replay are identical by construction (same uuid AND shape).
-      this.output.push({
-        type: 'user',
-        uuid: event.uuid,
-        session_id: this.opts.id,
-        parent_tool_use_id: null,
-        message: event.message,
-      } as unknown as AgentMessage)
+      // not render it twice. Each synthetic event carries exactly one
+      // tool_result block (repairInterruptedTurn mints one per unanswered id);
+      // emit it as a first-class neutral tool result keyed by the event uuid,
+      // which the host adapter projects back to the identical SDK user frame.
+      const block = event.message.content[0] as {
+        tool_use_id: string
+        content: Array<{ type: 'text'; text: string }>
+        is_error?: boolean
+      }
+      const callId = brandString<'ToolCallId'>(block.tool_use_id)
+      const liveFrame = freezeMessage({
+        role: 'tool',
+        id: brandString<'MessageId'>(event.uuid),
+        source: { kind: 'tool', callId },
+        toolCallId: callId,
+        content: block.content.map((b) => ({ type: 'text' as const, text: b.text })),
+        isError: block.is_error ?? false,
+      })
+      this.output.push({ type: 'enveloped-conversation', frame: liveFrame, parentToolUseId: null })
     }
     this.history.push(...legacyMessagesToNeutral([{
       role: 'user',
@@ -1346,7 +1463,7 @@ export class NativeSession implements ProviderSessionHandle {
 
   private async pumpLoop(): Promise<void> {
     while (!this._closed && (this.pendingDurableInitial !== null || this.input.length > 0)) {
-      const pending = this.pendingDurableInitial ?? { message: this.input.shift() as AgentUserMessage }
+      const pending = this.pendingDurableInitial ?? { message: this.input.shift() as RequestMessage }
       this.pendingDurableInitial = pending
       const next = pending.message
       // Fresh per-turn signal, armed BEFORE the persistence await: interrupt()
@@ -1387,7 +1504,7 @@ export class NativeSession implements ProviderSessionHandle {
           // Freeze the freshly discovered cache BEFORE resolving the command.
           // Invocation, available_skills and the Skill tool now share one view.
           turnSkillView = this.skills.snapshot(turnSkillPolicy)
-          invocation = skillInvocationForTurn(next.message.content, turnSkillView)
+          invocation = skillInvocationForTurn(next.content, turnSkillView)
         } catch (err) {
           skillError = err
         }
@@ -1396,9 +1513,13 @@ export class NativeSession implements ProviderSessionHandle {
         // upgrades before its first structured occurrence; a failed migration
         // or raw append leaves `pendingDurableInitial` withdrawable and pauses
         // the FIFO so later input cannot overtake it.
-        const timestamp = new Date(this.receivedAt.get(next)!).toISOString()
+        const timestamp = new Date(this.receivedAt.get(next.id!)!).toISOString()
         if (!pending.persisted) {
-          const normalized = nativeUserMessage(next.message)
+          // The neutral user content blocks are SDK-compatible (text / image /
+          // structured file with the full resolved attachment); the v1/v2 log
+          // stores them verbatim. PDF model forms are assigned once here at the
+          // transactional budget boundary (T11 owns the neutral v3 form).
+          const normalized = { role: 'user' as const, content: next.content as unknown[] }
           const assigned = assignPdfModelForms(
             normalized.content,
             this.pdfBudgets,
@@ -1417,14 +1538,11 @@ export class NativeSession implements ProviderSessionHandle {
         if (this.pendingDurableInitial !== pending) {
           throw new Error('initial message was withdrawn before persistence')
         }
-        const rawMessage = {
-          role: 'user',
-          content: typeof next.message.content === 'string' ? next.message.content : persisted.content,
-        } as { role: 'user'; content: unknown[] }
+        const rawMessage = { role: 'user', content: persisted.content } as { role: 'user'; content: unknown[] }
         initialMessages = legacyMessagesToNeutral([rawMessage])
         this.log.append({
           type: 'user',
-          uuid: next.uuid!,
+          uuid: next.id!,
           session_id: this.opts.id,
           parent_tool_use_id: null,
           timestamp,
@@ -1434,7 +1552,7 @@ export class NativeSession implements ProviderSessionHandle {
         pending.pdfReservations = []
         rawAppended = true
         this.syncAttachmentReferences()
-        this.opts.onUserMessagePersistence?.(next, 'appended')
+        this.onUserMessagePersistence?.(next, 'appended')
         appendedInitialMessages = [...initialMessages]
         if (invocation) {
           const instruction = createUserMessage({ content: [{ type: 'text', text: invocation.body }], source: { kind: 'user' } })
@@ -1448,7 +1566,7 @@ export class NativeSession implements ProviderSessionHandle {
           appendedInitialMessages.push(instruction)
         }
         this.pendingDurableInitial = null
-        this.opts.onUserMessageConsumed?.(next)
+        this.onUserMessageConsumed?.(next)
         // The prompt is now durable in the writer's event stream, so steering
         // admission may open. It closes when the manager settles the turn.
         this.steeringOpen = true
@@ -1485,7 +1603,7 @@ export class NativeSession implements ProviderSessionHandle {
             emit: (frame) => {
               const parent = this.ctx.parentToolUseId ?? null
               this.persistFrame(frame, parent)
-              this.output.push(this.projectFrame(frame, parent))
+              this.emitFrame(frame, parent)
             },
             persistToolResult: (result) => this.persistToolResult(result, null),
             attachmentProjection: {
@@ -1511,11 +1629,11 @@ export class NativeSession implements ProviderSessionHandle {
         endReason = res.isError ? 'error' : 'completed'
         if (!res.isError) endUsage = sdkUsageOf(res.usage)
       } catch (err) {
-        // A pre-append failure stays leased while the same pending prompt can
-        // be retried. Only withdrawal or another abandonment releases it.
-        if (!rawAppended && !this._closed && this.pendingDurableInitial !== pending) {
-          this.opts.onUserMessagePersistence?.(next, 'failed')
-        }
+        // A withdrawn parked head (pendingDurableInitial !== pending) already
+        // received its terminal 'failed' outcome from drainQueued (the T7
+        // pairing fix fires it for EVERY drained entry), so the catch must not
+        // fire a second one. A pre-append failure that was NOT withdrawn stays
+        // leased while the same pending prompt can be retried.
         // A pre-append failure owns no canonical history and keeps the pending
         // prompt at the FIFO head. Once raw append succeeds, later failures
         // restore exactly the appended prefix (raw plus any appended skill),
@@ -1544,14 +1662,18 @@ export class NativeSession implements ProviderSessionHandle {
         const interrupted = turnAbort.signal.aborted && !this.sessionAbort.signal.aborted
         if (interrupted) log.info(`[${this.opts.id}] turn interrupted by user`)
         else log.error(`[${this.opts.id}] turn failed:`, err)
-        this.output.push(resultFrame(this.ctx, {
+        this.output.push({
+          type: 'result',
+          sessionId: this.opts.id,
+          uuid: this.ctx.uuid(),
+          parentToolUseId: this.ctx.parentToolUseId ?? null,
           result: interrupted ? 'interrupted by user' : err instanceof Error ? err.message : String(err),
-          usage: this.lastUsage,
+          usage: neutralUsageOf(this.lastUsage),
           numTurns: 0,
           durationMs: 0,
           isError: true,
-          fastModeState: this.fastMode ? 'on' : 'off',
-        }))
+          fastMode: this.fastMode,
+        })
         endReason = interrupted ? 'interrupted' : 'error'
       } finally {
         this.preparedPdfs.clearHistory('main')
@@ -1578,15 +1700,16 @@ export class NativeSession implements ProviderSessionHandle {
     }
   }
 
-  enqueueUserMessage(message: AgentUserMessage): void {
+  enqueue(message: RequestMessage): void {
     if (this._closed) return
     // A direct enqueue is exactly what releases a durable-retry pause: the pump
     // loop (re)starts and retries the parked head prompt before this message.
     this.durableRetryPaused = false
     // Arrival time only — the message is not part of the conversation until
-    // the pump consumes it (see pumpLoop). The WeakMap keeps the provider's
-    // AgentUserMessage contract untouched.
-    this.receivedAt.set(message, Date.now())
+    // the pump consumes it (see pumpLoop). Keyed by the neutral message id (the
+    // host uuid for adapter-projected input); the host adapter re-keys the HOST
+    // receivedAt separately for the lease-callback projections.
+    this.receivedAt.set(message.id!, Date.now())
     this.enqueueGeneration++
     this.input.push(message)
     if (!this.pumping) {
@@ -1601,25 +1724,25 @@ export class NativeSession implements ProviderSessionHandle {
    *  join the conversation WITHOUT triggering a turn (shouldQuery:false
    *  semantics). Append it to the history the next turn sends; no frame —
    *  the manager broadcasts the seed itself. */
-  sendControlMessage(message: AgentUserMessage): void {
+  enqueueControl(message: RequestMessage): void {
     // The compact seed is a durable conversation message even though it never
     // starts a turn: persist it, then make it visible to the next request.
     this.log.append({
       type: 'user',
-      uuid: message.uuid!,
+      uuid: message.id!,
       session_id: this.opts.id,
       parent_tool_use_id: null,
       timestamp: new Date().toISOString(),
-      message: persistedUserMessage(message.message),
+      message: { role: 'user', content: message.content as unknown[] },
       isCompactSummary: true,
     })
     this.syncAttachmentReferences()
     flushInBackground(this.log, this.opts.id, 'compact summary')
-    this.history.push(...legacyMessagesToNeutral([{ role: 'user', content: message.message.content }]))
+    this.history.push(...legacyMessagesToNeutral([{ role: 'user', content: message.content as unknown[] }]))
   }
 
-  getAttachmentOccurrences(): readonly ProviderAttachmentOccurrence[] {
-    const occurrences: ProviderAttachmentOccurrence[] = []
+  getAttachmentOccurrences(): readonly NativeAttachmentOccurrence[] {
+    const occurrences: NativeAttachmentOccurrence[] = []
     for (const event of this.log.events) {
       if (event.type !== 'user') continue
       for (let outerIndex = 0; outerIndex < event.message.content.length; outerIndex++) {
@@ -1756,17 +1879,30 @@ export class NativeSession implements ProviderSessionHandle {
     this.lastUsage = { input_tokens: 0, output_tokens: 0 }
   }
 
-  clearQueuedInput(): number {
-    return this.drainQueuedInput().length
+  clearQueued(): number {
+    return this.drainQueued().length
   }
 
-  drainQueuedInput(): AgentUserMessage[] {
+  drainQueued(): RequestMessage[] {
     const pending = this.pendingDurableInitial
     for (const reservation of pending?.pdfReservations ?? []) this.pdfBudgets.release(reservation)
     this.pendingDurableInitial = null
     // Withdrawing the parked head prompt ends any durable-retry pause.
     this.durableRetryPaused = false
-    return [...(pending ? [pending.message] : []), ...this.input.splice(0)]
+    const drained = [...(pending ? [pending.message] : []), ...this.input.splice(0)]
+    // T7 pairing fix: fire a terminal 'failed' outcome for EVERY drained entry
+    // so the host adapter's strong host↔neutral pairing releases (no orphan,
+    // no leak). Under legacy core semantics a plain-FIFO drain (the manager's
+    // withdrawHostQueue leg) fired no outcome, orphaning the pairing. A drained
+    // prompt is abandoned (withdrawn) or transferred (respawn re-enqueues onto
+    // a fresh handle, re-pairing there); either way THIS handle's pairing ends.
+    // The pump catch no longer fires 'failed' for a withdrawn parked head — this
+    // is the single terminal-outcome point for drained input.
+    for (const msg of drained) {
+      this.receivedAt.delete(msg.id!)
+      this.onUserMessagePersistence?.(msg, 'failed')
+    }
+    return drained
   }
 
   /** Mid-run steering intake: admitted ONLY while a turn is live — i.e. since
@@ -1825,7 +1961,7 @@ export class NativeSession implements ProviderSessionHandle {
     const retained = wrapped.filter((_entry, index) => this.supplementQueue.includes(batch[index]))
     this.supplementQueue = this.supplementQueue.filter((entry) => !batch.includes(entry))
     for (const entry of retained) {
-      this.opts.onSupplementDelivered?.(entry.uuid, { ok: true, boundary: 'PreToolUse' })
+      this.onSupplementDelivered?.(entry.uuid, { ok: true, boundary: 'PreToolUse' })
     }
     return retained
   }
@@ -1838,15 +1974,23 @@ export class NativeSession implements ProviderSessionHandle {
     return this.tasks.stop(taskId)
   }
 
-  async interrupt(opts?: { cancelQueued?: boolean }): Promise<ProviderInterruptReceipt | void> {
+  async interrupt(opts?: { cancelQueued?: boolean }): Promise<NativeInterruptReceipt | void> {
     // A plain interrupt stops the current turn but leaves queued user turns
     // for the next one — the manager's contract (and claude's Query.interrupt
     // behavior). Only `cancelQueued` drops them; the manager has already
-    // drained its host queue and will broadcast the withdrawal.
-    if (opts?.cancelQueued) this.drainQueuedInput()
+    // drained its host queue (leg 1) and will broadcast the withdrawal. This
+    // drain catches anything enqueued since leg 1 (leg 2): drainQueued fires a
+    // terminal 'failed' per entry (releasing the adapter pairing) and the
+    // receipt lists the cancelled neutral ids (=== host uuids) for the
+    // manager's withdrawal accounting.
+    let cancelledQueued: string[] | undefined
+    if (opts?.cancelQueued) {
+      cancelledQueued = this.drainQueued().map((msg) => msg.id!)
+    }
     // NO frame emission here — the pumpLoop catch emits the single
     // 'interrupted by user' result frame.
     this.turnAbort?.abort(new Error('interrupted by user'))
+    return cancelledQueued !== undefined ? { cancelledQueued } : undefined
   }
 
   async setModel(model?: string): Promise<void> {
@@ -2095,7 +2239,7 @@ export class NativeSession implements ProviderSessionHandle {
     ]
   }
 
-  // ── MCP control (optional ProviderSessionHandle members) ───────────────
+  // ── MCP control (optional NativeSessionCore members) ───────────────────
 
   async mcpServerStatus(): Promise<unknown> {
     return this.mcp?.statuses() ?? []
@@ -2137,7 +2281,7 @@ export class NativeSession implements ProviderSessionHandle {
     // Crash recovery transfers pending input to respawnInPlace; keep its FIFO
     // and leases while the _closed checks above stop the old pump. Every other
     // teardown withdraws that input before releasing its lease.
-    if (reason !== 'crash-recovery') this.drainQueuedInput()
+    if (reason !== 'crash-recovery') this.drainQueued()
     // Abort first, then close: closeAll aborts every record synchronously, so
     // a hung handshake / in-flight call cannot hold teardown open. Idempotent.
     await this.mcp?.closeAll()

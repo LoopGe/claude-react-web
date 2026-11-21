@@ -22,6 +22,8 @@ import { summarizeForCompact } from '../../compact-summary.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
+import { nativeCoreOf } from '../native-host-frame-adapter.js'
+import type { ProviderSessionHandle } from '../types.js'
 import { hasNativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import type { CanonicalEvent } from './canonical.js'
 
@@ -171,7 +173,7 @@ describe('native provider persistence through SessionManager', () => {
       sessions: Map<string, { handle: { history: unknown[] } }>
     }).sessions.get(id)
     expect(live).toBeDefined()
-    const modelHistory = JSON.stringify(live!.handle.history)
+    const modelHistory = JSON.stringify((nativeCoreOf(live!.handle as unknown as ProviderSessionHandle) as unknown as { history: unknown[] }).history)
     expect(modelHistory).toContain(PROMPT)
     expect(modelHistory).toContain(REPLY)
   }, 20000)
@@ -410,7 +412,7 @@ describe('native provider persistence through SessionManager', () => {
       sessions: Map<string, { handle: { history: unknown[] } }>
     }).sessions.get(info.id)
     expect(live).toBeDefined()
-    const modelHistory = JSON.stringify(live!.handle.history)
+    const modelHistory = JSON.stringify((nativeCoreOf(live!.handle as unknown as ProviderSessionHandle) as unknown as { history: unknown[] }).history)
     expect(modelHistory).toContain('MOCK SUMMARY')
     expect(modelHistory).not.toContain(PROMPT)
     expect(modelHistory).not.toContain(REPLY)

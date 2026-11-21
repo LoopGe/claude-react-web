@@ -331,17 +331,20 @@ export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalF
  *  `attachment` (ref) vs `source` (legacy base64). */
 type HostInputBlock = ProviderContentBlock
 
-/** Project a resolved file attachment to the public neutral FileAttachmentRef.
- *  The registry path / observed media type are server-only metadata (the core
- *  re-resolves bytes through its attachment port by id/digest); they never enter
- *  the vocabulary. */
-function neutralFileRef(attachment: { id: string; name: string; size: number; digest?: string }): FileAttachmentRef {
-  return {
-    id: attachment.id,
-    name: attachment.name,
-    size: attachment.size,
-    ...(attachment.digest !== undefined ? { digest: attachment.digest } : {}),
-  }
+/** Project a resolved file attachment to the neutral FileBlock attachment.
+ *  The FIDELITY input retains the FULL resolved attachment (registry path /
+ *  observed media type / model form): the core's durable persistence and the
+ *  wire request projection (handle text / PDF document) consume those facts,
+ *  and the native log has always stored them. The public UI transcript strips
+ *  them at the history-read boundary (publicNativeHistoryLine), so server-only
+ *  metadata never reaches the client. The neutral FileBlock type declares the
+ *  public FileAttachmentRef; the resolved superset rides structurally (the wire
+ *  adapter reads it as NativeFileAttachment). T10 reconciliation: a stripped
+ *  public-only ref would starve assignPdfModelForms (mediaType) and the wire
+ *  projection (modelForm/path); core-side re-resolution by id/digest is a
+ *  future refinement (the attachment port exposes no registry getById). */
+function neutralFileRef(attachment: FileAttachmentRef): FileAttachmentRef {
+  return attachment
 }
 
 /** Project one host input block to its neutral ContentBlock. Lossless on the
@@ -420,8 +423,10 @@ function neutralIdOf(msg: RequestMessage): string {
 
 /** The operational frame discriminants (the live-only system/result surface).
  *  Everything else in NativeCoreFrame is a conversation frame projected by
- *  projectNativeFrameToSdk. */
+ *  projectNativeFrameToSdk. A first-class tool result has no `type` (it is
+ *  discriminated by role), so it is never operational. */
 function isOperationalFrame(frame: NativeCoreFrame): frame is OperationalFrame {
+  if (!('type' in frame)) return false
   switch (frame.type) {
     case 'init':
     case 'api/retry':
@@ -436,19 +441,29 @@ function isOperationalFrame(frame: NativeCoreFrame): frame is OperationalFrame {
 }
 
 /** Envelope for a conversation frame: the assistant bundle carries its own
- *  neutral uuid (message.id); raw passthrough / assembler chunks mint a fresh
- *  frame uuid (the legacy streamEventFrame mints ctx.uuid() likewise). The
- *  sidechain parent axis is main-thread null here — sidechain envelope identity
- *  is carried by the core's emission context (T10/T15). */
-function conversationEnv(frame: NativeLiveFrame | AssistantFrame, sessionId: string): NativeFrameEnvelope {
+ *  neutral uuid (message.id); a first-class tool result carries its minted id
+ *  (shared with the persisted result); raw passthrough mints a fresh frame
+ *  uuid (the legacy streamEventFrame mints ctx.uuid() likewise). The sidechain
+ *  parent is supplied by the core's emission context (the enveloped wrapper). */
+function conversationEnv(frame: NativeHostFrame, sessionId: string, parentToolUseId: string | null): NativeFrameEnvelope {
+  // A first-class tool result is the only role-bearing host frame; it carries
+  // its minted id (shared with the persisted result).
+  if ('role' in frame) {
+    return { sessionId, uuid: frame.id, parentToolUseId }
+  }
   const uuid = frame.type === 'assistant-frame' ? frame.message.id : randomUUID()
-  return { sessionId, uuid, parentToolUseId: null }
+  return { sessionId, uuid, parentToolUseId }
 }
 
 /** Project one core emission frame to the SDK AgentMessage the pump consumes:
- *  operational frames through projectNativeEventToSdk (inline envelope),
- *  conversation frames through projectNativeFrameToSdk (derived envelope). */
+ *  an enveloped conversation frame through projectNativeFrameToSdk with the
+ *  core's sidechain parent; operational frames through projectNativeEventToSdk
+ *  (inline envelope); a bare conversation frame (main-thread convenience / the
+ *  projection contract) with a null parent. */
 function projectCoreFrame(frame: NativeCoreFrame, sessionId: string): AgentMessage {
+  if ('type' in frame && frame.type === 'enveloped-conversation') {
+    return projectNativeFrameToSdk(frame.frame, conversationEnv(frame.frame, sessionId, frame.parentToolUseId))
+  }
   if (isOperationalFrame(frame)) {
     const projected = projectNativeEventToSdk(frame)
     if (projected === null) {
@@ -456,7 +471,27 @@ function projectCoreFrame(frame: NativeCoreFrame, sessionId: string): AgentMessa
     }
     return projected
   }
-  return projectNativeFrameToSdk(frame, conversationEnv(frame, sessionId))
+  return projectNativeFrameToSdk(frame as NativeHostFrame, conversationEnv(frame as NativeHostFrame, sessionId, null))
+}
+
+/** Core-retrieval seam: the neutral core behind a wrapped handle. The handle
+ *  is the SDK-shaped translation surface; host code (and tests) that need the
+ *  neutral core's internals reach it through this accessor rather than a
+ *  property on the handle contract. Keyed weakly so a discarded handle does
+ *  not retain its core. */
+const coreByHandle = new WeakMap<ProviderSessionHandle, NativeSessionCore>()
+export function nativeCoreOf(handle: ProviderSessionHandle): NativeSessionCore | undefined {
+  return coreByHandle.get(handle)
+}
+
+/** Optional host-input pre-projection applied BEFORE the neutral input
+ *  projection. The pre-fidelity (legacy text-only) boundary uses it to turn
+ *  structured file blocks into handle text (projectFileBlocksForProvider); the
+ *  fidelity path leaves the input untouched. The pairing/lease bookkeeping
+ *  always keys on the ORIGINAL host message, so consumedAt bridging and drain
+ *  return the object the manager enqueued. */
+export interface WrapNativeCoreOptions {
+  projectInput?: (host: AgentUserMessage) => AgentUserMessage
 }
 
 /** Wrap a neutral NativeSessionCore into the SDK-shaped ProviderSessionHandle.
@@ -464,7 +499,12 @@ function projectCoreFrame(frame: NativeCoreFrame, sessionId: string): AgentMessa
  *  receivedAt re-key + the host pairing, the lease callbacks (wrapping the
  *  core's neutral persistence outcomes with copyConsumedAt bridging), the live
  *  frame projection, and the ~50-method handle delegation. */
-export function wrapNativeCore(core: NativeSessionCore, hostCallbacks: NativeHostCallbacks): ProviderSessionHandle {
+export function wrapNativeCore(
+  core: NativeSessionCore,
+  hostCallbacks: NativeHostCallbacks,
+  opts: WrapNativeCoreOptions = {},
+): ProviderSessionHandle {
+  const projectInput = opts.projectInput ?? ((host: AgentUserMessage) => host)
   // Host identity paired by uuid. The neutral message id IS the host uuid
   // (projectSdkInputToNative preserves it), so the pairing key is the durable
   // host identity itself. The map still holds the ORIGINAL host AgentUserMessage
@@ -543,24 +583,34 @@ export function wrapNativeCore(core: NativeSessionCore, hostCallbacks: NativeHos
     echoesUserPrompts: false,
     messages,
     enqueueUserMessage(host: AgentUserMessage): void {
-      const neutral = projectSdkInputToNative(host)
+      const neutral = projectSdkInputToNative(projectInput(host))
       rememberHost(neutral, host)
       core.enqueue(neutral)
     },
     sendControlMessage(host: AgentUserMessage): void {
-      const neutral = projectSdkInputToNative(host)
+      const neutral = projectSdkInputToNative(projectInput(host))
       rememberHost(neutral, host)
       core.enqueueControl(neutral)
     },
     clearQueuedInput(): number {
-      // Drain does NOT release the pairing: the core may still fire a terminal
-      // 'failed' for a withdrawn parked head, which needs the pairing.
+      // The core fires a terminal 'failed' for every drained entry (T7 pairing
+      // fix), releasing the pairing — no orphan, no leak.
       return core.drainQueued().length
     },
     drainQueuedInput(): AgentUserMessage[] {
-      // Return the ORIGINAL host messages (lossless); keep the pairing so a
-      // subsequent terminal 'failed' for the drained parked head still maps back.
-      return core.drainQueued().map((neutral) => hostFor(neutral))
+      // The core fires a terminal 'failed' for every drained entry DURING the
+      // drain, which releases the pairing. Snapshot the pairing first so the
+      // original host messages can still be resolved after the release (the
+      // manager re-enqueues / withdraws these exact objects). The live map is
+      // released by the 'failed' outcomes, so it does not grow.
+      const snapshot = new Map(hostByUuid)
+      return core.drainQueued().map((neutral) => {
+        const host = snapshot.get(neutralIdOf(neutral))
+        if (!host) {
+          throw new Error('native host adapter: drained prompt has no paired host uuid')
+        }
+        return host
+      })
     },
     get queueDepth() { return core.queueDepth },
     get closed() { return core.closed },
@@ -656,5 +706,6 @@ export function wrapNativeCore(core: NativeSessionCore, hostCallbacks: NativeHos
   if (core.seedReadState) handle.seedReadState = (path, mtime) => core.seedReadState!(path, mtime)
   if (core.listSubagents) handle.listSubagents = () => core.listSubagents!()
 
+  coreByHandle.set(handle, core)
   return handle
 }

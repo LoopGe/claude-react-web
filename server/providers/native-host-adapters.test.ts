@@ -18,6 +18,7 @@ import { isMcpAuthError } from '../mcp-config.js'
 import { NativeProvider } from './native/native-provider.js'
 import type { ProviderSessionHandle } from './types.js'
 import { createNativeHostPorts, makeNativePorts } from './native-host-adapters.js'
+import { nativeCoreOf } from './native-host-frame-adapter.js'
 import type { NativeConfigPort, NativeHostPorts } from './native/ports.js'
 
 const dirs: string[] = []
@@ -63,7 +64,7 @@ async function providerResolvedProfile(stateDir: string, ports = makeNativePorts
   const provider = new NativeProvider({ stateDir, ports })
   const session = provider.createSession({ id: `pin-${sessions.length}`, cwd: stateDir })
   sessions.push(session)
-  return (session as unknown as { profile: ProviderProfile }).profile
+  return (nativeCoreOf(session) as unknown as { profile: ProviderProfile }).profile
 }
 
 describe('ConfigPort adapter mirrors the provider resolution', () => {
@@ -144,7 +145,7 @@ describe('ConfigPort adapter mirrors the provider resolution', () => {
       const provider = new NativeProvider({ stateDir: dir, ports })
       const session = provider.createSession({ id: `pin-injected-${hasProfiles}`, cwd: dir })
       sessions.push(session)
-      expect((session as unknown as { profile: ProviderProfile }).profile).toBe(injected)
+      expect((nativeCoreOf(session) as unknown as { profile: ProviderProfile }).profile).toBe(injected)
     }
   })
 })

@@ -16,6 +16,8 @@ import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js
 import { nativeSessionLogPath } from './session-log/paths.js'
 import { historyFromEvents } from './session-log/replay.js'
 import { legacyMessagesToNeutral } from './native-session.js'
+import { nativeCoreOf } from '../native-host-frame-adapter.js'
+import type { ProviderSessionHandle } from '../types.js'
 import { createToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
 import { readNativeHistoryEntries } from './session-log/reader.js'
@@ -76,6 +78,18 @@ vi.mock('node:http', async (importOriginal) => {
 })
 
 const transcriptPort = makeNativePorts().transcript
+
+/** T10: createSession returns the SDK-shaped wrapNativeCore handle; the neutral
+ *  NativeSession core (its private internals: log / history / pumping / mcp /
+ *  tasks / agentTool / …) is reached through the adapter's core seam. Internal-
+ *  state assertions unwrap to the core; SDK-frame assertions stay on the handle.
+ *  Every cast-accessed member exists on the core (it implements the neutral
+ *  control surface), so unwrapping is safe for both internals and control reads. */
+function coreOf(handle: unknown): unknown {
+  const core = nativeCoreOf(handle as ProviderSessionHandle)
+  if (!core) throw new Error('test: handle is not a wrapped native core')
+  return core
+}
 
 function textTurn(text: string): CanonicalEvent[] {
   return [
@@ -290,13 +304,18 @@ function delayedInstance(instance: McpServer, ms = 100): NativeMcpServerInstance
   }
 }
 
-function userMsg(text: string) {
+/** Each user turn carries a UNIQUE uuid (the manager mints one per send). The
+ *  host adapter pairs host↔neutral by uuid, so reusing one uuid across queued
+ *  turns would collide the pairing — tests enqueue distinct turns. A test that
+ *  pins a specific uuid passes it explicitly. */
+let userMsgSeq = 0
+function userMsg(text: string, uuid = `u-${++userMsgSeq}`) {
   return {
     type: 'user' as const,
     message: { role: 'user' as const, content: [{ type: 'text', text }] },
     parent_tool_use_id: null,
     session_id: '',
-    uuid: 'u1',
+    uuid,
   }
 }
 
@@ -394,7 +413,7 @@ function resolverOf(resolveRoute: (route: NativeModelRoute) => Promise<NativeMod
 }
 
 function effectiveSettingsOf(session: unknown) {
-  return (session as {
+  return (coreOf(session) as {
     getEffectiveSettings?: () => {
       model: string
       permissionMode?: string
@@ -434,11 +453,11 @@ interface LogLike {
 }
 
 function logOf(session: unknown): LogLike {
-  return (session as { log: LogLike }).log
+  return (coreOf(session) as { log: LogLike }).log
 }
 
 function runNestedAgent(session: unknown, cwd: string, input: Record<string, unknown>) {
-  const agent = (session as { agentTool: ToolDef }).agentTool
+  const agent = (coreOf(session) as { agentTool: ToolDef }).agentTool
   return agent.run(input as never, {
     cwd,
     signal: new AbortController().signal,
@@ -1000,7 +1019,7 @@ describe('NativeSession', () => {
     expect(rebuilt.at(-2)).toEqual({ role: 'user', content: [{ type: 'text', text: wrapped }] })
     expect(rebuilt.at(-1)?.role).toBe('assistant')
     // Not a renderable line: the transcript reader excludes it.
-    await (session as unknown as { log: { flush: () => Promise<void> } }).log.flush()
+    await (coreOf(session) as unknown as { log: { flush: () => Promise<void> } }).log.flush()
     const entries = await readNativeHistoryEntries(dir, 'steer', transcriptPort)
     expect(entries.length).toBeGreaterThan(0)
     expect(entries.some((entry) => JSON.stringify(entry.message).includes('[ADDITIONAL GUIDANCE]'))).toBe(false)
@@ -1102,7 +1121,7 @@ describe('NativeSession', () => {
     })()
     // Fail exactly the flush that follows the supplement append; the earlier
     // frame flushes must succeed or the turn never reaches injection.
-    const log = (session as unknown as { log: NativeSessionLog }).log
+    const log = (coreOf(session) as unknown as { log: NativeSessionLog }).log
     const originalFlush = log.flush.bind(log)
     let failed = false
     vi.spyOn(log, 'flush').mockImplementation(async () => {
@@ -1996,7 +2015,7 @@ describe('NativeSession', () => {
       await expect(session.applyFlagSettings?.({ agent: 'invalid', effortLevel: 'high', fastMode: true }))
         .rejects.toThrow(/background/)
       expect(effectiveSettingsOf(session)).toEqual(before)
-      expect((session as unknown as { fastMode: boolean }).fastMode).toBe(false)
+      expect((coreOf(session) as unknown as { fastMode: boolean }).fastMode).toBe(false)
       expect(logOf(session).events.some((event) => event.type === 'session/agent')).toBe(false)
     } finally {
       await session.destroy()
@@ -2014,7 +2033,7 @@ describe('NativeSession', () => {
       model: 'base-model',
       effortLevel: 'high',
     })
-    const log = (session as unknown as { log: NativeSessionLog }).log
+    const log = (coreOf(session) as unknown as { log: NativeSessionLog }).log
     const original = (log as unknown as { appendDurable?: unknown }).appendDurable
     ;(log as unknown as { appendDurable?: unknown }).appendDurable = async () => {
       throw new Error('durable write failed')
@@ -2774,11 +2793,11 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'agents-cap', cwd: dir })
     // The effective tool list holds from construction (rebuildTools runs in the
     // constructor), not builtins-only until the first turn.
-    expect((session as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name))
+    expect((coreOf(session) as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name))
       .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill'])
     const other = provider.createSession({ id: 'agents-cap-other', cwd: dir })
-    expect((session as unknown as { todoWriteTool: unknown }).todoWriteTool)
-      .not.toBe((other as unknown as { todoWriteTool: unknown }).todoWriteTool)
+    expect((coreOf(session) as unknown as { todoWriteTool: unknown }).todoWriteTool)
+      .not.toBe((coreOf(other) as unknown as { todoWriteTool: unknown }).todoWriteTool)
     await other.destroy()
     expect(await session.supportedAgents?.()).toEqual([
       { name: 'general-purpose', description: 'General-purpose subagent for self-contained tasks.' },
@@ -2806,7 +2825,7 @@ describe('NativeSession', () => {
     await writeProjectSkill(dir, 'demo', { body: '# demo v1' })
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'skill-reload', cwd: dir })
-    const catalog = session as unknown as { skills: { bodyOf(name: string): { text: string } } }
+    const catalog = coreOf(session) as unknown as { skills: { bodyOf(name: string): { text: string } } }
     expect(await session.reloadSkills?.()).toEqual({
       skills: [{ name: 'demo', description: 'demo description', argumentHint: '' }],
     })
@@ -2829,7 +2848,7 @@ describe('NativeSession', () => {
     await writeProjectSkill(dir, 'demo')
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'skill-overrides', cwd: dir })
-    const catalog = session as unknown as {
+    const catalog = coreOf(session) as unknown as {
       skills: { section(): string; bodyOf(name: string): { text: string; isError?: boolean } }
     }
     // `supportedCommands` awaits the construction-time discovery, so the
@@ -2976,7 +2995,7 @@ describe('NativeSession', () => {
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
     const mcpGate = deferred<void>()
     const efforts: Array<string | undefined> = []
-    const internals = session as unknown as {
+    const internals = coreOf(session) as unknown as {
       mcp: unknown
       streamFor: (
         req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
@@ -2989,7 +3008,7 @@ describe('NativeSession', () => {
       statuses: () => [],
       closeAll: async () => {},
     }
-    const streamFor = internals.streamFor.bind(session)
+    const streamFor = internals.streamFor.bind(internals)
     internals.streamFor = (req, opts) => {
       efforts.push(opts?.effortLevel?.())
       return streamFor(req, opts)
@@ -3034,7 +3053,7 @@ describe('NativeSession', () => {
     const frames: Frame[] = []
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
     const mcpGate = deferred<void>()
-    ;(session as unknown as { mcp: unknown }).mcp = {
+    ;(coreOf(session) as unknown as { mcp: unknown }).mcp = {
       whenReady: () => mcpGate.promise,
       tools: () => [],
       statuses: () => [],
@@ -3151,7 +3170,7 @@ describe('NativeSession', () => {
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
 
     const expected = canonicalSkillBody(dir, 'demo', '# demo body')
-    const getEntries = () => (session as unknown as {
+    const getEntries = () => (coreOf(session) as unknown as {
       getSkillCompactionEntries(): readonly { afterUserUuid: string; body: string }[]
     }).getSkillCompactionEntries()
     expect(getEntries()).toEqual([{ afterUserUuid: 'skill-anchor', body: expected }])
@@ -3163,7 +3182,7 @@ describe('NativeSession', () => {
 
     await session.destroy()
     const resumed = provider.createSession({ id: 'skill-compaction-entries', cwd: dir, resume: 'skill-compaction-entries' })
-    expect((resumed as unknown as { getSkillCompactionEntries(): unknown }).getSkillCompactionEntries())
+    expect((coreOf(resumed) as unknown as { getSkillCompactionEntries(): unknown }).getSkillCompactionEntries())
       .toEqual([{ afterUserUuid: 'skill-anchor', body: expected }])
     await resumed.destroy()
   })
@@ -3210,7 +3229,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-skill-compaction-negative-')
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'negative-compaction-entries', cwd: dir })
-    const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+    const sessionLog = (coreOf(session) as unknown as { log: NativeSessionLog }).log
     for (const event of events) sessionLog.append(event)
 
     expect(session.getSkillCompactionEntries?.()).toEqual([])
@@ -3260,7 +3279,7 @@ describe('NativeSession', () => {
 
     await session.destroy()
     const resumed = provider.createSession({ id: 'skill-expand-fail', cwd: dir, resume: 'skill-expand-fail' })
-    expect(neutralShape((resumed as unknown as { history: unknown[] }).history)).toEqual(neutralShape(legacyMessagesToNeutral(replayed)))
+    expect(neutralShape((coreOf(resumed) as unknown as { history: unknown[] }).history)).toEqual(neutralShape(legacyMessagesToNeutral(replayed)))
     await resumed.destroy()
   })
 
@@ -3596,7 +3615,7 @@ describe('NativeSession', () => {
     void (async () => {
       for await (const _ of session.messages) { /* drain */ }
     })()
-    const conns = (session as unknown as { mcp: NativeMcpConnections }).mcp
+    const conns = (coreOf(session) as unknown as { mcp: NativeMcpConnections }).mcp
     const closeAll = vi.spyOn(conns, 'closeAll')
 
     await session.destroy()
@@ -3610,7 +3629,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-task-controls-')
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'task-controls', cwd: dir })
-    const tasks = (session as unknown as { tasks: NativeTaskManager }).tasks
+    const tasks = (coreOf(session) as unknown as { tasks: NativeTaskManager }).tasks
     const background = vi.spyOn(tasks, 'background')
       .mockReturnValueOnce(true)
       .mockReturnValueOnce(false)
@@ -3633,7 +3652,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-task-destroy-')
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'task-destroy', cwd: dir })
-    const tasks = (session as unknown as { tasks: NativeTaskManager }).tasks
+    const tasks = (coreOf(session) as unknown as { tasks: NativeTaskManager }).tasks
     const execution = deferred<ToolOutcome>()
     let taskSignal!: AbortSignal
 
@@ -3682,7 +3701,7 @@ describe('NativeSession', () => {
     const frames: Frame[] = []
     void (async () => { for await (const f of resumed.messages) frames.push(f as Frame) })()
     await vi.waitFor(() => expect(frames[0]).toMatchObject({ type: 'system', subtype: 'init' }))
-    expect((resumed as unknown as { history: Array<{ role: string }> }).history[0].role).toBe('user')
+    expect((coreOf(resumed) as unknown as { history: Array<{ role: string }> }).history[0].role).toBe('user')
     resumed.enqueueUserMessage(userMsg('next') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'again')).toBe(true))
     await resumed.destroy()
@@ -3760,7 +3779,7 @@ describe('NativeSession', () => {
       cost_available: false,
     })
     // Sidechain frames never reach the main model history.
-    const history = JSON.stringify((resumed as unknown as { history: unknown[] }).history)
+    const history = JSON.stringify((coreOf(resumed) as unknown as { history: unknown[] }).history)
     expect(history).toContain('top')
     expect(history).not.toContain('inner')
     await resumed.destroy()
@@ -3770,7 +3789,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-side-persist-')
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'side-persist', cwd: dir })
-    const internals = session as unknown as {
+    const internals = coreOf(session) as unknown as {
       persistToolResult(record: { uuid: string; message: ReturnType<typeof createToolResultMessage> }, parent: string | null): void
       log: { flush: () => Promise<void> }
     }
@@ -3810,14 +3829,14 @@ describe('NativeSession', () => {
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
 
-    const internals = session as unknown as {
+    const internals = coreOf(session) as unknown as {
       pumpLoop: () => Promise<void>
       pumping: boolean
       log: { flush: () => Promise<void>; events: LogEventLike[] }
     }
     // `enqueueUserMessage` discards the pump promise; capture it so the test
     // can assert the pump resolves instead of rejecting on a write failure.
-    const originalPump = internals.pumpLoop.bind(session)
+    const originalPump = internals.pumpLoop.bind(internals)
     let pumpPromise: Promise<void> | null = null
     internals.pumpLoop = () => {
       pumpPromise = originalPump()
@@ -3851,7 +3870,7 @@ describe('NativeSession', () => {
 
     await session.destroy()
     const resumed = provider.createSession({ id: 'flush', cwd: dir, resume: 'flush' })
-    expect(neutralShape((resumed as unknown as { history: unknown[] }).history)).toEqual(neutralShape(legacyMessagesToNeutral(replayed)))
+    expect(neutralShape((coreOf(resumed) as unknown as { history: unknown[] }).history)).toEqual(neutralShape(legacyMessagesToNeutral(replayed)))
     await resumed.destroy()
   })
 
@@ -3865,22 +3884,22 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'mcp-history', cwd: dir })
     const frames: Frame[] = []
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
-    const internals = session as unknown as { mcp: unknown; pumping: boolean }
+    const internals = coreOf(session) as unknown as { mcp: unknown; pumping: boolean }
     internals.mcp = { whenReady: async () => { throw new Error('MCP not ready') } }
 
-    session.enqueueUserMessage(userMsg('/demo do this') as never)
+    session.enqueueUserMessage(userMsg('/demo do this', 'u1') as never)
     await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
     expect((frames.find((frame) => frame.type === 'result') as Frame).result).toBe('MCP not ready')
     expect(requests).toEqual([])
     await vi.waitFor(() => expect(internals.pumping).toBe(false))
 
     const expected = canonicalSkillBody(dir, 'demo', '# demo body')
-    expect((session as unknown as {
+    expect((coreOf(session) as unknown as {
       getSkillCompactionEntries(): readonly { afterUserUuid: string; body: string }[]
     }).getSkillCompactionEntries()).toEqual([
       { afterUserUuid: 'u1', body: expected },
     ])
-    expect(JSON.stringify((session as unknown as { history: unknown[] }).history)
+    expect(JSON.stringify((coreOf(session) as unknown as { history: unknown[] }).history)
       .match(/# demo body/g)).toHaveLength(1)
 
     internals.mcp = undefined
@@ -3901,7 +3920,7 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'validation-history', cwd: dir })
     const frames: Frame[] = []
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
-    const internals = session as unknown as {
+    const internals = coreOf(session) as unknown as {
       currentProfile: { name: string; maxTurns: number } | null
       pumping: boolean
     }
@@ -3938,7 +3957,7 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('first') as never)
     await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
     expect((frames.find((frame) => frame.type === 'result') as Frame).result).toBe('stream exploded')
-    await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+    await vi.waitFor(() => expect((coreOf(session) as unknown as { pumping: boolean }).pumping).toBe(false))
 
     session.enqueueUserMessage(userMsg('second') as never)
     await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
@@ -3967,7 +3986,7 @@ describe('NativeSession', () => {
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
 
-    const internals = session as unknown as {
+    const internals = coreOf(session) as unknown as {
       log: { flush: () => Promise<void>; events: LogEventLike[] }
       assistantFlush: Promise<void> | null
     }
@@ -4008,7 +4027,7 @@ describe('NativeSession', () => {
     })
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
-    const internals = session as unknown as {
+    const internals = coreOf(session) as unknown as {
       log: { flush: () => Promise<void> }
       history: unknown[]
     }
@@ -4056,7 +4075,7 @@ describe('NativeSession', () => {
     // The pump arms the per-turn abort controller before persisting the
     // consumed turn; wait until it is armed so interrupt() targets a live turn.
     await vi.waitFor(() => {
-      expect((session as unknown as { turnAbort: unknown }).turnAbort).not.toBeNull()
+      expect((coreOf(session) as unknown as { turnAbort: unknown }).turnAbort).not.toBeNull()
     })
     await session.interrupt?.({ cancelQueued: true })
     await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
@@ -4081,7 +4100,7 @@ describe('NativeSession', () => {
     const frames: Frame[] = []
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
     try {
-      const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+      const sessionLog = (coreOf(session) as unknown as { log: NativeSessionLog }).log
       const migrate = sessionLog.migrateToV2.bind(sessionLog)
       let fail = true
       vi.spyOn(sessionLog, 'migrateToV2').mockImplementation(async () => {
@@ -4094,11 +4113,11 @@ describe('NativeSession', () => {
 
       session.enqueueUserMessage(structuredUserMsg('first-attachment') as never)
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
-      await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+      await vi.waitFor(() => expect((coreOf(session) as unknown as { pumping: boolean }).pumping).toBe(false))
       expect(session.queueDepth).toBe(1)
       expect(consumed).toEqual([])
       expect(requests).toEqual([])
-      expect(JSON.stringify((session as unknown as { history: unknown[] }).history)).not.toContain('upload-1')
+      expect(JSON.stringify((coreOf(session) as unknown as { history: unknown[] }).history)).not.toContain('upload-1')
       expect(logOf(session).events.some((event) => event.type === 'user')).toBe(false)
 
       session.enqueueUserMessage({ ...userMsg('later input'), uuid: 'later' } as never)
@@ -4127,7 +4146,7 @@ describe('NativeSession', () => {
     const frames: Frame[] = []
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
     try {
-      const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+      const sessionLog = (coreOf(session) as unknown as { log: NativeSessionLog }).log
       const migrate = sessionLog.migrateToV2.bind(sessionLog)
       const gate = deferred<void>()
       let first = true
@@ -4145,7 +4164,7 @@ describe('NativeSession', () => {
       gate.resolve()
 
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
-      await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+      await vi.waitFor(() => expect((coreOf(session) as unknown as { pumping: boolean }).pumping).toBe(false))
       expect(session.queueDepth).toBe(2)
       expect(requests).toEqual([])
       expect(sessionLog.migrateToV2).toHaveBeenCalledOnce()
@@ -4175,13 +4194,13 @@ describe('NativeSession', () => {
     const frames: Frame[] = []
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
     try {
-      const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+      const sessionLog = (coreOf(session) as unknown as { log: NativeSessionLog }).log
       vi.spyOn(sessionLog, 'migrateToV2').mockRejectedValue(new Error('permanent migration failure'))
       session.enqueueUserMessage(structuredUserMsg('first-attachment') as never)
       session.enqueueUserMessage({ ...userMsg('already queued'), uuid: 'later' } as never)
 
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
-      await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+      await vi.waitFor(() => expect((coreOf(session) as unknown as { pumping: boolean }).pumping).toBe(false))
       expect(sessionLog.migrateToV2).toHaveBeenCalledOnce()
       expect(logOf(session).events.filter((event) => event.type === 'turn/end')).toHaveLength(1)
       expect(session.queueDepth).toBe(2)
@@ -4189,7 +4208,7 @@ describe('NativeSession', () => {
 
       session.enqueueUserMessage({ ...userMsg('explicit retry'), uuid: 'explicit' } as never)
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
-      await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+      await vi.waitFor(() => expect((coreOf(session) as unknown as { pumping: boolean }).pumping).toBe(false))
       expect(sessionLog.migrateToV2).toHaveBeenCalledTimes(2)
       expect(logOf(session).events.filter((event) => event.type === 'turn/end')).toHaveLength(2)
       expect(session.queueDepth).toBe(3)
@@ -4219,7 +4238,7 @@ describe('NativeSession', () => {
     const flushStarted = deferred<void>()
     const releaseFlush = deferred<void>()
     try {
-      const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+      const sessionLog = (coreOf(session) as unknown as { log: NativeSessionLog }).log
       vi.spyOn(sessionLog, 'migrateToV2').mockRejectedValue(new Error('permanent migration failure'))
       const originalFlush = sessionLog.flush.bind(sessionLog)
       let gateTurnEnd = true
@@ -4234,13 +4253,13 @@ describe('NativeSession', () => {
       session.enqueueUserMessage(structuredUserMsg('first-attachment') as never)
       session.enqueueUserMessage({ ...userMsg('already queued'), uuid: 'later' } as never)
       await flushStarted.promise
-      expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
 
       session.enqueueUserMessage({ ...userMsg('explicit during flush'), uuid: 'explicit' } as never)
-      expect((session as unknown as { pumping: boolean }).pumping).toBe(true)
+      expect((coreOf(session) as unknown as { pumping: boolean }).pumping).toBe(true)
       releaseFlush.resolve()
 
-      await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+      await vi.waitFor(() => expect((coreOf(session) as unknown as { pumping: boolean }).pumping).toBe(false))
       expect(sessionLog.migrateToV2).toHaveBeenCalledTimes(2)
       expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2)
       expect(logOf(session).events.filter((event) => event.type === 'turn/end')).toHaveLength(2)
@@ -4266,7 +4285,7 @@ describe('NativeSession', () => {
         const session = provider.createSession({ id: `append-withdraw-${mode}`, cwd: dir })
         const frames: Frame[] = []
         void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
-        const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+        const sessionLog = (coreOf(session) as unknown as { log: NativeSessionLog }).log
         const originalAppend = sessionLog.append.bind(sessionLog)
         vi.spyOn(sessionLog, 'append').mockImplementation((event) => {
           if (event.type === 'user' && event.uuid === 'withdraw-me') throw new Error('append failed')
@@ -4275,9 +4294,9 @@ describe('NativeSession', () => {
 
         session.enqueueUserMessage(structuredUserMsg('withdraw-me') as never)
         await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
-        await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+        await vi.waitFor(() => expect((coreOf(session) as unknown as { pumping: boolean }).pumping).toBe(false))
         expect(session.queueDepth).toBe(1)
-        expect(JSON.stringify((session as unknown as { history: unknown[] }).history)).not.toContain('upload-1')
+        expect(JSON.stringify((coreOf(session) as unknown as { history: unknown[] }).history)).not.toContain('upload-1')
 
         if (mode === 'clear') expect(session.clearQueuedInput()).toBe(1)
         else if (mode === 'drain') {
@@ -4321,7 +4340,7 @@ describe('NativeSession', () => {
       session.enqueueUserMessage({ ...userMsg('new prompt'), uuid: 'new-prompt' } as never)
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
       expect(requests).toEqual([])
-      const history = (session as unknown as { history: Array<{ content: unknown[] }> }).history
+      const history = (coreOf(session) as unknown as { history: Array<{ content: unknown[] }> }).history
       expect(history.filter((message) => JSON.stringify(message).includes('old-upload'))).toHaveLength(1)
       expect(history.filter((message) => JSON.stringify(message).includes('new prompt'))).toHaveLength(1)
       expect(logOf(session).events.filter((event) => event.type === 'user')).toHaveLength(2)
@@ -4589,7 +4608,7 @@ describe('NativeSession', () => {
     // The live turn-error repair already persisted the result, so resume reads
     // it back instead of appending a second copy at the log tail.
     expect(logOf(resumed).events.filter((e) => JSON.stringify(e).includes('tool result missing'))).toHaveLength(1)
-    const history = (resumed as unknown as { history: unknown[] }).history
+    const history = (coreOf(resumed) as unknown as { history: unknown[] }).history
     expect(JSON.stringify(history)).toContain('tool result missing')
     await resumed.destroy()
 
@@ -4640,7 +4659,7 @@ describe('NativeSession', () => {
     expect(log.events.some((e) => e.type === 'session/end-seed')).toBe(true)
     expect(log.events.some((e) => e.type === 'turn/end' && e.reason === 'forked')).toBe(true)
     expect(log.events.some((e) => e.type === 'session/context' && (e.text ?? '').includes(dir))).toBe(true)
-    const history = (forked as unknown as { history: unknown[] }).history
+    const history = (coreOf(forked) as unknown as { history: unknown[] }).history
     expect(history[0]).toMatchObject({ role: 'user' })
     expect(JSON.stringify(history)).toContain('source reply')
     // Copied events are re-owned by the child (never the source id).
@@ -4675,7 +4694,7 @@ describe('NativeSession', () => {
     const compact = logOf(session).events.find((e) => JSON.stringify(e).includes('compact summary'))
     expect(compact).toMatchObject({ type: 'user', isCompactSummary: true })
     expect(compact?.message?.content).toEqual([{ type: 'text', text: 'compact summary' }])
-    const history = (session as unknown as { history: unknown[] }).history
+    const history = (coreOf(session) as unknown as { history: unknown[] }).history
     expect(JSON.stringify(history)).toContain('compact summary')
     await session.destroy()
 
@@ -4716,7 +4735,7 @@ describe('NativeSession', () => {
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'occurrences', cwd: dir, resume: 'occurrences' })
 
-    const handle = session as unknown as {
+    const handle = coreOf(session) as unknown as {
       getAttachmentOccurrences(): readonly unknown[]
       getAttachmentCatalog(): readonly NativeFileAttachment[]
     }
@@ -4767,7 +4786,7 @@ describe('NativeSession', () => {
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'catalog-dedup', cwd: dir, resume: 'catalog-dedup' })
 
-    const catalog = (session as unknown as { getAttachmentCatalog(): readonly NativeFileAttachment[] })
+    const catalog = (coreOf(session) as unknown as { getAttachmentCatalog(): readonly NativeFileAttachment[] })
       .getAttachmentCatalog()
 
     expect(catalog).toEqual([inherited, shared, direct, nested])
@@ -4804,7 +4823,7 @@ describe('NativeSession', () => {
       await oldLog.close()
       const oldProvider = new NativeProvider({ stateDir: dir, uploadStore: store, ports: makeNativePorts({ stateDir: dir, uploadStore: store }) })
       const oldSession = oldProvider.createSession({ id: 'old-session', cwd: dir, resume: 'old-session' })
-      const catalog = (oldSession as unknown as { getAttachmentCatalog(): readonly NativeFileAttachment[] })
+      const catalog = (coreOf(oldSession) as unknown as { getAttachmentCatalog(): readonly NativeFileAttachment[] })
         .getAttachmentCatalog()
       await oldSession.destroy()
 
@@ -4817,7 +4836,7 @@ describe('NativeSession', () => {
         canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
       })
       active = session
-      await (session as unknown as {
+      await (coreOf(session) as unknown as {
         seedCompactSummary(summary: string, opts: {
           uuid: string; timestamp: string; attachments: readonly NativeFileAttachment[]
         }): Promise<void>
@@ -4851,7 +4870,7 @@ describe('NativeSession', () => {
       id: 'kept', name: 'kept.txt', size: 4, digest: 'c'.repeat(64),
       path: join(dir, 'kept.txt'), modelForm: 'handle',
     }
-    await (session as unknown as {
+    await (coreOf(session) as unknown as {
       seedCompactSummary(summary: string, opts: {
         uuid: string; timestamp: string; attachments: readonly NativeFileAttachment[]
       }): Promise<void>
@@ -4876,14 +4895,14 @@ describe('NativeSession', () => {
     await logOf(session).migrateToV2()
     vi.spyOn(logOf(session), 'flush').mockRejectedValueOnce(new Error('seed flush failed'))
 
-    await expect((session as unknown as {
+    await expect((coreOf(session) as unknown as {
       seedCompactSummary(summary: string, opts: {
         uuid: string; timestamp: string; attachments: readonly NativeFileAttachment[]
       }): Promise<void>
     }).seedCompactSummary('MUST NOT PUBLISH', {
       uuid: 'failed-summary', timestamp: '2026-11-13T00:00:00.000Z', attachments: [attachment],
     })).rejects.toThrow('seed flush failed')
-    expect(JSON.stringify((session as unknown as { history: unknown[] }).history)).not.toContain('MUST NOT PUBLISH')
+    expect(JSON.stringify((coreOf(session) as unknown as { history: unknown[] }).history)).not.toContain('MUST NOT PUBLISH')
     await session.destroy()
   })
 
@@ -4895,7 +4914,7 @@ describe('NativeSession', () => {
     ;(async () => { for await (const _ of session.messages) { /* drain */ } })()
     session.enqueueUserMessage(userMsg('hi') as never)
     await vi.waitFor(() => {
-      const log = (session as unknown as { log: { events: Array<{ type: string }> } }).log
+      const log = (coreOf(session) as unknown as { log: { events: Array<{ type: string }> } }).log
       expect(log.events.some((e) => e.type === 'turn/end')).toBe(true)
     })
     await session.destroy() // flush + close before reading the file
@@ -4929,7 +4948,7 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'inplace', cwd: dir })
     // `compactInPlace` is provider-specific (not on ProviderSessionHandle yet),
     // so reach it through the same narrow cast the internals reads use.
-    const compactable = session as unknown as {
+    const compactable = coreOf(session) as unknown as {
       compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
     }
     const frames: Frame[] = []
@@ -4954,7 +4973,7 @@ describe('NativeSession', () => {
     expect(compactEvent.context).toContain('Working directory')
     // The model history now starts from the captured context + summary; the
     // pre-compact conversation is gone from what the next request sends.
-    const history = (session as unknown as { history: unknown[] }).history
+    const history = (coreOf(session) as unknown as { history: unknown[] }).history
     expect(neutralShape(history)).toEqual(neutralShape(legacyMessagesToNeutral([
       { role: 'user', content: [{ type: 'text', text: compactEvent.context }] },
       { role: 'user', content: [{ type: 'text', text: 'SUMMARY' }] },
@@ -4971,7 +4990,7 @@ describe('NativeSession', () => {
     await vi.waitFor(() => expect(logOf(session).events.filter((e) => e.type === 'turn/end')).toHaveLength(2))
     expect(userTexts(session)).toEqual(['OLD-PROMPT', 'next'])
     expect(logOf(session).events.some((e) => e.type === 'session/compact')).toBe(true)
-    const afterHistory = JSON.stringify((session as unknown as { history: unknown[] }).history)
+    const afterHistory = JSON.stringify((coreOf(session) as unknown as { history: unknown[] }).history)
     expect(afterHistory).toContain('SUMMARY')
     expect(afterHistory).toContain('next')
     expect(afterHistory).toContain('after')
@@ -4983,7 +5002,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-snap-')
     const provider = providerWithStreamer([textTurn('first reply')], dir)
     const session = provider.createSession({ id: 'snap', cwd: dir })
-    const compactable = session as unknown as {
+    const compactable = coreOf(session) as unknown as {
       compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
     }
     void (async () => { for await (const _ of session.messages) { /* drain */ } })()
@@ -5022,7 +5041,7 @@ describe('NativeSession', () => {
       yield // unreachable
     }
     const session = provider.createSession({ id: 'refuse', cwd: dir })
-    const compactable = session as unknown as {
+    const compactable = coreOf(session) as unknown as {
       compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
     }
     const frames: Frame[] = []
@@ -5052,7 +5071,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-inplace-empty-')
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'empty', cwd: dir })
-    const compactable = session as unknown as {
+    const compactable = coreOf(session) as unknown as {
       compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
     }
     const opts = { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' }
@@ -5068,7 +5087,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-inplace-resume-')
     const provider = providerWithStreamer([textTurn('first')], dir)
     const session = provider.createSession({ id: 'compact-resume', cwd: dir })
-    const compactable = session as unknown as {
+    const compactable = coreOf(session) as unknown as {
       compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
     }
     const frames: Frame[] = []
@@ -5094,7 +5113,7 @@ describe('NativeSession', () => {
       rate_limits_available: false,
       cost_available: false,
     })
-    const history = JSON.stringify((resumed as unknown as { history: unknown[] }).history)
+    const history = JSON.stringify((coreOf(resumed) as unknown as { history: unknown[] }).history)
     expect(history).toContain('SUMMARY')
     expect(history).not.toContain('OLD-PROMPT')
     await resumed.destroy()
@@ -5104,7 +5123,7 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-inplace-race-')
     const provider = providerWithStreamer([textTurn('after')], dir)
     const session = provider.createSession({ id: 'race', cwd: dir })
-    const internals = session as unknown as {
+    const internals = coreOf(session) as unknown as {
       log: { flush: () => Promise<void>; events: LogEventLike[] }
       compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
     }
@@ -5138,7 +5157,7 @@ describe('NativeSession', () => {
     const promptIndex = events.findIndex((e) => e.type === 'user' && JSON.stringify(e).includes('next'))
     expect(compactIndex).toBeGreaterThanOrEqual(0)
     expect(promptIndex).toBeGreaterThan(compactIndex)
-    const history = JSON.stringify((session as unknown as { history: unknown[] }).history)
+    const history = JSON.stringify((coreOf(session) as unknown as { history: unknown[] }).history)
     expect(history).toContain('next')
     expect(history).toContain('after')
     expect(history.indexOf('SUMMARY')).toBeLessThan(history.indexOf('next'))
@@ -5159,8 +5178,8 @@ describe('NativeSession', () => {
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'retry', cwd: dir })
     try {
-      const internals = session as unknown as {
-        output: { drainQueue(): Frame[] }
+      const internals = coreOf(session) as unknown as {
+        output: { drainQueue(): Array<Record<string, unknown>> }
         defaultStream(
           req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
           opts?: { suppressRetryFrames?: boolean },
@@ -5169,12 +5188,14 @@ describe('NativeSession', () => {
       const req = { model: 'm', system: 's', tools: [], messages: [], signal: new AbortController().signal }
 
       for await (const _event of internals.defaultStream(req, { suppressRetryFrames: true })) { /* drain */ }
-      expect(internals.output.drainQueue().filter((f) => f.subtype === 'api_retry')).toHaveLength(0)
+      expect(internals.output.drainQueue().filter((f) => f.type === 'api/retry')).toHaveLength(0)
 
       for await (const _event of internals.defaultStream(req)) { /* drain */ }
-      const retries = internals.output.drainQueue().filter((f) => f.subtype === 'api_retry')
+      const retries = internals.output.drainQueue().filter((f) => f.type === 'api/retry')
       expect(retries).toHaveLength(1)
-      expect(retries[0]).toMatchObject({ type: 'system', subtype: 'api_retry', attempt: 1 })
+      // The core emits the NEUTRAL operational frame; the host adapter projects
+      // it to the SDK system/api_retry subtype.
+      expect(retries[0]).toMatchObject({ type: 'api/retry', attempt: 1, maxRetries: 10, delayMs: 250 })
     } finally {
       await session.destroy()
       streamAnthropicMessagesMock.mockReset()
@@ -5689,7 +5710,7 @@ describe('NativeSession', () => {
       })
       const frames: Frame[] = []
       void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
-      const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+      const sessionLog = (coreOf(session) as unknown as { log: NativeSessionLog }).log
       const originalAppend = sessionLog.append.bind(sessionLog)
       vi.spyOn(sessionLog, 'append').mockImplementation((event) => {
         if (event.type === 'user' && event.uuid === 'attachment-user') throw new Error('append failed')

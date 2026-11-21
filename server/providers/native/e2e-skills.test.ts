@@ -21,6 +21,8 @@ import { SessionManager } from '../../session-manager.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
+import { nativeCoreOf } from '../native-host-frame-adapter.js'
+import type { ProviderSessionHandle } from '../types.js'
 import type { CanonicalEvent } from './canonical.js'
 
 type Frame = Record<string, any>
@@ -403,7 +405,7 @@ describe('native skills end to end through SessionManager', () => {
       sessions: Map<string, { handle: { history: unknown[] } }>
     }).sessions.get(id)
     expect(live).toBeDefined()
-    const modelHistory = live!.handle.history as Array<{ role: string; content: unknown }>
+    const modelHistory = (nativeCoreOf(live!.handle as unknown as ProviderSessionHandle) as unknown as { history: unknown[] }).history as Array<{ role: string; content: unknown }>
     expect(modelHistory).toHaveLength(4)
     // Neutral messages carry minted id/source; compare the conversation shape.
     const shape = (ms: unknown[]) => (ms as Array<Record<string, unknown>>).map(({ id: _id, source: _source, ...rest }) => rest)

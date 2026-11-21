@@ -412,7 +412,10 @@ describe('native background task acceptance through direct provider handles', ()
     await waitForFile(detached.started)
     const detachedHandle = liveSession(first.sm, detachedId).handle
     await expect(detachedHandle.backgroundTasks!('restart-detached')).resolves.toBe(true)
-    expect(toolResultBlocks(detachedFrames.frames, 'restart-detached')).toHaveLength(1)
+    // The launch-ack tool_result is emitted by the loop continuation after the
+    // detach resolves; the wrapped handle's async projection delivers it a
+    // microtask later, so wait for it rather than racing the detach resolution.
+    await vi.waitFor(() => expect(toolResultBlocks(detachedFrames.frames, 'restart-detached')).toHaveLength(1))
     await vi.waitFor(() => {
       expect(liveSession(first.sm, detachedId).tasks.get('restart-detached')).toMatchObject({
         status: 'running',

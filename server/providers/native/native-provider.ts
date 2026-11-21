@@ -15,6 +15,7 @@ import { NativeMcpConnections } from './mcp/connections.js'
 import { SharedRegistry } from './mcp/shared-registry.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
 import { NativeSession } from './native-session.js'
+import { wrapNativeCore, type NativeHostCallbacks } from '../native-host-frame-adapter.js'
 import { NativeModelContextResolver } from './model-context.js'
 import { AnthropicModelDiscovery } from './model-discovery.js'
 import { AGENT_GUIDANCE } from './subagent.js'
@@ -43,28 +44,19 @@ import type { UploadStore } from '../../upload-store.js'
 import { NativeAttachmentReferenceIndex } from './attachment-reference-index.js'
 import { PdfBudgetLedger, PreparedPdfStore } from './pdf-documents.js'
 import { createAttachmentReadTool } from './tools/index.js'
-import { copyConsumedAt, projectFileBlocksForProvider, type AgentUserMessage } from '../../agent-message.js'
+import { projectFileBlocksForProvider } from '../../agent-message.js'
 import { extractToolProfile } from '../../../shared/tool-profile.js'
 
 import { NativeReadState } from './read-state.js'
 
 const STATIC_TOOLS: ToolDef[] = [grepTool, globTool, lsTool, notebookEditTool, askUserQuestionTool]
 
-/** Pre-fidelity native sessions consume the same legacy handle as before. The
- *  subclass lives at the provider boundary so the manager stays neutral. */
-class LegacyNativeSession extends NativeSession {
-  override enqueueUserMessage(message: AgentUserMessage): void {
-    const projected = projectFileBlocksForProvider(message)
-    super.enqueueUserMessage(projected)
-    copyConsumedAt(projected, message)
-  }
-
-  override sendControlMessage(message: AgentUserMessage): void {
-    const projected = projectFileBlocksForProvider(message)
-    super.sendControlMessage(projected)
-    copyConsumedAt(projected, message)
-  }
-}
+/** The pre-fidelity (legacy text-only) input boundary: structured file blocks
+ *  become handle text BEFORE the neutral input projection, so the core receives
+ *  text-only messages. Applied through wrapNativeCore's projectInput hook; the
+ *  pairing/lease bookkeeping still keys on the original host message. T14
+ *  unifies this with the fidelity path through the adapter. */
+const legacyInputProjection = { projectInput: projectFileBlocksForProvider }
 
 /** The Agent tool's prompt section. The text is the tool def's own guidance
  *  (one exported constant), so the section and the schema cannot drift. */
@@ -262,8 +254,13 @@ export class NativeProvider implements AgentProvider {
       return { baseUrl: profile.baseUrl, authToken: profile.authToken }
     }
     try {
-      const SessionClass = configPort.nativeAttachmentFidelity ? NativeSession : LegacyNativeSession
-      return new SessionClass({
+      // The neutral core (NativeSessionCore) owns the turn engine, persistence
+      // and neutral emission; wrapNativeCore translates it into the SDK-shaped
+      // ProviderSessionHandle (host-input identity, lease callbacks, frame
+      // projection). The host lease callbacks ride the WRAPPER, never the core
+      // opts (R1). The pre-fidelity path projects structured files to handle
+      // text before the neutral input projection; the fidelity path keeps them.
+      const core = new NativeSession({
         id: opts.id,
         cwd: opts.cwd ?? process.cwd(),
         stateDir: this.stateDir,
@@ -293,11 +290,14 @@ export class NativeProvider implements AgentProvider {
         system,
         subagentSystem,
         canUseTool: opts.canUseTool,
+        streamSupplier: () => this._testStream,
+      })
+      const hostCallbacks: NativeHostCallbacks = {
         onUserMessageConsumed: opts.onUserMessageConsumed,
         onUserMessagePersistence: opts.onUserMessagePersistence,
         onSupplementDelivered: opts.onSupplementDelivered,
-        streamSupplier: () => this._testStream,
-      })
+      }
+      return wrapNativeCore(core, hostCallbacks, configPort.nativeAttachmentFidelity ? {} : legacyInputProjection)
     } catch (err) {
       void mcp.closeAll()
       throw err

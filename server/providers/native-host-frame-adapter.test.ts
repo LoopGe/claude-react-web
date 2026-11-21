@@ -29,8 +29,8 @@ import { brandString } from './native/vocabulary/brand.js'
 import { createAssistantMessage, createToolResultMessage } from './native/vocabulary/message.js'
 import type { ContentBlock, TokenUsage } from './native/vocabulary/types.js'
 import type { NativeSessionEvent } from './native/vocabulary/session-event.js'
-import type { AssistantFrame, OperationalFrame, NativeCoreFrame } from './native/vocabulary/live-frame.js'
-import type { RequestMessage } from './native/vocabulary/message.js'
+import type { AssistantFrame, OperationalFrame, NativeCoreFrame, EnvelopedConversationFrame } from './native/vocabulary/live-frame.js'
+import type { RequestMessage, ToolResultMessage } from './native/vocabulary/message.js'
 import type { NativeSessionCore } from './native/core-contract.js'
 import type { AgentMessage, AgentUserMessage, ProviderContentBlock } from '../agent-message.js'
 import {
@@ -38,6 +38,7 @@ import {
   projectNativeEventToSdk,
   projectSdkInputToNative,
   wrapNativeCore,
+  nativeCoreOf,
   type NativeFrameEnvelope,
 } from './native-host-frame-adapter.js'
 
@@ -438,13 +439,16 @@ describe('projectSdkInputToNative — lossless content projection', () => {
     expect(neutral.content).toEqual([{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }])
   })
 
-  it('projects a resolved file block to a neutral FileBlock ref (public identity, no registry path)', () => {
+  it('retains the full resolved file attachment for the fidelity input (T10: persistence + wire projection consume it)', () => {
     const resolved = { type: 'file' as const, attachment: { ...FILE_REF, path: '/registry/notes.txt', mediaType: 'text/plain' } }
     const neutral = projectSdkInputToNative(hostUserMsg([resolved, { type: 'text', text: 'inspect' }]))
-    expect(neutral.content[0]).toEqual({ type: 'file', attachment: FILE_REF })
+    // The core's durable log + wire request projection (handle text / PDF) need
+    // the registry path / media type / model form, so the fidelity input keeps
+    // the FULL resolved attachment. The public UI transcript strips it at the
+    // history-read boundary (publicNativeHistoryLine), never the client.
+    expect(neutral.content[0]).toEqual({ type: 'file', attachment: resolved.attachment })
     expect(neutral.content[1]).toEqual({ type: 'text', text: 'inspect' })
-    // The registry path / observed media type are server-only and never enter the vocabulary.
-    expect(neutral.content[0]).not.toHaveProperty('attachment.path')
+    expect(neutral.content[0]).toHaveProperty('attachment.path', '/registry/notes.txt')
   })
 
   it('projects a base64 image to a LegacyImageBlock verbatim', () => {
@@ -749,6 +753,183 @@ describe('wrapNativeCore — control delegation', () => {
     expect(await handle.getContextUsage!()).toEqual({ totalTokens: 5 })
     await handle.compactInPlace!('summary', { uuid: 'c1', timestamp: 't' })
     expect(core.compactInPlace).toHaveBeenCalledWith('summary', { uuid: 'c1', timestamp: 't' })
+  })
+})
+
+// ── Task 10: neutral core emission (enveloped conversation + tool results) ──
+
+describe('wrapNativeCore — T10 enveloped conversation emission', () => {
+  it('projects an enveloped assistant frame with the sidechain parent', async () => {
+    const af = assistantFrameInput([{ type: 'text', text: 'nested' }], NEUTRAL_USAGE, 'end_turn')
+    const enveloped: EnvelopedConversationFrame = { type: 'enveloped-conversation', frame: af, parentToolUseId: PARENT }
+    const { core } = makeFakeCore({ frames: [enveloped] })
+    const handle = wrapNativeCore(core, {})
+    const [projected] = await collect(handle.messages) as Record<string, any>[]
+    expect(projected.parent_tool_use_id).toBe(PARENT)
+    expect(projected.uuid).toBe(af.message.id)
+    expect(projected.message.content[0]).toEqual({ type: 'text', text: 'nested' })
+  })
+
+  it('projects an enveloped raw stream event verbatim with the sidechain parent', async () => {
+    const event = { type: 'message_stop' }
+    const enveloped: EnvelopedConversationFrame = { type: 'enveloped-conversation', frame: { type: 'raw-stream-event', event }, parentToolUseId: PARENT }
+    const { core } = makeFakeCore({ frames: [enveloped] })
+    const handle = wrapNativeCore(core, {})
+    const [projected] = await collect(handle.messages) as Record<string, any>[]
+    expect(projected.type).toBe('stream_event')
+    expect(projected.event).toBe(event)
+    expect(projected.parent_tool_use_id).toBe(PARENT)
+  })
+
+  it('projects an enveloped first-class tool result with the sidechain parent and shared uuid', async () => {
+    const toolResult = createToolResultMessage({
+      callId: brandString<'ToolCallId'>('toolu_01'),
+      content: [{ type: 'text', text: 'output' }],
+      isError: false,
+    })
+    const enveloped: EnvelopedConversationFrame = { type: 'enveloped-conversation', frame: toolResult, parentToolUseId: PARENT }
+    const { core } = makeFakeCore({ frames: [enveloped] })
+    const handle = wrapNativeCore(core, {})
+    const [projected] = await collect(handle.messages) as Record<string, any>[]
+    expect(projected.type).toBe('user')
+    expect(projected.uuid).toBe(toolResult.id)
+    expect(projected.parent_tool_use_id).toBe(PARENT)
+    expect(projected.message.content[0]).toEqual({
+      type: 'tool_result', tool_use_id: 'toolu_01', content: [{ type: 'text', text: 'output' }], is_error: false,
+    })
+  })
+
+  it('projects a bare first-class tool result with a null parent (main thread)', async () => {
+    const toolResult: ToolResultMessage = createToolResultMessage({
+      callId: brandString<'ToolCallId'>('toolu_02'),
+      content: [{ type: 'text', text: 'main' }],
+      isError: true,
+    })
+    const { core } = makeFakeCore({ frames: [toolResult] })
+    const handle = wrapNativeCore(core, {})
+    const [projected] = await collect(handle.messages) as Record<string, any>[]
+    expect(projected.parent_tool_use_id).toBeNull()
+    expect(projected.uuid).toBe(toolResult.id)
+    expect(projected.message.content[0].is_error).toBe(true)
+  })
+
+  it('a main-thread enveloped frame (null parent) projects identically to the bare frame', async () => {
+    const af = assistantFrameInput([{ type: 'text', text: 'x' }], NEUTRAL_USAGE, 'end_turn')
+    const enveloped: EnvelopedConversationFrame = { type: 'enveloped-conversation', frame: af, parentToolUseId: null }
+    const { core } = makeFakeCore({ frames: [enveloped] })
+    const handle = wrapNativeCore(core, {})
+    const [projected] = await collect(handle.messages) as Record<string, any>[]
+    expect(projected).toEqual(projectNativeFrameToSdk(af, { sessionId: SESSION, uuid: af.message.id, parentToolUseId: null }))
+  })
+})
+
+describe('wrapNativeCore — T7 pairing fix: drain fires terminal failed', () => {
+  /** A fake core whose drainQueued fires a terminal 'failed' for EVERY drained
+   *  entry (the T10 core behavior), releasing the adapter pairing. */
+  function makeDrainingCore() {
+    const queued: RequestMessage[] = []
+    const enqueued: RequestMessage[] = []
+    const core: NativeSessionCore = {
+      sessionId: SESSION,
+      messages: (async function* () {})(),
+      enqueue(msg) { queued.push(msg); enqueued.push(msg) },
+      enqueueControl() {},
+      drainQueued() {
+        const drained = queued.splice(0)
+        for (const msg of drained) core.onUserMessagePersistence?.(msg, 'failed')
+        return drained
+      },
+      clearQueued() { return core.drainQueued().length },
+      get queueDepth() { return queued.length },
+      closed: false,
+      abortSignal: new AbortController().signal,
+      processExited: Promise.resolve(),
+      abort() {},
+      destroy() {},
+      reloadSkills: async () => ({}),
+    }
+    return { core, enqueued }
+  }
+
+  it('drainQueuedInput returns the original hosts even though the drain releases the pairing', () => {
+    const { core, enqueued } = makeDrainingCore()
+    const persisted: Array<{ uuid: string | undefined; outcome: string }> = []
+    const handle = wrapNativeCore(core, {
+      onUserMessagePersistence: (m, outcome) => persisted.push({ uuid: m.uuid, outcome }),
+    })
+    const a = hostUserMsg('one', 'uuid-a')
+    const b = hostUserMsg('two', 'uuid-b')
+    handle.enqueueUserMessage(a)
+    handle.enqueueUserMessage(b)
+    const drained = handle.drainQueuedInput!()
+    // The original host objects come back (the manager re-enqueues / withdraws them).
+    expect(drained).toEqual([a, b])
+    expect(drained[0]).toBe(a)
+    expect(drained[1]).toBe(b)
+    // The core fired a terminal 'failed' for each → the host lease callback ran.
+    expect(persisted).toEqual([
+      { uuid: 'uuid-a', outcome: 'failed' },
+      { uuid: 'uuid-b', outcome: 'failed' },
+    ])
+    // The pairing is released (no orphan, no leak): a repeat outcome is loud.
+    expect(() => core.onUserMessagePersistence!(enqueued[0], 'failed')).toThrow(/unpaired/)
+  })
+
+  it('clearQueuedInput fires failed per entry and returns the count', () => {
+    const { core } = makeDrainingCore()
+    const persisted: string[] = []
+    const handle = wrapNativeCore(core, { onUserMessagePersistence: (m) => persisted.push(m.uuid!) })
+    handle.enqueueUserMessage(hostUserMsg('one', 'u1'))
+    handle.enqueueUserMessage(hostUserMsg('two', 'u2'))
+    expect(handle.clearQueuedInput()).toBe(2)
+    expect(persisted).toEqual(['u1', 'u2'])
+    expect(handle.drainQueuedInput!()).toEqual([])
+  })
+
+  it('interrupt-cancel drains, fires failed per entry, and the receipt releases the pairing', async () => {
+    const { core, enqueued } = makeDrainingCore()
+    const persisted: string[] = []
+    core.interrupt = async (opts) => {
+      if (!opts?.cancelQueued) return undefined
+      const drained = core.drainQueued()
+      return { cancelledQueued: drained.map((m) => (m as { id: string }).id) }
+    }
+    const handle = wrapNativeCore(core, { onUserMessagePersistence: (m) => persisted.push(m.uuid!) })
+    handle.enqueueUserMessage(hostUserMsg('queued', 'host-uuid-cancel'))
+    const receipt = await handle.interrupt!({ cancelQueued: true })
+    expect(receipt).toEqual({ cancelledQueued: ['host-uuid-cancel'] })
+    expect(persisted).toEqual(['host-uuid-cancel'])
+    // The withdrawn pairing is released: a later outcome is loud.
+    expect(() => core.onUserMessageConsumed!(enqueued[0])).toThrow(/unpaired/)
+  })
+})
+
+describe('wrapNativeCore — core seam + pre-fidelity input projection', () => {
+  it('nativeCoreOf returns the wrapped neutral core', () => {
+    const { core } = makeFakeCore()
+    const handle = wrapNativeCore(core, {})
+    expect(nativeCoreOf(handle)).toBe(core)
+  })
+
+  it('projectInput pre-projects the host input but pairs the ORIGINAL host message', () => {
+    const { core, enqueued } = makeFakeCore()
+    const consumed: AgentUserMessage[] = []
+    // A pre-fidelity-style projection that rewrites content (handle text) while
+    // preserving the uuid identity.
+    const projectInput = (host: AgentUserMessage): AgentUserMessage => ({
+      ...host,
+      message: { role: 'user', content: [{ type: 'text', text: 'projected' }] },
+    }) as AgentUserMessage
+    const handle = wrapNativeCore(core, { onUserMessageConsumed: (m) => consumed.push(m) }, { projectInput })
+    const host = hostUserMsg([{ type: 'text', text: 'original' }], 'host-uuid-pi')
+    handle.enqueueUserMessage(host)
+    // The core received the PROJECTED neutral content...
+    expect((enqueued[0] as unknown as { content: Array<{ text: string }> }).content[0].text).toBe('projected')
+    // ...but the pairing keys on the ORIGINAL host (uuid preserved).
+    core.onUserMessageConsumed!(enqueued[0])
+    expect(consumed[0].uuid).toBe('host-uuid-pi')
+    expect(consumed[0].message.content).toEqual([{ type: 'text', text: 'original' }])
+    // drain returns the ORIGINAL host, not the projected form.
   })
 })
 
