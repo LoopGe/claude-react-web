@@ -5,7 +5,7 @@ import type { CanonicalEvent } from './canonical.js'
 import { assistantFrame, defaultFrameContext, isRetainedThinkingBlock, resultFrame, streamEventFrame, toolResultFrame, type Frame, type FrameContext } from './frames.js'
 import { projectNativeFrameToSdk, projectNativeEventToSdk, type NativeFrameEnvelope } from '../native-host-frame-adapter.js'
 import type { RequestMessage, ToolResultMessage } from './vocabulary/message.js'
-import type { AssistantFrame } from './vocabulary/live-frame.js'
+import type { AssistantFrame, OperationalFrame } from './vocabulary/live-frame.js'
 import { NativeTaskManager } from './task-manager.js'
 import { createReadTool } from './tools/read.js'
 import { NativeReadState } from './read-state.js'
@@ -323,8 +323,8 @@ describe('runTurn — neutral emission + neutral history', () => {
       backgroundable: { taskType: 'shell', describe: (input) => `run ${input.command}` },
       async run(_input, ctx) { taskSignal = ctx.signal; markStarted(); return execution.promise },
     }
-    const taskFrames: Frame[] = []
-    const tasks = new NativeTaskManager((frame) => taskFrames.push(frame as Frame))
+    const taskFrames: OperationalFrame[] = []
+    const tasks = new NativeTaskManager((frame) => taskFrames.push(frame))
     const turn = new AbortController()
     const deps = baseDeps({
       stream: s.stream.bind(s), tools: [tool], tasks,
@@ -338,7 +338,7 @@ describe('runTurn — neutral emission + neutral history', () => {
     const results = wireToolResults(s.calls[1])
     expect(results).toEqual([expect.objectContaining({ tool_use_id: 'tu-1', is_error: false })])
     expect(results[0].content[0].text).toContain('TaskOutput')
-    expect(taskFrames[0]).toMatchObject({ subtype: 'task_started', task_id: 'tu-1', description: 'run updated', task_type: 'local_bash' })
+    expect(taskFrames[0]).toMatchObject({ type: 'task/started', taskId: 'tu-1', description: 'run updated', taskType: 'local_bash' })
     execution.resolve({ text: 'eventual output' })
     await expect(waiting).resolves.toMatchObject({ finalText: 'done' })
   })

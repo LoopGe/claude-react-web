@@ -211,53 +211,6 @@ export function packAssistantStream(
   return records
 }
 
-// ── Temporary task-frame bridge (T16 removes) ───────────────────────────────
-// NativeTaskManager still constructs SDK-shaped task frames (frames.ts). Until
-// T16 neutralizes the task manager, the core converts them to the neutral
-// operational task frames at the emission boundary; the host adapter projects
-// them back to the identical SDK task_started / task_notification frames.
-
-/** SDK task_started / task_notification frame → neutral operational frame. */
-function taskFrameToNeutral(frame: unknown): NativeCoreFrame {
-  const f = frame as {
-    subtype?: unknown
-    task_id?: unknown
-    tool_use_id?: unknown
-    task_type?: unknown
-    description?: unknown
-    subagent_type?: unknown
-    status?: unknown
-    result?: unknown
-    reason?: unknown
-    receivedAt?: unknown
-  }
-  const time = typeof f.receivedAt === 'number' ? f.receivedAt : Date.now()
-  if (f.subtype === 'task_started') {
-    return {
-      type: 'task/started',
-      taskId: f.task_id as string,
-      toolUseId: f.tool_use_id as string,
-      taskType: f.task_type as 'local_bash' | 'local_agent',
-      description: f.description as string,
-      ...(typeof f.subagent_type === 'string' ? { subagentType: f.subagent_type } : {}),
-      time,
-    }
-  }
-  if (f.subtype === 'task_notification') {
-    return {
-      type: 'task/notification',
-      taskId: f.task_id as string,
-      toolUseId: f.tool_use_id as string,
-      description: f.description as string,
-      status: f.status as 'completed' | 'failed' | 'stopped',
-      ...(typeof f.result === 'string' && f.result ? { result: f.result } : {}),
-      ...(f.reason !== undefined ? { reason: f.reason as 'worker_restart' } : {}),
-      time,
-    }
-  }
-  throw new Error(`native task bridge: unexpected task frame subtype "${String(f.subtype)}"`)
-}
-
 /** `/name args` — the composer's slash-command shape for a user-invoked skill.
  *  The name grammar mirrors the CLI's skill-name rule. */
 const SKILL_COMMAND_RE = /^\/([A-Za-z0-9][A-Za-z0-9._-]{0,79})(?:\s+([\s\S]*))?$/
@@ -599,7 +552,7 @@ export class NativeSession implements NativeSessionCore {
     this.skills = new NativeSkillCatalog(opts.cwd, opts.ports.skill)
     this.skills.configure(opts.skills)
     this.skillsReady = this.startSkillReload()
-    this.tasks = new NativeTaskManager((frame: unknown) => this.output.push(taskFrameToNeutral(frame)))
+    this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
     this.taskOutputTool = createTaskOutputTool(this.tasks)
     // Every session can delegate, MCP or not: `tools` is a live getter and the
     // `emit` path is the session's own persist+push, so a nested run's frames

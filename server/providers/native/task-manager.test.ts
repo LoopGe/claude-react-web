@@ -1,8 +1,13 @@
 // server/providers/native/task-manager.test.ts
 import { describe, expect, it, vi } from 'vitest'
-import type { Frame } from './frames.js'
+import { taskNotificationFrame, taskStartedFrame } from './frames.js'
+import { projectNativeEventToSdk } from '../native-host-frame-adapter.js'
+import type { OperationalFrame } from './vocabulary/live-frame.js'
 import { NativeTaskManager, type NativeTaskMetadata } from './task-manager.js'
 import type { ToolOutcome } from './tools/types.js'
+
+type TaskStarted = Extract<OperationalFrame, { type: 'task/started' }>
+type TaskNotification = Extract<OperationalFrame, { type: 'task/notification' }>
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -23,13 +28,17 @@ function metadata(toolUseId: string, taskType: NativeTaskMetadata['taskType'] = 
 }
 
 function setup() {
-  const frames: Frame[] = []
-  const manager = new NativeTaskManager((frame) => frames.push(frame as Frame))
+  const frames: OperationalFrame[] = []
+  const manager = new NativeTaskManager((frame) => frames.push(frame))
   return { manager, frames }
 }
 
-function notifications(frames: Frame[]): Frame[] {
-  return frames.filter((frame) => frame.type === 'system' && frame.subtype === 'task_notification')
+function notifications(frames: OperationalFrame[]): TaskNotification[] {
+  return frames.filter((frame): frame is TaskNotification => frame.type === 'task/notification')
+}
+
+function started(frames: OperationalFrame[]): TaskStarted[] {
+  return frames.filter((frame): frame is TaskStarted => frame.type === 'task/started')
 }
 
 describe('NativeTaskManager', () => {
@@ -60,17 +69,15 @@ describe('NativeTaskManager', () => {
       isError: false,
     })
     expect(executionSettled).toBe(false)
-    expect(frames).toHaveLength(1)
-    expect(frames[0]).toMatchObject({
-      type: 'system',
-      subtype: 'task_started',
-      task_id: 'tu-detach',
-      tool_use_id: 'tu-detach',
-      task_type: 'local_bash',
+    expect(started(frames)).toHaveLength(1)
+    expect(started(frames)[0]).toMatchObject({
+      type: 'task/started',
+      taskId: 'tu-detach',
+      toolUseId: 'tu-detach',
+      taskType: 'local_bash',
       description: 'description for tu-detach',
-      is_backgrounded: true,
     })
-    expect(typeof frames[0].receivedAt).toBe('number')
+    expect(typeof started(frames)[0].time).toBe('number')
 
     execution.resolve({ text: 'eventual output' })
     await flush()
@@ -88,15 +95,15 @@ describe('NativeTaskManager', () => {
 
     expect(notifications(frames)).toHaveLength(1)
     expect(notifications(frames)[0]).toMatchObject({
-      task_id: 'tu-complete',
-      tool_use_id: 'tu-complete',
+      taskId: 'tu-complete',
+      toolUseId: 'tu-complete',
       description: 'description for tu-complete',
       status: 'completed',
       result: 'real final report',
     })
-    expect(frames.some((frame) => frame.type === 'result')).toBe(false)
-    expect(frames.some((frame) => frame.type === 'user' && Array.isArray(frame.message?.content)
-      && frame.message.content.some((block: { type?: string }) => block.type === 'tool_result'))).toBe(false)
+    // The manager emits ONLY neutral task frames — never a result frame or a
+    // tool_result (the real completion rides the notification, not a tool result).
+    expect(frames.every((frame) => frame.type === 'task/started' || frame.type === 'task/notification')).toBe(true)
   })
 
   it('detaches every foreground record with no id and rejects unknown or terminal ids', async () => {
@@ -182,7 +189,7 @@ describe('NativeTaskManager', () => {
     expect(manager.background('tu-child')).toBe(true)
     await expect(childWait).resolves.toMatchObject({ isError: false })
     await expect(manager.stop('tu-outer')).rejects.toThrow(/not backgrounded/i)
-    expect(frames.filter((frame) => frame.subtype === 'task_started').map((frame) => frame.task_id)).toEqual(['tu-child'])
+    expect(started(frames).map((frame) => frame.taskId)).toEqual(['tu-child'])
 
     outerExecution.resolve({ text: 'outer report' })
     childExecution.resolve({ text: 'child output' })
@@ -266,7 +273,7 @@ describe('NativeTaskManager', () => {
     completed.resolve({ text: 'success details' })
     await flush()
 
-    const byId = new Map(notifications(frames).map((frame) => [frame.task_id, frame]))
+    const byId = new Map(notifications(frames).map((frame) => [frame.taskId, frame]))
     expect(byId.get('tu-failed')).toMatchObject({ status: 'failed', result: 'failure details' })
     expect(byId.get('tu-completed')).toMatchObject({ status: 'completed', result: 'success details' })
   })
@@ -478,8 +485,119 @@ describe('NativeTaskManager', () => {
     await destroying
     await expect(foregroundWait).resolves.toEqual({ text: 'foreground stopped', isError: true })
 
-    expect(frames.filter((frame) => frame.subtype === 'task_started').map((frame) => frame.task_id)).toEqual(['tu-destroy-detached'])
+    expect(started(frames).map((frame) => frame.taskId)).toEqual(['tu-destroy-detached'])
     expect(notifications(frames)).toHaveLength(1)
-    expect(notifications(frames)[0]).toMatchObject({ task_id: 'tu-destroy-detached', status: 'stopped' })
+    expect(notifications(frames)[0]).toMatchObject({ taskId: 'tu-destroy-detached', status: 'stopped' })
+  })
+})
+
+describe('NativeTaskManager neutral emission projects to the identical legacy SDK task frames', () => {
+  // Behavior-preserving pin (T16): the manager emits NEUTRAL operational frames
+  // and the host adapter owns the SDK projection. Projecting the manager's
+  // ACTUAL emission must equal the legacy frames.ts golden field-for-field (the
+  // full native task field set — is_backgrounded / subagent_type / result /
+  // reason / receivedAt). patch/summary/last_tool_name/output_file/run_id/
+  // resource_links are claude-only task fields native never emits (R6), so they
+  // are absent on both sides of the comparison.
+
+  it('detach of a shell task → task/started → SDK task_started (local_bash, no subagent_type)', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-bash'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-bash')
+    await waiting
+
+    const neutral = started(frames)[0]
+    expect(projectNativeEventToSdk(neutral)).toEqual(taskStartedFrame({
+      taskId: 'tu-bash', toolUseId: 'tu-bash', taskType: 'local_bash',
+      description: 'description for tu-bash', receivedAt: neutral.time,
+    }))
+    execution.resolve({ text: 'done' })
+    await flush()
+  })
+
+  it('detach of a subagent task → task/started → SDK task_started (local_agent + subagent_type)', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = { toolUseId: 'tu-agent', taskType: 'subagent', description: 'research', subagentType: 'Explore' }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+    manager.background('tu-agent')
+    await waiting
+
+    const neutral = started(frames)[0]
+    expect(neutral.subagentType).toBe('Explore')
+    expect(projectNativeEventToSdk(neutral)).toEqual(taskStartedFrame({
+      taskId: 'tu-agent', toolUseId: 'tu-agent', taskType: 'local_agent',
+      description: 'research', subagentType: 'Explore', receivedAt: neutral.time,
+    }))
+    execution.resolve({ text: 'report' })
+    await flush()
+  })
+
+  it('backgrounded completion → task/notification → SDK task_notification (completed + result)', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-ok'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-ok')
+    await waiting
+    execution.resolve({ text: 'final report' })
+    await flush()
+
+    const neutral = notifications(frames)[0]
+    expect(projectNativeEventToSdk(neutral)).toEqual(taskNotificationFrame({
+      taskId: 'tu-ok', toolUseId: 'tu-ok', description: 'description for tu-ok',
+      status: 'completed', result: 'final report', receivedAt: neutral.time,
+    }))
+  })
+
+  it('backgrounded failure → task/notification → SDK task_notification (failed + result)', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-err'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-err')
+    await waiting
+    execution.resolve({ text: 'boom', isError: true })
+    await flush()
+
+    const neutral = notifications(frames)[0]
+    expect(projectNativeEventToSdk(neutral)).toEqual(taskNotificationFrame({
+      taskId: 'tu-err', toolUseId: 'tu-err', description: 'description for tu-err',
+      status: 'failed', result: 'boom', receivedAt: neutral.time,
+    }))
+  })
+
+  it('stop → task/notification → SDK task_notification (stopped + partial result)', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-stop'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-stop')
+    await waiting
+    const stopping = manager.stop('tu-stop')
+    execution.resolve({ text: 'partial', isError: true })
+    await stopping
+
+    const neutral = notifications(frames)[0]
+    expect(projectNativeEventToSdk(neutral)).toEqual(taskNotificationFrame({
+      taskId: 'tu-stop', toolUseId: 'tu-stop', description: 'description for tu-stop',
+      status: 'stopped', result: 'partial', receivedAt: neutral.time,
+    }))
+  })
+
+  it('an empty result is omitted from the projected SDK notification', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-empty'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-empty')
+    await waiting
+    execution.resolve({ text: '' })
+    await flush()
+
+    const neutral = notifications(frames)[0]
+    const projected = projectNativeEventToSdk(neutral) as Record<string, unknown>
+    expect(projected).toEqual(taskNotificationFrame({
+      taskId: 'tu-empty', toolUseId: 'tu-empty', description: 'description for tu-empty',
+      status: 'completed', result: '', receivedAt: neutral.time,
+    }))
+    expect('result' in projected).toBe(false)
   })
 })

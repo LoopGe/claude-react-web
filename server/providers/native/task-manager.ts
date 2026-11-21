@@ -1,7 +1,6 @@
 // server/providers/native/task-manager.ts
-import type { AgentMessage } from '../../agent-message.js'
 import { MAX_TERMINAL_TASKS } from '../../../shared/tasks.js'
-import { taskNotificationFrame, taskStartedFrame } from './frames.js'
+import type { OperationalFrame } from './vocabulary/live-frame.js'
 import type { ToolOutcome } from './tools/types.js'
 
 export interface NativeTaskMetadata {
@@ -46,7 +45,11 @@ const MAX_OUTPUT_TIMEOUT = 600_000
 export class NativeTaskManager {
   private readonly records = new Map<string, TaskRecord>()
 
-  constructor(private readonly emit: (frame: AgentMessage) => void) {}
+  // Emits NEUTRAL live-only operational task frames (R6): task/started on
+  // detach, task/notification on a backgrounded settle. The host adapter owns
+  // the SDK projection (task_started / task_notification); the core never
+  // constructs SDK shapes. These frames are live-only — never persisted.
+  constructor(private readonly emit: (frame: OperationalFrame) => void) {}
 
   runForeground(
     metadata: NativeTaskMetadata,
@@ -95,14 +98,15 @@ export class NativeTaskManager {
       if (wasForeground) {
         record.resolveLoop(outcome)
       } else {
-        this.emit(taskNotificationFrame({
+        this.emit({
+          type: 'task/notification',
           taskId: record.metadata.toolUseId,
           toolUseId: record.metadata.toolUseId,
           description: record.metadata.description,
           status: record.status,
           result: outcome.text,
-          receivedAt: Date.now(),
-        }))
+          time: Date.now(),
+        })
       }
       this.pruneTerminalRecords()
     })
@@ -182,14 +186,15 @@ export class NativeTaskManager {
     if (!record || record.state !== 'foreground') return false
     record.state = 'background'
     record.removeParentListener()
-    this.emit(taskStartedFrame({
+    this.emit({
+      type: 'task/started',
       taskId: record.metadata.toolUseId,
       toolUseId: record.metadata.toolUseId,
       taskType: record.metadata.taskType === 'shell' ? 'local_bash' : 'local_agent',
       description: record.metadata.description,
-      subagentType: record.metadata.subagentType,
-      receivedAt: record.startedAt,
-    }))
+      ...(record.metadata.subagentType !== undefined ? { subagentType: record.metadata.subagentType } : {}),
+      time: record.startedAt,
+    })
     record.resolveLoop({
       text: `Task ${record.metadata.toolUseId} is running in the background.\nUse TaskOutput with task_id="${record.metadata.toolUseId}" to retrieve its final output.`,
       isError: false,
