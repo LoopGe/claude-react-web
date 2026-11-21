@@ -1,5 +1,21 @@
-// server/providers/native/frames.ts
-import type { AgentMessage } from '../../agent-message.js'
+// server/providers/native-frames.ts
+//
+// ADAPTER-SIDE legacy SDK frame builders (option C relocation of the former
+// native/frames.ts). The neutral core emits the vocabulary's live frames
+// (native/vocabulary/live-frame.ts) and the host adapter
+// (native-host-frame-adapter.ts) owns the production SDK projection; these
+// SDK-shaped constructors survive for the test suite, which builds legacy
+// frames directly. This module lives OUTSIDE native/ so the core neutrality
+// pin (native/vocabulary/neutrality.test.ts) sees zero SDK frame vocabulary
+// inside the core tree. The neutral identity facts (FrameContext /
+// defaultFrameContext / Usage) relocated to the vocabulary; they are
+// re-exported here so existing consumers keep one import site.
+import type { AgentMessage } from '../agent-message.js'
+import type { FrameContext } from './native/vocabulary/frame-context.js'
+import type { Usage } from './native/vocabulary/types.js'
+
+export { defaultFrameContext, type FrameContext } from './native/vocabulary/frame-context.js'
+export { isRetainedThinkingBlock, type Usage } from './native/vocabulary/types.js'
 
 // The SDKMessage union does not carry the frame fields uniformly (e.g.
 // SDKResultSuccess has no parent_tool_use_id, most members have no `message`),
@@ -12,36 +28,6 @@ export type ContentBlock =
   | { type: 'thinking'; thinking: string; signature?: string }
   | { type: 'redacted_thinking'; data: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-
-/** Model history may carry a thinking block only when the API can verify it:
- *  signed (`signature` non-empty) or redacted (`data` non-empty). The API
- *  rejects unsigned thinking on a follow-up request, so those are stripped
- *  from history — the UI-facing assistant frame keeps every block. Shared by
- *  the live loop and the log replay so the two can never diverge. */
-export function isRetainedThinkingBlock(block: { type?: unknown; signature?: unknown; data?: unknown }): boolean {
-  if (block.type === 'thinking') return typeof block.signature === 'string' && block.signature !== ''
-  if (block.type === 'redacted_thinking') return typeof block.data === 'string' && block.data !== ''
-  return true
-}
-
-export interface Usage {
-  input_tokens: number
-  output_tokens: number
-  cache_read_input_tokens?: number
-  cache_creation_input_tokens?: number
-}
-
-export interface FrameContext {
-  sessionId: string
-  uuid(): string
-  /** Set by a nested (sidechain) runner: the id of the tool_use that spawned
-   *  it. Unset / null for the main thread. */
-  parentToolUseId?: string | null
-}
-
-export function defaultFrameContext(sessionId: string, parentToolUseId?: string | null): FrameContext {
-  return { sessionId, uuid: () => crypto.randomUUID(), parentToolUseId: parentToolUseId ?? null }
-}
 
 function base(ctx: FrameContext, type: string, uuid = ctx.uuid()): Record<string, unknown> {
   return { type, session_id: ctx.sessionId, uuid, parent_tool_use_id: ctx.parentToolUseId ?? null }

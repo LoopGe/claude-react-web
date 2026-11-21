@@ -1,6 +1,6 @@
 // server/providers/native/task-manager.test.ts
 import { describe, expect, it, vi } from 'vitest'
-import { taskNotificationFrame, taskStartedFrame } from './frames.js'
+import { taskNotificationFrame, taskStartedFrame } from '../native-frames.js'
 import { projectNativeEventToSdk } from '../native-host-frame-adapter.js'
 import type { OperationalFrame } from './vocabulary/live-frame.js'
 import { NativeTaskManager, type NativeTaskMetadata } from './task-manager.js'

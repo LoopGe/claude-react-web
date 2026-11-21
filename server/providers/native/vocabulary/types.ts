@@ -89,6 +89,18 @@ export interface TokenUsage {
   reasoningTokens?: number
 }
 
+/** The API usage-counter shape (snake_case, as the Anthropic API returns it):
+ *  a plain SDK-free counter pair, relocated here from the former
+ *  native/frames.ts so the core's live accounting (lastUsage / usageByModel /
+ *  turn-end usage) needs no adapter import. TokenUsage above is the neutral
+ *  internal currency; the core bridges the two at its own boundary. */
+export interface Usage {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}
+
 /** A structured LLM failure. Codes are defined at the native API boundary
  *  (CONTEXT_WINDOW_EXCEEDED, EMPTY_RESPONSE, AUTH, RATE_LIMIT, TIMEOUT,
  *  TRANSPORT, …), not enumerated here. */

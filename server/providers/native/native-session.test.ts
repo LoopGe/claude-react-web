@@ -40,7 +40,7 @@ import { ASK_USER_QUESTION_GUIDANCE } from './tools/ask-user-question.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { CanonicalEvent } from './canonical.js'
 import { buildRequestBody } from './anthropic-stream.js'
-import type { Frame } from './frames.js'
+import type { Frame } from '../native-frames.js'
 import { config, __setConfigForTest } from '../../config.js'
 import { AnthropicModelDiscovery } from './model-discovery.js'
 import { NativeModelContextResolver, type NativeModelContext, type NativeModelRoute } from './model-context.js'
@@ -4301,7 +4301,7 @@ describe('NativeSession', () => {
         const sessionLog = (coreOf(session) as unknown as { log: NativeSessionLog }).log
         const originalAppend = sessionLog.append.bind(sessionLog)
         vi.spyOn(sessionLog, 'append').mockImplementation((event) => {
-          if (event.type === 'user' && event.uuid === 'withdraw-me') throw new Error('append failed')
+          if (event.type === 'user/message' && event.data.id === 'withdraw-me') throw new Error('append failed')
           return originalAppend(event)
         })
 
@@ -5726,7 +5726,7 @@ describe('NativeSession', () => {
       const sessionLog = (coreOf(session) as unknown as { log: NativeSessionLog }).log
       const originalAppend = sessionLog.append.bind(sessionLog)
       vi.spyOn(sessionLog, 'append').mockImplementation((event) => {
-        if (event.type === 'user' && event.uuid === 'attachment-user') throw new Error('append failed')
+        if (event.type === 'user/message' && event.data.id === 'attachment-user') throw new Error('append failed')
         return originalAppend(event)
       })
       try {

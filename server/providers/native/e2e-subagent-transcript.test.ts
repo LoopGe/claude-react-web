@@ -27,7 +27,7 @@ import { nativeHistoryCache } from './session-log/cache.js'
 import type { NativeEventInput } from './session-log/format.js'
 import { loadNativeSessionLogSync, NativeSessionLog } from './session-log/log.js'
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
-import { NativeSubagentTranscriptSource } from './subagent-transcript-source.js'
+import { NativeSubagentTranscriptSource } from '../native-subagent-transcript-source.js'
 
 type Frame = Record<string, any>
 type CreateOptions = Parameters<SessionManager['create']>[0]

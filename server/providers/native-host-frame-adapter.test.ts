@@ -24,7 +24,7 @@ import {
   type ContentBlock as SdkContentBlock,
   type FrameContext,
   type Usage as SdkUsage,
-} from './native/frames.js'
+} from './native-frames.js'
 import { brandString } from './native/vocabulary/brand.js'
 import { createAssistantMessage, createToolResultMessage } from './native/vocabulary/message.js'
 import type { ContentBlock, TokenUsage } from './native/vocabulary/types.js'

@@ -1,9 +1,9 @@
-// server/providers/native/frames.test.ts
+// server/providers/native-frames.test.ts
 import { describe, expect, it } from 'vitest'
 import {
   apiRetryFrame, assistantFrame, defaultFrameContext, resultFrame,
   streamEventFrame, taskNotificationFrame, taskStartedFrame, toolResultFrame, type FrameContext,
-} from './frames.js'
+} from './native-frames.js'
 
 const ctx: FrameContext = defaultFrameContext('sess-1')
 const usage = { input_tokens: 10, output_tokens: 5 }

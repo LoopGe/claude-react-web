@@ -2,7 +2,7 @@
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
-import type { FrameContext } from './frames.js'
+import type { FrameContext } from './vocabulary/frame-context.js'
 import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
 import type { EffortLevel } from './anthropic-stream.js'

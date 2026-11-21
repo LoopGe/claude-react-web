@@ -40,14 +40,14 @@ import type {
 import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
 import { createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
-import type { ContentBlock, FinishReason, TokenUsage } from './vocabulary/types.js'
+import type { ContentBlock, FinishReason, TokenUsage, Usage } from './vocabulary/types.js'
 import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './vocabulary/session-event.js'
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
 import type { NativeHostPorts } from './ports.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
-import { defaultFrameContext, type FrameContext, type Usage } from './frames.js'
+import { defaultFrameContext, type FrameContext } from './vocabulary/frame-context.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import { buildForkSeed } from './session-log/fork.js'
 import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './session-log/replay.js'
@@ -689,14 +689,18 @@ export class NativeSession implements NativeSessionCore {
 
     const unsupportedFields = unsupportedAgentFields(definition)
     const dropped = unsupportedFields.length > 0
+    const timestamp = new Date().toISOString()
     const migrated = sessionLog.append({
       type: 'session/agent',
-      name: dropped ? null : definition.name,
-      ...(dropped
-        ? { droppedAgent: { name: definition.name, unsupportedFields } }
-        : { definition: structuredClone(definition) }),
-      base: this.agentBaseSnapshot(),
-      timestamp: new Date().toISOString(),
+      time: Date.parse(timestamp),
+      data: {
+        name: dropped ? null : definition.name,
+        ...(dropped
+          ? { droppedAgent: { name: definition.name, unsupportedFields } }
+          : { definition: structuredClone(definition) }),
+        base: this.agentBaseSnapshot(),
+        timestamp,
+      },
     }) as NativeAgentSelectionEvent
     flushInBackground(sessionLog, this.opts.id, 'legacy agent migration')
     this.applyAgentSelection(migrated)
@@ -726,12 +730,16 @@ export class NativeSession implements NativeSessionCore {
     definition: NativeAgentSelectionEvent['definition'],
     base: NativeAgentBase,
   ): Promise<void> {
+    const timestamp = new Date().toISOString()
     const selection = await this.log.appendDurable({
       type: 'session/agent',
-      name,
-      ...(definition ? { definition: structuredClone(definition) } : {}),
-      base,
-      timestamp: new Date().toISOString(),
+      time: Date.parse(timestamp),
+      data: {
+        name,
+        ...(definition ? { definition: structuredClone(definition) } : {}),
+        base,
+        timestamp,
+      },
     }) as NativeAgentSelectionEvent
     this.applyAgentSelection(selection)
   }
@@ -849,7 +857,7 @@ export class NativeSession implements NativeSessionCore {
     const { synthetic } = repairInterruptedTurn(neutralEventsOf(log))
     if (synthetic.length > 0) {
       for (const event of synthetic) log.append(event)
-      log.append({ type: 'turn/end', reason: 'interrupted' })
+      log.append({ type: 'turn/end', time: 0, data: { reason: 'interrupted' } })
       flushInBackground(log, opts.id, 'interrupted-turn repair')
     }
     // `append` mutated the log's event streams, so this is the original prefix
@@ -1439,12 +1447,15 @@ export class NativeSession implements NativeSessionCore {
         // the turn loop — no SDK→neutral bridge (T13).
         initialMessages = [createUserMessage({ content: persisted.content as ContentBlock[], source: { kind: 'user' } })]
         this.log.append({
-          type: 'user',
-          uuid: next.id!,
-          session_id: this.opts.id,
-          parent_tool_use_id: null,
-          timestamp,
-          message: persisted,
+          type: 'user/message',
+          time: Date.parse(timestamp),
+          parentToolUseId: null,
+          data: {
+            role: 'user',
+            id: brandString<'MessageId'>(next.id!),
+            content: persisted.content as ContentBlock[],
+            source: { kind: 'user' },
+          },
         })
         for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.confirm(reservation)
         pending.pdfReservations = []
@@ -1457,9 +1468,8 @@ export class NativeSession implements NativeSessionCore {
           initialMessages.push(instruction)
           this.log.append({
             type: 'session/skill',
-            name: invocation.name,
-            body: invocation.body,
-            timestamp,
+            time: Date.parse(timestamp),
+            data: { name: invocation.name, body: invocation.body, timestamp },
           })
           appendedInitialMessages.push(instruction)
         }
@@ -1581,11 +1591,14 @@ export class NativeSession implements NativeSessionCore {
       // failure here must log rather than land in the catch above, which
       // would emit a second terminal result and a second turn/end.
       try {
-        const turnEnd: { type: 'turn/end'; reason: NativeTurnEndReason; usage?: Usage } = {
-          type: 'turn/end',
-          reason: endReason,
+        const turnEnd = {
+          type: 'turn/end' as const,
+          time: 0,
+          data: {
+            reason: endReason,
+            ...(endUsage ? { usage: neutralUsageOf(endUsage) } : {}),
+          },
         }
-        if (endUsage) turnEnd.usage = endUsage
         this.log.append(turnEnd)
         await this.log.flush()
       } catch (err) {
@@ -1625,14 +1638,18 @@ export class NativeSession implements NativeSessionCore {
   enqueueControl(message: RequestMessage): void {
     // The compact seed is a durable conversation message even though it never
     // starts a turn: persist it, then make it visible to the next request.
+    const timestamp = new Date().toISOString()
     this.log.append({
-      type: 'user',
-      uuid: message.id!,
-      session_id: this.opts.id,
-      parent_tool_use_id: null,
-      timestamp: new Date().toISOString(),
-      message: { role: 'user', content: message.content as unknown[] },
-      isCompactSummary: true,
+      type: 'user/message',
+      time: Date.parse(timestamp),
+      parentToolUseId: null,
+      data: {
+        role: 'user',
+        id: brandString<'MessageId'>(message.id!),
+        content: message.content,
+        source: { kind: 'user' },
+        isCompactSummary: true,
+      },
     })
     this.syncAttachmentReferences()
     flushInBackground(this.log, this.opts.id, 'compact summary')
@@ -1699,18 +1716,24 @@ export class NativeSession implements NativeSessionCore {
       await this.log.migrateToV2()
       this.log.append({
         type: 'session/attachments',
-        attachments: opts.attachments.map((attachment) => ({ ...attachment })),
-        timestamp: opts.timestamp,
+        time: Date.parse(opts.timestamp),
+        data: {
+          attachments: opts.attachments.map((attachment) => ({ ...attachment })),
+          timestamp: opts.timestamp,
+        },
       })
     }
     this.log.append({
-      type: 'user',
-      uuid: opts.uuid,
-      session_id: this.opts.id,
-      parent_tool_use_id: null,
-      timestamp: opts.timestamp,
-      message: { role: 'user', content: [{ type: 'text', text: summary }] },
-      isCompactSummary: true,
+      type: 'user/message',
+      time: Date.parse(opts.timestamp),
+      parentToolUseId: null,
+      data: {
+        role: 'user',
+        id: brandString<'MessageId'>(opts.uuid),
+        content: [{ type: 'text', text: summary }],
+        source: { kind: 'user' },
+        isCompactSummary: true,
+      },
     })
     await this.log.flush()
     this.syncAttachmentReferences()
@@ -1757,10 +1780,8 @@ export class NativeSession implements NativeSessionCore {
     const context = contextSnapshot(this.opts.cwd)
     this.log.append({
       type: 'session/compact',
-      text: summary,
-      context,
-      uuid: opts.uuid,
-      timestamp: opts.timestamp,
+      time: Date.parse(opts.timestamp),
+      data: { text: summary, context, uuid: opts.uuid, timestamp: opts.timestamp },
     })
     await this.log.flush()
     this.pdfBudgets.rebuildFromEvents(this.log.events)
@@ -1846,9 +1867,8 @@ export class NativeSession implements NativeSessionCore {
     for (const entry of wrapped) {
       this.log.append({
         type: 'session/supplement',
-        uuid: entry.uuid,
-        text: entry.text,
-        timestamp,
+        time: Date.parse(timestamp),
+        data: { uuid: entry.uuid, text: entry.text, timestamp },
       })
     }
     await this.log.flush()

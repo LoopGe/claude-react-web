@@ -24,7 +24,7 @@ import { nativeFileHandleText, projectNativeMessages, type NativeProjectionOptio
 import { historyFromEvents } from '../session-log/replay.js'
 import { isSidechainEvent, type NativeCompactEvent, type NativeFileAttachment, type NativeLogEvent } from '../session-log/format.js'
 import { migrateEventToV3 } from '../session-log/migration.js'
-import { isRetainedThinkingBlock } from '../frames.js'
+import { isRetainedThinkingBlock } from '../../native-frames.js'
 import { brandString } from '../vocabulary/brand.js'
 import {
   createAssistantMessage,

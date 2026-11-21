@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { runTurn, type LoopDeps, type NativeLoopFrame } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
-import { assistantFrame, defaultFrameContext, isRetainedThinkingBlock, resultFrame, streamEventFrame, toolResultFrame, type Frame, type FrameContext } from './frames.js'
+import { assistantFrame, defaultFrameContext, isRetainedThinkingBlock, resultFrame, streamEventFrame, toolResultFrame, type Frame, type FrameContext } from '../native-frames.js'
 import { projectNativeFrameToSdk, projectNativeEventToSdk, type NativeFrameEnvelope } from '../native-host-frame-adapter.js'
 import type { RequestMessage, ToolResultMessage } from './vocabulary/message.js'
 import type { AssistantFrame, OperationalFrame } from './vocabulary/live-frame.js'

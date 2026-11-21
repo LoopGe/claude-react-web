@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-After the [provider seam neutralization](../../proposed/architecture/2026-11-18-provider-seam-neutralization.md),
+After the [provider seam neutralization](2026-11-18-provider-seam-neutralization.md),
 the native provider's contract imports no concrete provider, but its
 IMPLEMENTATION still reaches into host-domain service modules and reads the
 `config` singleton directly. That blocks extracting native into its own

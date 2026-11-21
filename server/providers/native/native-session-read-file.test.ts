@@ -9,7 +9,7 @@ import type { CreateSessionOptions, ProviderSessionHandle } from '../types.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { FileReadResult } from '../../../shared/read-file.js'
 import type { CanonicalEvent } from './canonical.js'
-import type { Frame } from './frames.js'
+import type { Frame } from '../native-frames.js'
 import { NativeFileEncodingError } from './file-read.js'
 import * as fileRead from './file-read.js'
 

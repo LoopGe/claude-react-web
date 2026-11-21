@@ -1,18 +1,25 @@
-import type { AgentMessage } from '../../agent-message.js'
-import type { RawLine } from '../../../shared/transcript-format.js'
-import { createPushable } from '../../pushable.js'
+// ADAPTER-SIDE host transcript source (option C relocation of the former
+// native/subagent-transcript-source.ts). It implements the HOST contract
+// (SubagentTranscriptSource / SubagentTranscriptFrame) over the neutral core's
+// log cache and subagent projection, so it lives outside native/ with the
+// other host-adapter modules — the core neutrality pin
+// (native/vocabulary/neutrality.test.ts) sees zero host frame vocabulary
+// inside the core tree.
+import type { AgentMessage } from '../agent-message.js'
+import type { RawLine } from '../../shared/transcript-format.js'
+import { createPushable } from '../pushable.js'
 import type {
   SubagentTranscriptFrame,
   SubagentTranscriptSub,
-} from '../../subagent-transcript-hub.js'
-import type { SubagentTranscriptSource } from '../../subagent-transcript-source.js'
-import type { NativeTranscriptPort } from './ports.js'
-import { nativeHistoryCache } from './session-log/cache.js'
+} from '../subagent-transcript-hub.js'
+import type { SubagentTranscriptSource } from '../subagent-transcript-source.js'
+import type { NativeTranscriptPort } from './native/ports.js'
+import { nativeHistoryCache } from './native/session-log/cache.js'
 import {
   nativeSubagentPromptFrame,
   projectNativeSubagentLine,
   readNativeSubagentTranscript,
-} from './subagent-transcripts.js'
+} from './native/subagent-transcripts.js'
 
 export type SubscribeNativeSubagentLive = (
   sessionId: string,

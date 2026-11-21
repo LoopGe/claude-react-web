@@ -56,7 +56,8 @@ export interface NativeSessionLogSnapshot {
   header: NativeSessionHeader
   events: NativeLogEvent[]
   /** Canonical neutral events for a v3 log (undefined for v1/v2). `events`
-   *  remains the legacy read view transitional consumers use until T13. */
+   *  remains the legacy read view read-side consumers use (attachment index,
+   *  PDF budgets, usage restore); the core WRITE path is neutral-only. */
   neutralEvents?: NativeSessionEvent[]
   path: string
   /** Byte offset just past the last complete line; a torn tail starts here. */
@@ -228,8 +229,8 @@ export async function deleteNativeSessionLog(stateDir: string, id: string): Prom
 export class NativeSessionLog {
   readonly header: NativeSessionHeader
   /** The legacy v1/v2 event view. For a v3 log this is the projection of
-   *  `neutralEvents` (transitional consumers read it until T13); for v1/v2 it
-   *  is the canonical event list. */
+   *  `neutralEvents` (read-side consumers read it); for v1/v2 it is the
+   *  canonical event list. The core WRITE path appends neutral events only. */
   readonly events: NativeLogEvent[]
   /** Canonical neutral events for a v3 log; null for v1/v2. Reassigned by the
    *  eager-at-open v3 migration (a v1/v2 writer upgrades to a neutral baseline). */
@@ -380,10 +381,12 @@ export class NativeSessionLog {
     // Neutral v3 inputs carry a `data` envelope; legacy v1/v2 inputs never do.
     const isNeutral = 'data' in input
     // A v3 log — or a v1/v2 log with an in-flight v3 migration gate —
-    // canonicalizes every append to neutral. The core still emits some legacy
-    // events (user / turn-end / compact / skill / …, neutralized in T13), so a
-    // legacy input is migrated losslessly rather than rejected; a neutral input
-    // is stored verbatim (its v3-only facts preserved).
+    // canonicalizes every append to neutral. The core write path appends
+    // NEUTRAL v3 events only (option C; pinned by vocabulary/neutrality.test.ts).
+    // A legacy input is still migrated losslessly rather than rejected: that
+    // write-compat serves the writer's own v1/v2 contract (log.test.ts) and
+    // legacy seeds, never the core. A neutral input is stored verbatim (its
+    // v3-only facts preserved).
     const targetV3 = this.header.v === NATIVE_SESSION_LOG_V3 || this.migrationTargetVersion === NATIVE_SESSION_LOG_V3
     let legacy: NativeLogEvent
     let neutral: NativeSessionEvent | null = null
