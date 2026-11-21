@@ -35,6 +35,7 @@ import type {
   NativeResetBaseSettings,
   NativeEffectiveSettings,
   NativePersistenceOutcome,
+  NativeDrainMode,
 } from './core-contract.js'
 import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
 import { createAssistantMessage, createToolResultMessage, createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
@@ -1880,27 +1881,27 @@ export class NativeSession implements NativeSessionCore {
   }
 
   clearQueued(): number {
-    return this.drainQueued().length
+    return this.drainQueued('withdrawal').length
   }
 
-  drainQueued(): RequestMessage[] {
+  drainQueued(mode: NativeDrainMode = 'withdrawal'): RequestMessage[] {
     const pending = this.pendingDurableInitial
     for (const reservation of pending?.pdfReservations ?? []) this.pdfBudgets.release(reservation)
     this.pendingDurableInitial = null
     // Withdrawing the parked head prompt ends any durable-retry pause.
     this.durableRetryPaused = false
     const drained = [...(pending ? [pending.message] : []), ...this.input.splice(0)]
-    // T7 pairing fix: fire a terminal 'failed' outcome for EVERY drained entry
-    // so the host adapter's strong host↔neutral pairing releases (no orphan,
-    // no leak). Under legacy core semantics a plain-FIFO drain (the manager's
-    // withdrawHostQueue leg) fired no outcome, orphaning the pairing. A drained
-    // prompt is abandoned (withdrawn) or transferred (respawn re-enqueues onto
-    // a fresh handle, re-pairing there); either way THIS handle's pairing ends.
-    // The pump catch no longer fires 'failed' for a withdrawn parked head — this
-    // is the single terminal-outcome point for drained input.
+    // T7 pairing fix / Q1: a WITHDRAWAL drain abandons the prompts, so fire a
+    // terminal 'failed' outcome per entry — the adapter releases the host↔neutral
+    // pairing AND the host lease callback releases the manager's send lease. A
+    // TRANSFER drain (respawnInPlace moving prompts to a fresh handle) fires NO
+    // outcome: the adapter releases the pairing silently and the send lease is
+    // PRESERVED across the re-enqueue (which never re-acquires it). Either way
+    // THIS handle's pairing ends; the pump catch no longer fires 'failed' for a
+    // withdrawn parked head — the withdrawal drain is its single terminal point.
     for (const msg of drained) {
       this.receivedAt.delete(msg.id!)
-      this.onUserMessagePersistence?.(msg, 'failed')
+      if (mode === 'withdrawal') this.onUserMessagePersistence?.(msg, 'failed')
     }
     return drained
   }

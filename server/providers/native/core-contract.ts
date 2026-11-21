@@ -26,6 +26,12 @@ import type { SupplementOutcome } from '../steering-format.js'
  *  no outcome (the lease is retained until append or withdrawal). */
 export type NativePersistenceOutcome = 'appended' | 'failed'
 
+/** The drain context (T10 fix Q1). `'withdrawal'` abandons the queued prompts
+ *  (fire terminal 'failed' → release pairing + send lease); `'transfer'` moves
+ *  them to a respawned session (release pairing silently, preserve the send
+ *  lease across the re-enqueue). */
+export type NativeDrainMode = 'withdrawal' | 'transfer'
+
 /** Neutral attachment occurrence (full-log, for compact hydration). Structurally
  *  identical to the host's ProviderAttachmentOccurrence; defined here so the
  *  core contract carries no host-contract import. `blockPath` is [contentIndex]
@@ -80,11 +86,21 @@ export interface NativeSessionCore {
   /** Enqueue a neutral control message (joins the conversation without starting
    *  a turn — the compact hand-off seed). */
   enqueueControl(msg: RequestMessage): void
-  /** Remove and return queued neutral user turns not yet consumed (crash
-   *  recovery / interrupt withdrawal). The adapter maps each back to its host
-   *  AgentUserMessage. */
-  drainQueued(): RequestMessage[]
-  /** Drop queued neutral user turns; returns the count dropped. */
+  /** Remove and return queued neutral user turns not yet consumed. The drain
+   *  MODE decides the terminal outcome (T10 fix Q1):
+   *  - `'withdrawal'` (default): the prompts are ABANDONED (interrupt cancelQueued
+   *    / clearQueued). The core fires a terminal `'failed'` persistence outcome
+   *    per entry, so the adapter releases the host↔neutral pairing AND the host
+   *    lease callback releases the manager's attachment send lease.
+   *  - `'transfer'`: the prompts are MOVED to a respawned session (the manager's
+   *    respawnInPlace drain → re-enqueue). The core fires NO outcome — the adapter
+   *    releases the pairing SILENTLY and the manager's send lease is PRESERVED
+   *    across the transfer (the re-enqueue never re-acquires it). The manager
+   *    owns the lease decision for this path (it also releases the lease itself
+   *    on the withdrawal leg-1 drain and on failed-resume abandonment).
+   *  The adapter maps each drained message back to its host AgentUserMessage. */
+  drainQueued(mode?: NativeDrainMode): RequestMessage[]
+  /** Drop queued neutral user turns (withdrawal); returns the count dropped. */
   clearQueued(): number
   readonly queueDepth: number
   readonly closed: boolean

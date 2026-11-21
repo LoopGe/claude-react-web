@@ -18,6 +18,7 @@ import { createPushable } from './pushable.js'
 import { fileHandleText } from '../shared/upload-handle.js'
 import { NativeProvider } from './providers/native/native-provider.js'
 import { makeNativePorts } from './providers/native-host-adapters.js'
+import { nativeCoreOf } from './providers/native-host-frame-adapter.js'
 import { nativeFileHandleText } from './providers/native/attachment-projection.js'
 import { __setConfigForTest } from './config.js'
 import { rmRf } from './__test-utils__/index.js'
@@ -31,6 +32,15 @@ vi.mock('node:fs', async (importOriginal) => {
 })
 
 const attachment = { id: 'u1', name: 'a.pdf', size: 3 }
+
+/** T10: the native handle is the SDK-shaped wrapNativeCore wrapper; the neutral
+ *  core's internals (log / pumping / tasks / pendingDurableInitial / input) are
+ *  reached through the adapter's core seam. */
+function coreOf(handle: unknown): unknown {
+  const core = nativeCoreOf(handle as ProviderSessionHandle)
+  if (!core) throw new Error('test: handle is not a wrapped native core')
+  return core
+}
 
 function message(content: unknown[]): SDKUserMessage {
   return {
@@ -431,9 +441,9 @@ describe('SessionManager attachment dispatch serialization', () => {
         uploadedAt: 2, sessionTitle: '', sessionId: info.id,
       }
       fx.store.record([{ ...fx.entry, sessionId: info.id }, pdfEntry])
-      const nativeSession = (sm as unknown as {
+      const nativeSession = coreOf((sm as unknown as {
         sessions: Map<string, { handle: ProviderSessionHandle }>
-      }).sessions.get(info.id)!.handle as unknown as {
+      }).sessions.get(info.id)!.handle) as unknown as {
         log: NativeSessionLog
         pumping: boolean
       }
@@ -654,7 +664,7 @@ describe('SessionManager attachment dispatch serialization', () => {
       const nativeSession = (sm as unknown as {
         sessions: Map<string, { handle: ProviderSessionHandle }>
       }).sessions.get(info.id)!.handle
-      const internals = nativeSession as unknown as {
+      const internals = coreOf(nativeSession) as unknown as {
         log: NativeSessionLog
         tasks: { destroy(): Promise<void> }
       }
@@ -744,9 +754,9 @@ describe('SessionManager attachment dispatch serialization', () => {
       manager.handleProcessExit({ sessionId: info.id, code: 1, signal: null, killed: false })
       await vi.waitFor(() => expect(manager.sessions.get(info.id)!.handle).not.toBe(oldHandle))
       const newHandle = manager.sessions.get(info.id)!.handle
-      const internals = newHandle as unknown as {
-        pendingDurableInitial: { message: AgentUserMessage } | null
-        input: AgentUserMessage[]
+      const internals = coreOf(newHandle) as unknown as {
+        pendingDurableInitial: { message: { id: string } } | null
+        input: unknown[]
         log: NativeSessionLog
       }
       // The failed-append attachment is carried at the recovered handle's FIFO
@@ -754,7 +764,8 @@ describe('SessionManager attachment dispatch serialization', () => {
       // handle — it is queued-not-published in the durable writer, which
       // survives the in-place respawn and materializes at the recovered turn's
       // terminal. The two homes together preserve the original dispatch order.
-      expect(internals.pendingDurableInitial?.message.uuid).toBe(first.uuid)
+      // T10: the parked prompt is a neutral RequestMessage (id === host uuid).
+      expect(internals.pendingDurableInitial?.message.id).toBe(first.uuid)
       expect(internals.input).toHaveLength(0)
       const writer = manager.transcriptWriters.get(info.id)!
       expect(writer.queuedCount).toBe(1)

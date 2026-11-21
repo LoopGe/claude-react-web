@@ -557,7 +557,7 @@ describe('wrapNativeCore — input identity + drain', () => {
     expect((drained[0] as { receivedAt?: number }).receivedAt).toBe(4242)
   })
 
-  it('drain keeps the pairing so a terminal failed for the withdrawn parked head still maps to the host uuid', () => {
+  it('TRANSFER drain (drainQueuedInput) releases the pairing silently — no host failed, a later outcome is loud (Q1)', () => {
     const { core, enqueued } = makeFakeCore()
     const persisted: Array<{ uuid: string | undefined; outcome: string }> = []
     const handle = wrapNativeCore(core, {
@@ -565,13 +565,13 @@ describe('wrapNativeCore — input identity + drain', () => {
     })
     const host = hostUserMsg('parked', 'host-uuid-parked')
     handle.enqueueUserMessage(host)
-    // The manager drains its host queue BEFORE interrupt; the core then fires
-    // 'failed' for the withdrawn parked head (native-session.ts:1376).
+    // respawnInPlace transfer drain: the prompt is MOVED, not abandoned. The
+    // adapter releases the pairing silently and fires NO host 'failed' (the
+    // manager's send lease is preserved across the re-enqueue).
     const drained = handle.drainQueuedInput!()
     expect(drained).toEqual([host])
-    expect(() => core.onUserMessagePersistence!(enqueued[0], 'failed')).not.toThrow()
-    expect(persisted).toEqual([{ uuid: 'host-uuid-parked', outcome: 'failed' }])
-    // 'failed' is terminal: the pairing is now released (a repeat outcome is loud).
+    expect(persisted).toEqual([])
+    // The pairing is released: a subsequent outcome for the drained id is loud.
     expect(() => core.onUserMessagePersistence!(enqueued[0], 'failed')).toThrow(/unpaired/)
   })
 
@@ -823,9 +823,10 @@ describe('wrapNativeCore — T10 enveloped conversation emission', () => {
   })
 })
 
-describe('wrapNativeCore — T7 pairing fix: drain fires terminal failed', () => {
-  /** A fake core whose drainQueued fires a terminal 'failed' for EVERY drained
-   *  entry (the T10 core behavior), releasing the adapter pairing. */
+describe('wrapNativeCore — drain modes: withdrawal fires failed, transfer preserves the lease (Q1)', () => {
+  /** A fake core mirroring the T10 drain-mode contract: a WITHDRAWAL drain fires
+   *  terminal 'failed' per entry; a TRANSFER drain fires nothing (the adapter
+   *  releases the pairing silently). */
   function makeDrainingCore() {
     const queued: RequestMessage[] = []
     const enqueued: RequestMessage[] = []
@@ -834,12 +835,14 @@ describe('wrapNativeCore — T7 pairing fix: drain fires terminal failed', () =>
       messages: (async function* () {})(),
       enqueue(msg) { queued.push(msg); enqueued.push(msg) },
       enqueueControl() {},
-      drainQueued() {
+      drainQueued(mode = 'withdrawal') {
         const drained = queued.splice(0)
-        for (const msg of drained) core.onUserMessagePersistence?.(msg, 'failed')
+        if (mode === 'withdrawal') {
+          for (const msg of drained) core.onUserMessagePersistence?.(msg, 'failed')
+        }
         return drained
       },
-      clearQueued() { return core.drainQueued().length },
+      clearQueued() { return core.drainQueued('withdrawal').length },
       get queueDepth() { return queued.length },
       closed: false,
       abortSignal: new AbortController().signal,
@@ -851,56 +854,92 @@ describe('wrapNativeCore — T7 pairing fix: drain fires terminal failed', () =>
     return { core, enqueued }
   }
 
-  it('drainQueuedInput returns the original hosts even though the drain releases the pairing', () => {
+  it('TRANSFER drain (drainQueuedInput) preserves the send lease: no failed, pairing released silently, hosts returned', () => {
+    const { core, enqueued } = makeDrainingCore()
+    // Model the manager's session-scoped send lease: acquired at send, released
+    // only by a host persistence outcome (appended/failed) or the manager's own
+    // withdrawal release. The re-enqueue never re-acquires it.
+    const leased = new Set<string>()
+    const persisted: Array<{ uuid: string | undefined; outcome: string }> = []
+    const handle = wrapNativeCore(core, {
+      onUserMessagePersistence: (m, outcome) => {
+        persisted.push({ uuid: m.uuid, outcome })
+        leased.delete(m.uuid!) // the host lease callback releases the send lease
+      },
+    })
+    const a = hostUserMsg('one', 'uuid-a')
+    const b = hostUserMsg('two', 'uuid-b')
+    leased.add('uuid-a'); leased.add('uuid-b') // sendContent acquired the leases
+    handle.enqueueUserMessage(a)
+    handle.enqueueUserMessage(b)
+    // respawnInPlace transfer drain.
+    const drained = handle.drainQueuedInput!()
+    expect(drained).toEqual([a, b])
+    expect(drained[0]).toBe(a)
+    expect(drained[1]).toBe(b)
+    // NO host 'failed' fired → the send lease is PRESERVED across the transfer.
+    expect(persisted).toEqual([])
+    expect(leased.has('uuid-a')).toBe(true)
+    expect(leased.has('uuid-b')).toBe(true)
+    // The pairing is released SILENTLY (no orphan): a repeat outcome is loud.
+    expect(() => core.onUserMessagePersistence!(enqueued[0], 'failed')).toThrow(/unpaired/)
+    // The re-enqueue onto the fresh handle re-pairs and the lease is still held;
+    // consumption later releases it via 'appended'.
+    handle.enqueueUserMessage(a)
+    core.onUserMessagePersistence!(enqueued[0], 'appended')
+    expect(persisted).toEqual([{ uuid: 'uuid-a', outcome: 'appended' }])
+    expect(leased.has('uuid-a')).toBe(false)
+  })
+
+  it('WITHDRAWAL clearQueuedInput fires failed per entry (releases lease + pairing) and returns the count', () => {
+    const { core } = makeDrainingCore()
+    const leased = new Set<string>(['u1', 'u2'])
+    const persisted: string[] = []
+    const handle = wrapNativeCore(core, {
+      onUserMessagePersistence: (m) => { persisted.push(m.uuid!); leased.delete(m.uuid!) },
+    })
+    handle.enqueueUserMessage(hostUserMsg('one', 'u1'))
+    handle.enqueueUserMessage(hostUserMsg('two', 'u2'))
+    expect(handle.clearQueuedInput()).toBe(2)
+    expect(persisted).toEqual(['u1', 'u2'])
+    expect(leased.size).toBe(0) // withdrawal released the send leases
+    expect(handle.drainQueuedInput!()).toEqual([])
+  })
+
+  it('WITHDRAWAL interrupt-cancel fires failed per entry, returns the receipt, and releases the pairing', async () => {
+    const { core, enqueued } = makeDrainingCore()
+    const leased = new Set<string>(['host-uuid-cancel'])
+    const persisted: string[] = []
+    core.interrupt = async (opts) => {
+      if (!opts?.cancelQueued) return undefined
+      const drained = core.drainQueued('withdrawal')
+      return { cancelledQueued: drained.map((m) => (m as { id: string }).id) }
+    }
+    const handle = wrapNativeCore(core, {
+      onUserMessagePersistence: (m) => { persisted.push(m.uuid!); leased.delete(m.uuid!) },
+    })
+    handle.enqueueUserMessage(hostUserMsg('queued', 'host-uuid-cancel'))
+    const receipt = await handle.interrupt!({ cancelQueued: true })
+    expect(receipt).toEqual({ cancelledQueued: ['host-uuid-cancel'] })
+    expect(persisted).toEqual(['host-uuid-cancel'])
+    expect(leased.size).toBe(0) // withdrawal released the send lease
+    // The withdrawn pairing is released: a later outcome is loud.
+    expect(() => core.onUserMessageConsumed!(enqueued[0])).toThrow(/unpaired/)
+  })
+
+  it('the withdrawn parked head terminal failed maps via the pairing to the host uuid', () => {
     const { core, enqueued } = makeDrainingCore()
     const persisted: Array<{ uuid: string | undefined; outcome: string }> = []
     const handle = wrapNativeCore(core, {
       onUserMessagePersistence: (m, outcome) => persisted.push({ uuid: m.uuid, outcome }),
     })
-    const a = hostUserMsg('one', 'uuid-a')
-    const b = hostUserMsg('two', 'uuid-b')
-    handle.enqueueUserMessage(a)
-    handle.enqueueUserMessage(b)
-    const drained = handle.drainQueuedInput!()
-    // The original host objects come back (the manager re-enqueues / withdraws them).
-    expect(drained).toEqual([a, b])
-    expect(drained[0]).toBe(a)
-    expect(drained[1]).toBe(b)
-    // The core fired a terminal 'failed' for each → the host lease callback ran.
-    expect(persisted).toEqual([
-      { uuid: 'uuid-a', outcome: 'failed' },
-      { uuid: 'uuid-b', outcome: 'failed' },
-    ])
-    // The pairing is released (no orphan, no leak): a repeat outcome is loud.
+    const parked = hostUserMsg('parked', 'host-uuid-parked')
+    handle.enqueueUserMessage(parked)
+    // A withdrawal drain fires the terminal 'failed' for the parked head; the
+    // adapter maps it back to the host uuid via the (still-live) pairing.
+    core.drainQueued('withdrawal')
+    expect(persisted).toEqual([{ uuid: 'host-uuid-parked', outcome: 'failed' }])
     expect(() => core.onUserMessagePersistence!(enqueued[0], 'failed')).toThrow(/unpaired/)
-  })
-
-  it('clearQueuedInput fires failed per entry and returns the count', () => {
-    const { core } = makeDrainingCore()
-    const persisted: string[] = []
-    const handle = wrapNativeCore(core, { onUserMessagePersistence: (m) => persisted.push(m.uuid!) })
-    handle.enqueueUserMessage(hostUserMsg('one', 'u1'))
-    handle.enqueueUserMessage(hostUserMsg('two', 'u2'))
-    expect(handle.clearQueuedInput()).toBe(2)
-    expect(persisted).toEqual(['u1', 'u2'])
-    expect(handle.drainQueuedInput!()).toEqual([])
-  })
-
-  it('interrupt-cancel drains, fires failed per entry, and the receipt releases the pairing', async () => {
-    const { core, enqueued } = makeDrainingCore()
-    const persisted: string[] = []
-    core.interrupt = async (opts) => {
-      if (!opts?.cancelQueued) return undefined
-      const drained = core.drainQueued()
-      return { cancelledQueued: drained.map((m) => (m as { id: string }).id) }
-    }
-    const handle = wrapNativeCore(core, { onUserMessagePersistence: (m) => persisted.push(m.uuid!) })
-    handle.enqueueUserMessage(hostUserMsg('queued', 'host-uuid-cancel'))
-    const receipt = await handle.interrupt!({ cancelQueued: true })
-    expect(receipt).toEqual({ cancelledQueued: ['host-uuid-cancel'] })
-    expect(persisted).toEqual(['host-uuid-cancel'])
-    // The withdrawn pairing is released: a later outcome is loud.
-    expect(() => core.onUserMessageConsumed!(enqueued[0])).toThrow(/unpaired/)
   })
 })
 

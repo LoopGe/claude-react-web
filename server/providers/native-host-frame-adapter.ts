@@ -572,11 +572,30 @@ export function wrapNativeCore(
     hostCallbacks.onSupplementDelivered?.(uuid, outcome)
   }
 
-  const messages: AsyncIterable<AgentMessage> = (async function* () {
-    for await (const frame of core.messages) {
-      yield projectCoreFrame(frame, core.sessionId)
-    }
-  })()
+  // A custom iterable (NOT an async generator): the pump tears down via
+  // iter.return() while iter.next() is parked on the core's emission queue.
+  // An async generator QUEUES return() behind the pending next() (generator
+  // semantics), so return() would deadlock until the core's queue ends — the
+  // pump's abort teardown would hang. Forwarding return() straight to the
+  // source iterator resolves the parked waiter immediately (the Pushable
+  // contract), unblocking the pending next() exactly like the legacy direct
+  // iterable. next() projects each neutral frame to SDK.
+  const messages: AsyncIterable<AgentMessage> = {
+    [Symbol.asyncIterator]() {
+      const source = core.messages[Symbol.asyncIterator]()
+      return {
+        async next(): Promise<IteratorResult<AgentMessage>> {
+          const result = await source.next()
+          if (result.done) return { done: true, value: undefined }
+          return { done: false, value: projectCoreFrame(result.value, core.sessionId) }
+        },
+        async return(): Promise<IteratorResult<AgentMessage>> {
+          await source.return?.()
+          return { done: true, value: undefined }
+        },
+      }
+    },
+  }
 
   const handle: ProviderSessionHandle = {
     provider: 'native',
@@ -593,18 +612,24 @@ export function wrapNativeCore(
       core.enqueueControl(neutral)
     },
     clearQueuedInput(): number {
-      // The core fires a terminal 'failed' for every drained entry (T7 pairing
-      // fix), releasing the pairing — no orphan, no leak.
-      return core.drainQueued().length
+      // WITHDRAWAL: the core fires a terminal 'failed' per entry (T7 pairing
+      // fix), releasing the pairing AND the manager's send lease — no orphan.
+      return core.clearQueued()
     },
     drainQueuedInput(): AgentUserMessage[] {
-      // The core fires a terminal 'failed' for every drained entry DURING the
-      // drain, which releases the pairing. Snapshot the pairing first so the
-      // original host messages can still be resolved after the release (the
-      // manager re-enqueues / withdraws these exact objects). The live map is
-      // released by the 'failed' outcomes, so it does not grow.
+      // TRANSFER (Q1): the manager calls this to MOVE queued prompts into a
+      // respawned session (respawnInPlace drain → re-enqueue) — and also for the
+      // interrupt withdrawal leg-1 / failed-resume abandonment, where it owns the
+      // send-lease decision itself (releases on withdrawal/abandonment, preserves
+      // on transfer). So this path drains in 'transfer' mode: NO host 'failed'
+      // outcome (the send lease is preserved across the re-enqueue, which never
+      // re-acquires it), and the pairing is released SILENTLY here. Snapshot the
+      // pairing first so the original host objects are still returned after the
+      // release. The live map does not grow.
       const snapshot = new Map(hostByUuid)
-      return core.drainQueued().map((neutral) => {
+      const drained = core.drainQueued('transfer')
+      for (const neutral of drained) forget(neutralIdOf(neutral))
+      return drained.map((neutral) => {
         const host = snapshot.get(neutralIdOf(neutral))
         if (!host) {
           throw new Error('native host adapter: drained prompt has no paired host uuid')
