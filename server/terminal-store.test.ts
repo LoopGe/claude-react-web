@@ -109,6 +109,26 @@ describe('TerminalScreenStore', () => {
     }
   })
 
+  it('a failed debounced write is logged, never crashes; flush still throws', () => {
+    // The rename target exists as a DIRECTORY: writeFileSync(tmp) succeeds,
+    // renameSync onto it fails on every platform (EISDIR / EPERM).
+    mkdirSync(fileFor('s1'), { recursive: true })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      store.schedule('s1', data('doomed'))
+      // Fake timers run the callback synchronously, so an uncaught write
+      // error would propagate out of advanceTimersByTime and fail here.
+      expect(() => vi.advanceTimersByTime(TERMINAL_SCREEN_DEBOUNCE_MS)).not.toThrow()
+      expect(errorSpy).toHaveBeenCalledTimes(1)
+      expect(errorSpy.mock.calls[0][0]).toBe('[terminal]')
+      // The caller-driven synchronous path still surfaces the failure.
+      store.schedule('s1', data('doomed'))
+      expect(() => store.flush('s1')).toThrow()
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
   it('remove deletes the file and cancels a pending timer', () => {
     store.schedule('s1', data('old'))
     store.flush('s1')

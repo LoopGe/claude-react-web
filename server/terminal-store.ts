@@ -7,8 +7,10 @@
 // Writes are trailing-debounced (TERMINAL_SCREEN_DEBOUNCE_MS after the last
 // schedule, so an output burst costs one write) and atomic (tmp + rename):
 // a crash mid-write leaves at most a stray tmp file, never a truncated
-// canonical one. load() still guards corrupt JSON — the proven failure mode
-// this store exists to survive — by treating it as absent with one warn.
+// canonical one. Debounced writes are best-effort: a failure is logged, never
+// process-fatal; flush() surfaces write errors to its caller. load() guards
+// corrupt JSON — the proven failure mode this store exists to survive — by
+// treating it as absent with one warn.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -45,7 +47,15 @@ export class TerminalScreenStore {
     this.cancelPending(sessionId)
     const timer = setTimeout(() => {
       this.pending.delete(sessionId)
-      this.write(sessionId, data)
+      try {
+        this.write(sessionId, data)
+      } catch (err) {
+        // Best-effort persistence (the spec accepts the crash window): a
+        // failed debounced write is logged loudly but must not crash the
+        // process from a timer callback. flush() — caller-driven — still
+        // throws to its caller.
+        log.error(`[${sessionId}] screen persistence write failed: ${(err as Error).message}`)
+      }
     }, TERMINAL_SCREEN_DEBOUNCE_MS)
     // A pending persistence write must not keep the process alive.
     timer.unref()
