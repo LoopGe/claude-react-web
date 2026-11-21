@@ -225,13 +225,23 @@ export class TerminalSession {
       this.status = 'exited'
       this.exitCode = exitCode
       // Persist the final screen + exited meta synchronously (the debounce
-      // window must not swallow the exit state on a graceful shutdown).
-      this.store.schedule(this.sessionId, {
-        screen: ser.serialize(),
-        state: this.state(),
-        savedAt: Date.now(),
-      })
-      this.store.flush(this.sessionId)
+      // window must not swallow the exit state on a graceful shutdown). This
+      // callback runs inside node-pty's exit emitter — a caller-less context
+      // like the store's debounce timer — so a write failure (ENOSPC, Windows
+      // EPERM on a locked tmp) is caught and logged here, never thrown into the
+      // emitter where it would crash the server. The route-driven flush() still
+      // propagates to its caller, which can surface a 500.
+      try {
+        this.store.schedule(this.sessionId, {
+          screen: ser.serialize(),
+          state: this.state(),
+          savedAt: Date.now(),
+        })
+        this.store.flush(this.sessionId)
+      } catch (err) {
+        log.error(`[${this.sessionId}] exit screen persistence failed: ${(err as Error).message}`)
+      }
+      // Clients learn the shell exited regardless of persistence success.
       this.events.onState(id, this.state())
       log.info(`[${this.sessionId}] shell exited (code ${exitCode})`)
     })

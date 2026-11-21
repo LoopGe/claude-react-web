@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { TerminalSession, type TerminalEvents } from './terminal.js'
 import { TerminalScreenStore } from './terminal-store.js'
 import { HttpError } from './errors.js'
+import { getLogConfig, setLogConfig, type LogConfigSnapshot } from './log.js'
 import {
   TERMINAL_MAX_COLS,
   TERMINAL_MAX_INPUT_BYTES,
@@ -252,6 +253,41 @@ describe('TerminalSession', () => {
     expect(snap2.state.status).toBe('running')
     expect(snap2.seq).toBe(0)
   })
+
+  it('exit-path persistence failure is logged, never thrown; onState still fires', async () => {
+    // Force the exit-path write to fail: the canonical file path is a DIRECTORY,
+    // so writeFileSync(tmp) succeeds but renameSync(tmp, file) fails (EISDIR /
+    // Windows EPERM) — the store's own documented failure trick. The exit
+    // callback runs inside node-pty's caller-less exit emitter (the same context
+    // as the store's debounce timer), so the failure must be caught and logged,
+    // never thrown into the emitter — a throw would crash the server and suppress
+    // the exited state event.
+    mkdirSync(fileFor(), { recursive: true })
+    const prevLog: LogConfigSnapshot = getLogConfig()
+    setLogConfig({ level: 'info', scopes: null })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { ts, rec, id } = await startSession()
+      ts.input(id, 'exit\r')
+      // Reaching the exited state proves both that no uncaught throw crashed the
+      // emitter and that onState fired despite the persistence failure.
+      await waitUntil(() => rec.states.some((s) => s.state.status === 'exited'), 15000, 'exited state')
+      const ex = rec.states.find((s) => s.state.status === 'exited')!
+      expect(ex.id).toBe(id)
+      expect(ex.state.exitCode).toBe(0)
+      expect(ts.snapshot().state.status).toBe('exited')
+      expect(ts.snapshot().state.exitCode).toBe(0)
+      // The exit-path failure was logged via the terminal logger.
+      const logged = errorSpy.mock.calls.some((c) => c.join(' ').includes('exit screen persistence failed'))
+      expect(logged).toBe(true)
+    } finally {
+      errorSpy.mockRestore()
+      setLogConfig(prevLog)
+      // Remove the directory-target so afterEach close → store.remove (rmSync
+      // force, non-recursive) does not hit EISDIR.
+      rmSync(fileFor(), { recursive: true, force: true })
+    }
+  }, 30000)
 
   it('stale-generation input/resize reject with 409 and never reach the new shell', async () => {
     const { ts, rec, id: oldId } = await startSession()
