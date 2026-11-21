@@ -17,7 +17,7 @@ import {
   type PanelOverlayKind,
 } from './useAppOverlays'
 
-const ALL_KINDS: PanelOverlayKind[] = ['settings', 'git', 'tasks', 'worktree', 'search']
+const ALL_KINDS: PanelOverlayKind[] = ['settings', 'git', 'tasks', 'worktree', 'search', 'terminal']
 
 type OverlayReturn = ReturnType<typeof useAppOverlays>
 type HookResult = { current: OverlayReturn }
@@ -31,6 +31,7 @@ function openFor(result: HookResult) {
     tasks: result.current.tasksPanelOpenFor,
     worktree: result.current.worktreeOpenFor,
     search: result.current.searchOpenFor,
+    terminal: result.current.terminalOpenFor,
   }
 }
 
@@ -44,6 +45,7 @@ describe('useAppOverlays — PanelOverlay union', () => {
     expect(result.current.tasksPanelOpenFor).toBeNull()
     expect(result.current.worktreeOpenFor).toBeNull()
     expect(result.current.searchOpenFor).toBeNull()
+    expect(result.current.terminalOpenFor).toBeNull()
   })
 
   it.each(ALL_KINDS)(
@@ -91,8 +93,35 @@ describe('useAppOverlays — PanelOverlay union', () => {
       result.current.gitPanelOpenFor,
       result.current.tasksPanelOpenFor,
       result.current.worktreeOpenFor,
+      result.current.terminalOpenFor,
     ].filter((v) => v !== null).length
     expect(openCount).toBe(1)
+  })
+
+  it('terminal joins the mutual-exclusion group in BOTH directions (git ↔ terminal)', () => {
+    const { result } = renderHook(() => useAppOverlays())
+
+    // Opening the terminal replaces an open git overlay.
+    act(() => result.current.handleOpenGitPanel('s1'))
+    expect(result.current.gitPanelOpenFor).toBe('s1')
+    act(() => result.current.handleOpenTerminal('s1'))
+    expect(result.current.panelOverlay).toEqual({ kind: 'terminal', sessionId: 's1' })
+    expect(result.current.terminalOpenFor).toBe('s1')
+    expect(result.current.gitPanelOpenFor).toBeNull()
+
+    // Opening git replaces the open terminal overlay.
+    act(() => result.current.handleOpenGitPanel('s1'))
+    expect(result.current.panelOverlay).toEqual({ kind: 'git', sessionId: 's1' })
+    expect(result.current.gitPanelOpenFor).toBe('s1')
+    expect(result.current.terminalOpenFor).toBeNull()
+
+    // The terminal's own close clears only the terminal, never a sibling.
+    act(() => result.current.handleOpenTerminal('s1'))
+    act(() => result.current.handleCloseGitPanel())
+    expect(result.current.terminalOpenFor).toBe('s1')
+    act(() => result.current.handleCloseTerminal())
+    expect(result.current.panelOverlay).toBeNull()
+    expect(result.current.terminalOpenFor).toBeNull()
   })
 
   it('opening a different kind never leaves both open', () => {
@@ -141,6 +170,8 @@ describe('useAppOverlays — compatibility adapter', () => {
     ['git', 'handleOpenGitPanel', 'handleCloseGitPanel', 'gitPanelOpenFor'],
     ['tasks', 'handleOpenTasksPanel', 'handleCloseTasksPanel', 'tasksPanelOpenFor'],
     ['worktree', 'handleOpenWorktree', 'handleCloseWorktree', 'worktreeOpenFor'],
+    ['search', 'handleOpenSearch', 'handleCloseSearch', 'searchOpenFor'],
+    ['terminal', 'handleOpenTerminal', 'handleCloseTerminal', 'terminalOpenFor'],
   ] as const)(
     '%s handler opens the union and the kind-specific close clears only it',
     (kind, openName, closeName, field) => {
@@ -186,6 +217,10 @@ describe('useAppOverlays — compatibility adapter', () => {
     act(() => result.current.handleOpenWorktree('s4'))
     expect(result.current.tasksPanelOpenFor).toBeNull()
     expect(result.current.worktreeOpenFor).toBe('s4')
+
+    act(() => result.current.handleOpenTerminal('s5'))
+    expect(result.current.worktreeOpenFor).toBeNull()
+    expect(result.current.terminalOpenFor).toBe('s5')
   })
 })
 

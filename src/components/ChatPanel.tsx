@@ -244,6 +244,12 @@ export interface ChatPanelProps {
   searchOpen?: boolean
   onOpenSearch: (sessionId: string) => void
   onCloseSearch: () => void
+  /** When true, reveal the terminal overlay on top of this panel. Mutually
+   *  exclusive with the other panel overlays (parent App enforces). The
+   *  overlay body is keep-alive (Chat mounts it once after first open). */
+  terminalOpen?: boolean
+  onOpenTerminal: (sessionId: string) => void
+  onCloseTerminal: () => void
   /** When true, render the Worktree-changes overlay on top of this panel.
    *  Mutually exclusive with `settingsOpen` / `gitPanelOpen` /
    *  `tasksPanelOpen` (parent App enforces via the same shared dispatch). */
@@ -340,6 +346,9 @@ export const ChatPanel = memo(function ChatPanel({
   searchOpen,
   onOpenSearch,
   onCloseSearch,
+  terminalOpen,
+  onOpenTerminal,
+  onCloseTerminal,
   worktreeOpen,
   onOpenWorktree,
   onCloseWorktree,
@@ -1336,6 +1345,9 @@ export const ChatPanel = memo(function ChatPanel({
             searchOpen={searchOpen}
             onOpenSearch={onOpenSearch}
             onCloseSearch={onCloseSearch}
+            terminalOpen={terminalOpen}
+            onOpenTerminal={onOpenTerminal}
+            onCloseTerminal={onCloseTerminal}
             settingsOpen={settingsOpen}
             onCloseSettings={onCloseSettings}
             gitPanelOpen={gitPanelOpen}

@@ -138,6 +138,8 @@ const basePanelProps = {
   onCloseTasksPanel: noop,
   onOpenSearch: noop,
   onCloseSearch: noop,
+  onOpenTerminal: noop,
+  onCloseTerminal: noop,
   onOpenWorktree: noop,
   onCloseWorktree: noop,
   snippets: { snippets: [], add: noop, update: noop, remove: noop, reorder: noop } as never,

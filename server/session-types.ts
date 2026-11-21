@@ -30,7 +30,8 @@ import type { SessionSkillOverride } from '../shared/skills.js'
 import type { SessionToolProfile } from '../shared/tool-profile.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
-import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased, WsRebuildWaiting, WsTurnChanges } from '../shared/ws-protocol.js'
+import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessageQueued, WsMessagesWithdrawn, WsMessagesEvicted, WsTranscriptRebased, WsRebuildWaiting, WsTurnChanges, WsTerminalSnapshot, WsTerminalOutput, WsTerminalState } from '../shared/ws-protocol.js'
+import type { TerminalSnapshot } from '../shared/terminal.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 import type { FirstPartyToolStatus } from '../shared/first-party.js'
 
@@ -998,13 +999,14 @@ export interface GlobalSubscriber {
   end: () => void
 }
 
-/** Read-only subscription surface used by ws.ts.
+/** Subscription surface used by ws.ts / the frame bridge.
  *  Narrower than the full SessionManager — depends only on the fan-out
  *  methods plus the two operations needed to *begin streaming* a session:
  *  `get` (does the session exist, and is it live?) and `resume` (bring a
  *  known-but-dormant session back so a WS subscribe that raced the
- *  session's `/resume` can actually be served). No other mutation or
- *  lifecycle operations. */
+ *  session's `/resume` can actually be served), the broadcast triggers,
+ *  and the terminal channel's control ops. No other mutation or lifecycle
+ *  operations. */
 export interface SessionBroadcaster {
   subscribeGlobal(): {
     iterable: AsyncIterable<GlobalSessionEvent>
@@ -1162,6 +1164,24 @@ export interface SessionBroadcaster {
    *  triggered context reset is confirmed. No-op when the session is
    *  unknown or has no subscribers. */
   broadcastSessionCleared(sessionId: string): void
+  /** Terminal channel (embedded terminal). Manager-owned and dormant-capable:
+   *  every op works on live OR persisted sessions and never wakes the SDK
+   *  subprocess. Control ops throw HttpError (400 unsupported / bad input,
+   *  409 stale generation, 404 unknown session); the frame bridge surfaces
+   *  those as prose error frames while the channel stays live.
+   *  subscribeTerminal returns null for unknown sessions and seeds the
+   *  current snapshot alongside the live iterable, whose items are complete
+   *  wire frames (output / state, kind + sessionId stamped by the manager). */
+  terminalCreate(sessionId: string, cols: number, rows: number): TerminalSnapshot
+  terminalInput(sessionId: string, terminalId: string, data: string): void
+  terminalResize(sessionId: string, terminalId: string, cols: number, rows: number): void
+  terminalClose(sessionId: string): void
+  terminalSnapshot(sessionId: string): TerminalSnapshot
+  subscribeTerminal(sessionId: string): {
+    iterable: AsyncIterable<WsTerminalSnapshot | WsTerminalOutput | WsTerminalState>
+    snapshot: TerminalSnapshot | null
+    unsubscribe: () => void
+  } | null
 }
 
 // Re-export HttpError from its canonical location so existing importers

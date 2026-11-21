@@ -27,7 +27,9 @@
     "claude-react-web": "dist/cli.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "patches",
+    "scripts/postinstall.mjs"
   ],
   "scripts": {
     "dev:server": "tsx watch server/cli.ts --no-open",
@@ -61,6 +63,7 @@
     "release": "node scripts/release.mjs",
     "commitlint": "commitlint",
     "prepare": "node scripts/setup-hooks.mjs",
+    "postinstall": "node scripts/postinstall.mjs",
     "prepublishOnly": "npm run build",
     "analyze:bundle": "npm run build:client && node scripts/analyze-bundle.mjs"
   },
@@ -74,6 +77,10 @@
     "@hono/node-server": "^1.13.7",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/diff": "^7.0.2",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/headless": "6.0.0",
+    "@xterm/xterm": "6.0.0",
     "ansicolor": "^2.0.3",
     "busboy": "^1.6.0",
     "diff": "^9.0.0",
@@ -87,6 +94,7 @@
     "mdast-util-to-hast": "^13.2.1",
     "motion": "^12.42.2",
     "open": "^10.1.0",
+    "patch-package": "^8.0.1",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -145,6 +153,7 @@
     "electron@33.4.11": true
   },
   "optionalDependencies": {
-    "koffi": "3.1.1"
+    "koffi": "3.1.1",
+    "node-pty": "1.2.0-beta.15"
   }
 }

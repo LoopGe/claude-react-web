@@ -35,6 +35,15 @@ export const FILE_DRAFT_KEY_PREFIX = 'claude-react-web:file-drafts:'
  *  cadence. Tune once — both follow. */
 export const DRAFT_WRITE_DEBOUNCE_MS = 400
 
+/** localStorage key prefix for the per-session terminal binding: the
+ *  terminalId of the generation this tab last saw running. A remembered tab
+ *  meeting a restored-idle snapshot after a server restart auto-creates the
+ *  fresh shell; an explicit close clears the binding. */
+export const TERMINAL_BINDING_KEY_PREFIX = 'crw.terminal.binding.'
+export function terminalBindingKey(sessionId: string): string {
+  return TERMINAL_BINDING_KEY_PREFIX + sessionId
+}
+
 /** Allowed range for the max-group-panels / max-sessions-per-group setting. */
 export const MAX_OPEN_MIN = 2
 export const MAX_OPEN_MAX = 5

@@ -779,6 +779,51 @@ describe('useWsHub: subagent transcript channel', () => {
   })
 })
 
+// ── terminal channel ───────────────────────────────────────────────
+
+describe('useWsHub: terminal channel', () => {
+  it('sends terminal-subscribe on the first holder, dedups the second, resends on reconnect, unsubscribes on last release', async () => {
+    const { result } = mountHub()
+    openSocket()
+    expect(sock().framesOfKind('terminal-subscribe')).toHaveLength(0)
+
+    const release = result.current.hub.subscribeTerminal('s1')
+    expect(sock().framesOfKind('terminal-subscribe')).toHaveLength(1)
+    expect(sock().framesOfKind('terminal-subscribe')[0]).toMatchObject({ sessionId: 's1' })
+
+    // Ref-count: a second holder does not re-send (the server seeds an
+    // idempotent snapshot per subscribe; no subscribe-result bookkeeping).
+    const release2 = result.current.hub.subscribeTerminal('s1')
+    expect(sock().framesOfKind('terminal-subscribe')).toHaveLength(1)
+
+    // Reconnect: every held key is re-asked on the fresh connection.
+    act(() => { sock().serverDrop() })
+    await flushMicrotasks()
+    act(() => { vi.advanceTimersByTime(500) })
+    openSocket()
+    const subs = sock().framesOfKind('terminal-subscribe')
+    expect(subs).toHaveLength(1)
+    expect(subs[0]).toMatchObject({ sessionId: 's1' })
+
+    release2()
+    expect(sock().framesOfKind('terminal-unsubscribe')).toHaveLength(0)
+    release()
+    expect(sock().framesOfKind('terminal-unsubscribe')).toHaveLength(1)
+    expect(sock().framesOfKind('terminal-unsubscribe')[0]).toMatchObject({ sessionId: 's1' })
+  })
+
+  it('send delivers a consumer control frame on the open socket', () => {
+    const { result } = mountHub()
+    openSocket()
+    act(() => {
+      result.current.hub.send({ kind: 'terminal-create', sessionId: 's1', cols: 80, rows: 24 })
+    })
+    expect(sock().framesOfKind('terminal-create')).toEqual([
+      { kind: 'terminal-create', sessionId: 's1', cols: 80, rows: 24 },
+    ])
+  })
+})
+
 // ── contract ───────────────────────────────────────────────────────
 
 describe('useWsHub: contract', () => {

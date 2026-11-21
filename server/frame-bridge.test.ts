@@ -356,6 +356,15 @@ class FakeBroadcaster implements SessionBroadcaster {
   gitGroupKeyOf() { return null }
   gitGroupLivePeer() { return null }
   broadcastSessionCleared() { /* noop */ }
+  // Terminal channel: not wired in this fixture — focused coverage lives in
+  // frame-bridge.terminal.test.ts. subscribeTerminal reports "no channel";
+  // a control op reaching this fake is a wiring bug and fails loudly.
+  subscribeTerminal() { return null }
+  terminalCreate(): never { throw new Error('terminal ops not wired in FakeBroadcaster') }
+  terminalInput(): never { throw new Error('terminal ops not wired in FakeBroadcaster') }
+  terminalResize(): never { throw new Error('terminal ops not wired in FakeBroadcaster') }
+  terminalClose(): never { throw new Error('terminal ops not wired in FakeBroadcaster') }
+  terminalSnapshot(): never { throw new Error('terminal ops not wired in FakeBroadcaster') }
 }
 
 /** Poll `sink.frames` until `pred` matches, or fail after a timeout. */

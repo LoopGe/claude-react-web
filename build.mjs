@@ -4,7 +4,9 @@
 // claude CLI process at runtime — bundling it would break its internal
 // filesystem-relative lookups. koffi (win32 Job Object FFI, optional dep) is
 // external because it is a native Node-API addon loaded via createRequire at
-// runtime, only on win32. All other deps (hono, open) are bundled.
+// runtime, only on win32. node-pty (embedded terminal, optional dep) is
+// external for the same reason: its N-API prebuilds and JS lib resolve
+// relative to the package on disk. All other deps (hono, open) are bundled.
 import { build } from 'esbuild'
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, cpSync, rmSync } from 'node:fs'
 
@@ -18,7 +20,7 @@ await build({
   target: 'node20',
   format: 'esm',
   outfile: 'dist/cli.mjs',
-  external: ['@anthropic-ai/claude-agent-sdk', 'koffi'],
+  external: ['@anthropic-ai/claude-agent-sdk', 'koffi', 'node-pty'],
   banner: {
     // Needed because we're an ESM bundle but depend on pkgs that use require()
     js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
@@ -47,7 +49,7 @@ await build({
   target: 'node20',
   format: 'esm',
   outfile: 'dist/daemon.mjs',
-  external: ['@anthropic-ai/claude-agent-sdk', 'koffi'],
+  external: ['@anthropic-ai/claude-agent-sdk', 'koffi', 'node-pty'],
   banner: {
     js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
   },

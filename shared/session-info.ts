@@ -268,6 +268,19 @@ export interface SessionInfoBase<PM = string> {
    *  UI; explicit false hides mutation controls. Not persisted — re-derived
    *  from the provider registry on every live and dormant projection. */
   taskControlSupported?: boolean
+  /** Whether the embedded terminal is available on this server (the
+   *  node-pty capability probe — a host property, not a provider one).
+   *  Undefined on legacy frames retains the Claude-compatible UI; explicit
+   *  false hides the terminal entry points. Not persisted — re-derived from
+   *  the cached probe on every live and dormant projection. */
+  terminalSupported?: boolean
+  /** Whether this session's terminal slot holds a live PTY shell. The
+   *  composer terminal indicator reads this fact directly (no terminal
+   *  channel subscription needed — it works before first open, after a
+   *  reload, and in bystander tabs). Broadcast on terminal lifecycle
+   *  transitions only (spawn / exit / close / dispose), never per chunk.
+   *  Not persisted — a shell never outlives its server lifetime. */
+  terminalRunning?: boolean
   /** Whether this session's provider implements mid-run steering (the
    *  claude provider does; runtime degradation on old CLIs is handled inside
    *  the handle, so this is the provider mechanism flag — spec §9). Drives

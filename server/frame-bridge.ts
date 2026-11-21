@@ -40,6 +40,13 @@ import type {
   WsSubagentTranscriptSubscribe,
   WsSubagentTranscriptUnsubscribe,
   WsTasklistSnapshot,
+  WsTerminalSubscribe,
+  WsTerminalUnsubscribe,
+  WsTerminalCreate,
+  WsTerminalInput,
+  WsTerminalResize,
+  WsTerminalResync,
+  WsTerminalClose,
   WsTranscriptRebased,
   WsRebuildWaiting,
   WsTurnChanges,
@@ -215,6 +222,12 @@ export class SessionConnection {
   private readonly subs = new Map<string, SessionSub>()
   /** Live subagent-transcript subscriptions keyed by `sessionId::agentId`. */
   private readonly subagentSubs = new Map<string, { unsubscribe: () => void }>()
+  /** Live terminal-channel subscriptions keyed by sessionId. Independent of
+   *  the message channel (`subs`): the terminal overlay attaches without a
+   *  transcript subscribe, and the manager serves dormant sessions without
+   *  waking the SDK. The stored object is the subscription itself, so the
+   *  drive loop's staleness check is an identity comparison. */
+  private readonly terminalSubs = new Map<string, NonNullable<ReturnType<SessionBroadcaster['subscribeTerminal']>>>()
   /** Sessions whose subscribe-setup is mid-flight (waiting on the
    *  auto-resume await below). Guard: a second subscribe frame for the
    *  same session must not race the first through the await — subs.has()
@@ -425,9 +438,154 @@ export class SessionConnection {
         }
         return
       }
+      case 'terminal-subscribe': {
+        const f = frame as WsTerminalSubscribe
+        if (typeof f.sessionId !== 'string' || !f.sessionId) {
+          this.sink.send({ kind: 'error', message: 'terminal-subscribe: sessionId required' })
+          return
+        }
+        this.openTerminalChannel(f.sessionId, true)
+        return
+      }
+      case 'terminal-unsubscribe': {
+        const f = frame as WsTerminalUnsubscribe
+        const sub = this.terminalSubs.get(f.sessionId)
+        if (sub) {
+          this.terminalSubs.delete(f.sessionId)
+          sub.unsubscribe()
+        }
+        return
+      }
+      case 'terminal-create': {
+        const f = frame as WsTerminalCreate
+        if (typeof f.sessionId !== 'string' || !f.sessionId || typeof f.cols !== 'number' || typeof f.rows !== 'number') {
+          this.sink.send({ kind: 'error', message: 'terminal-create: sessionId/cols/rows required' })
+          return
+        }
+        // A create after a server-side channel end (sleep / GC dispose ended
+        // the pushable and released the entry) revives the channel: the
+        // creator expects to see the shell it just spawned. Failures stay
+        // quiet here — the create op itself surfaces them.
+        if (!this.terminalSubs.has(f.sessionId)) this.openTerminalChannel(f.sessionId, false)
+        this.runTerminalOp(f.kind, f.sessionId, () => {
+          const snapshot = this.sm.terminalCreate(f.sessionId, f.cols, f.rows)
+          this.sink.send({ kind: 'terminal-snapshot', sessionId: f.sessionId, snapshot })
+        })
+        return
+      }
+      case 'terminal-input': {
+        const f = frame as WsTerminalInput
+        if (typeof f.sessionId !== 'string' || !f.sessionId || typeof f.terminalId !== 'string' || !f.terminalId || typeof f.data !== 'string') {
+          this.sink.send({ kind: 'error', message: 'terminal-input: sessionId/terminalId/data required' })
+          return
+        }
+        this.runTerminalOp(f.kind, f.sessionId, () => {
+          this.sm.terminalInput(f.sessionId, f.terminalId, f.data)
+        })
+        return
+      }
+      case 'terminal-resize': {
+        const f = frame as WsTerminalResize
+        if (typeof f.sessionId !== 'string' || !f.sessionId || typeof f.terminalId !== 'string' || !f.terminalId || typeof f.cols !== 'number' || typeof f.rows !== 'number') {
+          this.sink.send({ kind: 'error', message: 'terminal-resize: sessionId/terminalId/cols/rows required' })
+          return
+        }
+        this.runTerminalOp(f.kind, f.sessionId, () => {
+          this.sm.terminalResize(f.sessionId, f.terminalId, f.cols, f.rows)
+        })
+        return
+      }
+      case 'terminal-resync': {
+        const f = frame as WsTerminalResync
+        if (typeof f.sessionId !== 'string' || !f.sessionId || typeof f.terminalId !== 'string' || !f.terminalId) {
+          this.sink.send({ kind: 'error', message: 'terminal-resync: sessionId/terminalId required' })
+          return
+        }
+        // Seq-gap recovery: answer the CURRENT snapshot (the manager's
+        // terminalId/seq/screen), never a replay of raw output.
+        this.runTerminalOp(f.kind, f.sessionId, () => {
+          this.sink.send({ kind: 'terminal-snapshot', sessionId: f.sessionId, snapshot: this.sm.terminalSnapshot(f.sessionId) })
+        })
+        return
+      }
+      case 'terminal-close': {
+        const f = frame as WsTerminalClose
+        if (typeof f.sessionId !== 'string' || !f.sessionId) {
+          this.sink.send({ kind: 'error', message: 'terminal-close: sessionId required' })
+          return
+        }
+        this.runTerminalOp(f.kind, f.sessionId, () => {
+          this.sm.terminalClose(f.sessionId)
+        })
+        return
+      }
       default:
         // Exhaustiveness check — a new client-side kind we don't know.
         this.sink.send({ kind: 'error', message: `unknown kind: ${(frame as { kind: string }).kind}` })
+    }
+  }
+
+  /** Open (or re-open) this connection's terminal channel for a session:
+   *  subscribe at the manager, seed the snapshot FIRST (it anchors
+   *  terminalId + seq before any live frame), and drive the pushable until
+   *  it ends. Idempotent — a live entry is left alone. `reportErrors` is
+   *  false on the create-path revival, where the create op surfaces any
+   *  failure itself. */
+  private openTerminalChannel(sessionId: string, reportErrors: boolean): void {
+    if (this.terminalSubs.has(sessionId)) return // duplicate subscribe — channel already streaming
+    const fail = (message: string) => {
+      if (reportErrors) this.sink.send({ kind: 'terminal-error', sessionId, message })
+    }
+    let sub: ReturnType<SessionBroadcaster['subscribeTerminal']>
+    try {
+      sub = this.sm.subscribeTerminal(sessionId)
+    } catch (err) {
+      fail(`terminal subscribe: ${(err as Error).message}`)
+      return
+    }
+    if (!sub) {
+      fail(`terminal subscribe: session ${sessionId} not found`)
+      return
+    }
+    this.terminalSubs.set(sessionId, sub)
+    if (sub.snapshot) {
+      this.sink.send({ kind: 'terminal-snapshot', sessionId, snapshot: sub.snapshot })
+    }
+    // A dead channel must not latch the duplicate-subscribe guard: when
+    // the loop ends (manager teardown ended the pushable) or throws,
+    // release the entry — but only if it is still OUR subscription (a
+    // re-subscribe that replaced it must survive).
+    const release = () => {
+      if (this.terminalSubs.get(sessionId) === sub) {
+        this.terminalSubs.delete(sessionId)
+        sub.unsubscribe()
+      }
+    }
+    // The channel carries complete wire frames (kind + sessionId stamped
+    // by the manager) — forward verbatim, like git-snapshot / tasklist.
+    void this.driveChannel(
+      sub.iterable[Symbol.asyncIterator](),
+      (value) => { this.sink.send(value) },
+      () => this.closed || this.terminalSubs.get(sessionId) !== sub,
+    ).then(release, (err) => {
+      release()
+      if (!this.closed) {
+        this.sink.send({ kind: 'terminal-error', sessionId, message: `terminal channel: ${(err as Error).message}` })
+      }
+    })
+  }
+
+  /** Delegate one terminal control operation to the manager. HttpErrors
+   *  (unsupported 400 / stale generation 409 / unknown session 404) surface
+   *  as `terminal-error` frames addressed to the session — terminal-local
+   *  notices, NOT the prose `error` frame the session synchronizer renders
+   *  as the persistent chat error bar. The terminal channel, if subscribed,
+   *  stays live. */
+  private runTerminalOp(kind: string, sessionId: string, op: () => void): void {
+    try {
+      op()
+    } catch (err) {
+      this.sink.send({ kind: 'terminal-error', sessionId, message: `${kind}: ${(err as Error).message}` })
     }
   }
 
@@ -442,6 +600,8 @@ export class SessionConnection {
     this.subscribeCapability.clear()
     for (const sub of this.subagentSubs.values()) sub.unsubscribe()
     this.subagentSubs.clear()
+    for (const sub of this.terminalSubs.values()) sub.unsubscribe()
+    this.terminalSubs.clear()
     this.globalCleanup?.()
     this.globalCleanup = null
     this.appPluginCleanup?.()

@@ -58,13 +58,18 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
   const localItems: PaletteItem[] = useMemo(() => {
     const result: PaletteItem[] = []
     for (const shortcut of shortcuts) {
-      if (!shortcut.description) continue
+      if (!shortcut.description || shortcut.paletteHidden) continue
       result.push({
         id: `shortcut:${shortcut.combo}`,
         section: 'Commands',
         label: shortcut.description,
         hint: formatCombo(shortcut.combo),
-        action: () => shortcut.handler(new KeyboardEvent('keydown')),
+        // Prefer the unguarded palette action: the keydown handler may carry
+        // modal-suppression gates that would no-op here (the palette is itself
+        // a modal). Falls back to the handler for ordinary shortcuts.
+        action: shortcut.paletteAction
+          ? () => shortcut.paletteAction!()
+          : () => shortcut.handler(new KeyboardEvent('keydown')),
       })
     }
     for (const session of sessions) {

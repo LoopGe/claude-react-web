@@ -26,7 +26,7 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useCountUp } from '../hooks/useCountUp'
-import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo } from './icons/ToolIcons'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo, IconTerminal } from './icons/ToolIcons'
 import type { ScheduledSendsApi } from '../hooks/useScheduledSends'
 import type { TranscriptRecovery } from '../session-sync/session-synchronizer'
 import type { RebuildWaitingState } from '../session-store/types'
@@ -189,6 +189,15 @@ interface Props {
    *  the working bar where a lit marker claimed ACTIVITY, while this button
    *  is a panel entry — "lit" only means the panel has live rows to show. */
   totalTaskCount?: number
+
+  /** Opens this panel's terminal overlay. The terminal button mounts only
+   *  when this AND terminalRunning are set — a running shell is the only
+   *  state with something to show, so idle/exited panels carry no button. */
+  onOpenTerminal?: () => void
+  /** The session's terminal slot holds a live shell (SessionInfo's
+   *  terminalRunning lifecycle fact — broadcast on terminal transitions
+   *  only, never output churn; works without a terminal subscription). */
+  terminalRunning?: boolean
 }
 
 export const Composer = memo(function Composer({
@@ -243,6 +252,8 @@ export const Composer = memo(function Composer({
   onOpenTasks,
   taskCount,
   totalTaskCount,
+  onOpenTerminal,
+  terminalRunning,
 }: Props) {
   // RichPromptInput monkey-patches the RichPromptHandle methods onto this
   // div in a useLayoutEffect (deps: [value, ref, onChange]).  The ref's
@@ -1165,6 +1176,18 @@ export const Composer = memo(function Composer({
                 </span>
               )}
             </span>
+            </button>
+          </HoverHint>
+        )}
+        {onOpenTerminal && terminalRunning && (
+          <HoverHint label="Terminal running — click to open" side="top">
+            <button
+              type="button"
+              className="btn btn-icon composer-terminal"
+              onClick={onOpenTerminal}
+              aria-label="Open terminal"
+            >
+              <IconTerminal size={18} />
             </button>
           </HoverHint>
         )}

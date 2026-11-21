@@ -1,4 +1,4 @@
-import { useCallback, useRef, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { PORTAL_MARKER } from '../theme'
 import { motion, useIsPresent } from 'motion/react'
@@ -55,6 +55,11 @@ const VARIANT_CLASSES = {
   // Full-history session search: a body-only panel overlay, same pattern as
   // git/tasks (the child <aside className="search-panel"> IS the card).
   search: { backdrop: 'search-overlay', card: null, roleOn: 'backdrop', ariaModal: 'true' },
+  // Embedded terminal: a body-only panel overlay like git/tasks/search (the
+  // child <aside className="terminal-panel"> IS the card). Keep-alive — Chat
+  // mounts it once and toggles `open`, so the backdrop persists hidden via
+  // `.terminal-overlay.hidden` and the xterm body never remounts.
+  terminal: { backdrop: 'terminal-overlay', card: null, roleOn: 'backdrop', ariaModal: 'true' },
   marketplace: { backdrop: 'marketplace-overlay', card: 'marketplace-card', roleOn: 'card', ariaModal: 'true' },
   globalSettings: { backdrop: 'modal-backdrop', card: 'global-settings-modal', roleOn: 'card', ariaModal: 'true' },
   // Full-viewport image viewer (Lightbox). card: null like settings/git — the
@@ -145,6 +150,16 @@ export interface OverlayProps {
    *  dialogs deny the request). */
   escapeBehavior?: 'close' | 'custom'
   onEscape?: (e: KeyboardEvent) => void
+  /** Opt-in: make this surface Esc-capable ONLY while focus is inside its
+   *  container. The terminal passes this so an Esc pressed in a SIBLING panel
+   *  (focus released there via focusEscapeSelector) falls through to the global
+   *  interrupt handler instead of being swallowed by the registry's topmost
+   *  fallback and typed into the shell. Other overlays omit it and keep closing
+   *  on Esc regardless of focus location. Implemented by withholding `onEscape`
+   *  from the floating-surface registration while unfocused (NOT by gating
+   *  `active`): the surface stays registered so the focus-trap containment
+   *  invariant above holds — only its Escape capability toggles. */
+  escapeRequiresFocus?: boolean
   /** Whether to trap Tab focus inside the card while open. Palettes pass
    *  false — they manage Tab themselves to keep the search input focused. */
   trapFocus?: boolean
@@ -192,6 +207,7 @@ export function Overlay(props: OverlayProps) {
     canCloseOnBackdrop,
     escapeBehavior = 'close',
     onEscape,
+    escapeRequiresFocus = false,
     trapFocus = true,
     restoreFocus = true,
     focusEscapeSelector,
@@ -233,6 +249,23 @@ export function Overlay(props: OverlayProps) {
   }, [])
   const cardElRef = useRef<HTMLDivElement>(null)
 
+  // Focus containment for the opt-in escape gate (escapeRequiresFocus). Tracked
+  // via focusin/focusout below; while false the surface is registered WITHOUT an
+  // onEscape, so the registry's topmost-fallback cannot pick it for an Esc whose
+  // target sits outside the container.
+  const [focusInside, setFocusInside] = useState(false)
+  const escapeCapable = !escapeRequiresFocus || focusInside
+  // Live `open` for the focus handlers below. The listeners stay installed
+  // across close (so a reopen's focusin is never missed), and the handlers read
+  // this ref to ignore focus moves while closed — keeping the effect's deps
+  // independent of `open` (no reinstall) and avoiding closed-state re-renders.
+  // A layout effect updates it before any passive effect (the terminal body's
+  // reveal term.focus()) runs on reopen.
+  const openRef = useRef(open)
+  useLayoutEffect(() => {
+    openRef.current = open
+  })
+
   // Register in the Escape stack while open. The getContainer is the backdrop
   // (it contains the card + focus), so the stack's containment scan resolves
   // nesting correctly regardless of portal.
@@ -252,12 +285,55 @@ export function Overlay(props: OverlayProps) {
     getContainer: () => backdropElRef.current,
     onDismiss: onClose,
     canDismiss: () => backdropDismiss && (canCloseOnBackdrop?.() ?? true),
-    onEscape: (e) => {
-      if (escapeBehavior === 'custom') onEscape?.(e)
-      else onClose()
-    },
+    // Withheld while unfocused under escapeRequiresFocus: no onEscape → the
+    // surface is absent from the registry's Esc-capable set, so an Esc outside
+    // the container falls through to the global handler instead of being
+    // preventDefault/stopPropagation'd by the topmost fallback.
+    onEscape: escapeCapable
+      ? (e) => {
+          if (escapeBehavior === 'custom') onEscape?.(e)
+          else onClose()
+        }
+      : undefined,
     canCloseOnEscape,
   })
+
+  // Focus containment for escapeRequiresFocus. Two properties make keep-alive
+  // reopen correct:
+  //   1. A LAYOUT effect installs the listeners. The terminal body's reveal
+  //      term.focus() is a CHILD PASSIVE effect, which runs before any parent
+  //      passive effect — and the trap then skips its own focus move because
+  //      focus is already inside. A passive listener here would therefore miss
+  //      that focusin (on first open AND on reopen). Layout effects run before
+  //      all passive effects, so the listeners are present when term.focus()
+  //      fires and the focusin is observed.
+  //   2. The listeners stay installed across close — deps deliberately exclude
+  //      `open` — so a reopen never has a window without them. The handlers gate
+  //      on openRef so focus moves while closed neither update state nor
+  //      re-render.
+  // focusin is authoritative for moves; focusout clears on blur to outside / to
+  // nothing (body), where no focusin fires. No synchronous setState in the
+  // effect body — state only changes inside the subscribed handlers (lint-clean).
+  useLayoutEffect(() => {
+    if (!escapeRequiresFocus || !mounted) return
+    const container = backdropElRef.current
+    if (!container) return
+    const onFocusIn = (e: FocusEvent) => {
+      if (!openRef.current) return
+      setFocusInside(container.contains(e.target as Node))
+    }
+    const onFocusOut = (e: FocusEvent) => {
+      if (!openRef.current) return
+      const next = e.relatedTarget as Node | null
+      if (!next || !container.contains(next)) setFocusInside(false)
+    }
+    document.addEventListener('focusin', onFocusIn)
+    document.addEventListener('focusout', onFocusOut)
+    return () => {
+      document.removeEventListener('focusin', onFocusIn)
+      document.removeEventListener('focusout', onFocusOut)
+    }
+  }, [escapeRequiresFocus, mounted])
 
   // `mounted` (not just `open`) gates the trap so it only engages once the
   // overlay is actually in the DOM: useExitPresence flips shouldRender one

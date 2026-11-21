@@ -22,12 +22,13 @@
 import { describe, expect, it } from 'vitest'
 import { parseBlocks, readCss, standaloneRuleBodies } from './contrast-test-utils'
 
-const BACKDROPS = ['.git-overlay', '.tasks-overlay', '.search-overlay'] as const
+const BACKDROPS = ['.git-overlay', '.tasks-overlay', '.search-overlay', '.terminal-overlay'] as const
 
 const CARDS = [
   { selector: '.git-overlay > .git-panel', file: 'git-panel.css' },
   { selector: '.tasks-overlay > .tasks-panel', file: 'tasks-panel.css' },
   { selector: '.search-overlay > .search-panel', file: 'search-panel.css' },
+  { selector: '.terminal-overlay > .terminal-panel', file: 'terminal.css' },
   { selector: '.turn-review', file: 'turn-changes.css' },
 ] as const
 
@@ -53,6 +54,7 @@ describe('in-panel overlays align to the transcript reading column', () => {
     const cases = [
       { file: 'git-panel.css', backdrop: '.git-overlay' },
       { file: 'tasks-panel.css', backdrop: '.tasks-overlay' },
+      { file: 'terminal.css', backdrop: '.terminal-overlay' },
       // overlays.css must keep the grouped head: a standalone backdrop rule
       // here would mean the group was split.
       { file: 'overlays.css', backdrop: null },

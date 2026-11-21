@@ -98,4 +98,70 @@ describe('useKeyboardShortcuts', () => {
     window.dispatchEvent(event)
     expect(handler).not.toHaveBeenCalled()
   })
+
+  // Platform-fixed combos: the embedded terminal toggles on Ctrl+Backquote
+  // on EVERY platform — Cmd+Backquote is macOS window cycling and must not
+  // trigger it. `ctrl` therefore matches ctrlKey only, `meta` metaKey only,
+  // while `mod` keeps accepting either.
+  describe('distinct ctrl / meta modifiers', () => {
+    it('ctrl+` fires on Ctrl+Backquote', () => {
+      const handler = vi.fn()
+      renderHook(() => useKeyboardShortcuts([{ combo: 'ctrl+`', handler }]))
+      press('`', { ctrlKey: true })
+      expect(handler).toHaveBeenCalledOnce()
+    })
+
+    it('ctrl+` does NOT fire on Cmd+Backquote (metaKey)', () => {
+      const handler = vi.fn()
+      renderHook(() => useKeyboardShortcuts([{ combo: 'ctrl+`', handler }]))
+      press('`', { metaKey: true })
+      expect(handler).not.toHaveBeenCalled()
+    })
+
+    it('mod+1 still fires on both the ctrl and the meta variant', () => {
+      const handler = vi.fn()
+      renderHook(() => useKeyboardShortcuts([{ combo: 'mod+1', handler }]))
+      press('1', { ctrlKey: true })
+      press('1', { metaKey: true })
+      expect(handler).toHaveBeenCalledTimes(2)
+    })
+
+    it('ctrl+` fires while a textarea holds focus (allowInInput)', () => {
+      const handler = vi.fn()
+      renderHook(() => useKeyboardShortcuts([{ combo: 'ctrl+`', handler, allowInInput: true }]))
+      const textarea = document.createElement('textarea')
+      document.body.appendChild(textarea)
+      textarea.focus()
+      const event = new KeyboardEvent('keydown', { key: '`', ctrlKey: true })
+      Object.defineProperty(event, 'target', { value: textarea })
+      window.dispatchEvent(event)
+      expect(handler).toHaveBeenCalledOnce()
+      document.body.removeChild(textarea)
+    })
+
+    it('ctrl+` does not fire during IME composition (isComposing)', () => {
+      const handler = vi.fn()
+      renderHook(() => useKeyboardShortcuts([{ combo: 'ctrl+`', handler }]))
+      const event = new KeyboardEvent('keydown', { key: '`', ctrlKey: true })
+      Object.defineProperty(event, 'isComposing', { value: true })
+      window.dispatchEvent(event)
+      expect(handler).not.toHaveBeenCalled()
+    })
+
+    it('meta+k fires on meta only, not on ctrl', () => {
+      const handler = vi.fn()
+      renderHook(() => useKeyboardShortcuts([{ combo: 'meta+k', handler }]))
+      press('k', { ctrlKey: true })
+      expect(handler).not.toHaveBeenCalled()
+      press('k', { metaKey: true })
+      expect(handler).toHaveBeenCalledOnce()
+    })
+
+    it('mod+k still fires when both ctrl and meta are held', () => {
+      const handler = vi.fn()
+      renderHook(() => useKeyboardShortcuts([{ combo: 'mod+k', handler }]))
+      press('k', { ctrlKey: true, metaKey: true })
+      expect(handler).toHaveBeenCalledOnce()
+    })
+  })
 })
