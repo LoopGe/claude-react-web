@@ -85,6 +85,13 @@ afterEach(async () => {
 })
 const fresh = async () => { dir = await mkdtemp(join(tmpdir(), 'native-log-')); return dir }
 
+// T12: fresh seeds now default to the neutral v3 format. The legacy writer
+// machinery tests below exercise the v1/v2 path (byte shapes, migrateToV2), so
+// they pin version:1 explicitly. A fresh legacy seed preserves its version (no
+// eager migration — that fires on resume), keeping the v1→v2 path testable.
+const openV1 = (stateDir: string, id = 's1') =>
+  NativeSessionLog.open({ stateDir, id, cwd: '/repo', resume: false, seed: { events: [], inheritedEventCount: 0, isSeeded: false, version: 1 } })
+
 const userEvent = (uuid: string) => ({ type: 'user' as const, uuid, session_id: 's1', parent_tool_use_id: null as null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user' as const, content: [{ type: 'text', text: 'hi' }] } })
 const nativeAttachment = {
   id: 'upload-1',
@@ -118,7 +125,7 @@ const expectStorageError = (fn: () => unknown, kind: NativeSessionStorageError['
 describe('NativeSessionLog', () => {
   it('creates, appends, reloads in order and survives a torn tail', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1'))
     log.append({ type: 'turn/end', reason: 'completed' })
     await log.flush()
@@ -137,7 +144,7 @@ describe('NativeSessionLog', () => {
   })
   it('does not truncate a complete line committed after the resume snapshot read', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1'))
     await log.flush()
     await log.close()
@@ -169,7 +176,7 @@ describe('NativeSessionLog', () => {
   })
   it('re-buffers the unwritten suffix when a write fails mid-flush', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1'))
     let calls = 0
     const written: Buffer[] = []
@@ -204,7 +211,7 @@ describe('NativeSessionLog', () => {
   })
   it('appendDurable rolls back a partial selection and resequences later appends', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('committed'))
     await log.flush()
     log.append(userEvent('prior-pending'))
@@ -251,7 +258,7 @@ describe('NativeSessionLog', () => {
 
   it('appendDurable preserves an ordinary append that lands during the initial baseline flush', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('pre-existing-pending'))
     const path = nativeSessionLogPath(stateDir, 's1')
     let injected = false
@@ -310,7 +317,7 @@ describe('NativeSessionLog', () => {
 
   it('appendDurable preserves an ordinary append that lands between preSize and reservation', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('committed'))
     await log.flush()
     const path = nativeSessionLogPath(stateDir, 's1')
@@ -361,7 +368,7 @@ describe('NativeSessionLog', () => {
 
   it('appendDurable rejects takeover during reservation without truncating replacement events', async () => {
     const stateDir = await fresh()
-    const original = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const original = openV1(stateDir)
     original.append(userEvent('committed'))
     await original.flush()
     let replacement: NativeSessionLog | undefined
@@ -397,7 +404,7 @@ describe('NativeSessionLog', () => {
 
   it('appendDurable close flush restores ordinary events after a partial selection write', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('committed'))
     await log.flush()
     const path = nativeSessionLogPath(stateDir, 's1')
@@ -447,7 +454,7 @@ describe('NativeSessionLog', () => {
 
   it('appendDurable close flush restores ordinary events after selection sync failure', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('committed'))
     await log.flush()
     const path = nativeSessionLogPath(stateDir, 's1')
@@ -493,7 +500,7 @@ describe('NativeSessionLog', () => {
 
   it('appendDurable does not roll back a successful reservation when close races its flush', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('committed'))
     await log.flush()
     const path = nativeSessionLogPath(stateDir, 's1')
@@ -539,7 +546,7 @@ describe('NativeSessionLog', () => {
 
   it('appendDurable refuses closed and superseded writers without reserving an event', async () => {
     const stateDir = await fresh()
-    const original = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const original = openV1(stateDir)
     const replacement = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: true })
     const selection = {
       type: 'session/agent' as const,
@@ -561,7 +568,7 @@ describe('NativeSessionLog', () => {
 
   it('migrates a drained v1 log to v2 and persists structured attachments and their catalog', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('before-migration'))
     await log.flush()
     expect(log.header.v).toBe(1)
@@ -581,7 +588,7 @@ describe('NativeSessionLog', () => {
 
   it('closes both the live writer and temp file before rename', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1'))
     await log.flush()
     const path = nativeSessionLogPath(stateDir, 's1')
@@ -598,7 +605,7 @@ describe('NativeSessionLog', () => {
 
   it('reopens v1 and accepts later durable turns when rename fails', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1'))
     await log.flush()
     fsMigration.failRename = true
@@ -614,7 +621,7 @@ describe('NativeSessionLog', () => {
 
   it('does not release a structured append into v1 when rename fails', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1'))
     await log.flush()
     fsMigration.failRename = true
@@ -634,7 +641,7 @@ describe('NativeSessionLog', () => {
 
   it('rejects an unstarted durable reservation instead of acknowledging it behind migration', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('committed'))
     await log.flush()
     fsMigration.failRename = true
@@ -661,7 +668,7 @@ describe('NativeSessionLog', () => {
 
   it('finishes durable rollback before migration and routes restored structured appends through the gate', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('committed'))
     await log.flush()
     const path = nativeSessionLogPath(stateDir, 's1')
@@ -717,7 +724,7 @@ describe('NativeSessionLog', () => {
   it('closes the live session after a post-rename directory fsync failure', async () => {
     const stateDir = await fresh()
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1'))
     await log.flush()
     fsMigration.directorySyncFailurePath = nativeSessionDir(stateDir, 's1')
@@ -732,7 +739,7 @@ describe('NativeSessionLog', () => {
 
   it('closes the live session after a post-rename reopen failure', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1'))
     await log.flush()
     fsMigration.appendOpenFailurePath = nativeSessionLogPath(stateDir, 's1')
@@ -746,9 +753,9 @@ describe('NativeSessionLog', () => {
 
   it('refuses a fresh open over an existing log', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1')); await log.flush(); await log.close()
-    expectStorageError(() => NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false }), 'exists')
+    expectStorageError(() => openV1(stateDir), 'exists')
   })
   it('throws missing when resuming without a log', async () => {
     const stateDir = await fresh()
@@ -773,7 +780,7 @@ describe('NativeSessionLog', () => {
   })
   it('takes over the writer: committed lines survive, post-takeover appends do not', async () => {
     const stateDir = await fresh()
-    const a = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const a = openV1(stateDir)
     let b: NativeSessionLog | undefined
     try {
       a.append(userEvent('u1'))
@@ -807,7 +814,7 @@ describe('NativeSessionLog', () => {
   })
   it('ignores appends after close', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1'))
     await log.flush()
     await log.close()
@@ -818,7 +825,7 @@ describe('NativeSessionLog', () => {
   })
   it('reports existence without parsing and deletes the directory', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1')); await log.flush(); await log.close()
     expect(await hasNativeSessionLog(stateDir, 's1')).toBe(true)
     expect(await deleteNativeSessionLog(stateDir, 's1')).toBe(true)
@@ -830,7 +837,7 @@ describe('NativeSessionLog', () => {
   })
   it('rejects an unknown version on load', async () => {
     const stateDir = await fresh()
-    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const log = openV1(stateDir)
     log.append(userEvent('u1')); await log.flush(); await log.close()
     const path = nativeSessionLogPath(stateDir, 's1')
     const lines = (await readFile(path, 'utf8')).split('\n')
@@ -898,13 +905,21 @@ describe('NativeSessionLog v3 (neutral writer)', () => {
     await resumed.close()
   })
 
-  it('rejects legacy event inputs on a v3 log', async () => {
+  it('migrates legacy event inputs losslessly on a v3 log (T12 seam)', async () => {
     const stateDir = await fresh()
     const log = NativeSessionLog.open({
       stateDir, id: 's1', cwd: '/repo', resume: false,
       seed: { events: [], inheritedEventCount: 0, isSeeded: false, version: 3 },
     })
-    expect(() => log.append({ type: 'turn/end', reason: 'completed' })).toThrow(/neutral/)
+    // The core still emits some legacy events (neutralized in T13); a v3 writer
+    // migrates them rather than rejecting, preserving the legacy read view.
+    const legacy = log.append({ type: 'turn/end', reason: 'completed', usage: { input_tokens: 3, output_tokens: 4 } })
+    expect(legacy).toMatchObject({ type: 'turn/end', reason: 'completed', usage: { input_tokens: 3, output_tokens: 4 } })
+    expect(log.neutralEvents![0]).toMatchObject({ type: 'turn/end', seq: 0, data: { reason: 'completed', usage: { inputTokens: 3, outputTokens: 4 } } })
+    await log.flush()
+    const snap = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(snap.header.v).toBe(3)
+    expect(snap.events[0]).toEqual(legacy)
     await log.close()
   })
 

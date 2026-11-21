@@ -403,7 +403,9 @@ describe('native attachment fidelity end to end', () => {
       expect(log.events.some((event) => event.type === 'user' && event.uuid === initial.uuid)).toBe(true)
     })
     const sourceLog = loadNativeSessionLogSync(stateDir, id)!
-    expect(sourceLog.header.v).toBe(2)
+    // T12: fresh logs are neutral v3 (the legacy read view still carries the
+    // structured file blocks / modelForm / skill adjacency asserted below).
+    expect(sourceLog.header.v).toBe(3)
     const rawIndex = sourceLog.events.findIndex(
       (event) => event.type === 'user' && event.uuid === initial.uuid,
     )
@@ -577,14 +579,16 @@ describe('native attachment fidelity end to end', () => {
       role: 'user',
       content: [{ type: 'text', text: legacyHandle }],
     })
-    expect(loadNativeSessionLogSync(stateDir, id)!.header.v).toBe(1)
+    // T12: the resumed v1 log migrates eager-at-open to neutral v3; the legacy
+    // handle text still replays verbatim (asserted above) without a digest.
+    expect(loadNativeSessionLogSync(stateDir, id)!.header.v).toBe(3)
 
     const upload = await postUpload(second, id, 'new structured body', 'new.txt')
     second.scripts.push(textTurn('MIGRATED DONE'))
     const sent = await sendContentAndWait(second, id, seen.frames, [fileBlock(upload)])
     expect(sent.result.is_error).not.toBe(true)
     const migrated = loadNativeSessionLogSync(stateDir, id)!
-    expect(migrated.header.v).toBe(2)
+    expect(migrated.header.v).toBe(3)
     const legacyEvent = migrated.events.find((event) => event.type === 'user' && event.uuid === 'legacy-user')
     expect(legacyEvent).toBeDefined()
     expect(legacyEvent!.type === 'user' ? legacyEvent!.message.content : undefined).toEqual([

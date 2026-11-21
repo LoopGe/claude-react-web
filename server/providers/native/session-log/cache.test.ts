@@ -42,9 +42,12 @@ afterEach(async () => {
   }
 })
 
-async function openLog(): Promise<NativeSessionLog> {
+async function openLog(version?: number): Promise<NativeSessionLog> {
   dir = await mkdtemp(join(tmpdir(), 'native-cache-'))
-  return NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+  return NativeSessionLog.open({
+    stateDir: dir, id: 's1', cwd: '/repo', resume: false,
+    ...(version !== undefined ? { seed: { events: [], inheritedEventCount: 0, isSeeded: false, version } } : {}),
+  })
 }
 
 function origin(id: string): NativeEventInput {
@@ -137,7 +140,7 @@ describe('native history cache skill instructions', () => {
 
 describe('native history cache v2 migration', () => {
   it('invalidates a warm v1 entry and fully reparses v2 attachments instead of using v1 appendParse', async () => {
-    const log = await openLog()
+    const log = await openLog(1)
     const stateDir = dir!
     log.append(origin('before'))
     await log.flush()

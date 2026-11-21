@@ -54,6 +54,11 @@ import type { NativeTurnEndReason } from '../vocabulary/session-event.js'
 export interface NativeUsage {
   input_tokens: number
   output_tokens: number
+  /** Cache buckets are preserved verbatim when present so v1/v2→v3 migration
+   *  carries the full turn-end usage (the disjoint neutral TokenUsage keeps
+   *  them separate). Readers that only sum the counter pair ignore these. */
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
 }
 
 export type { NativeFileAttachment, NativeFileBlock } from '../../attachment-types.js'
@@ -792,7 +797,12 @@ export function parseEventLine(
         if (typeof raw.usage.input_tokens !== 'number' || typeof raw.usage.output_tokens !== 'number') {
           corrupt(sessionId, path, 'turn/end event usage must have numeric input_tokens and output_tokens')
         }
-        event.usage = { input_tokens: raw.usage.input_tokens, output_tokens: raw.usage.output_tokens }
+        event.usage = {
+          input_tokens: raw.usage.input_tokens,
+          output_tokens: raw.usage.output_tokens,
+          ...(typeof raw.usage.cache_read_input_tokens === 'number' ? { cache_read_input_tokens: raw.usage.cache_read_input_tokens } : {}),
+          ...(typeof raw.usage.cache_creation_input_tokens === 'number' ? { cache_creation_input_tokens: raw.usage.cache_creation_input_tokens } : {}),
+        }
       }
       return event
     }
@@ -967,6 +977,10 @@ function parseV3AssistantMessage(data: JsonObject, sessionId: string, path: stri
     if (data.interrupted !== true) corrupt(sessionId, path, 'assistant/message data.interrupted must be true')
     out.interrupted = true
   }
+  if (data.rawStopReason !== undefined) {
+    if (typeof data.rawStopReason !== 'string') corrupt(sessionId, path, 'assistant/message data.rawStopReason must be a string')
+    out.rawStopReason = data.rawStopReason
+  }
   return out
 }
 
@@ -1120,7 +1134,7 @@ export function parseEventLineV3(
 export function eventRequiresV3(event: NativeSessionEvent): boolean {
   if (event.ignorable === true) return true
   switch (event.type) {
-    case 'assistant/message': return event.data.stream.length > 0
+    case 'assistant/message': return event.data.stream.length > 0 || event.data.interrupted === true
     case 'tool/result': return event.data.error !== undefined || event.data.meta !== undefined
     case 'session/end-seed': return event.data.inherited === true
     default: return false
@@ -1212,6 +1226,7 @@ export function projectNeutralEventToLegacy(event: NativeSessionEvent, sessionId
         seq, type: 'user', uuid: event.data.id, session_id: sessionId,
         parent_tool_use_id: parent, timestamp,
         message: { role: 'user', content: event.data.content.map(neutralInputBlockToSdk) },
+        ...(event.data.isCompactSummary === true ? { isCompactSummary: true as const } : {}),
       }
     case 'assistant/message': {
       const message = event.data.message
@@ -1227,13 +1242,20 @@ export function projectNeutralEventToLegacy(event: NativeSessionEvent, sessionId
           content: message.content.map(neutralAssistantBlockToSdk),
           id: `msg_${message.id}`,
           model: message.source.model,
-          stop_reason: stopReasonOfStream(event.data.stream),
+          // The verbatim raw stop reason wins when carried (migration preserves
+          // rare API reasons the closed FinishReason union cannot express);
+          // otherwise reconstruct from the packed finish record.
+          stop_reason: event.data.rawStopReason ?? stopReasonOfStream(event.data.stream),
           ...(event.data.usage !== undefined ? { usage: sdkUsageOf(event.data.usage) } : {}),
         } as NativeAssistantEvent['message'],
       }
     }
     case 'tool/result': {
       const message = event.data.message
+      // A migrated legacy tool_result whose content was a bare string carries
+      // that verbatim form in meta (the neutral message content is block array);
+      // reconstruct the string so the parsed legacy line is byte-identical.
+      const legacyString = (event.data.meta as { legacyStringContent?: unknown } | undefined)?.legacyStringContent
       return {
         seq, type: 'user', uuid: message.id, session_id: sessionId,
         parent_tool_use_id: parent, timestamp,
@@ -1242,7 +1264,7 @@ export function projectNeutralEventToLegacy(event: NativeSessionEvent, sessionId
           content: [{
             type: 'tool_result',
             tool_use_id: message.toolCallId,
-            content: message.content.map(neutralInputBlockToSdk),
+            content: typeof legacyString === 'string' ? legacyString : message.content.map(neutralInputBlockToSdk),
             is_error: message.isError ?? false,
           }],
         },

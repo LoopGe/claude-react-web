@@ -25,6 +25,7 @@ import { mkdirSync, readFileSync, truncateSync, writeFileSync } from 'node:fs'
 import { open as openFile, readFile, rename, rm, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { createLogger } from '../../../log.js'
 import { NativeSessionStorageError } from './errors.js'
 import {
   NATIVE_SESSION_LOG_VERSION,
@@ -39,7 +40,10 @@ import {
 } from './format.js'
 import type { NativeEventInput, NativeLogEvent, NativeSessionHeader } from './format.js'
 import type { NativeSessionEvent, SessionEvent, SessionEventMap } from '../vocabulary/session-event.js'
+import { migrateEventToV3 } from './migration.js'
 import { nativeSessionDir, nativeSessionLogPath, nativeSessionMigrationTempPath } from './paths.js'
+
+const logger = createLogger('native-session-log')
 
 /** A neutral v3 event input: the durable event minus its log-assigned seq.
  *  Mapped key-by-key so `type` and `data` stay correlated (mirrors
@@ -227,8 +231,9 @@ export class NativeSessionLog {
    *  `neutralEvents` (transitional consumers read it until T13); for v1/v2 it
    *  is the canonical event list. */
   readonly events: NativeLogEvent[]
-  /** Canonical neutral events for a v3 log; null for v1/v2. */
-  readonly neutralEvents: NativeSessionEvent[] | null
+  /** Canonical neutral events for a v3 log; null for v1/v2. Reassigned by the
+   *  eager-at-open v3 migration (a v1/v2 writer upgrades to a neutral baseline). */
+  neutralEvents: NativeSessionEvent[] | null
   readonly path: string
 
   private readonly registryKey: string
@@ -243,6 +248,16 @@ export class NativeSessionLog {
   /** Events accepted after the migration gate are buffered separately, so the
    *  pre-gate drain cannot accidentally write them into the v1 source. */
   private migrationAppends: NativeLogEvent[] | null = null
+  /** Canonical NEUTRAL form of the post-gate appends, buffered in lockstep with
+   *  `migrationAppends` for a v3-target migration so v3-only facts (packed stream
+   *  records, tool error/meta, interrupted) are not lost through the legacy
+   *  compat projection. Null for a v2-target migration (legacy bytes suffice). */
+  private migrationNeutralAppends: NativeSessionEvent[] | null = null
+  /** The version the in-flight migration upgrades to (2 or 3); null when no
+   *  migration gate is installed. While a v3 gate is active the writer is still
+   *  v1/v2 on disk, but appends canonicalize to neutral so the post-rename
+   *  release writes v3 bytes. */
+  private migrationTargetVersion: number | null = null
   private migrationFatal: unknown = null
   private superseded = false
   private closed = false
@@ -288,11 +303,19 @@ export class NativeSessionLog {
       header = snapshot.header
       events = snapshot.events
       neutralEvents = snapshot.neutralEvents ?? null
+      // Eager-at-open migration (R7): a resumed v1/v2 log upgrades to neutral v3
+      // before the first durable append. The gate installs synchronously inside
+      // migrateToV3 (below, after the writer is registered); post-gate appends
+      // buffer behind it. A fresh fork seed instead PRESERVES its source version
+      // until migrated (see the else branch).
     } else {
       mkdirSync(nativeSessionDir(stateDir, id), { recursive: true })
       header = {
         type: 'session/header',
-        v: seed?.version ?? NATIVE_SESSION_LOG_VERSION,
+        // Fresh seeds default to the neutral v3 format. A fork preserves its
+        // source version (buildForkSeed sets `version`); the eager-at-open
+        // migration below upgrades a legacy fork seed before the first append.
+        v: seed?.version ?? NATIVE_SESSION_LOG_V3,
         id,
         cwd,
         createdAt: Date.now(),
@@ -300,7 +323,14 @@ export class NativeSessionLog {
         inheritedEventCount: seed?.inheritedEventCount ?? 0,
       }
       if (header.v === NATIVE_SESSION_LOG_V3) {
-        neutralEvents = (seed ? [...seed.events] : []) as NativeSessionEvent[]
+        // A v3 seed may carry neutral events (a v3-source fork) or legacy events
+        // (openFreshLog's context/selection, a legacy-source fork's read view);
+        // normalize every entry to neutral, renumbering seq to the seed order.
+        neutralEvents = (seed ? seed.events : []).map((event, index) =>
+          'data' in event
+            ? { ...event, seq: index } as NativeSessionEvent
+            : migrateEventToV3({ ...event, seq: index } as NativeLogEvent),
+        )
         events = neutralEvents.map((event) => projectNeutralEventToLegacy(event, id))
       } else {
         neutralEvents = null
@@ -326,6 +356,19 @@ export class NativeSessionLog {
     if (previous) previous.markSuperseded()
     const log = new NativeSessionLog(header, events, neutralEvents, path, stateDir, registryKey)
     writers.set(registryKey, log)
+    // Eager-at-open migration (R7): a RESUMED v1/v2 log upgrades to neutral v3
+    // before the first durable append (a v3 writer cannot append neutral events
+    // to an unmigrated legacy log). The gate installs synchronously inside
+    // migrateToV3; post-gate appends buffer behind it. A failure closes the
+    // writer (migrationFatal) and surfaces on the next append/flush — the
+    // durable-retry pause owns recovery — so the eager promise is caught here
+    // only to avoid an unhandled rejection. A fresh fork seed preserves its
+    // source version until migrated (a later resume upgrades it).
+    if (resume && log.header.v < NATIVE_SESSION_LOG_V3) {
+      void log.migrateToV3().catch((err) => {
+        logger.error(`[${id}] eager v1/v2→v3 migration failed:`, err)
+      })
+    }
     return log
   }
 
@@ -336,16 +379,25 @@ export class NativeSessionLog {
     const seq = this.events.length
     // Neutral v3 inputs carry a `data` envelope; legacy v1/v2 inputs never do.
     const isNeutral = 'data' in input
+    // A v3 log — or a v1/v2 log with an in-flight v3 migration gate —
+    // canonicalizes every append to neutral. The core still emits some legacy
+    // events (user / turn-end / compact / skill / …, neutralized in T13), so a
+    // legacy input is migrated losslessly rather than rejected; a neutral input
+    // is stored verbatim (its v3-only facts preserved).
+    const targetV3 = this.header.v === NATIVE_SESSION_LOG_V3 || this.migrationTargetVersion === NATIVE_SESSION_LOG_V3
     let legacy: NativeLogEvent
     let neutral: NativeSessionEvent | null = null
-    if (this.header.v === NATIVE_SESSION_LOG_V3) {
-      if (!isNeutral) throw new Error(`v3 session log requires neutral event inputs: ${this.path}`)
-      neutral = { ...input, seq } as NativeSessionEvent
-      legacy = projectNeutralEventToLegacy(neutral, this.header.id)
+    if (targetV3) {
+      neutral = isNeutral
+        ? { ...input, seq } as NativeSessionEvent
+        : migrateEventToV3({ ...input, seq } as NativeLogEvent)
+      // A legacy input's exact shape is the lossless read view; a neutral input
+      // projects to legacy (v3-only facts drop from the VIEW only — the canonical
+      // neutral above keeps them).
+      legacy = isNeutral ? projectNeutralEventToLegacy(neutral, this.header.id) : { ...input, seq } as NativeLogEvent
     } else if (isNeutral) {
-      // A neutral append into a not-yet-migrated v1/v2 log: project to the
-      // legacy shape (version compat lives here, not in the core). v3-only
-      // facts are dropped; T12 migrates the log eager-at-open to preserve them.
+      // A neutral append into a v1/v2 log with no v3 gate: project to the legacy
+      // shape (version compat lives here, not in the core). v3-only facts drop.
       legacy = projectNeutralEventToLegacy({ ...input, seq } as NativeSessionEvent, this.header.id)
     } else {
       legacy = { ...input, seq } as NativeLogEvent
@@ -355,8 +407,12 @@ export class NativeSessionLog {
     // A superseded or closed writer must never buffer again: its file belongs
     // to another writer, or its own handle is about to be destroyed.
     if (!this.superseded && !this.closed) {
-      if (this.migrationAppends) this.migrationAppends.push(legacy)
-      else this.bufferEvent(legacy, neutral)
+      if (this.migrationAppends) {
+        this.migrationAppends.push(legacy)
+        if (this.migrationNeutralAppends) this.migrationNeutralAppends.push(neutral!)
+      } else {
+        this.bufferEvent(legacy, neutral)
+      }
     }
     return legacy
   }
@@ -374,9 +430,13 @@ export class NativeSessionLog {
   migrateToV2(): Promise<void> {
     if (this.migrationPromise) return this.migrationPromise
     this.assertDurableWriterActive()
-    // Already v2 or v3: nothing to upgrade (v3 migration is T12's migrateToV3).
-    if (this.header.v >= NATIVE_SESSION_LOG_V2) return Promise.resolve()
+    // Already v2 or v3: nothing to upgrade. A v3 migration in flight supersedes
+    // any v2 upgrade (the log is heading straight to neutral).
+    if (this.header.v >= NATIVE_SESSION_LOG_V2 || this.migrationTargetVersion === NATIVE_SESSION_LOG_V3) {
+      return Promise.resolve()
+    }
     this.migrationAppends = []
+    this.migrationTargetVersion = NATIVE_SESSION_LOG_V2
     const run = this.enqueueWriterOperation(() => this.performMigration())
     const tracked = run.finally(() => {
       // A pre-rename failure leaves a live v1 writer that may retry. A fatal
@@ -385,6 +445,116 @@ export class NativeSessionLog {
     })
     this.migrationPromise = tracked
     return tracked
+  }
+
+  /** Atomically upgrade this writer's v1/v2 log to the neutral v3 format,
+   *  rewriting EVERY event (not header-only). Eager-at-open (R7): `open`
+   *  triggers this before the writer is returned, so the first durable append
+   *  lands on a v3 baseline. Idempotent (a v3 log no-ops). Reuses migrateToV2's
+   *  safety — the gate is installed synchronously before the first await, and
+   *  the copy/fsync/rename/re-parse/cache-invalidate sequence runs behind the
+   *  serialized writer-operation queue. Post-gate appends canonicalize to
+   *  neutral (see `append`) and are released as v3 bytes after the rename. */
+  migrateToV3(): Promise<void> {
+    if (this.migrationPromise) return this.migrationPromise
+    this.assertDurableWriterActive()
+    if (this.header.v >= NATIVE_SESSION_LOG_V3) return Promise.resolve()
+    this.migrationAppends = []
+    this.migrationNeutralAppends = []
+    this.migrationTargetVersion = NATIVE_SESSION_LOG_V3
+    const run = this.enqueueWriterOperation(() => this.performMigrationV3())
+    const tracked = run.finally(() => {
+      // A pre-rename failure leaves a live v1/v2 writer that may retry. A fatal
+      // post-rename failure stays closed and can never be retried on this object.
+      if (!this.closed && this.header.v < NATIVE_SESSION_LOG_V3) this.migrationPromise = null
+    })
+    this.migrationPromise = tracked
+    return tracked
+  }
+
+  private async performMigrationV3(): Promise<void> {
+    const queued = this.migrationAppends
+    const queuedNeutral = this.migrationNeutralAppends
+    if (!queued || !queuedNeutral) throw new Error('v3 migration gate is not installed')
+    const temp = nativeSessionMigrationTempPath(this.stateDir, this.header.id)
+    let renamed = false
+    try {
+      // Flush every pre-gate event (legacy bytes) before rewriting the file.
+      while (this.pending.length > 0) await this.writePending(false)
+      this.assertDurableWriterActive()
+      await this.closeHandle()
+
+      // Rewrite EVERY event into the neutral v3 language. The source snapshot is
+      // re-read and parsed with its own version validator, then each legacy
+      // event is migrated losslessly (uuid/seq/parent/usage/signatures preserved).
+      const original = await readFile(this.path)
+      const snapshot = parseLogBuffer(original, this.header.id, this.path)
+      const neutralEvents = snapshot.events.map((event) => migrateEventToV3(event))
+      const migrated = Buffer.from(
+        serializeHeader({ ...snapshot.header, v: NATIVE_SESSION_LOG_V3 }) + '\n' +
+        neutralEvents.map((event) => serializeEvent(event) + '\n').join(''),
+        'utf8',
+      )
+      const tempHandle = await openFile(temp, 'w')
+      try {
+        await writeAll(tempHandle, migrated, temp)
+        await tempHandle.sync()
+      } finally {
+        await tempHandle.close()
+      }
+      this.assertDurableWriterActive()
+      await rename(temp, this.path)
+      renamed = true
+      this.header.v = NATIVE_SESSION_LOG_V3
+      await syncDirectory(this.stateDir, this.header.id)
+
+      // Re-read the replacement with the v3 parser before accepting any queued
+      // append: proves the on-disk seq chain and establishes the neutral baseline.
+      const reloaded = await loadNativeSessionLog(this.stateDir, this.header.id)
+      if (!reloaded || reloaded.header.v !== NATIVE_SESSION_LOG_V3 || !reloaded.neutralEvents) {
+        throw new Error(`migrated session log did not reload as v3: ${this.path}`)
+      }
+      this.handle = await openFile(this.path, 'a')
+      this.neutralEvents = reloaded.neutralEvents
+      this.events.splice(0, this.events.length, ...reloaded.events, ...queued)
+      const { nativeHistoryCache } = await import('./cache.js')
+      nativeHistoryCache.invalidate(this.header.id)
+      this.releaseMigrationAppends(queued)
+    } catch (err) {
+      if (this.superseded) {
+        this.migrationAppends = null
+        this.migrationNeutralAppends = null
+        this.migrationTargetVersion = null
+        throw err
+      }
+      if (!renamed) {
+        // The source is still v1/v2. Reopen it at its original version and
+        // release the queued appends as legacy bytes (a neutral append's v3-only
+        // facts degrade to the compat projection — the status quo ante a failed
+        // migration). If even the reopen fails, the writer closes rather than
+        // pretending to be live.
+        try {
+          await this.closeHandle()
+          this.handle = await openFile(this.path, 'a')
+          this.migrationTargetVersion = null
+          this.migrationNeutralAppends = null
+          this.releaseMigrationAppends(queued)
+        } catch (reopenErr) {
+          await this.failMigration(err)
+          throw new AggregateError([err, reopenErr], `failed to reopen v1/v2 session log: ${this.path}`)
+        }
+        try {
+          await rm(temp, { force: true })
+        } catch (cleanupErr) {
+          throw new AggregateError([err, cleanupErr], `failed to clean migration temp: ${temp}`)
+        }
+      } else {
+        // The replacement already happened. Never roll it back; close rather
+        // than acknowledge another turn while durability/reopen state is unknown.
+        await this.failMigration(err)
+      }
+      throw err
+    }
   }
 
   private async performMigration(): Promise<void> {
@@ -475,9 +645,21 @@ export class NativeSessionLog {
 
   private releaseMigrationAppends(queued: NativeLogEvent[]): void {
     if (!this.closed && !this.superseded) {
-      for (const event of queued) this.pending.push(Buffer.from(serializeEvent(event) + '\n', 'utf8'))
+      if (this.migrationNeutralAppends) {
+        // v3 target: the canonical neutral appends become the durable bytes and
+        // join the neutral baseline in lockstep with the legacy view (already
+        // spliced into `events` by the caller).
+        for (const neutral of this.migrationNeutralAppends) {
+          this.neutralEvents!.push(neutral)
+          this.pending.push(Buffer.from(serializeEvent(neutral) + '\n', 'utf8'))
+        }
+      } else {
+        for (const event of queued) this.pending.push(Buffer.from(serializeEvent(event) + '\n', 'utf8'))
+      }
     }
     this.migrationAppends = null
+    this.migrationNeutralAppends = null
+    this.migrationTargetVersion = null
   }
 
   private async failMigration(cause: unknown): Promise<void> {
@@ -485,6 +667,8 @@ export class NativeSessionLog {
     this.closed = true
     this.pending = []
     this.migrationAppends = null
+    this.migrationNeutralAppends = null
+    this.migrationTargetVersion = null
     await this.closeHandle()
   }
 
@@ -542,7 +726,11 @@ export class NativeSessionLog {
       this.pending = []
       if (this.migrationAppends) {
         const rolledBack = new Set(appended)
-        this.migrationAppends = this.migrationAppends.filter((event) => !rolledBack.has(event))
+        const keep = this.migrationAppends.map((event) => !rolledBack.has(event))
+        this.migrationAppends = this.migrationAppends.filter((_event, index) => keep[index])
+        if (this.migrationNeutralAppends) {
+          this.migrationNeutralAppends = this.migrationNeutralAppends.filter((_event, index) => keep[index])
+        }
       }
       // A replacement writer may already have committed newer events. Never
       // truncate its file; only discard this stale writer's uncommitted state.
@@ -574,8 +762,15 @@ export class NativeSessionLog {
     // contract. It re-enters the active migration gate when one exists, so a
     // restored structured event cannot be drained into the v1 source copy.
     // Otherwise a racing close's queued allowClosed flush owns these bytes.
-    if (this.migrationAppends) this.migrationAppends.push(restored)
-    else this.bufferEvent(restored, restoredNeutral)
+    if (this.migrationAppends) {
+      this.migrationAppends.push(restored)
+      // A v3 gate buffers the canonical neutral form too. (Unreachable in
+      // practice — a durable reservation refuses to start behind a migration
+      // gate — but kept lockstep-correct should the ordering ever change.)
+      if (this.migrationNeutralAppends) this.migrationNeutralAppends.push(migrateEventToV3(restored))
+    } else {
+      this.bufferEvent(restored, restoredNeutral)
+    }
   }
 
   private assertDurableReservationNotGated(): void {

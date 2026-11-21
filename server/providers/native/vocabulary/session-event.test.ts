@@ -196,13 +196,15 @@ function assertNever(value: never): never {
  *  no-op, but the ambient narrowing reads must not execute at runtime). */
 function _narrowingPin(event: NativeSessionEvent): void {
   if (event.type === 'user/message') {
-    expectTypeOf(event.data).toEqualTypeOf<UserMessage>()
+    expectTypeOf(event.data).toEqualTypeOf<UserMessage & { isCompactSummary?: true }>()
+    expectTypeOf(event.data.isCompactSummary).toEqualTypeOf<true | undefined>()
   }
   if (event.type === 'assistant/message') {
     expectTypeOf(event.data.message).toEqualTypeOf<AssistantMessage>()
     expectTypeOf(event.data.stream).toEqualTypeOf<AssistantStreamRecord[]>()
     expectTypeOf(event.data.usage).toEqualTypeOf<TokenUsage | undefined>()
     expectTypeOf(event.data.interrupted).toEqualTypeOf<true | undefined>()
+    expectTypeOf(event.data.rawStopReason).toEqualTypeOf<string | undefined>()
   }
   if (event.type === 'tool/result') {
     expectTypeOf(event.data.message).toEqualTypeOf<ToolResultMessage>()

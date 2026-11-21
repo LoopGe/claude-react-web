@@ -68,11 +68,22 @@ export type AssistantStreamRecord =
  *  the top level (seq, and the parent axis). */
 export interface SessionEventMap {
   /** One user turn (v1/v2 `user` event). Sidechain user frames carry a
-   *  string parent on the envelope. */
-  'user/message': UserMessage
+   *  string parent on the envelope. `isCompactSummary` is the event-level
+   *  marker the v1/v2 `user` event carries for a seeded compaction summary;
+   *  it rides the data payload (not the message source) so the closed
+   *  MessageSource union stays the four core kinds, and the legacy projection
+   *  maps it back to the top-level `isCompactSummary` flag losslessly. */
+  'user/message': UserMessage & { isCompactSummary?: true }
   /** One settled assistant message plus its packed streaming history
-   *  (v1/v2 `assistant` event). `interrupted` marks a partial turn. */
-  'assistant/message': { message: AssistantMessage; stream: AssistantStreamRecord[]; usage?: TokenUsage; interrupted?: true }
+   *  (v1/v2 `assistant` event). `interrupted` marks a partial turn.
+   *  `rawStopReason` carries the API stop reason VERBATIM (the v1/v2
+   *  `message.stop_reason` string). The packed finish record maps the common
+   *  reasons to the closed FinishReason union, which cannot express rare
+   *  reasons (`stop_sequence`, `pause_turn`, `refusal`, …); this field preserves
+   *  them so v1/v2→v3 migration is lossless and the legacy projection
+   *  reconstructs the exact original stop_reason. Absent when the source
+   *  carried no stop reason (null — an interrupted turn). */
+  'assistant/message': { message: AssistantMessage; stream: AssistantStreamRecord[]; usage?: TokenUsage; interrupted?: true; rawStopReason?: string }
   /** A first-class tool result (v1/v2 persisted these as tool_result blocks
    *  inside user content). `error` names a structured tool failure; `meta`
    *  is adapter-owned opaque JSON (SDK-only representation lives here, never
