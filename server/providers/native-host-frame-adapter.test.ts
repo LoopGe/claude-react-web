@@ -461,11 +461,18 @@ describe('projectSdkInputToNative — lossless content projection', () => {
     expect(neutral.content[0]).toEqual({ type: 'image', attachment: IMAGE_REF })
   })
 
-  it('mints a fresh neutral uuid distinct from the host uuid (identity re-key)', () => {
+  it('preserves the host uuid as the neutral durable identity (branded MessageId)', () => {
     const neutral = projectSdkInputToNative(hostUserMsg('hi', 'host-uuid-xyz'))
-    expect(typeof neutral.id).toBe('string')
-    expect(neutral.id).not.toBe('host-uuid-xyz')
+    // Goal-4: the durable log identity must match the host bridge (resume/replay/
+    // compact/lease all key on the host uuid), so the neutral id IS the host uuid.
+    expect(neutral.id).toBe('host-uuid-xyz')
     expect(neutral.source).toEqual({ kind: 'user' })
+    expect(Object.isFrozen(neutral)).toBe(true)
+  })
+
+  it('throws loudly when the host message has no uuid identity to preserve', () => {
+    const noUuid = { ...hostUserMsg('hi'), uuid: undefined } as unknown as AgentUserMessage
+    expect(() => projectSdkInputToNative(noUuid)).toThrow(/uuid identity/)
   })
 
   it('preserves block order across a mixed text/image/file batch', () => {
@@ -533,17 +540,35 @@ describe('wrapNativeCore — input identity + drain', () => {
     expect((drained[1] as { receivedAt?: number }).receivedAt).toBe(2000)
   })
 
-  it('re-keys receivedAt onto the neutral uuid (fresh id, host arrival preserved)', () => {
+  it('re-keys receivedAt onto the uuid identity (host uuid preserved, arrival kept)', () => {
     const { core, enqueued } = makeFakeCore()
     const handle = wrapNativeCore(core, {})
     const host = { ...hostUserMsg('hi', 'host-uuid-9'), receivedAt: 4242 } as AgentUserMessage
     handle.enqueueUserMessage(host)
     expect(enqueued).toHaveLength(1)
     const neutral = enqueued[0] as { id: string }
-    expect(neutral.id).not.toBe('host-uuid-9')
-    // The host arrival time survives the round-trip keyed by the neutral identity.
+    expect(neutral.id).toBe('host-uuid-9')
+    // The host arrival time survives the round-trip keyed by the uuid identity.
     const drained = handle.drainQueuedInput!()
     expect((drained[0] as { receivedAt?: number }).receivedAt).toBe(4242)
+  })
+
+  it('drain keeps the pairing so a terminal failed for the withdrawn parked head still maps to the host uuid', () => {
+    const { core, enqueued } = makeFakeCore()
+    const persisted: Array<{ uuid: string | undefined; outcome: string }> = []
+    const handle = wrapNativeCore(core, {
+      onUserMessagePersistence: (m, outcome) => persisted.push({ uuid: m.uuid, outcome }),
+    })
+    const host = hostUserMsg('parked', 'host-uuid-parked')
+    handle.enqueueUserMessage(host)
+    // The manager drains its host queue BEFORE interrupt; the core then fires
+    // 'failed' for the withdrawn parked head (native-session.ts:1376).
+    const drained = handle.drainQueuedInput!()
+    expect(drained).toEqual([host])
+    expect(() => core.onUserMessagePersistence!(enqueued[0], 'failed')).not.toThrow()
+    expect(persisted).toEqual([{ uuid: 'host-uuid-parked', outcome: 'failed' }])
+    // 'failed' is terminal: the pairing is now released (a repeat outcome is loud).
+    expect(() => core.onUserMessagePersistence!(enqueued[0], 'failed')).toThrow(/unpaired/)
   })
 
   it('clearQueuedInput delegates to core.clearQueued and returns the count', () => {
@@ -679,7 +704,7 @@ describe('wrapNativeCore — messages projects NativeCoreFrame → SDK (identica
 })
 
 describe('wrapNativeCore — control delegation', () => {
-  it('delegates interrupt / abort / destroy to the core, mapping neutral cancelled uuids to host uuids', async () => {
+  it('delegates interrupt / abort / destroy; interrupt-cancel passes host uuids through and releases the pairing', async () => {
     const { core, enqueued } = makeFakeCore()
     const interrupt = vi.fn(async () => ({ cancelledQueued: [] as string[] }))
     const abort = vi.fn()
@@ -687,13 +712,17 @@ describe('wrapNativeCore — control delegation', () => {
     core.interrupt = interrupt
     core.abort = abort
     core.destroy = destroy
-    const handle = wrapNativeCore(core, {})
+    const handle = wrapNativeCore(core, { onUserMessageConsumed: () => {} })
     handle.enqueueUserMessage(hostUserMsg('queued', 'host-uuid-cancel'))
     const neutralId = (enqueued[0] as { id: string }).id
+    // Identity preserved: the neutral id IS the host uuid.
+    expect(neutralId).toBe('host-uuid-cancel')
     interrupt.mockResolvedValue({ cancelledQueued: [neutralId] })
     const receipt = await handle.interrupt!({ cancelQueued: true })
     expect(interrupt).toHaveBeenCalledWith({ cancelQueued: true })
     expect(receipt).toEqual({ cancelledQueued: ['host-uuid-cancel'] })
+    // Withdrawn entries release the pairing (no leak): a later outcome is loud.
+    expect(() => core.onUserMessageConsumed!(enqueued[0])).toThrow(/unpaired/)
     handle.abort()
     expect(abort).toHaveBeenCalled()
     await handle.destroy('reason')

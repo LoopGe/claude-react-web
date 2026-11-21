@@ -58,7 +58,8 @@ import type {
 import type { SupplementOutcome } from './steering-format.js'
 import type { FileAttachmentRef } from '../../shared/attachments.js'
 import type { ImageAttachmentRef, LegacyImageBlock } from '../../shared/image-attachment.js'
-import { createUserMessage, type RequestMessage, type ToolResultMessage } from './native/vocabulary/message.js'
+import { freezeMessage, type RequestMessage, type ToolResultMessage } from './native/vocabulary/message.js'
+import { brandString } from './native/vocabulary/brand.js'
 import type { ContentBlock, TokenUsage } from './native/vocabulary/types.js'
 import type { NativeLiveFrame } from './native/vocabulary/stream.js'
 import type { NativeSessionEvent } from './native/vocabulary/session-event.js'
@@ -366,16 +367,32 @@ function neutralInputBlock(block: HostInputBlock): ContentBlock {
  *  immutable UserMessage). File blocks become neutral FileBlock refs (the
  *  handle-text projection stays adapter-side via projectFileBlocksForProvider
  *  for the legacy text-only boundary); base64 images become LegacyImageBlock;
- *  store-backed image refs become ImageRefBlock; text becomes TextBlock. The
- *  neutral uuid is freshly minted by createUserMessage — the adapter re-keys the
- *  host receivedAt identity onto it (see wrapNativeCore), so the host uuid stays
- *  on the paired host message while the core speaks the neutral identity. */
+ *  store-backed image refs become ImageRefBlock; text becomes TextBlock.
+ *
+ *  IDENTITY (R1 / Goal-4): the neutral message CARRIES THE HOST UUID as its
+ *  durable id (branded MessageId), NOT a fresh randomUUID. The legacy native log
+ *  persists the host uuid (native-session.ts `uuid: next.uuid!`) and the entire
+ *  resume/replay/compact/lease bridge keys on it (rewriteSeedPromptUuids, the
+ *  prompt-uuid sidecar, getSkillCompactionEntries.afterUserUuid). Preserving it
+ *  here means the core's v3 log stores the same identity, so durable resume needs
+ *  no fresh-id↔host-id reconciliation. The adapter re-keys receivedAt onto this
+ *  uuid (see wrapNativeCore). A host message without a uuid is a contract
+ *  violation surfaced loudly (the manager always mints one before enqueue). */
 export function projectSdkInputToNative(message: AgentUserMessage): RequestMessage {
+  const hostUuid = message.uuid
+  if (typeof hostUuid !== 'string') {
+    throw new Error('native host adapter: AgentUserMessage has no uuid identity to preserve')
+  }
   const content = message.message.content
   const blocks: ContentBlock[] = typeof content === 'string'
     ? [{ type: 'text', text: content }]
     : content.map(neutralInputBlock)
-  return createUserMessage({ content: blocks, source: { kind: 'user' } })
+  return freezeMessage({
+    role: 'user',
+    id: brandString<'MessageId'>(hostUuid),
+    content: blocks,
+    source: { kind: 'user' },
+  })
 }
 
 // ── wrapNativeCore: neutral core → SDK ProviderSessionHandle ──────────────
@@ -389,14 +406,14 @@ export interface NativeHostCallbacks {
   onSupplementDelivered?: (uuid: string, outcome: SupplementOutcome) => void
 }
 
-/** The neutral uuid of an identified RequestMessage. The adapter always enqueues
- *  identified UserMessages (projectSdkInputToNative mints the id), so a drained
- *  or consumed neutral message carries one; a missing id is a contract violation
- *  surfaced loudly rather than silently dropping the host pairing. */
+/** The uuid identity of an identified RequestMessage. projectSdkInputToNative
+ *  preserves the host uuid as the neutral id, so a drained or consumed neutral
+ *  message carries one; a missing id is a contract violation surfaced loudly
+ *  rather than silently dropping the host pairing. */
 function neutralIdOf(msg: RequestMessage): string {
   const id = (msg as { id?: string }).id
   if (typeof id !== 'string') {
-    throw new Error('native host adapter: core emitted a RequestMessage without a neutral uuid identity')
+    throw new Error('native host adapter: core emitted a RequestMessage without a uuid identity')
   }
   return id
 }
@@ -448,34 +465,39 @@ function projectCoreFrame(frame: NativeCoreFrame, sessionId: string): AgentMessa
  *  core's neutral persistence outcomes with copyConsumedAt bridging), the live
  *  frame projection, and the ~50-method handle delegation. */
 export function wrapNativeCore(core: NativeSessionCore, hostCallbacks: NativeHostCallbacks): ProviderSessionHandle {
-  // Host identity paired by neutral uuid: the original host AgentUserMessage
-  // (carrying the host uuid / receivedAt / resolved content) and its arrival
-  // time, re-keyed from the legacy WeakMap<AgentUserMessage> onto the neutral
-  // uuid. The pairing is the lossless back-projection — drainQueuedInput and the
-  // lease callbacks return the ORIGINAL host message, never a lossy rebuild.
-  const hostByNeutralId = new Map<string, AgentUserMessage>()
-  const receivedAtByNeutralId = new Map<string, number>()
+  // Host identity paired by uuid. The neutral message id IS the host uuid
+  // (projectSdkInputToNative preserves it), so the pairing key is the durable
+  // host identity itself. The map still holds the ORIGINAL host AgentUserMessage
+  // object (carrying receivedAt / resolved SDK content) because the lease
+  // callbacks and drainQueuedInput must return that exact object — the manager
+  // reads consumedAt off it and re-enqueues it verbatim. receivedAt is re-keyed
+  // from the legacy WeakMap<AgentUserMessage> onto the uuid.
+  const hostByUuid = new Map<string, AgentUserMessage>()
+  const receivedAtByUuid = new Map<string, number>()
 
   const rememberHost = (neutral: RequestMessage, host: AgentUserMessage): void => {
     const id = neutralIdOf(neutral)
-    hostByNeutralId.set(id, host)
+    hostByUuid.set(id, host)
     const arrival = (host as { receivedAt?: number }).receivedAt
-    receivedAtByNeutralId.set(id, typeof arrival === 'number' ? arrival : Date.now())
+    receivedAtByUuid.set(id, typeof arrival === 'number' ? arrival : Date.now())
   }
   const hostFor = (neutral: RequestMessage): AgentUserMessage => {
-    const host = hostByNeutralId.get(neutralIdOf(neutral))
+    const host = hostByUuid.get(neutralIdOf(neutral))
     if (!host) {
-      throw new Error('native host adapter: core reported an outcome for an unpaired neutral prompt')
+      throw new Error('native host adapter: core reported an outcome for an unpaired prompt uuid')
     }
     return host
   }
-  // Drop the pairing once a prompt is no longer withdrawable. The legacy
-  // provider keyed receivedAt by a WeakMap<AgentUserMessage> (GC-friendly); this
-  // strong Map must release consumed/dropped prompts explicitly or it grows for
-  // the session lifetime.
+  // Release the pairing on a TERMINAL outcome (consumed or failed) or an
+  // interrupt withdrawal — NOT on drain. The manager drains its host queue
+  // BEFORE interrupt, and the core then fires 'failed' for the withdrawn parked
+  // head (native-session.ts:1376), which still needs the pairing to map back to
+  // the host uuid. The legacy provider keyed receivedAt by a GC-friendly
+  // WeakMap; this strong Map must release terminal prompts explicitly or it
+  // grows for the session lifetime.
   const forget = (id: string): void => {
-    hostByNeutralId.delete(id)
-    receivedAtByNeutralId.delete(id)
+    hostByUuid.delete(id)
+    receivedAtByUuid.delete(id)
   }
 
   // Wire the core's neutral persistence-outcome callbacks to the host lease
@@ -484,13 +506,14 @@ export function wrapNativeCore(core: NativeSessionCore, hostCallbacks: NativeHos
   // time; copyConsumedAt bridges the consumption stamp the manager writes on that
   // projection back onto the original host message the manager reads after
   // enqueueUserMessage returns. Outcome order is persistence('appended') BEFORE
-  // consumption (the durable append precedes the consume ack), so the pairing is
-  // still live for both; consumption releases it.
+  // consumption (the durable append precedes the consume ack). 'appended' keeps
+  // the pairing (consumption follows); 'failed' and consumption are terminal and
+  // release it.
   const projectHost = (neutral: RequestMessage): { id: string; original: AgentUserMessage; projected: AgentUserMessage } => {
     const id = neutralIdOf(neutral)
     const original = hostFor(neutral)
     const projected = { ...original }
-    ;(projected as { receivedAt?: number }).receivedAt = receivedAtByNeutralId.get(id)
+    ;(projected as { receivedAt?: number }).receivedAt = receivedAtByUuid.get(id)
     return { id, original, projected }
   }
   core.onUserMessageConsumed = (neutral) => {
@@ -500,7 +523,10 @@ export function wrapNativeCore(core: NativeSessionCore, hostCallbacks: NativeHos
     forget(id)
   }
   core.onUserMessagePersistence = (neutral, outcome) => {
-    hostCallbacks.onUserMessagePersistence?.(projectHost(neutral).projected, outcome)
+    const { id, projected } = projectHost(neutral)
+    hostCallbacks.onUserMessagePersistence?.(projected, outcome)
+    // 'failed' abandons the prompt (terminal); 'appended' precedes consumption.
+    if (outcome === 'failed') forget(id)
   }
   core.onSupplementDelivered = (uuid, outcome) => {
     hostCallbacks.onSupplementDelivered?.(uuid, outcome)
@@ -527,16 +553,14 @@ export function wrapNativeCore(core: NativeSessionCore, hostCallbacks: NativeHos
       core.enqueueControl(neutral)
     },
     clearQueuedInput(): number {
-      const dropped = core.drainQueued()
-      for (const neutral of dropped) forget(neutralIdOf(neutral))
-      return dropped.length
+      // Drain does NOT release the pairing: the core may still fire a terminal
+      // 'failed' for a withdrawn parked head, which needs the pairing.
+      return core.drainQueued().length
     },
     drainQueuedInput(): AgentUserMessage[] {
-      return core.drainQueued().map((neutral) => {
-        const host = hostFor(neutral)
-        forget(neutralIdOf(neutral))
-        return host
-      })
+      // Return the ORIGINAL host messages (lossless); keep the pairing so a
+      // subsequent terminal 'failed' for the drained parked head still maps back.
+      return core.drainQueued().map((neutral) => hostFor(neutral))
     },
     get queueDepth() { return core.queueDepth },
     get closed() { return core.closed },
@@ -566,14 +590,11 @@ export function wrapNativeCore(core: NativeSessionCore, hostCallbacks: NativeHos
     handle.interrupt = async (opts): Promise<ProviderInterruptReceipt | void> => {
       const receipt = await core.interrupt!(opts)
       if (!receipt || receipt.cancelledQueued === undefined) return receipt ?? undefined
-      // Map neutral cancelled uuids back to host uuids for the manager's
-      // withdrawal accounting (unknown ids are ignored by the host).
-      const cancelledQueued: string[] = []
-      for (const id of receipt.cancelledQueued) {
-        const uuid = hostByNeutralId.get(id)?.uuid
-        if (typeof uuid === 'string') cancelledQueued.push(uuid)
-      }
-      return { cancelledQueued }
+      // Identity is preserved (neutral id === host uuid), so the cancelled ids
+      // ARE host uuids — pass them through to the manager's withdrawal accounting
+      // (it ignores unknown ids) and release the withdrawn pairings (no leak).
+      for (const id of receipt.cancelledQueued) forget(id)
+      return { cancelledQueued: receipt.cancelledQueued }
     }
   }
   if (core.compactInPlace) handle.compactInPlace = (summary, opts) => core.compactInPlace!(summary, opts)
