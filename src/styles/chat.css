@@ -97,7 +97,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  /* Anchor for the /handoff wait pill (HandoffOverlay, absolutely centered). */
+  /* Anchor for the reset wait pill (ResetOverlay, absolutely centered). */
   position: relative;
 }
 /* One-shot settle when the recap window closes (useRecapSettle toggles the
@@ -234,8 +234,9 @@
 }
 /* /clear transition: blur the transcript as a view-only "clearing" affordance
    while the POST is in flight (the local /clear path drives `clearing` from
-   `clearingIds` state and swaps X→Y atomically on POST resolve — no veil).
-   The SDK-emitted `session-cleared` path (in-place wipe) also uses this. */
+   `clearingIds` state and swaps X→Y atomically on POST resolve). The centered
+   "Clearing…" pill is Chat's ResetOverlay, not this blur. The SDK-emitted
+   `session-cleared` path (in-place wipe) also uses this blur. */
 .chat-messages.chat-messages-clearing {
   animation: clear-blur-fade var(--motion-duration-slow) var(--motion-ease-exit) both;
 }
@@ -257,19 +258,21 @@
     animation: none;
   }
 }
-/* /handoff wait pill — centered over the blurred transcript while the
-   handoff POST runs (the summarize leg can take up to ten minutes; an
-   unmarked blur reads as a frozen panel). The veil is pointer-events: none
-   so the blurred transcript stays inert; the Cancel button inside re-enables
-   events for itself only (.handoff-veil-cancel). The composer lockout is the
-   panel-local input gate; the server also 409s sends during the window. The
-   elapsed counter ticks in JS (HandoffOverlay) and stays legible under
+/* Reset wait pill — centered over the blurred transcript while a reset POST
+   runs (/clear, /clear-permanent, /discard, /handoff). /handoff's summarize
+   leg can take up to ten minutes; the clear-family POSTs are much shorter but
+   the pill is their shared "reset in progress" affordance. The veil is
+   pointer-events: none so the blurred transcript stays inert; the Cancel
+   button inside (rendered only for /handoff, the sole cancellable flow)
+   re-enables events for itself only (.reset-veil-cancel). The composer lockout
+   is the panel-local input gate; the server also 409s sends during the window.
+   The elapsed counter ticks in JS (ResetOverlay) and stays legible under
    reduced motion, where the spinner is suppressed. Sibling of MessageList
    inside .chat-messages-area (anchored by its position:relative), so the
    pill itself stays sharp over the blurred transcript. Card recipe mirrors
    .working-bar (accent border mix + static glass plate) so the wait reads
    as part of the same status-card family. */
-.handoff-veil {
+.reset-veil {
   position: absolute;
   top: 50%;
   left: 50%;
@@ -287,12 +290,12 @@
   pointer-events: none;
   /* ABOVE .chat-bottom-stack (z-index: 2): the pill is centered and the stack
      reaches up to 45% of the panel, so they overlap on short panels. Below it
-     the MonitorBar / task-checklist cards would cover the only "Handing off…"
-     signal during the wait. */
+     the MonitorBar / task-checklist cards would cover the reset-in-progress
+     signal for every flow (/clear, /clear-permanent, /handoff). */
   z-index: 3;
 }
 /* Static glass plate. Owns fill + blur; never animates. */
-.handoff-veil::before {
+.reset-veil::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -304,22 +307,22 @@
   z-index: 0;
 }
 /* Keep status content above the glass plate. */
-.handoff-veil > * {
+.reset-veil > * {
   position: relative;
   z-index: 1;
 }
-.handoff-veil-label {
+.reset-veil-label {
   color: var(--accent-text);
   font-weight: 600;
   letter-spacing: 0.02em;
 }
-.handoff-veil-elapsed {
+.reset-veil-elapsed {
   font-variant-numeric: tabular-nums;
   min-width: 3ch;
 }
 /* The only interactive element inside the pointer-events:none veil — the
    blurred transcript behind it stays inert. */
-.handoff-veil-cancel {
+.reset-veil-cancel {
   pointer-events: auto;
   padding: 2px 10px;
   border: 1px solid var(--border);
@@ -329,15 +332,15 @@
   font: inherit;
   cursor: pointer;
 }
-.handoff-veil-cancel:hover:not(:disabled) {
+.reset-veil-cancel:hover:not(:disabled) {
   background: var(--btn-hover-bg);
   color: var(--fg);
 }
-.handoff-veil-cancel:disabled {
+.reset-veil-cancel:disabled {
   opacity: 0.5;
   cursor: default;
 }
-.handoff-veil-spinner {
+.reset-veil-spinner {
   width: 12px;
   height: 12px;
   border-radius: var(--radius-circle);
@@ -346,7 +349,7 @@
   animation: spin 0.9s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .handoff-veil-spinner {
+  .reset-veil-spinner {
     animation: none;
   }
 }

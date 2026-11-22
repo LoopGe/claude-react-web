@@ -83,7 +83,7 @@
 :root[data-transparency="opaque"] .app-empty-state,
 :root[data-transparency="opaque"] .app-loading-card,
 :root[data-transparency="opaque"] .composer-card,
-:root[data-transparency="opaque"] .handoff-veil::before,
+:root[data-transparency="opaque"] .reset-veil::before,
 :root[data-transparency="opaque"] .working-bar::before,
 :root[data-transparency="opaque"] .lightbox-toolbar,
 :root[data-transparency="opaque"] .lightbox-nav {

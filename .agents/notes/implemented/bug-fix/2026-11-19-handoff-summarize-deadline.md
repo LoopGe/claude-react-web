@@ -115,5 +115,10 @@ cancel abort (409 'handoff cancelled', X survives, sendable again), the 504
 deadline callback, and the no-op cancel outside the window;
 `sessions-handoff.test.ts` pins the cancel route's response shape and 404;
 `reset-completion.test.ts` pins `isDeliberateHandoffCancel`'s error-identity
-match; `HandoffOverlay.test.tsx` pins the Cancel button's single-fire +
-disable-on-success and re-enable-on-failure behavior.
+match; `ResetOverlay.test.tsx` pins the Cancel button's single-fire +
+disable-on-success and re-enable-on-failure behavior. The same overlay is now
+shared by every reset wait (`/clear`, `/clear-permanent`, `/discard`, `/handoff`);
+Cancel stays /handoff-only because the clear-family POSTs have no cancellable
+leg (the clear/spawn tail is not cancellable, and a permanent clear's deletion
+cannot be safely aborted), while the clear-family flows show the same pill with
+just spinner + label + elapsed.

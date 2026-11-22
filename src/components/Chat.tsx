@@ -62,7 +62,7 @@ import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useElicitationChannel } from '../hooks/useElicitationChannel'
 import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
 import { Composer } from './Composer'
-import { HandoffOverlay } from './HandoffOverlay'
+import { ResetOverlay } from './ResetOverlay'
 import { ContextOrb } from './ContextOrb'
 import { type ScrollNavigator } from './MessageList'
 import { SessionMessageList } from './SessionMessageList'
@@ -265,10 +265,12 @@ interface Props {
    *  /clear) so a missing pass-through fails loudly rather than swallowing
    *  `/handoff`. */
   onHandoffSession: (panelSessionId: string) => void
-  /** True while this panel's /handoff POST is in flight. Renders the
-   *  "Handing off…" pill over the blurred transcript AND locks the composer —
-   *  the server also 409s sends during the summarize window, so input cannot
-   *  race the X→Y swap from this or any other tab. */
+  /** True while this panel's /handoff POST is in flight. Selects the pill's
+   *  "Handing off…" label and its Cancel surface (the only flow with a
+   *  cancellable leg). The composer lock itself is `effectiveClearing`
+   *  (OR'd with this flag so a /discard settling mid-/handoff cannot release
+   *  it), and the server 409s sends during the summarize window, so input
+   *  cannot race the X→Y swap from this or any other tab. */
   handoffing?: boolean
   /** Cancel this panel's in-flight /handoff summarisation — the veil's Cancel
    *  button. Resolves true when the server aborted the summarize window;
@@ -1171,10 +1173,17 @@ export const Chat = memo(function Chat({
     elicitations.pending.length > 0 ||
     dialogs.pending.length > 0
   // One gate for the composer controls and file intake: a terminated session,
-  // a pending interactive request, an in-flight handoff, or a degraded
-  // transcript (spec §10 read-only fence) blocks new turns. A capability-
-  // blocked rebuild does NOT disable send — capable tabs keep working.
-  const composerDisabled = session.terminated || interactivePending || !!handoffing || paging.recovery?.kind === 'degraded'
+  // a pending interactive request, an in-flight reset (/clear, /clear-permanent,
+  // /discard, /handoff), or a degraded transcript (spec §10 read-only fence)
+  // blocks new turns. A capability-blocked rebuild does NOT disable send —
+  // capable tabs keep working. `effectiveClearing || handoffing` covers every
+  // reset flow; OR-ing `handoffing` matters because a /discard that settles
+  // mid-/handoff clears App's `clearingIds` (and thus `clearing`) while the
+  // summarize POST is still in flight. The server's clearing guard 409s sends
+  // during the window anyway, so the composer must not advertise a turn it
+  // cannot accept (the old `!!handoffing`-only gate left the composer live
+  // under the "Clearing…" pill).
+  const composerDisabled = session.terminated || interactivePending || effectiveClearing || !!handoffing || paging.recovery?.kind === 'degraded'
   // Drop persisted draft entries once a question resolves so questionDrafts
   // doesn't accumulate stale ids over a long session. The corresponding
   // minimize state is derived on read (see `minimizedQ` above), so we no
@@ -1489,11 +1498,11 @@ export const Chat = memo(function Chat({
     // App owns the POST + panel id-swap. The ordinary clear detaches a
     // resumable pre-clear conversation; the permanent variant deletes its
     // transcript. Both return a fresh session Y under a new id and swap this
-    // panel from X to Y.
-    // We deliberately do NOT set `clearing` here — the blur-fade was tied to
-    // the old same-id wipe, and a stuck "Clearing…" veil on a failed POST
-    // (onCleared never fires for a local /clear) isn't worth the transition.
-    // `clearing` remains wired for the SDK's own in-band `cleared` event.
+    // panel from X to Y. The wait pill is App-driven: resetSession sets
+    // `clearingIds` for every local /clear, which reaches Chat as the
+    // `clearing` prop → `effectiveClearing` → ResetOverlay's "Clearing…".
+    // This callback does not set Chat's local `clearing` state; that state
+    // remains the reset half of a future SDK-emitted `cleared` signal.
     clearError()
     onClearSession(sessionId, opts)
   }, [clearError, onClearSession])
@@ -2291,13 +2300,34 @@ export const Chat = memo(function Chat({
           emptyStateExtra={emptyStateExtra}
         />
         </TurnChangesProvider>
-        {/* /handoff wait pill — centered over the blurred transcript, with the
-            Cancel button as its only interactive surface. The composer is
-            locked (below); the veil's pointer-events:none keeps the transcript
-            inert while the button re-enables events for itself. Conditional
+        {/* Reset wait pill — centered over the blurred transcript while any
+            reset POST is in flight (/clear, /clear-permanent, /discard, /handoff).
+            Gated on `effectiveClearing || handoffing`: App's `clearingIds` is
+            released by whichever reset settles first (a /discard that settles
+            mid-/handoff clears it), while `handoffing` keeps its own
+            counter-gated lifecycle — OR-ing keeps the summarize wait's signal
+            alive across that race.
+            The pill is a small centered card with `pointer-events: none`, so
+            it does NOT block the transcript beneath: context-menu actions
+            (discard / rewind) stay reachable during a wait. The composer lock
+            (above, `composerDisabled`) is the panel-local input gate, and the
+            server 409s sends during the clearing window regardless.
+            The Cancel button is rendered ONLY for /handoff — the sole flow
+            with a cancellable leg (the summarize window); a /clear has none,
+            so a Cancel there could only ever report failure. For /discard the
+            ConfirmDialog (`busy` → "Working...") paints above the pill
+            (`.perm-overlay` z-index 7 vs `.reset-veil` z-index 3), so the
+            dialog is the visible progress UI there and the pill is occluded —
+            it still mounts for a uniform reset-in-progress state. Conditional
             MOUNT (not an `active` prop) — remounting resets the elapsed
             counter and the button's disabled state. */}
-        {handoffing ? <HandoffOverlay onCancel={() => onCancelHandoff(session.id)} /> : null}
+        {(effectiveClearing || !!handoffing) ? (
+          <ResetOverlay
+            label={handoffing ? 'Handing off…' : 'Clearing…'}
+            onCancel={handoffing ? () => onCancelHandoff(session.id) : undefined}
+            cancelLabel={handoffing ? 'Cancel handoff' : undefined}
+          />
+        ) : null}
         </div>
         {discardConfirm && (
           <ConfirmDialog
