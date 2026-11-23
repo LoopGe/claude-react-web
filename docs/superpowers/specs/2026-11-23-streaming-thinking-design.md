@@ -185,6 +185,10 @@ mirror.thinkingDraftKey: string | null       // 稳定字符串投影（MessageL
 - done 翻转可能先于最后一次 flush ≤80ms：收拢启动时预览文本缺尾，flush 落地即
   补齐；定稿帧带全文，交接无损——节奏固有。
 
+**浏览器实测（2026-11-23）**：三场景通过——普通 thinking 回合（全文生长→动画
+收拢→定稿无跳变）、工具调用回合、thinking 中打断（折叠半截行定格、可展开）；
+无 thinking 回合零回归。上述接受边无需再议。
+
 ### 5.6 定稿交接（supersede）
 
 thinking 块的定稿 assistant 帧（主线程、content 含 thinking 块）到达
