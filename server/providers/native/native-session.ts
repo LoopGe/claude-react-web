@@ -547,7 +547,7 @@ export class NativeSession implements NativeSessionCore {
         // The runner builds the neutral v3 descriptor (identity in `data`, time
         // paired with data.timestamp); the log assigns seq. Return the neutral
         // event with that seq — for a v3 log this is exactly the stored canonical
-        // form (the legacy read view is reconstructed by the log, not here).
+        // form.
         const appended = await this.log.appendDurable(input)
         return { ...input, seq: appended.seq } as SessionEvent<'subagent/descriptor'>
       },

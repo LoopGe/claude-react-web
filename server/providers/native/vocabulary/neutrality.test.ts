@@ -115,8 +115,8 @@ function isWireAdapter(file: string): boolean {
  *  legacy coupling a core consumer would reintroduce by reading that view, so
  *  they are banned as named bindings (value AND type-only) in core production
  *  files OUTSIDE the session-log allowlist below. The writer's own v1/v2
- *  write-compat, the eager migration, the fork seed builder and the neutral-read
- *  fallback are the residual legitimate legacy users. */
+ *  write-compat, the eager migration and the neutral-read fallback are the
+ *  residual legitimate legacy users. */
 const LEGACY_VIEW_NAMES = new Set([
   'NativeLogEvent',
   'NativeEventInput',
@@ -124,14 +124,13 @@ const LEGACY_VIEW_NAMES = new Set([
 ])
 
 /** Core production files allowed to import the legacy read-view vocabulary:
- *  the session-log writer/format/migration/fork machinery plus the neutral-read
+ *  the session-log writer/format/migration machinery plus the neutral-read
  *  helper (whose v1/v2 fallback parameter is typed `NativeLogEvent`). Every
  *  other core file reads the canonical neutral events (`neutralEventsOf`). */
 const LEGACY_VIEW_ALLOWLIST = new Set([
   'server/providers/native/session-log/format.ts',
   'server/providers/native/session-log/log.ts',
   'server/providers/native/session-log/migration.ts',
-  'server/providers/native/session-log/fork.ts',
   'server/providers/native/session-log/neutral-read.ts',
 ])
 
@@ -144,8 +143,8 @@ function isSessionLog(file: string): boolean {
 
 /** Neutral fork-seed receivers whose `.events` field is the NEUTRAL seed list
  *  (NativeForkSeed.events), NOT the log's dropped legacy read view. The only
- *  core `.events` reads outside session-log are these seed reads. */
-const SEED_EVENTS_RECEIVERS = new Set(['forkSeed', 'seed'])
+ *  core `.events` read outside session-log is `forkSeed.events`. */
+const SEED_EVENTS_RECEIVERS = new Set(['forkSeed'])
 
 interface ImportRef {
   specifier: string
