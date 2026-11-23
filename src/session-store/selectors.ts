@@ -1,7 +1,9 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react'
 import { sessionStoreRegistry } from './registry'
 import type { SessionSnapshot } from './types'
+import type { TaskRecordUi } from '../types'
 import { countTaskActivity, type ActiveWorktree } from './normalize'
+import { taskResultHasResultForRecord, taskResultVersionForRecord } from '../../shared/tasks.js'
 
 // ── Module-level (referentially stable) selectors ──────────────────
 //
@@ -156,6 +158,56 @@ export function useSessionTaskCounts(sessionId: string): { all: number; indicato
   }, [store])
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
+
+/** Reactive subscription to the content generation of the result each task
+ *  record HOLDS — keyed by taskId. Inline results use the cached
+ *  `taskResultVersionForRecord`; paged projections (the wire omits the body
+ *  for large outputs) carry the same generation in `resultRef.resultVersion`
+ *  (projectTasksSnapshot computes it with the identical function). The
+ *  transcript row model drops an unroutable `<task-notification>` completion
+ *  (result-bearing, no tool-use-id) exactly when the record under its
+ *  `<task-id>` holds THIS payload — generation equal to the injection's own
+ *  result — so a record holding a DIFFERENT report never hides an unfolded
+ *  one. Reference-stable when the versions are unchanged, so a task_progress
+ *  refresh (new array, same results) does not re-render the row-model
+ *  consumer; a reference-equal tasks array short-circuits the derivation
+ *  entirely (O(1) per emit, the useSessionActiveWorktree discipline).
+ *  Without a session id the subscription is inert and the map is a stable
+ *  empty one (static transcripts keep every card). */
+export function useTaskResultVersions(sessionId: string | undefined): ReadonlyMap<string, number> {
+  const store = sessionId ? sessionStoreRegistry.getOrCreate(sessionId) : null
+  const prevRef = useRef<{ tasks: readonly TaskRecordUi[] | null; versions: ReadonlyMap<string, number> }>({
+    tasks: null,
+    versions: EMPTY_TASK_RESULT_VERSIONS,
+  })
+  const subscribe = useCallback(
+    (listener: () => void) => (store ? store.subscribe(listener) : () => {}),
+    [store],
+  )
+  const getSnapshot = useCallback(() => {
+    if (!store) return EMPTY_TASK_RESULT_VERSIONS
+    const tasks = store.getSnapshot().tasks
+    if (prevRef.current.tasks === tasks) return prevRef.current.versions
+    const next = new Map<string, number>()
+    for (const task of tasks) {
+      // Same has-output rule as the sidechain index / SubagentTranscriptBody:
+      // the projected ref's flag wins; the inline body uses the cached
+      // non-whitespace check (no per-emit trim allocation on large results).
+      const holds = task.resultRef?.hasResult ?? taskResultHasResultForRecord(task)
+      if (!holds) continue
+      const version = task.resultRef?.resultVersion ?? taskResultVersionForRecord(task)
+      if (version !== undefined) next.set(task.taskId, version)
+    }
+    const prev = prevRef.current.versions
+    const same = prev.size === next.size && [...next].every(([id, v]) => prev.get(id) === v)
+    const versions = same ? prev : next
+    prevRef.current = { tasks, versions }
+    return versions
+  }, [store])
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+const EMPTY_TASK_RESULT_VERSIONS: ReadonlyMap<string, number> = new Map()
 
 /** Reactive subscription to the session's current "isolated in a
  *  worktree" state, folded from EnterWorktree/ExitWorktree in the

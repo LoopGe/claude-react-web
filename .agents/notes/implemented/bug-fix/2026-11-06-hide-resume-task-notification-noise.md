@@ -50,6 +50,42 @@ reaches the store and the disk JSONL in all cases: the reducer's
 `activeSubagents` merge and `backfillSubagentCompletions` read it regardless
 of `hiddenByDefault`.
 
+### Update 2026-11-23: unroutable completions fold into existing records
+
+The third bullet's "nothing to key a task record on" was too strong: the
+injection's `<task-id>` IS the task map's primary key (the subagent's
+agentId). A result-bearing no-`<tool-use-id>` completion — the harness's
+re-notification when a previously-launched background agent stops again
+(e.g. after a SendMessage resume) — now folds into an EXISTING record under
+that key, and its transcript row is dropped once the record holds the
+payload. The contract is deliberately conservative:
+
+- server: `applyTaskNotificationInjection` parses the shape with
+  `parseUnroutableCompletion` (shared/user-frames.ts — non-empty `<result>`,
+  no `<tool-use-id>`, present `<task-id>`) and merges status/result/endedAt
+  into `session.tasks.get(taskId)` ONLY when a record exists. No record →
+  no-op; the neutral card stays. Monitor `<event>`-only and status-only
+  notices never settle a record (the original rejection's concern).
+- client: the hide decision is state-dependent, so it lives in the row
+  model, NOT in `shouldHideByDefault` (which stays content-only for the
+  server search index). `buildTranscriptRows` takes `taskResultVersions`
+  (fed by `useTaskResultVersions` from `mirror.tasks`) — each result-holding
+  record's content generation, inline (`taskResultVersionForRecord`) or
+  paged (`resultRef.resultVersion`, computed by `projectTasksSnapshot` with
+  the same function) — and drops the injection row only when the generation
+  under its task-id equals `taskResultVersionForText(injection.result)`.
+  The identity match, not bare task-id membership, is what makes the
+  guarantee hold: a record carrying a DIFFERENT report (an earlier stop's
+  result, a fuller output_file body, a pre-change session that never folded
+  this injection) keeps the card — fail-visible, the report is never lost.
+  Live replay and disk replay agree because both read the same tasks
+  snapshot (sidecar-seeded after restart).
+
+No disk backfill: old sessions heal only if the record already carries a
+result from another path. Known gap, same class as before: in-session search
+still indexes the injection (its `hiddenByDefault` stays false) and can
+point at a row the row model drops.
+
 ## Alternatives considered
 
 **Hide every `<task-notification>` injection, as the original spec §3.3
@@ -66,11 +102,15 @@ bespoke card for it would be a new surface for content the user does not act
 on. It remains in the model's context on disk.
 
 **Fold task-id-only notices into `session.tasks` so their status survives in
-TasksPanel.** Rejected for now: `<task-id>` equals the subagent's agentId and
-is the task map's primary key, but monitor events also carry `<task-id>` and
-must not become task records. Distinguishing them there would duplicate the
-payload classification this change already needs for rendering, and the
-stopped status is recoverable from the persisted task sidecar.
+TasksPanel.** Rejected at the time: `<task-id>` equals the subagent's agentId
+and is the task map's primary key, but monitor events also carry `<task-id>`
+and must not become task records. Distinguishing them there would duplicate
+the payload classification this change already needs for rendering, and the
+stopped status is recoverable from the persisted task sidecar. The
+2026-11-23 update adopts the narrowed form for RESULT-bearing completions
+only (existing records, never created); the monitor-event concern is handled
+by gating the fold on a non-empty `<result>`, which monitor notifications
+do not carry.
 
 **Preserve `origin` through the disk normalizer so the card says
 `task-notification` instead of `system`.** Rejected as the fix: it only

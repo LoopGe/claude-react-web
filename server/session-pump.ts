@@ -32,7 +32,7 @@ import { broadcastTasksSnapshot } from './session-broadcaster.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 import { isEmptyResultFrame, localCommandOf } from '../shared/results.js'
 import { summarizeTurnResult } from '../shared/turn-summary.js'
-import { classifyUserFrameOrigin, isTaskNotificationUserMessage, parseTaskNotificationInjection, userMessageText } from '../shared/user-frames.js'
+import { classifyUserFrameOrigin, isTaskNotificationUserMessage, parseTaskNotificationInjection, parseUnroutableCompletion, userMessageText } from '../shared/user-frames.js'
 import { isLocalCommandLogUserMessage } from '../shared/message-visibility.js'
 import { taskToolUseId } from '../shared/task-list.js'
 
@@ -439,10 +439,37 @@ export function pruneAndBroadcastTasks(session: Session): void {
  *
  *  `result` is the inline `<result>` body. The `system/task_notification`
  *  path is hydrated separately by the pump from a foreground tool_result or
- *  the completion's output_file before applyTaskEvent folds it. */
-export function applyTaskNotificationInjection(session: Session, msg: SDKMessage): void {
-  const inj = parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])
-  if (!inj) return
+ *  the completion's output_file before applyTaskEvent folds it.
+ *
+ *  UNROUTABLE COMPLETIONS: an injection with a non-empty `<result>` but no
+ *  `<tool-use-id>` (a background agent stopping again after a resume) is
+ *  merged into the EXISTING record keyed by its `<task-id>` — never created.
+ *  With no record there is no home for the payload, so the transcript keeps
+ *  its neutral card (the client's row filter hides the row only when the
+ *  record holds THIS result, by content generation). Monitor `<event>`-only
+ *  and status-only notices never settle a record.
+ *
+ *  Returns whether a record was written, so the caller persists the task
+ *  sidecar only on an actual fold. */
+export function applyTaskNotificationInjection(session: Session, msg: SDKMessage): boolean {
+  const frame = msg as Parameters<typeof parseTaskNotificationInjection>[0]
+  const inj = parseTaskNotificationInjection(frame)
+  if (!inj) {
+    const completion = parseUnroutableCompletion(frame)
+    if (!completion) return false
+    const existing = session.tasks.get(completion.taskId)
+    if (!existing) return false
+    const now = Date.now()
+    session.tasks.set(completion.taskId, {
+      ...existing,
+      status: completion.status,
+      result: completion.result,
+      endedAt: now,
+      updatedAt: now,
+    })
+    pruneAndBroadcastTasks(session)
+    return true
+  }
   const now = Date.now()
   // Prefer the key of a record this tool_use_id already owns (created by
   // task_started under its task_id). Fall back to the injection's own key.
@@ -479,6 +506,7 @@ export function applyTaskNotificationInjection(session: Session, msg: SDKMessage
     updatedAt: now,
   })
   pruneAndBroadcastTasks(session)
+  return true
 }
 
 /** Fold a `system/background_tasks_changed` frame into `session.tasks`.
@@ -1230,17 +1258,14 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           stampUnaccountedTurn(session, deps)
         }
         // Fold the injection into session.tasks (the task map's XML path —
-        // applyTaskEvent only handles the system-frame shape). Parse once;
-        // null when there is no <tool-use-id>, in which case there is nothing
-        // to key a record on and the frame is left to the transcript filter's
-        // unparsed-residue fallback (Task 6).
-        if (isNotif) {
-          const inj = parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])
-          if (inj) {
-            applyTaskNotificationInjection(session, msg)
-            try { deps.recordTasksSnapshot?.(session.id) }
-            catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
-          }
+        // applyTaskEvent only handles the system-frame shape). The function
+        // itself decides foldability: a <tool-use-id> keys/upserts a record,
+        // a result-bearing no-id completion merges into an EXISTING task-id
+        // record, and anything else (monitor events, status-only notices,
+        // no record) is a no-op. Persist the sidecar only on an actual fold.
+        if (isNotif && applyTaskNotificationInjection(session, msg)) {
+          try { deps.recordTasksSnapshot?.(session.id) }
+          catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
         }
         log.debug(
           `[session ${session.id}] msg #${msgCount + 1} received d` +

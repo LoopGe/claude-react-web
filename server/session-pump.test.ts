@@ -2088,6 +2088,114 @@ describe('applyTaskNotificationInjection', () => {
     applyTaskNotificationInjection(session, xml('plain text'))
     expect(session.tasks.size).toBe(0)
   })
+
+  // Unroutable completions: a background agent that stops again (e.g. after a
+  // SendMessage resume) notifies with only <task-id> — no fresh launch
+  // tool_use to key on. Conservative contract: merge into an EXISTING record
+  // keyed by that task-id; never create one.
+  it('folds a result-bearing no-tool-use-id completion into the existing task-id record', () => {
+    const { session, snapshots } = makeTaskSession()
+    applyTaskEvent(session, {
+      type: 'system', subtype: 'task_started', task_id: 'a1',
+      tool_use_id: 'tu1', description: 'bg agent', task_type: 'local_bash',
+    } as unknown as SDKMessage)
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>a1</task-id><status>completed</status>' +
+      '<summary>Agent "x" finished</summary><result>THE-REPORT</result></task-notification>'))
+    expect(session.tasks.size).toBe(1)
+    const rec = session.tasks.get('a1')!
+    expect(rec.status).toBe('completed')
+    expect(rec.result).toBe('THE-REPORT')
+    // Upsert, not replace: the launch metadata survives the fold.
+    expect(rec.toolUseId).toBe('tu1')
+    expect(rec.description).toBe('bg agent')
+    expect(rec.taskType).toBe('shell')
+    expect(rec.endedAt).toBeTypeOf('number')
+    expect(snapshots.at(-1)).toBeTruthy()
+  })
+
+  it('does NOT create a record for a no-tool-use-id completion when none exists', () => {
+    const { session } = makeTaskSession()
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>a1</task-id><status>completed</status>' +
+      '<result>THE-REPORT</result></task-notification>'))
+    expect(session.tasks.size).toBe(0)
+  })
+
+  it('leaves an existing record untouched for a monitor event-only notification', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'm1', tool_use_id: 'tu1', task_type: 'local_bash' }))
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>m1</task-id><summary>Monitor event: "build"</summary>' +
+      '<event>exe produced</event></task-notification>'))
+    const rec = session.tasks.get('m1')!
+    expect(rec.status).toBe('running')
+    expect(rec.result).toBeUndefined()
+  })
+
+  it('leaves an existing record untouched for a status-only recovery notice', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'a1', tool_use_id: 'tu1', task_type: 'local_bash' }))
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>a1</task-id><status>stopped</status>' +
+      '<summary>Background agent "x" didn\'t finish before the previous session ended</summary>' +
+      '</task-notification>'))
+    const rec = session.tasks.get('a1')!
+    expect(rec.status).toBe('running')
+    expect(rec.result).toBeUndefined()
+  })
+
+  it('lets a later no-tool-use-id completion overwrite the result (resume re-notification)', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'a1', tool_use_id: 'tu1', task_type: 'local_bash' }))
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>a1</task-id><status>completed</status><result>FIRST</result></task-notification>'))
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>a1</task-id><status>completed</status><result>SECOND</result></task-notification>'))
+    expect(session.tasks.get('a1')!.result).toBe('SECOND')
+  })
+
+  it('does not fold a whitespace-only result body', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'a1', tool_use_id: 'tu1', task_type: 'local_bash' }))
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>a1</task-id><status>completed</status>' +
+      '<result>\n  </result></task-notification>'))
+    expect(session.tasks.get('a1')!.result).toBeUndefined()
+  })
+
+  // Pump-level: the live loop must REACH the unroutable fold. The call site
+  // once gated the call behind parseTaskNotificationInjection (non-null only
+  // with a <tool-use-id>), which made the fold dead code while every direct
+  // unit test stayed green.
+  it('pump folds a no-tool-use-id completion into an existing record and persists the sidecar', async () => {
+    const notif = userMsg(
+      '<task-notification><task-id>a1</task-id><status>completed</status>' +
+      '<summary>Agent "x" finished</summary><result>REPORT</result></task-notification>')
+    const { session, taskSnapshots } = makePumpSession([notif])
+    session.tasks.set('a1', { taskId: 'a1', toolUseId: 'tu1', description: 'bg agent', status: 'running', updatedAt: 0 })
+    const recordTasksSnapshot = vi.fn()
+    await pump(session, makePumpDeps({ recordTasksSnapshot }))
+    expect(session.tasks.get('a1')!.result).toBe('REPORT')
+    expect(session.tasks.get('a1')!.status).toBe('completed')
+    expect(recordTasksSnapshot).toHaveBeenCalledWith('s-pump')
+    expect(taskSnapshots.length).toBeGreaterThan(0)
+  })
+
+  it('pump leaves the sidecar untouched for a monitor event-only notification', async () => {
+    const notif = userMsg(
+      '<task-notification><task-id>m1</task-id><summary>Monitor event: "build"</summary>' +
+      '<event>exe produced</event></task-notification>')
+    const { session } = makePumpSession([notif])
+    // Terminal seed so the pump's process-exit settle (which stops running
+    // records and persists) stays out of the way — this pins the
+    // notification's OWN effect: no fold, no sidecar write.
+    session.tasks.set('m1', { taskId: 'm1', description: 'watch', status: 'completed', updatedAt: 0 })
+    const recordTasksSnapshot = vi.fn()
+    await pump(session, makePumpDeps({ recordTasksSnapshot }))
+    expect(session.tasks.get('m1')!.result).toBeUndefined()
+    expect(recordTasksSnapshot).not.toHaveBeenCalled()
+  })
 })
 
 // ---------------------------------------------------------------------------

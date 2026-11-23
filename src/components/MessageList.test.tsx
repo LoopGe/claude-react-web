@@ -6221,3 +6221,57 @@ describe('in-place draft rows (store-backed)', () => {
     expect(container.textContent?.split('partial answer').length - 1).toBe(1)
   })
 })
+
+describe('unroutable completion rows (store-backed)', () => {
+  // A <task-notification> with a <result> but no <tool-use-id> keeps its
+  // neutral card until a task record keyed by its <task-id> holds a result
+  // (the server folded it); then the TasksPanel is its home and the row goes.
+  const SID = 'unroutable-completion'
+
+  afterEach(async () => {
+    await sessionStoreRegistry.clear()
+  })
+
+  const injection = (taskId: string) =>
+    ({
+      type: 'user',
+      uuid: 'n1',
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: `<task-notification><task-id>${taskId}</task-id><status>completed</status><summary>Agent "x" finished</summary><result>the report</result></task-notification>`,
+      },
+    }) as unknown as SdkMessage
+
+  const list = () => (
+    <MessageList items={getSessionStore(SID).getSnapshot().items} sessionId={SID} />
+  )
+
+  it('keeps the raw-XML card until a task record holds its result, then drops it', () => {
+    getSessionStore(SID).dispatch({ type: 'MESSAGE', message: injection('a1') })
+    const { container, rerender } = render(list())
+    expect(container.querySelector('[data-message-id="n1"]')).toBeTruthy()
+
+    act(() => {
+      getSessionStore(SID).dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [{ taskId: 'a1', description: 'bg agent', status: 'completed', result: 'the report', updatedAt: 1 }],
+      })
+      rerender(list())
+    })
+    expect(container.querySelector('[data-message-id="n1"]')).toBeNull()
+  })
+
+  it('keeps the card when the record holds no result', () => {
+    getSessionStore(SID).dispatch({ type: 'MESSAGE', message: injection('a1') })
+    const { container, rerender } = render(list())
+    act(() => {
+      getSessionStore(SID).dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [{ taskId: 'a1', description: 'bg agent', status: 'completed', updatedAt: 1 }],
+      })
+      rerender(list())
+    })
+    expect(container.querySelector('[data-message-id="n1"]')).toBeTruthy()
+  })
+})

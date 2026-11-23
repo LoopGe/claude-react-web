@@ -6,6 +6,7 @@ import {
   imagePayloadOfMessage,
   isHumanUserMessage,
   parseTaskNotificationInjection,
+  parseUnroutableCompletion,
 } from './user-frames'
 
 const msg = (text: string) =>
@@ -110,6 +111,64 @@ describe('classifyTaskNotificationInjection', () => {
 
   it('returns null for a non-notification frame', () => {
     expect(classifyTaskNotificationInjection(msg('plain user text'))).toBeNull()
+  })
+})
+
+describe('parseUnroutableCompletion', () => {
+  it('parses a result-bearing injection with no tool-use-id', () => {
+    expect(parseUnroutableCompletion(msg(
+      '<task-notification><task-id>a1</task-id><status>completed</status>' +
+      '<summary>Agent "x" finished</summary><result>the report</result></task-notification>'))).toEqual({
+      taskId: 'a1',
+      status: 'completed',
+      result: 'the report',
+    })
+  })
+
+  it('returns null for a foldable injection (the tool-use-id parser owns it)', () => {
+    expect(parseUnroutableCompletion(msg(
+      '<task-notification><task-id>t1</task-id><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><result>R</result></task-notification>'))).toBeNull()
+  })
+
+  it('returns null when task-id is absent', () => {
+    expect(parseUnroutableCompletion(msg(
+      '<task-notification><status>completed</status><result>R</result></task-notification>'))).toBeNull()
+  })
+
+  it('returns null for a monitor event-only notification', () => {
+    expect(parseUnroutableCompletion(msg(
+      '<task-notification><task-id>m1</task-id><summary>Monitor event: "build"</summary>' +
+      '<event>exe produced</event></task-notification>'))).toBeNull()
+  })
+
+  it('returns null for a status-only recovery notice', () => {
+    expect(parseUnroutableCompletion(msg(
+      '<task-notification><task-id>a1</task-id><status>stopped</status>' +
+      '<summary>Background agent "x" didn\'t finish before the previous session ended</summary>' +
+      '</task-notification>'))).toBeNull()
+  })
+
+  it('returns null for a whitespace-only result body', () => {
+    expect(parseUnroutableCompletion(msg(
+      '<task-notification><task-id>a1</task-id><status>completed</status>' +
+      '<result>\n  </result></task-notification>'))).toBeNull()
+  })
+
+  it('normalises an unrecognised status to failed', () => {
+    expect(parseUnroutableCompletion(msg(
+      '<task-notification><task-id>a1</task-id><status>weird</status>' +
+      '<result>R</result></task-notification>'))?.status).toBe('failed')
+  })
+
+  it('takes the first non-empty repeated result element', () => {
+    expect(parseUnroutableCompletion(msg(
+      '<task-notification><task-id>a1</task-id><status>completed</status>' +
+      '<result></result><result>second</result></task-notification>'))?.result).toBe('second')
+  })
+
+  it('returns null for a non-notification frame', () => {
+    expect(parseUnroutableCompletion(msg('plain user text'))).toBeNull()
   })
 })
 

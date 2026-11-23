@@ -68,9 +68,14 @@ export function shouldHideByDefault(msg: VisibilityShape): boolean {
   //     session ended"), injected once per abandoned task per restart. There
   //     is nothing in it for the user and it renders as raw XML.
   //   • Not foldable but carrying a `<result>` or a monitor `<event>` →
-  //     visible: it is the only place that payload can surface (nothing to
-  //     key a task record on, and monitor events have no other render path),
-  //     so it keeps MessageView's neutral card.
+  //     visible HERE (this gate is content-only, shared with the server
+  //     search index). A result-bearing completion gets a second,
+  //     state-dependent gate in the client's row model: the server folds it
+  //     into an EXISTING task record keyed by `<task-id>` (never creates
+  //     one), and `buildTranscriptRows` drops the row only when that record
+  //     holds THIS payload (`taskResultVersions` content-generation match).
+  //     With no record, a different result, or a monitor `<event>` (no other
+  //     render path), the neutral card stays.
   //
   // The frame MUST still reach the store and the disk JSONL in every case:
   // the reducer's activeSubagents merge and `backfillSubagentCompletions`

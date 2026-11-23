@@ -53,6 +53,8 @@ import type { DraftState } from '../../session-store/draft-state'
 import { getBlocks, userMessageHasToolResult } from '../../session-store/normalize'
 import { QUESTION_TOOL_NAME } from '../../utils/question-answers'
 import { MARKER_TOOL_NAMES, PLAN_TOOL_NAMES } from '../../constants/toolNames'
+import { parseUnroutableCompletion } from '../../../shared/user-frames'
+import { taskResultVersionForText } from '../../../shared/tasks'
 import { willRenderEmpty } from './rendering'
 
 /**
@@ -167,6 +169,18 @@ export interface BuildTranscriptRowsInput {
    *  (the `toolGroupCards` UI pref). False renders each tool row individually
    *  with no fold chrome. Defaults to true. */
   toolGroupCards?: boolean
+  /** Content generation of the result each `session.tasks` record holds,
+   *  keyed by taskId (inline or paged via resultRef — same generation
+   *  function on both sides). An unroutable completion — a
+   *  `<task-notification>` with a `<result>` but no `<tool-use-id>` — keeps
+   *  its neutral card UNLESS the record under its `<task-id>` holds THIS
+   *  payload (generation equal to the injection's result): the report has a
+   *  home in the TasksPanel, so the raw-XML row is dropped. A record holding
+   *  a DIFFERENT result, or none, keeps the card — fail-visible, never
+   *  silently drop a report. Absent/empty (overlays, static transcripts)
+   *  keeps every such card visible. Monitor `<event>`-only notifications are
+   *  not completions and are never dropped here. */
+  taskResultVersions?: ReadonlyMap<string, number>
 }
 
 export interface TranscriptRowsResult {
@@ -181,13 +195,46 @@ export interface TranscriptRowsResult {
   nextItemTypeMap: Map<string, string>
 }
 
+/** Parse + content-generation of an unroutable completion, memoized per
+ *  frame object. `buildTranscriptRows` re-runs on every transcript append;
+ *  without the memo a folded large report would be re-hashed on each
+ *  rebuild. Keyed by the msg object (stable across appends; a replaced
+ *  frame re-parses). Observationally pure — same frame, same answer — and
+ *  weak, so it retains nothing. */
+const completionIdentityCache = new WeakMap<object, { taskId: string; version: number } | null>()
+
+function unroutableCompletionIdentity(msg: SdkMessage): { taskId: string; version: number } | null {
+  const cached = completionIdentityCache.get(msg)
+  if (cached !== undefined) return cached
+  const completion = parseUnroutableCompletion(msg as Parameters<typeof parseUnroutableCompletion>[0])
+  const identity = completion
+    ? { taskId: completion.taskId, version: taskResultVersionForText(completion.result) }
+    : null
+  completionIdentityCache.set(msg, identity)
+  return identity
+}
+
 function pushRow(
   out: TranscriptRow[],
   item: TranscriptItem,
   itemIndex: number,
   isResultConsumed: (id: string) => boolean,
+  taskResultVersions?: ReadonlyMap<string, number>,
 ): void {
   if (item.hiddenByDefault) return
+  // An unroutable completion whose payload already lives in a task record
+  // (the server folded it into session.tasks) has no transcript row — the
+  // TasksPanel is its render surface. The generation match ensures the
+  // record holds THIS report, not an older/different one. State-dependent,
+  // so it lives here beside the other visibility filters rather than in the
+  // content-only `shouldHideByDefault` gate the server search index shares.
+  if (taskResultVersions && taskResultVersions.size > 0 && item.msg.type === 'user') {
+    const identity = unroutableCompletionIdentity(item.msg)
+    if (identity) {
+      const held = taskResultVersions.get(identity.taskId)
+      if (held !== undefined && held === identity.version) return
+    }
+  }
   // Drop messages MessageView would render as null (merged tool_result
   // frames, subagent heartbeats, empty assistant shells). Otherwise each
   // leaves an empty `.virtuoso-item-wrapper` whose padding doubles the gap
@@ -354,6 +401,7 @@ export function buildTranscriptRows({
   leadingItems,
   trailingItems,
   toolGroupCards = true,
+  taskResultVersions,
 }: BuildTranscriptRowsInput): TranscriptRowsResult {
   const out: TranscriptRow[] = []
 
@@ -363,7 +411,7 @@ export function buildTranscriptRows({
     // block's sentinels (search's itemIndex → row index reverse map is keyed
     // on them).
     for (let li = 0; li < leadingItems.length; li++) {
-      pushRow(out, leadingItems[li], -1 - li, isResultConsumed)
+      pushRow(out, leadingItems[li], -1 - li, isResultConsumed, taskResultVersions)
     }
   }
 
@@ -374,12 +422,12 @@ export function buildTranscriptRows({
     } else {
       if (item.msg.parent_tool_use_id !== parentToolUseIdFilter) continue
     }
-    pushRow(out, item, i, isResultConsumed)
+    pushRow(out, item, i, isResultConsumed, taskResultVersions)
   }
 
   if (trailingItems) {
     for (let ti = 0; ti < trailingItems.length; ti++) {
-      pushRow(out, trailingItems[ti], -1000 - ti, isResultConsumed)
+      pushRow(out, trailingItems[ti], -1000 - ti, isResultConsumed, taskResultVersions)
     }
   }
 

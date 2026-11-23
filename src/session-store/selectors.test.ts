@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { sessionStoreRegistry } from './registry'
-import { getSessionStore, useSessionTaskCounts, useSessionActiveWorktree } from './selectors'
+import { getSessionStore, useSessionTaskCounts, useSessionActiveWorktree, useTaskResultVersions } from './selectors'
+import { taskResultVersion } from '../../shared/tasks'
 import type { SdkMessage, TaskRecordUi } from '../types'
 
 function asst(msgUuid: string, blocks: unknown[]): SdkMessage {
@@ -77,6 +78,120 @@ describe('useSessionTaskCounts', () => {
       getSessionStore('s1').dispatch({ type: 'TASKS_SNAPSHOT', tasks: [task({ taskId: 'a', status: 'completed' })] })
     })
     expect(result.current).toEqual({ all: 0, indicator: 0 })
+  })
+})
+
+describe('useTaskResultVersions', () => {
+  beforeEach(async () => {
+    await sessionStoreRegistry.clear()
+  })
+  afterEach(async () => {
+    await sessionStoreRegistry.clear()
+  })
+
+  it('starts empty and excludes records without a result', () => {
+    const { result } = renderHook(() => useTaskResultVersions('s1'))
+    expect(result.current.size).toBe(0)
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [task({ taskId: 'a', status: 'completed' })],
+      })
+    })
+    expect(result.current.size).toBe(0)
+  })
+
+  it('maps task ids to the content generation of their inline result', () => {
+    const { result } = renderHook(() => useTaskResultVersions('s1'))
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [
+          task({ taskId: 'a', status: 'completed', result: 'the report' }),
+          task({ taskId: 'b', status: 'completed', result: '   ' }),
+          task({ taskId: 'c', status: 'running' }),
+        ],
+      })
+    })
+    expect([...result.current]).toEqual([['a', taskResultVersion('the report')]])
+  })
+
+  it('uses the projected resultRef version when the inline body is omitted', () => {
+    const { result } = renderHook(() => useTaskResultVersions('s1'))
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [
+          task({
+            taskId: 'big', status: 'completed',
+            resultRef: { totalChars: 200_000, hasResult: true, isError: false, projection: 'partial', resultVersion: 42 },
+          }),
+          task({
+            taskId: 'empty', status: 'completed',
+            resultRef: { totalChars: 0, hasResult: false, isError: false, projection: 'full', resultVersion: 43 },
+          }),
+        ],
+      })
+    })
+    expect([...result.current]).toEqual([['big', 42]])
+  })
+
+  it('stays reference-stable when the tasks array changes but the versions do not', () => {
+    const { result } = renderHook(() => useTaskResultVersions('s1'))
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [task({ taskId: 'a', status: 'completed', result: 'R' })],
+      })
+    })
+    const first = result.current
+    // Same versions, brand-new array identity (a task_progress refresh) →
+    // must NOT churn the row-model consumer.
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [task({ taskId: 'a', status: 'completed', result: 'R', progressSummary: 'still going' })],
+      })
+    })
+    expect(result.current).toBe(first)
+  })
+
+  it('updates when a record gains or replaces its result', () => {
+    const { result } = renderHook(() => useTaskResultVersions('s1'))
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [task({ taskId: 'a', status: 'running' })],
+      })
+    })
+    expect(result.current.size).toBe(0)
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [task({ taskId: 'a', status: 'completed', result: 'R' })],
+      })
+    })
+    expect([...result.current]).toEqual([['a', taskResultVersion('R')]])
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [task({ taskId: 'a', status: 'completed', result: 'R2' })],
+      })
+    })
+    expect([...result.current]).toEqual([['a', taskResultVersion('R2')]])
+  })
+
+  it('returns a stable empty map without a session id (static transcripts)', () => {
+    const { result } = renderHook(() => useTaskResultVersions(undefined))
+    const first = result.current
+    expect(first.size).toBe(0)
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [task({ taskId: 'a', status: 'completed', result: 'R' })],
+      })
+    })
+    expect(result.current).toBe(first)
   })
 })
 

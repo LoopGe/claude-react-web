@@ -25,7 +25,7 @@ import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, Transcrip
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { countCachedMessageSearchMatches, getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/normalize'
 import { consumesSubagentRootResult } from '../session-store/sidechain-index'
-import { useOptionalSessionField } from '../session-store/selectors'
+import { useOptionalSessionField, useTaskResultVersions } from '../session-store/selectors'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
 import { ChatEmptyState } from './ChatEmptyState'
@@ -577,6 +577,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // module, so "which rows exist, in what order, under what identity" is
   // answered the same way for the main transcript and for every overlay that
   // reuses this component, and is unit-testable without a DOM.
+  // Unroutable completions (result-bearing <task-notification>, no
+  // tool-use-id) drop their raw-XML row once the task record holds THIS
+  // payload (content-generation match). Version-stable subscription: a
+  // task_progress refresh doesn't rebuild.
+  const taskResultVersions = useTaskResultVersions(sessionId)
   const builtRows = useMemo(
     () => buildTranscriptRows({
       items,
@@ -585,8 +590,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       leadingItems,
       trailingItems,
       toolGroupCards,
+      taskResultVersions,
     }),
-    [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, toolGroupCards],
+    [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, toolGroupCards, taskResultVersions],
   )
 
   // In-place draft rows (the growing card + frozen interrupted half-cards).

@@ -287,6 +287,26 @@ export function classifyTaskNotificationInjection(msg: UserFrameShape): TaskNoti
   }
 }
 
+/** An unroutable agent completion: a `<task-notification>` injection carrying
+ *  a non-empty `<result>` but NO `<tool-use-id>`, keyed only by `<task-id>`
+ *  (the subagent's agentId — the task map's primary key). The harness emits
+ *  this shape when a previously-launched background agent stops again (e.g.
+ *  after a SendMessage resume), so there is no fresh launch tool_use to key
+ *  on. Foldable injections belong to `parseTaskNotificationInjection`;
+ *  monitor `<event>`-only and status-only notices return null here — they
+ *  are not agent completions and must never settle a task record. */
+export interface UnroutableCompletion {
+  taskId: string
+  status: TaskNotificationStatus
+  result: string
+}
+
+export function parseUnroutableCompletion(msg: UserFrameShape): UnroutableCompletion | null {
+  const raw = readTaskNotification(msg)
+  if (!raw || raw.toolUseId || !raw.taskId || !raw.result?.trim()) return null
+  return { taskId: raw.taskId, status: raw.status, result: raw.result }
+}
+
 // ---------------------------------------------------------------------------
 // Frame-origin classification (the ingestion decision point).
 //

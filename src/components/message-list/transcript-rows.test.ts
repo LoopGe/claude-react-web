@@ -1,9 +1,11 @@
 // @vitest-environment node
 // No DOM anywhere in this file. `src/**` otherwise maps to happy-dom (see
 // vitest.config.ts) as the safe default; opting out skips that env boot.
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { SdkMessage } from '../../types'
 import type { TranscriptItem } from '../../session-store/types'
+import * as tasksModule from '../../../shared/tasks'
+import { taskResultVersion } from '../../../shared/tasks'
 import {
   INITIAL_FIRST_ITEM_INDEX,
   advanceRowAnchor,
@@ -1047,6 +1049,118 @@ describe('buildTranscriptRows: task-notification rows', () => {
       isResultConsumed: never,
     })
     expect(rows.every((r) => (r as { taskNotifGroup?: unknown }).taskNotifGroup === undefined)).toBe(true)
+  })
+})
+
+// ─── unroutable completions (result-bearing, no tool-use-id) ─────────────
+//
+// These injections keep their neutral card UNLESS the payload has a home:
+// a task record keyed by the injection's <task-id> that holds THIS result
+// (content-generation match, so a record holding a DIFFERENT report never
+// hides an unfolded one). `taskResultVersions` is that check, fed from
+// mirror.tasks.
+
+const unroutableItem = (id: string, taskId: string): TranscriptItem => ({
+  id,
+  msg: {
+    type: 'user',
+    uuid: id,
+    parent_tool_use_id: null,
+    message: {
+      role: 'user',
+      content: `<task-notification><task-id>${taskId}</task-id><status>completed</status><summary>Agent "x" finished</summary><result>the report</result></task-notification>`,
+    },
+  } as unknown as SdkMessage,
+  plainText: 'notification',
+  isCompactSummary: false,
+  hiddenByDefault: false,
+}) as TranscriptItem
+
+const monitorItem = (id: string, taskId: string): TranscriptItem => ({
+  id,
+  msg: {
+    type: 'user',
+    uuid: id,
+    parent_tool_use_id: null,
+    message: {
+      role: 'user',
+      content: `<task-notification><task-id>${taskId}</task-id><summary>Monitor event: "build"</summary><event>exe produced</event></task-notification>`,
+    },
+  } as unknown as SdkMessage,
+  plainText: 'monitor event',
+  isCompactSummary: false,
+  hiddenByDefault: false,
+}) as TranscriptItem
+
+describe('buildTranscriptRows: unroutable completion hiding', () => {
+  const versions = (taskId: string, result: string) => new Map([[taskId, taskResultVersion(result)]])
+
+  it('hides the injection when the record holds THIS result', () => {
+    const { rows } = buildTranscriptRows({
+      items: [unroutableItem('n1', 'a1'), assistant('a', 'hello')],
+      isResultConsumed: never,
+      taskResultVersions: versions('a1', 'the report'),
+    })
+    expect(rows.map((r) => r.id)).toEqual(['a'])
+  })
+
+  it('keeps the injection when the record holds a DIFFERENT result (unfolded report stays visible)', () => {
+    const { rows } = buildTranscriptRows({
+      items: [unroutableItem('n1', 'a1')],
+      isResultConsumed: never,
+      taskResultVersions: versions('a1', 'an older report'),
+    })
+    expect(rows.map((r) => r.id)).toEqual(['n1'])
+  })
+
+  it('keeps the injection when no record holds its task-id', () => {
+    const { rows } = buildTranscriptRows({
+      items: [unroutableItem('n1', 'a1')],
+      isResultConsumed: never,
+      taskResultVersions: versions('other', 'the report'),
+    })
+    expect(rows.map((r) => r.id)).toEqual(['n1'])
+  })
+
+  it('keeps the injection when the input is absent (overlays / static transcripts)', () => {
+    const { rows } = buildTranscriptRows({
+      items: [unroutableItem('n1', 'a1')],
+      isResultConsumed: never,
+    })
+    expect(rows.map((r) => r.id)).toEqual(['n1'])
+  })
+
+  it('keeps a monitor event-only notification even when its task-id has a version', () => {
+    const { rows } = buildTranscriptRows({
+      items: [monitorItem('m1', 'a1')],
+      isResultConsumed: never,
+      taskResultVersions: versions('a1', 'the report'),
+    })
+    expect(rows.map((r) => r.id)).toEqual(['m1'])
+  })
+
+  it('does not hide a human message whose text merely mentions the task-id', () => {
+    const { rows } = buildTranscriptRows({
+      items: [user('u1', 'what happened to a1?')],
+      isResultConsumed: never,
+      taskResultVersions: versions('a1', 'the report'),
+    })
+    expect(rows.map((r) => r.id)).toEqual(['u1'])
+  })
+
+  it('hashes a completion result once per frame across rebuilds (render-path memo)', () => {
+    // buildTranscriptRows re-runs on every transcript append; a folded large
+    // report must not be re-hashed on each rebuild. Same msg object → one hash.
+    const spy = vi.spyOn(tasksModule, 'taskResultVersionForText')
+    try {
+      const items = [unroutableItem('n1', 'a1')]
+      const input = { items, isResultConsumed: never, taskResultVersions: versions('a1', 'the report') }
+      buildTranscriptRows(input)
+      buildTranscriptRows(input)
+      expect(spy).toHaveBeenCalledTimes(1)
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
 
