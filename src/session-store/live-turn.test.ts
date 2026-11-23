@@ -479,3 +479,182 @@ describe('flushLiveTurn: identity-stable and coalescing', () => {
     expect(m.draft?.text).toBe('main ')
   })
 })
+
+// ── Streaming thinking (2026-11-23 spec §5.3) ────────────────────────────────
+function thinkingDeltaMsg(uuid: string, thinking: string, opts: { sidechain?: boolean; index?: number } = {}): SdkMessage {
+  return {
+    type: 'stream_event',
+    uuid,
+    ...(opts.sidechain ? { parent_tool_use_id: 'toolu_sub_1' } : {}),
+    event: { type: 'content_block_delta', index: opts.index ?? 0, delta: { type: 'thinking_delta', thinking } },
+  } as unknown as SdkMessage
+}
+
+function thinkingStartMsg(uuid: string, index: number, kind: 'thinking' | 'redacted_thinking' = 'thinking'): SdkMessage {
+  return {
+    type: 'stream_event',
+    uuid,
+    event: { type: 'content_block_start', index, content_block: { type: kind } },
+  } as unknown as SdkMessage
+}
+
+function blockStopMsg(uuid: string, index: number): SdkMessage {
+  return {
+    type: 'stream_event',
+    uuid,
+    event: { type: 'content_block_stop', index },
+  } as unknown as SdkMessage
+}
+
+describe('updateLiveTurnMirror: thinking accumulation', () => {
+  it('main-thread thinking_delta pushes thinkingChunks and sets dirty', () => {
+    const m = updateLiveTurnMirror(fresh(), thinkingDeltaMsg('se-1', 'a'))
+    expect(m.liveTurn?.thinkingChunks).toEqual([{ text: 'a', sidechain: false }])
+    expect(m.liveTurn?.dirty).toBe(true)
+  })
+
+  it('sidechain thinking_delta is tagged sidechain', () => {
+    const m = updateLiveTurnMirror(fresh(), thinkingDeltaMsg('se-1', 'a', { sidechain: true }))
+    expect(m.liveTurn?.thinkingChunks).toEqual([{ text: 'a', sidechain: true }])
+  })
+
+  it('thinking content_block_start records thinkingBlockIndex; matching stop clears it and marks thinkingDraft done', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingStartMsg('se-0', 0))
+    expect(m.liveTurn?.thinkingBlockIndex).toBe(0)
+    m = updateLiveTurnMirror(m, thinkingDeltaMsg('se-1', 'x'))
+    m = flushLiveTurn(m)
+    expect(m.thinkingDraft).toEqual({ key: 'thinking:1', text: 'x', done: false })
+    m = updateLiveTurnMirror(m, blockStopMsg('se-2', 0))
+    expect(m.liveTurn?.thinkingBlockIndex).toBeNull()
+    expect(m.thinkingDraft?.done).toBe(true)
+  })
+
+  it('non-matching block stop does not flip done or clear the index', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingStartMsg('se-0', 0))
+    m = updateLiveTurnMirror(m, thinkingDeltaMsg('se-1', 'x'))
+    m = flushLiveTurn(m)
+    m = updateLiveTurnMirror(m, blockStopMsg('se-2', 1))
+    expect(m.liveTurn?.thinkingBlockIndex).toBe(0)
+    expect(m.thinkingDraft?.done).toBe(false)
+  })
+
+  it('sidechain block stop at the SAME index does NOT fold the main-thread thinking row', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingStartMsg('se-0', 0))
+    m = updateLiveTurnMirror(m, thinkingDeltaMsg('se-1', 'x'))
+    m = flushLiveTurn(m)
+    // A running subagent's thinking block 0 overlaps the parent's in time;
+    // its stop carries the same index but a non-null parent_tool_use_id.
+    m = updateLiveTurnMirror(m, {
+      type: 'stream_event',
+      uuid: 'se-sub-stop',
+      parent_tool_use_id: 'toolu_sub_1',
+      event: { type: 'content_block_stop', index: 0 },
+    } as unknown as SdkMessage)
+    expect(m.liveTurn?.thinkingBlockIndex).toBe(0)
+    expect(m.thinkingDraft?.done).toBe(false)
+    // The parent's own stop still folds it.
+    m = updateLiveTurnMirror(m, blockStopMsg('se-2', 0))
+    expect(m.liveTurn?.thinkingBlockIndex).toBeNull()
+    expect(m.thinkingDraft?.done).toBe(true)
+  })
+
+  it('stop BEFORE first flush carries done through the flush (whole block inside the 80ms window)', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingStartMsg('se-0', 0))
+    m = updateLiveTurnMirror(m, thinkingDeltaMsg('se-1', 'fast'))
+    m = updateLiveTurnMirror(m, blockStopMsg('se-2', 0))
+    expect(m.thinkingDraft).toBeNull()
+    m = flushLiveTurn(m)
+    expect(m.thinkingDraft).toEqual({ key: 'thinking:1', text: 'fast', done: true })
+  })
+
+  it('redacted_thinking start records index; stop with null thinkingDraft clears index, draft stays null', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingStartMsg('se-0', 0, 'redacted_thinking'))
+    expect(m.liveTurn?.thinkingBlockIndex).toBe(0)
+    expect(m.liveTurn?.phase).toBe('thinking')
+    m = updateLiveTurnMirror(m, blockStopMsg('se-1', 0))
+    expect(m.liveTurn?.thinkingBlockIndex).toBeNull()
+    expect(m.thinkingDraft).toBeNull()
+  })
+
+  it('thinking deltas do NOT touch totalChars / textChunks / flushedText', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingDeltaMsg('se-1', 'abcd'))
+    m = flushLiveTurn(m)
+    expect(m.liveTurn?.totalChars).toBe(0)
+    expect(m.liveTurn?.textChunks).toEqual([])
+    expect(m.liveTurn?.flushedText).toEqual([])
+  })
+})
+
+describe('flushLiveTurn: thinking fold', () => {
+  it('folds main-thread thinkingChunks into thinkingDraft, creating thinking:<seq+1> on first fold', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingDeltaMsg('se-1', 'a'))
+    m = updateLiveTurnMirror(m, thinkingDeltaMsg('se-2', 'b'))
+    m = flushLiveTurn(m)
+    expect(m.thinkingDraft).toEqual({ key: 'thinking:1', text: 'ab', done: false })
+    expect(m.thinkingSeq).toBe(1)
+    expect(m.liveTurn?.thinkingChunks).toEqual([])
+    expect(m.liveTurn?.dirty).toBe(false)
+  })
+
+  it('extends the existing thinking draft in place (same key, no thinkingSeq bump)', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingDeltaMsg('se-1', 'a'))
+    m = flushLiveTurn(m)
+    m = updateLiveTurnMirror(m, thinkingDeltaMsg('se-2', 'b'))
+    m = flushLiveTurn(m)
+    expect(m.thinkingDraft).toEqual({ key: 'thinking:1', text: 'ab', done: false })
+    expect(m.thinkingSeq).toBe(1)
+  })
+
+  it('drops sidechain thinking chunks', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingDeltaMsg('se-1', 'child', { sidechain: true }))
+    m = flushLiveTurn(m)
+    expect(m.thinkingDraft).toBeNull()
+    expect(m.liveTurn?.thinkingChunks).toEqual([])
+  })
+
+  it('thinking-only flush leaves flushedText and draft references UNTOUCHED', () => {
+    let m = updateLiveTurnMirror(fresh(), streamEventMsg('se-1', 'text'))
+    m = flushLiveTurn(m)
+    const flushedRef = m.liveTurn!.flushedText
+    const draftRef = m.draft
+    m = updateLiveTurnMirror(m, thinkingDeltaMsg('se-2', 'think'))
+    m = flushLiveTurn(m)
+    expect(m.liveTurn?.flushedText).toBe(flushedRef)
+    expect(m.draft).toBe(draftRef)
+    expect(m.thinkingDraft?.text).toBe('think')
+  })
+
+  it('text-only flush leaves thinkingDraft reference untouched', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingDeltaMsg('se-1', 'think'))
+    m = flushLiveTurn(m)
+    const thinkingRef = m.thinkingDraft
+    m = updateLiveTurnMirror(m, streamEventMsg('se-2', 'text'))
+    m = flushLiveTurn(m)
+    expect(m.thinkingDraft).toBe(thinkingRef)
+    expect(m.draft?.text).toBe('text')
+  })
+
+  it('both-empty dirty flush clears dirty without rebuilding', () => {
+    let m = updateLiveTurnMirror(fresh(), streamEventMsg('se-1', 'x'))
+    m = { ...m, liveTurn: { ...m.liveTurn!, textChunks: [], thinkingChunks: [], dirty: true } }
+    const flushedRef = m.liveTurn!.flushedText
+    m = flushLiveTurn(m)
+    expect(m.liveTurn?.dirty).toBe(false)
+    expect(m.liveTurn?.flushedText).toBe(flushedRef)
+  })
+})
+
+describe('pruneFinalizedLiveTurnText: thinking', () => {
+  it('drops main-thread thinkingChunks on finalized assistant, keeps sidechain', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingDeltaMsg('se-1', 'main'))
+    m = updateLiveTurnMirror(m, thinkingDeltaMsg('se-2', 'child', { sidechain: true }))
+    m = pruneFinalizedLiveTurnText(m, asstMsg('a-1', 'final'))
+    expect(m.liveTurn?.thinkingChunks).toEqual([{ text: 'child', sidechain: true }])
+  })
+
+  it('thinking-only pending chunks trigger the prune (hasMainThread gate includes thinking)', () => {
+    const m = updateLiveTurnMirror(fresh(), thinkingDeltaMsg('se-1', 'main'))
+    const pruned = pruneFinalizedLiveTurnText(m, asstMsg('a-1', 'final'))
+    expect(pruned.liveTurn?.thinkingChunks).toEqual([])
+  })
+})

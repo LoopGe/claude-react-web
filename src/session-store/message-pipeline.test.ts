@@ -23,6 +23,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { applyMessage } from './message-pipeline'
+import { reduceSessionState } from './reducer'
 import { applyMessageConsumed, ackUserMessage } from './user-message-lifecycle'
 import {
   createInitialSessionState,
@@ -557,5 +558,109 @@ describe('applyMessage end-to-end ordering (FIFO → effectiveConsumedAt → app
     expect(appended.deliveryStatus).toBe('consumed')
     // Placeholder is gone from intent.
     expect(state.intent.pendingPlaceholders.size).toBe(0)
+  })
+})
+
+// ── Thinking supersede + freeze (2026-11-23-streaming-thinking spec §5.6/§5.7) ──
+
+function thinkingAsstMsg(uuid: string, thinking: string): SdkMessage {
+  return {
+    type: 'assistant',
+    uuid,
+    parent_tool_use_id: null,
+    receivedAt: 1_000,
+    message: { role: 'assistant', content: [{ type: 'thinking', thinking, signature: 'sig' }] },
+  } as unknown as SdkMessage
+}
+
+function thinkingStreamMsg(uuid: string, thinking: string): SdkMessage {
+  return {
+    type: 'stream_event',
+    uuid,
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking } },
+  } as unknown as SdkMessage
+}
+
+describe('applyMessage: thinking-bearing frame supersedes the thinking row', () => {
+  it('aliases the thinkingDraft key and clears it', () => {
+    let state = freshState()
+    state = applyMessage(state, thinkingStreamMsg('se-1', 'ponder'))
+    state = { ...state, mirror: flushLiveTurn(state.mirror) }
+    expect(state.mirror.thinkingDraft).not.toBeNull()
+    state = applyMessage(state, thinkingAsstMsg('a-think', 'ponder'))
+    expect(state.mirror.thinkingDraft).toBeNull()
+    expect(state.mirror.draftRowKeys['a-think']).toBe('thinking:1')
+  })
+
+  it('does NOT take over the text draft (regression fix: content-typed supersede)', () => {
+    let state = freshState()
+    state = applyMessage(state, thinkingStreamMsg('se-1', 'ponder'))
+    state = applyMessage(state, streamEventMsg('se-2', 'text'))
+    state = { ...state, mirror: flushLiveTurn(state.mirror) }
+    const draftBefore = state.mirror.draft
+    state = applyMessage(state, thinkingAsstMsg('a-think', 'ponder'))
+    expect(state.mirror.draft).toBe(draftBefore)
+    expect(state.mirror.draftRowKeys['a-think']).toBe('thinking:1')
+    expect(state.mirror.thinkingDraft).toBeNull()
+  })
+
+  it('pure tool_use / empty-shell assistant frame supersedes nothing', () => {
+    let state = freshState()
+    state = applyMessage(state, streamEventMsg('se-1', 'text'))
+    state = { ...state, mirror: flushLiveTurn(state.mirror) }
+    const draftBefore = state.mirror.draft
+    state = applyMessage(state, toolUseMsg('a-tool', 'tu_1'))
+    expect(state.mirror.draft).toBe(draftBefore)
+    state = applyMessage(state, {
+      type: 'assistant', uuid: 'a-empty', parent_tool_use_id: null,
+      message: { role: 'assistant', content: [] },
+    } as unknown as SdkMessage)
+    expect(state.mirror.draft).toBe(draftBefore)
+  })
+
+  it('merged thinking+text frame aliases the thinking key and clears both drafts', () => {
+    let state = freshState()
+    state = applyMessage(state, thinkingStreamMsg('se-1', 'ponder'))
+    state = applyMessage(state, streamEventMsg('se-2', 'text'))
+    state = { ...state, mirror: flushLiveTurn(state.mirror) }
+    state = applyMessage(state, {
+      type: 'assistant', uuid: 'a-merged', parent_tool_use_id: null,
+      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'ponder', signature: 's' }, { type: 'text', text: 'text' }] },
+    } as unknown as SdkMessage)
+    expect(state.mirror.thinkingDraft).toBeNull()
+    expect(state.mirror.draft).toBeNull()
+    expect(state.mirror.draftRowKeys['a-merged']).toBe('thinking:1')
+  })
+})
+
+describe('applyMessage: result freezes thinking and text drafts in interrupt order', () => {
+  it('freezes thinkingDraft BEFORE draft when both are live', () => {
+    let state = freshState()
+    state = applyMessage(state, thinkingStreamMsg('se-1', 'ponder'))
+    state = applyMessage(state, streamEventMsg('se-2', 'half'))
+    state = { ...state, mirror: flushLiveTurn(state.mirror) }
+    state = applyMessage(state, resultMsg('r-end'))
+    expect(state.mirror.thinkingDraft).toBeNull()
+    expect(state.mirror.draft).toBeNull()
+    expect(state.mirror.frozenDrafts.map((f) => f.kind)).toEqual(['thinking', 'text'])
+  })
+
+  it('freezes thinking-only (no text draft ever created)', () => {
+    let state = freshState()
+    state = applyMessage(state, thinkingStreamMsg('se-1', 'ponder'))
+    state = { ...state, mirror: flushLiveTurn(state.mirror) }
+    state = applyMessage(state, resultMsg('r-end'))
+    expect(state.mirror.frozenDrafts).toHaveLength(1)
+    expect(state.mirror.frozenDrafts[0]).toEqual({ kind: 'thinking', key: 'thinking:1', text: 'ponder', done: false })
+  })
+
+  it('SESSION_TERMINATED does not freeze thinkingDraft (draft symmetry — sweep only)', () => {
+    let state = freshState()
+    state = applyMessage(state, thinkingStreamMsg('se-1', 'ponder'))
+    state = { ...state, mirror: flushLiveTurn(state.mirror) }
+    const thinkingBefore = state.mirror.thinkingDraft
+    state = reduceSessionState(state, { type: 'SESSION_TERMINATED' })
+    expect(state.mirror.thinkingDraft).toBe(thinkingBefore)
+    expect(state.mirror.frozenDrafts).toHaveLength(0)
   })
 })

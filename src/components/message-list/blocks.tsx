@@ -10,6 +10,21 @@ import { imageBlockToDataUrl } from '../../utils/image-block'
 import { isImageRefBlock } from '../../../shared/image-attachment'
 import { useImageContent } from '../../hooks/useImageContent'
 
+/** Single-line preview of thinking text: whitespace collapsed, deliberately
+ *  NO length cap — truncation is left to the CSS ellipsis on `.thinking-preview`,
+ *  which always marks itself with "…" (the old `slice(0, 120)` cut the text
+ *  with no ellipsis whenever the cap fit inside the panel width, so a clipped
+ *  preview looked identical to a complete one). Shared by the settled
+ *  BlockView and the streaming ThinkingDraftBody so the fold hand-off is
+ *  pixel-identical. Accepted costs of the uncapped preview — see the note on
+ *  `.thinking-preview` in styles/chat.css: the preview line is a second full
+ *  layout of the reasoning text, and the whole text sits in the <summary>
+ *  (the toggle's accessible name, and what triple-click / select-all hands to
+ *  copy and to the search seed). */
+export function thinkingPreviewText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
 // Memoised because parent MessageView re-renders on every searchQuery
 // keystroke. MessageView keeps block references stable with useMemo([msg]),
 // so this shallow memo avoids reparsing Markdown and reconciling tool cards.
@@ -29,19 +44,7 @@ export const BlockView = memo(function BlockView({ block, searchQuery, activeMat
   }
   if (block.type === 'thinking' && typeof block.thinking === 'string') {
     if (block.thinking.trim().length === 0) return null
-    // Whitespace is collapsed because the preview renders as one `nowrap` line
-    // (`.thinking-preview`). The length is deliberately NOT capped: the old
-    // `slice(0, 120)` cut the text with no ellipsis whenever the cap happened
-    // to fit inside the panel width, so a clipped preview looked identical to a
-    // complete one. Truncation is left entirely to the CSS ellipsis, which
-    // always marks itself with "…".
-    //
-    // Accepted costs of dropping the cap — see the note on `.thinking-preview`
-    // in styles/chat.css for the measurements: the preview line is a second
-    // full layout of the reasoning text, and the whole text sits in the
-    // <summary> (the toggle's accessible name, and what a triple-click /
-    // select-all hands to copy and to the search seed).
-    const preview = block.thinking.replace(/\s+/g, ' ').trim()
+    const preview = thinkingPreviewText(block.thinking)
     return (
       <AnimatedDetails
         className="thinking-details"

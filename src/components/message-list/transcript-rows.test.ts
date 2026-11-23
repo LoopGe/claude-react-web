@@ -1168,7 +1168,7 @@ describe('buildDraftRows', () => {
   it('emits frozen rows first and the live draft last, each keyed by its draft key and marked isDraft', () => {
     const rows = buildDraftRows(
       { key: 'draft:5', text: 'live' },
-      [{ key: 'draft:3', text: 'frozen-1' }, { key: 'draft:4', text: 'frozen-2' }],
+      [{ kind: 'text', key: 'draft:3', text: 'frozen-1' }, { kind: 'text', key: 'draft:4', text: 'frozen-2' }],
     )
     expect(rows.map((r) => r.id)).toEqual(['draft:3', 'draft:4', 'draft:5'])
     for (const r of rows) {
@@ -1182,7 +1182,41 @@ describe('buildDraftRows', () => {
     expect((rows[0]!.msg as unknown as { timestamp?: unknown }).timestamp).toBeUndefined()
   })
 
+  it('frozen thinking entry builds an isThinkingDraft row carrying its text in a thinking placeholder', () => {
+    const rows = buildDraftRows(null, [
+      { kind: 'thinking', key: 'thinking:1', text: 'partial', done: false },
+    ])
+    expect(rows).toHaveLength(1)
+    const msg = rows[0]!.msg as unknown as { isDraft?: boolean; isThinkingDraft?: boolean; message?: { content?: Array<{ type?: string; thinking?: string }> } }
+    expect(msg.isDraft).toBe(true)
+    expect(msg.isThinkingDraft).toBe(true)
+    expect(msg.message?.content).toEqual([{ type: 'thinking', thinking: 'partial' }])
+  })
+
   it('returns [] when there is no draft and no frozen rows', () => {
     expect(buildDraftRows(null, [])).toEqual([])
+  })
+
+  it('orders frozen, live thinking, live text draft', () => {
+    const rows = buildDraftRows(
+      { key: 'draft:1', text: '' },
+      [{ kind: 'text', key: 'draft:0', text: 'f' }, { kind: 'thinking', key: 'thinking:0', text: 'ft', done: true }],
+      { key: 'thinking:1', text: '', done: false },
+    )
+    expect(rows.map((r) => r.id)).toEqual(['draft:0', 'thinking:0', 'thinking:1', 'draft:1'])
+  })
+
+  it('live thinking row placeholder thinking text is empty (body reads store)', () => {
+    const rows = buildDraftRows(null, [], { key: 'thinking:1', text: '', done: false })
+    expect(rows).toHaveLength(1)
+    const msg = rows[0]!.msg as unknown as { isDraft?: boolean; isThinkingDraft?: boolean; message?: { content?: Array<{ type?: string; thinking?: string }> } }
+    expect(msg.isDraft).toBe(true)
+    expect(msg.isThinkingDraft).toBe(true)
+    expect(msg.message?.content).toEqual([{ type: 'thinking', thinking: '' }])
+    expect(rows[0]!.plainText).toBe('')
+  })
+
+  it('no thinkingDraft leaves the row list unchanged from today', () => {
+    expect(buildDraftRows({ key: 'draft:1', text: '' }, [], null).map((r) => r.id)).toEqual(['draft:1'])
   })
 })

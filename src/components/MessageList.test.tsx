@@ -6055,6 +6055,88 @@ describe('in-place draft rows (store-backed)', () => {
     expect(container.querySelector('[data-message-id="draft:1"]')).toBeTruthy()
   })
 
+  const thinkingDelta = (thinking: string, uuid = `se-t-${Math.random()}`) =>
+    dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'stream_event',
+        uuid,
+        parent_tool_use_id: null,
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking } },
+      } as unknown as SdkMessage,
+    })
+
+  it('appends the thinking row above the draft row', () => {
+    thinkingDelta('ponder')
+    streamDelta('hello')
+    flush()
+    const { container } = renderList()
+    const thinkRow = container.querySelector('[data-message-id="thinking:1"]')
+    const draftRow = container.querySelector('[data-message-id="draft:1"]')
+    expect(thinkRow).toBeTruthy()
+    expect(draftRow).toBeTruthy()
+    expect(thinkRow!.compareDocumentPosition(draftRow!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('thinking-only turn renders the thinking row without a draft row', () => {
+    thinkingDelta('ponder')
+    flush()
+    const { container } = renderList()
+    expect(container.querySelector('[data-message-id="thinking:1"]')).toBeTruthy()
+    expect(container.querySelector('[data-message-id^="draft:"]')).toBeNull()
+  })
+
+  it('settled thinking frame keeps the thinking row DOM node via the alias table (computeItemKey zero-change pin)', () => {
+    thinkingDelta('ponder')
+    flush()
+    const { container, rerender } = renderList()
+    const before = container.querySelector('[data-message-id="thinking:1"]') as HTMLElement
+    expect(before).toBeTruthy()
+    // Same batch discipline as the text-draft hand-off test: dispatch + prop
+    // refresh in ONE act so no intermediate stale-items render unmounts the row.
+    act(() => {
+      dispatch({
+        type: 'MESSAGE',
+        message: {
+          type: 'assistant',
+          uuid: 'a-think',
+          parent_tool_use_id: null,
+          receivedAt: Date.now(),
+          message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'ponder', signature: 's' }] },
+        } as unknown as SdkMessage,
+      })
+      rerender(list())
+    })
+    const after = container.querySelector('[data-message-id="a-think"]') as HTMLElement
+    expect(after).toBeTruthy()
+    expect(after).toBe(before)
+  })
+
+  it('interrupt during thinking freezes the row in place: same DOM node, folded, partial text kept', () => {
+    thinkingDelta('partial thought')
+    flush()
+    const { container, rerender } = renderList()
+    const before = container.querySelector('[data-message-id="thinking:1"]') as HTMLElement
+    expect(before).toBeTruthy()
+    expect(before.querySelector('details')?.getAttribute('data-state')).toBe('open')
+    // The frozen row keeps the SAME key (thinking:1) — the mounted
+    // ThinkingDraftBody instance crosses controlled→uncontrolled (frozenText
+    // appears). Correctness relies on AnimatedDetails never writing
+    // uncontrolledOpen while controlled (it stays defaultOpen=false), so the
+    // freeze folds closed. This test pins that invariant end-to-end.
+    act(() => {
+      dispatch({
+        type: 'MESSAGE',
+        message: { type: 'result', uuid: 'r-int', subtype: 'aborted_streaming', is_error: true } as unknown as SdkMessage,
+      })
+      rerender(list())
+    })
+    const after = container.querySelector('[data-message-id="thinking:1"]') as HTMLElement
+    expect(after).toBe(before)
+    expect(after.querySelector('details')?.getAttribute('data-state')).toBe('closed')
+    expect(after.querySelector('pre.thinking-body')?.textContent).toBe('partial thought')
+  })
+
   it('static does not append root draft rows', () => {
     streamDelta('preview only')
     flush()

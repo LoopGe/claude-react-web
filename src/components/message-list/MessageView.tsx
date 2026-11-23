@@ -18,6 +18,7 @@ import { countMatches, extractPlainText, extractMessagePlainText, extractToolUse
 import { getBlocks, isHumanUserMessage, userMessageOriginKind } from '../../session-store/normalize'
 import { BlockView, ToolResultBlock } from './blocks'
 import { DraftTextBody } from './draft-body'
+import { ThinkingDraftBody } from './thinking-draft-body'
 import { TurnChangesCard } from './TurnChangesCard'
 import { useResultConsumed } from './result-consumed-context'
 import { blockRendersContent, willRenderEmpty } from './rendering'
@@ -587,6 +588,11 @@ export const MessageView = memo(function MessageView({
     const draftFrozenText = msg.isDraft
       ? blocks.map((b) => (b as { type?: string; text?: string }).type === 'text' ? (b as { text?: string }).text ?? '' : '').join('')
       : ''
+    // Frozen THINKING half-card: its partial text rides a thinking placeholder
+    // (buildDraftRows), rendered statically by ThinkingDraftBody.
+    const draftFrozenThinking = msg.isDraft && (msg as { isThinkingDraft?: boolean }).isThinkingDraft
+      ? blocks.map((b) => (b as { type?: string; thinking?: string }).type === 'thinking' ? (b as { thinking?: string }).thinking ?? '' : '').join('')
+      : ''
     // The SDK stream emits one assistant frame per content block, so a settled
     // row is normally single-block. The CLI can also persist a whole response
     // as one frame (observed: thinking + tool_use). Rendering that as one
@@ -636,7 +642,11 @@ export const MessageView = memo(function MessageView({
           aria-atomic={msg.isDraft ? false : undefined}
         >
           {msg.isDraft ? (
-            <DraftTextBody sessionId={sessionId} frozenText={draftFrozenText || undefined} />
+            (msg as { isThinkingDraft?: boolean }).isThinkingDraft ? (
+              <ThinkingDraftBody sessionId={sessionId} frozenText={draftFrozenThinking || undefined} />
+            ) : (
+              <DraftTextBody sessionId={sessionId} frozenText={draftFrozenText || undefined} />
+            )
           ) : (
             <>
             {/* Structured twins of `/context` and `/usage` (SDK 0.3.232 / 0.3.273)

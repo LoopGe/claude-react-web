@@ -413,3 +413,43 @@ describe('SessionStore: trim + replay without isDiskStableMsg', () => {
     expect(snap.newestSeq).toBe(3)
   })
 })
+
+describe('SessionStore: thinking draft snapshot projection', () => {
+  function thinkingDelta(uuid: string, thinking: string): SdkMessage {
+    return {
+      type: 'stream_event',
+      uuid,
+      parent_tool_use_id: null,
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking } },
+    } as unknown as SdkMessage
+  }
+
+  it('exposes thinkingDraft and thinkingDraftKey after a flush', () => {
+    const store = new SessionStore('s-think-snap')
+    store.dispatch({ type: 'MESSAGE', message: thinkingDelta('se-1', 'a') })
+    store.dispatch({ type: 'LIVE_TURN_FLUSH' })
+    const snap = store.getSnapshot()
+    expect(snap.thinkingDraft).toEqual({ key: 'thinking:1', text: 'a', done: false })
+    expect(snap.thinkingDraftKey).toBe('thinking:1')
+  })
+
+  it('thinkingDraftKey stays reference-stable across follow-up flushes', () => {
+    const store = new SessionStore('s-think-key')
+    store.dispatch({ type: 'MESSAGE', message: thinkingDelta('se-1', 'a') })
+    store.dispatch({ type: 'LIVE_TURN_FLUSH' })
+    const key1 = store.getSnapshot().thinkingDraftKey
+    store.dispatch({ type: 'MESSAGE', message: thinkingDelta('se-2', 'b') })
+    store.dispatch({ type: 'LIVE_TURN_FLUSH' })
+    expect(store.getSnapshot().thinkingDraftKey).toBe(key1)
+    expect(store.getSnapshot().thinkingDraft?.text).toBe('ab')
+  })
+
+  it('CLEAR_TRANSCRIPT resets thinkingDraft/thinkingDraftKey', () => {
+    const store = new SessionStore('s-think-clear')
+    store.dispatch({ type: 'MESSAGE', message: thinkingDelta('se-1', 'a') })
+    store.dispatch({ type: 'LIVE_TURN_FLUSH' })
+    store.dispatch({ type: 'CLEAR_TRANSCRIPT' })
+    expect(store.getSnapshot().thinkingDraft).toBeNull()
+    expect(store.getSnapshot().thinkingDraftKey).toBeNull()
+  })
+})

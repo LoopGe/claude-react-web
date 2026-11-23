@@ -606,3 +606,23 @@ describe('replay-merge: liveTurn across a cache merge', () => {
     expect(out.mirror.liveTurn).toBeNull()
   })
 })
+
+// ─── thinkingDraft preservation across a cache merge ────────────────────────
+
+describe('replay-merge: thinkingDraft across a cache merge', () => {
+  it('preserves an in-flight thinkingDraft when the newer slice has no result', () => {
+    let state = createInitialSessionState('s')
+    state = replayReplace(state, [userMsg('u1', 'hi'), asstMsg('a1', 'hello')], [])
+    const thinkMsg: SdkMessage = {
+      type: 'stream_event', uuid: 'se-think',
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'pondering' } },
+    } as unknown as SdkMessage
+    state = applyMessage(state, thinkMsg)
+    state = { ...state, mirror: flushLiveTurn(state.mirror) }
+    const ref = state.mirror.thinkingDraft
+    expect(ref).toEqual({ key: 'thinking:1', text: 'pondering', done: false })
+
+    const out = replayReplace(state, [userMsg('u1-disk', 'hi'), asstMsg('a1', 'hello')], [])
+    expect(out.mirror.thinkingDraft).toBe(ref)
+  })
+})
