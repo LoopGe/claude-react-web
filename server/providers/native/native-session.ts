@@ -55,7 +55,6 @@ import { neutralEventsOf, neutralFileOccurrences } from './session-log/neutral-r
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
 import type { NativeFileAttachment, NativeLogEvent, NativeTurnEndReason } from './session-log/format.js'
-import { NATIVE_SESSION_LOG_V3, projectNeutralEventToLegacy } from './session-log/format.js'
 import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
@@ -852,46 +851,32 @@ export class NativeSession implements NativeSessionCore {
     const forkSeed = buildForkSeed({
       source,
       sourceId,
-      newId: opts.id,
       cwd: opts.cwd,
       resumeSessionAt: opts.resumeSessionAt,
     })
-    // Neutral read view of the seed: buildForkSeed still emits legacy events
-    // (fork seeds are fully neutralized in a later task) and the seed snapshot
-    // carries no neutral baseline, so neutralEventsOf takes the lossless
-    // migration fallback here.
-    const seedEvents = neutralEventsOf(forkSeed)
-    // NativeSeed accepts both event languages: the pre-persona clear below
-    // rides neutral for a v3 child (the writer normalizes each entry at open).
+    // The seed is neutral end-to-end (a v1/v2 source was migrated in memory by
+    // buildForkSeed); the child log is v3 and stamps its own header id onto the
+    // legacy read view / SDK seam, so no session_id rewrite rides the seed.
+    const seedEvents = forkSeed.events
     const seed: NativeSeed = forkSeed
-    const firstSelection = source.events.find(
-      (event): event is NativeAgentSelectionEvent => event.type === 'session/agent',
+    const firstSelection = neutralEventsOf(source).find(
+      (event): event is SessionEvent<'session/agent'> => event.type === 'session/agent',
     )
-    let selectionEvents = seedEvents
     if (firstSelection && !agentSelectionFromEvents(seedEvents)) {
       // The cut predates the persona, but later source metadata must not leak
       // into the child. Preserve the pre-persona base carried by the FIRST
-      // selection and synchronously seed an explicit clear for replay.
+      // selection and synchronously seed an explicit neutral clear for replay.
       const timestamp = new Date().toISOString()
-      const clear: SessionEvent<'session/agent'> = {
+      seedEvents.push({
         seq: seedEvents.length,
         type: 'session/agent',
         time: Date.parse(timestamp),
         data: {
           name: null,
-          base: structuredClone(firstSelection.base),
+          base: structuredClone(firstSelection.data.base),
           timestamp,
         },
-      }
-      // The seed speaks the child's version language until fork seeds are
-      // neutral end-to-end: a v3 child normalizes the neutral event verbatim,
-      // while a legacy child's seed is written as-is — there the clear rides
-      // the compat projection (the same write-compat the writer applies to a
-      // neutral append into a v1/v2 log).
-      seed.events.push(
-        seed.version === NATIVE_SESSION_LOG_V3 ? clear : projectNeutralEventToLegacy(clear, opts.id),
-      )
-      selectionEvents = [...seedEvents, clear]
+      })
     }
     const log = NativeSessionLog.open({
       stateDir: opts.stateDir,
@@ -901,7 +886,7 @@ export class NativeSession implements NativeSessionCore {
       seed,
     })
     this.history.push(...historyFromEvents(neutralEventsOf(log)))
-    this.restoreAgentSelection(selectionEvents, log)
+    this.restoreAgentSelection(seedEvents, log)
     // Match what a restart of this child would see: its copied prefix's
     // usage-bearing `turn/end` events define last/total (the `{forked}` close
     // carries none and is skipped). Without this the fork reports 0 until the

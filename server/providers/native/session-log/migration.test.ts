@@ -423,12 +423,14 @@ describe('migrateToV3 — eager-at-open writer migration', () => {
     await log.close()
   })
 
-  it('fork preserves the source version until the eager migration upgrades it', async () => {
+  it('a legacy-version seed preserves its version until the eager migration upgrades it', async () => {
     const stateDir = await fresh()
     const events = corpus()
     await writeLegacyLog(stateDir, SID, 2, events)
-    // A fork seed carries the source version (buildForkSeed contract): open writes
-    // a v2 seed, then the eager-at-open migration upgrades it to v3.
+    // The writer's v1/v2 compat contract: an explicit legacy seed version is
+    // written as-is, then migrateToV3 upgrades it to neutral. (Fork seeds
+    // themselves are neutral v3 — buildForkSeed migrates a legacy source in
+    // memory; this pins open's seed-version handling, not the fork builder.)
     const log = NativeSessionLog.open({
       stateDir, id: 'child', cwd: '/repo', resume: false,
       seed: { events, inheritedEventCount: events.length, isSeeded: true, version: 2 },

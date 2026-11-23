@@ -2294,13 +2294,13 @@ describe('NativeSession', () => {
     }
   })
 
-  it('seeds the pre-persona clear into a legacy-version fork child in the child’s own version language', async () => {
+  it('seeds the pre-persona clear into a v2-source fork child as a neutral v3 seed', async () => {
     const dir = await tempDir('native-preset-fork-legacy-clear-')
     const definition = agentDefinition({ prompt: 'LATER-PERSONA', model: 'persona-model', tools: ['Bash'] })
     // A real v2 source log: the cut precedes the first selection, so the fork
-    // must seed an explicit clear. The child preserves the source version, so
-    // the seeded clear must ride the legacy shape — a neutral event written
-    // under a v2 header would brick the child log on its next read.
+    // must seed an explicit clear. The fork migrates the source to neutral in
+    // memory and writes a neutral v3 child — the clear rides the neutral
+    // envelope, and the source's later persona never leaks in.
     const events: NativeLogEvent[] = [
       { seq: 0, type: 'session/context', text: 'ctx' },
       {
@@ -2339,13 +2339,15 @@ describe('NativeSession', () => {
       expect(effectiveSettingsOf(forked)).toEqual({
         model: 'base-model', permissionMode: 'default', effortLevel: 'high', agent: null,
       })
-      // The child log must still parse at its preserved version, with exactly
-      // the seeded clear (the source's later persona never leaks in).
+      // The v2 source is migrated to a neutral v3 child carrying exactly the
+      // seeded clear (the source's later persona never leaks in).
       const child = loadNativeSessionLogSync(dir, 'legacy-clear-child')!
-      expect(child.header.v).toBe(2)
-      const selections = child.events.filter((event) => event.type === 'session/agent')
+      expect(child.header.v).toBe(3)
+      const selections = child.neutralEvents!.filter(
+        (event): event is Extract<NativeSessionEvent, { type: 'session/agent' }> => event.type === 'session/agent',
+      )
       expect(selections).toHaveLength(1)
-      expect(selections[0]).toMatchObject({
+      expect(selections[0].data).toMatchObject({
         name: null,
         base: { model: 'base-model', permissionMode: 'default', effortLevel: 'high' },
       })

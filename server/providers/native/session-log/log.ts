@@ -70,11 +70,15 @@ export interface NativeSessionLogSnapshot {
 }
 
 export interface NativeSeed {
-  /** Legacy events for a v1/v2 seed; neutral events for a v3 seed. */
+  /** A fork seed carries NEUTRAL events (always v3 — a legacy source is
+   *  migrated in memory by buildForkSeed). Fresh seeds and the writer's v1/v2
+   *  compat contract may carry legacy events; `open` normalizes legacy entries
+   *  to neutral for a v3 log. */
   events: Array<NativeLogEvent | NativeSessionEvent>
   inheritedEventCount: number
   isSeeded: boolean
-  /** A fork preserves its source version; ordinary fresh seeds remain v1. */
+  /** Explicit seed version for the writer's v1/v2 compat contract; fork seeds
+   *  are v3. Absent defaults to v3. */
   version?: number
 }
 
@@ -307,15 +311,16 @@ export class NativeSessionLog {
       // Eager-at-open migration (R7): a resumed v1/v2 log upgrades to neutral v3
       // before the first durable append. The gate installs synchronously inside
       // migrateToV3 (below, after the writer is registered); post-gate appends
-      // buffer behind it. A fresh fork seed instead PRESERVES its source version
-      // until migrated (see the else branch).
+      // buffer behind it. A fork seed is already neutral v3 (a legacy source is
+      // migrated in memory); an explicit legacy seed version is the writer's
+      // v1/v2 compat contract (see the else branch).
     } else {
       mkdirSync(nativeSessionDir(stateDir, id), { recursive: true })
       header = {
         type: 'session/header',
-        // Fresh seeds default to the neutral v3 format. A fork preserves its
-        // source version (buildForkSeed sets `version`); the eager-at-open
-        // migration below upgrades a legacy fork seed before the first append.
+        // Fresh seeds and fork seeds default to the neutral v3 format
+        // (buildForkSeed migrates a legacy source in memory). An explicit legacy
+        // `version` is the writer's v1/v2 compat contract.
         v: seed?.version ?? NATIVE_SESSION_LOG_V3,
         id,
         cwd,
@@ -324,9 +329,9 @@ export class NativeSessionLog {
         inheritedEventCount: seed?.inheritedEventCount ?? 0,
       }
       if (header.v === NATIVE_SESSION_LOG_V3) {
-        // A v3 seed may carry neutral events (a v3-source fork) or legacy events
-        // (openFreshLog's context/selection, a legacy-source fork's read view);
-        // normalize every entry to neutral, renumbering seq to the seed order.
+        // A v3 seed may carry neutral events (a fork seed) or legacy events
+        // (openFreshLog's context, the writer's legacy-seed compat); normalize
+        // every entry to neutral, renumbering seq to the seed order.
         neutralEvents = (seed ? seed.events : []).map((event, index) =>
           'data' in event
             ? { ...event, seq: index } as NativeSessionEvent
@@ -363,8 +368,8 @@ export class NativeSessionLog {
     // migrateToV3; post-gate appends buffer behind it. A failure closes the
     // writer (migrationFatal) and surfaces on the next append/flush — the
     // durable-retry pause owns recovery — so the eager promise is caught here
-    // only to avoid an unhandled rejection. A fresh fork seed preserves its
-    // source version until migrated (a later resume upgrades it).
+    // only to avoid an unhandled rejection. A fork seed is already neutral v3;
+    // only a resumed legacy log needs this upgrade.
     if (resume && log.header.v < NATIVE_SESSION_LOG_V3) {
       void log.migrateToV3().catch((err) => {
         logger.error(`[${id}] eager v1/v2→v3 migration failed:`, err)
