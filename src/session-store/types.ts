@@ -3,7 +3,7 @@ import type { RebuildBlocker } from '../../shared/ws-protocol'
 import type { ContextUsage } from '../types/context-usage'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { emptyWindow, type WindowState } from './seq-window'
-import type { DraftState, ThinkingDraftState } from './draft-state'
+import type { DraftState, ThinkingDraftState, FrozenDraft } from './draft-state'
 
 export interface TranscriptItem {
   id: string
@@ -546,8 +546,9 @@ export interface ServerMirror {
   draft: DraftState | null
   /** Frozen interrupted half-cards (the "no roll back" ruling): drafts still
    *  live at the turn's result because no finalized message salvaged them.
+   *  One ordered list (text + thinking interleaved by interrupt time).
    *  Session-memory only — a fresh store starts empty. */
-  frozenDrafts: readonly DraftState[]
+  frozenDrafts: readonly FrozenDraft[]
   /** message uuid → the draft key its row was born with. The settled row
    *  keeps the draft key so the hand-off updates in place (no remount).
    *  Append-only per session; a fresh store re-keys rows by uuid. */
@@ -861,7 +862,7 @@ export interface SessionSnapshot {
    *  draft object's identity changes every flush (its text grows), so the row
    *  layer must key its presence off this string, not off `draft`. */
   draftKey: string | null
-  frozenDrafts: readonly DraftState[]
+  frozenDrafts: readonly FrozenDraft[]
   draftRowKeys: Readonly<Record<string, string>>
   /** In-place streaming thinking row (parallel to draft/draftKey). The row
    *  layer subscribes to the STABLE thinkingDraftKey projection; the body

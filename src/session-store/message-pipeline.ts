@@ -46,7 +46,7 @@ import {
   type SessionState,
   withMirror,
 } from './types'
-import { supersedeDraft } from './draft-state'
+import { supersedeDraft, type FrozenDraft } from './draft-state'
 import {
   pruneFinalizedLiveTurnText,
   updateLiveTurnMirror,
@@ -222,21 +222,43 @@ export function applyMessage(state: SessionState, message: SdkMessage): SessionS
   // pruneFinalizedLiveTurnText for the serial-response invariant this leans on).
   working = withMirror(working, pruneFinalizedLiveTurnText(working.mirror, incomingMessage))
 
-  // A finalized main-thread assistant takes over the in-place draft row: the
-  // row keeps its draft key (alias) so the hand-off updates in place instead
-  // of remounting a fresh row.
+  // A finalized main-thread assistant takes over the in-place draft row(s):
+  // the row keeps its draft key (alias) so the hand-off updates in place
+  // instead of remounting a fresh row. Content-typed (2026-11-23 thinking
+  // spec §5.6): the SDK streams one assistant frame per content block, so a
+  // thinking-bearing frame takes over the THINKING row and a text-bearing
+  // frame takes over the TEXT draft — a thinking frame must never alias the
+  // text draft (the pre-thinking code did, since it superseded on ANY
+  // main-thread assistant). A rare merged thinking+text frame aliases the
+  // thinking key (split rendering puts thinking first) and clears both.
   if (
     incomingMessage.type === 'assistant'
     && incomingMessage.parent_tool_use_id == null
-    && working.mirror.draft
     && messageUuid
   ) {
-    const { cleared, aliasEntry } = supersedeDraft(working.mirror.draft, messageUuid)
-    working = withMirror(working, {
-      ...working.mirror,
-      draft: cleared,
-      draftRowKeys: { ...working.mirror.draftRowKeys, [aliasEntry[0]]: aliasEntry[1] },
-    })
+    const blocks = Array.isArray(incomingMessage.message?.content) ? incomingMessage.message.content : []
+    const hasThinking = blocks.some((b) => b.type === 'thinking' || b.type === 'redacted_thinking')
+    const hasText = blocks.some((b) => b.type === 'text')
+    let aliased = false
+    if (hasThinking && working.mirror.thinkingDraft) {
+      const { aliasEntry } = supersedeDraft(working.mirror.thinkingDraft, messageUuid)
+      working = withMirror(working, {
+        ...working.mirror,
+        thinkingDraft: null,
+        draftRowKeys: { ...working.mirror.draftRowKeys, [aliasEntry[0]]: aliasEntry[1] },
+      })
+      aliased = true
+    }
+    if (hasText && working.mirror.draft) {
+      const { aliasEntry } = supersedeDraft(working.mirror.draft, messageUuid)
+      working = withMirror(working, {
+        ...working.mirror,
+        draft: null,
+        draftRowKeys: aliased
+          ? working.mirror.draftRowKeys
+          : { ...working.mirror.draftRowKeys, [aliasEntry[0]]: aliasEntry[1] },
+      })
+    }
   }
 
   if (messageUuid && working.mirror.pendingConsumedMessages.has(messageUuid)) {
@@ -249,10 +271,15 @@ export function applyMessage(state: SessionState, message: SdkMessage): SessionS
     // A draft still live at the turn's end is an interrupted half-card ("no
     // roll back"): freeze it as a session-memory partial row. A salvaged
     // partial response would have superseded the draft already (the MESSAGE
-    // above), so this fires exactly when nothing salvaged it.
+    // above), so this fires exactly when nothing salvaged it. Thinking freezes
+    // BEFORE text (block order within a response), one ordered list so
+    // multiple interrupts keep their chronological row order.
     const m = working.mirror
-    const frozen = m.draft
-      ? { ...m, frozenDrafts: [...m.frozenDrafts, m.draft], draft: null }
+    const entries: FrozenDraft[] = []
+    if (m.thinkingDraft) entries.push({ kind: 'thinking', ...m.thinkingDraft })
+    if (m.draft) entries.push({ kind: 'text', ...m.draft })
+    const frozen = entries.length > 0
+      ? { ...m, frozenDrafts: [...m.frozenDrafts, ...entries], draft: null, thinkingDraft: null }
       : m
     // Turn-end sweep via the shared helper. The live-only concerns
     // (liveTurn=null, clearSendingPlaceholders) are applied on top.
