@@ -51,12 +51,11 @@ import { defaultFrameContext, type FrameContext } from './vocabulary/frame-conte
 import { NativeSessionLog, loadNativeSessionLogSync, type NativeSeed } from './session-log/log.js'
 import { buildForkSeed } from './session-log/fork.js'
 import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './session-log/replay.js'
-import { neutralEventsOf } from './session-log/neutral-read.js'
+import { neutralEventsOf, neutralFileOccurrences } from './session-log/neutral-read.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
 import type { NativeFileAttachment, NativeLogEvent, NativeTurnEndReason } from './session-log/format.js'
 import { NATIVE_SESSION_LOG_V3, projectNeutralEventToLegacy } from './session-log/format.js'
-import { nativeAttachmentOccurrences } from './attachment-reference-index.js'
 import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
@@ -1651,36 +1650,19 @@ export class NativeSession implements NativeSessionCore {
 
   getAttachmentOccurrences(): readonly NativeAttachmentOccurrence[] {
     const occurrences: NativeAttachmentOccurrence[] = []
-    for (const event of this.log.events) {
-      if (event.type !== 'user') continue
-      for (let outerIndex = 0; outerIndex < event.message.content.length; outerIndex++) {
-        const outer = event.message.content[outerIndex] as {
-          type?: unknown
-          attachment?: NativeFileAttachment
-          content?: unknown
-        }
-        if (outer?.type === 'file' && outer.attachment) {
-          occurrences.push({
-            messageUuid: event.uuid,
-            blockPath: [outerIndex],
-            attachment: outer.attachment,
-          })
-          continue
-        }
-        if (outer?.type !== 'tool_result' || !Array.isArray(outer.content)) continue
-        for (let innerIndex = 0; innerIndex < outer.content.length; innerIndex++) {
-          const inner = outer.content[innerIndex] as {
-            type?: unknown
-            attachment?: NativeFileAttachment
-          }
-          if (inner?.type !== 'file' || !inner.attachment) continue
-          occurrences.push({
-            messageUuid: event.uuid,
-            blockPath: [outerIndex, innerIndex],
-            attachment: inner.attachment,
-          })
-        }
-      }
+    for (const occurrence of neutralFileOccurrences(neutralEventsOf(this.log))) {
+      // Catalog entries (session/attachments) carry no message identity — the
+      // legacy scan walked only user events, so they never became occurrences.
+      if (occurrence.messageUuid === '') continue
+      // The helper emits the HOST SDK-transcript coordinates: a direct user file
+      // at [i], a tool/result inner file at [0, inner] (the legacy projection
+      // wraps tool/result content in ONE tool_result block at outer index 0).
+      // compact-attachments hydrates by joining these on uuid + blockPath.
+      occurrences.push({
+        messageUuid: occurrence.messageUuid,
+        blockPath: occurrence.blockPath,
+        attachment: occurrence.attachment,
+      })
     }
     return occurrences
   }
@@ -1688,7 +1670,11 @@ export class NativeSession implements NativeSessionCore {
   getAttachmentCatalog(): readonly NativeFileAttachment[] {
     const seen = new Set<string>()
     const catalog: NativeFileAttachment[] = []
-    for (const attachment of nativeAttachmentOccurrences(neutralEventsOf(this.log))) {
+    // Full-log neutral scan (direct user + tool/result inner + the hidden
+    // session/attachments handoff catalogs), deduped by id+digest in log order —
+    // the manual replacement copies every referenced attachment so AttachmentRead
+    // stays authorized in the handoff log.
+    for (const { attachment } of neutralFileOccurrences(neutralEventsOf(this.log))) {
       const key = `${attachment.id}\0${attachment.digest}`
       if (seen.has(key)) continue
       seen.add(key)

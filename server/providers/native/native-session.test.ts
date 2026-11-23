@@ -23,7 +23,11 @@ import { readNativeHistoryEntries } from './session-log/reader.js'
 import type { NativeEventInput, NativeFileAttachment, NativeLogEvent } from './session-log/format.js'
 import { serializeEvent, serializeHeader } from './session-log/format.js'
 import { migrateEventToV3 } from './session-log/migration.js'
+import { neutralEventsOf, neutralFileOccurrences } from './session-log/neutral-read.js'
 import type { NativeSessionEvent } from './vocabulary/session-event.js'
+import type { ContentBlock } from './vocabulary/types.js'
+import { buildCompactAttachmentContent } from '../../compact-attachments.js'
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { projectNativeHistoryToWire } from './wire/wire-projection.js'
 import { formatSupplementInstruction } from '../steering-format.js'
 import { AGENT_GUIDANCE } from './subagent.js'
@@ -6092,4 +6096,234 @@ describe('live assistant emitter carries rawStopReason (T13)', () => {
     expect(legacyAssistant.message.stop_reason).toBe('stop_sequence')
     await session.destroy()
   })
+})
+
+// Task 4: getAttachmentOccurrences / getAttachmentCatalog read the canonical
+// NEUTRAL events (neutralEventsOf + neutralFileOccurrences), preserving the HOST
+// SDK-transcript blockPath contract that compact-attachments joins by uuid+path:
+// user/message → [i], tool/result → [0, inner]. Catalog entries (messageUuid '')
+// are excluded from occurrences; the handoff catalog keeps the full-scan dedup.
+describe('native attachment occurrence neutral read (Task 4)', () => {
+  const TS_ISO = '2026-11-13T00:00:00.000Z'
+  const TS = Date.parse(TS_ISO)
+
+  function att(id: string, digestChar = 'a'): NativeFileAttachment {
+    return {
+      id, name: `${id}.txt`, size: 4, digest: digestChar.repeat(64),
+      path: join('registry', `${id}.txt`), modelForm: 'handle',
+    }
+  }
+
+  function neutralUser(seq: number, uuid: string, parent: string | null, content: ContentBlock[]): NativeSessionEvent {
+    return {
+      type: 'user/message', seq, time: TS, parentToolUseId: parent,
+      data: { role: 'user', id: brandString<'MessageId'>(uuid), content, source: { kind: 'user' } },
+    }
+  }
+
+  function neutralToolResult(seq: number, uuid: string, callId: string, parent: string | null, content: ContentBlock[]): NativeSessionEvent {
+    return {
+      type: 'tool/result', seq, time: TS, parentToolUseId: parent,
+      data: {
+        message: {
+          role: 'tool', id: brandString<'MessageId'>(uuid),
+          source: { kind: 'tool', callId: brandString<'ToolCallId'>(callId) },
+          toolCallId: brandString<'ToolCallId'>(callId), content, isError: false,
+        },
+      },
+    }
+  }
+
+  /** The pre-neutralization occurrence scan, kept verbatim as the
+   *  behavior-preservation reference: the neutral read must emit exactly the
+   *  host SDK-transcript coordinates this legacy scan emitted. */
+  function legacyOccurrenceScan(
+    events: readonly NativeLogEvent[],
+  ): Array<{ messageUuid: string; blockPath: number[]; attachment: NativeFileAttachment }> {
+    const occurrences: Array<{ messageUuid: string; blockPath: number[]; attachment: NativeFileAttachment }> = []
+    for (const event of events) {
+      if (event.type !== 'user') continue
+      for (let outerIndex = 0; outerIndex < event.message.content.length; outerIndex++) {
+        const outer = event.message.content[outerIndex] as {
+          type?: unknown; attachment?: NativeFileAttachment; content?: unknown
+        }
+        if (outer?.type === 'file' && outer.attachment) {
+          occurrences.push({ messageUuid: event.uuid, blockPath: [outerIndex], attachment: outer.attachment })
+          continue
+        }
+        if (outer?.type !== 'tool_result' || !Array.isArray(outer.content)) continue
+        for (let innerIndex = 0; innerIndex < outer.content.length; innerIndex++) {
+          const inner = outer.content[innerIndex] as { type?: unknown; attachment?: NativeFileAttachment }
+          if (inner?.type !== 'file' || !inner.attachment) continue
+          occurrences.push({ messageUuid: event.uuid, blockPath: [outerIndex, innerIndex], attachment: inner.attachment })
+        }
+      }
+    }
+    return occurrences
+  }
+
+  type OccurrenceCore = {
+    getAttachmentOccurrences(): readonly { messageUuid: string; blockPath: readonly number[]; attachment: NativeFileAttachment }[]
+    getAttachmentCatalog(): readonly NativeFileAttachment[]
+    log: { events: unknown[]; neutralEvents: unknown[] | null }
+  }
+
+  /** Seed a fresh v3 log with neutral events, then resume it through the real
+   *  provider so the core reads the same neutral baseline a live session has. */
+  async function resumedCore(dir: string, id: string, events: NativeSessionEvent[], uploadStore?: UploadStore) {
+    const seeded = NativeSessionLog.open({ stateDir: dir, id, cwd: dir, resume: false })
+    for (const event of events) seeded.append(event)
+    await seeded.flush()
+    await seeded.close()
+    const provider = new NativeProvider({
+      stateDir: dir,
+      ...(uploadStore ? { uploadStore } : {}),
+      ports: makeNativePorts({ stateDir: dir, ...(uploadStore ? { uploadStore } : {}) }),
+    })
+    const session = provider.createSession({ id, cwd: dir, resume: id })
+    return { session, core: coreOf(session) as unknown as OccurrenceCore }
+  }
+
+  const direct = att('direct', 'a')
+  const nested = att('nested', 'b')
+  const catalog = att('catalog', 'c')
+  const side = att('side', 'd')
+  const neutralFixture: NativeSessionEvent[] = [
+    neutralUser(0, 'direct-user', null, [{ type: 'text', text: 'before' }, { type: 'file', attachment: direct }]),
+    neutralToolResult(1, 'tool-user', 'read-1', 'agent-1', [{ type: 'text', text: 'Read' }, { type: 'file', attachment: nested }]),
+    { type: 'session/attachments', seq: 2, time: TS, data: { attachments: [catalog], timestamp: TS_ISO } },
+    neutralUser(3, 'side-user', 'agent-2', [{ type: 'file', attachment: side }]),
+  ]
+  const expectedOccurrences = [
+    { messageUuid: 'direct-user', blockPath: [1], attachment: direct },
+    { messageUuid: 'tool-user', blockPath: [0, 1], attachment: nested },
+    { messageUuid: 'side-user', blockPath: [0], attachment: side },
+  ]
+
+  it('emits host blockPath coordinates, excludes the catalog, and deep-equals the legacy scan', async () => {
+    const dir = await tempDir('native-occ-neutral-')
+    const { session, core } = await resumedCore(dir, 'occ', neutralFixture)
+
+    const occurrences = core.getAttachmentOccurrences()
+    // user/message → [i]; tool/result → [0, inner]; sidechain direct preserved.
+    expect(occurrences).toEqual(expectedOccurrences)
+    // Catalog entries carry no message identity and never become occurrences.
+    expect(occurrences.some((occ) => occ.messageUuid === '')).toBe(false)
+    // Behavior pin: deep-equal the verbatim legacy scan on the legacy projection.
+    expect(occurrences).toEqual(legacyOccurrenceScan(core.log.events as unknown as NativeLogEvent[]))
+    // The handoff catalog keeps the full-scan id+digest dedup in log order.
+    expect(core.getAttachmentCatalog()).toEqual([direct, nested, catalog, side])
+    await session.destroy()
+  })
+
+  it('sources occurrences from the neutral baseline, not the legacy read view', async () => {
+    const dir = await tempDir('native-occ-source-')
+    const { session, core } = await resumedCore(dir, 'occ-src', neutralFixture)
+    expect(core.getAttachmentOccurrences()).toEqual(expectedOccurrences)
+    // Task 6 shrinks the v3 legacy read view; the occurrence read must not
+    // depend on it. Clearing the projection leaves the neutral baseline intact.
+    core.log.events.splice(0, core.log.events.length)
+    expect(core.getAttachmentOccurrences()).toEqual(expectedOccurrences)
+    await session.destroy()
+  })
+
+  it('preserves host occurrence coordinates on an unmigrated v1/v2 log via the migration fallback', async () => {
+    const dir = await tempDir('native-occ-v2-')
+    const id = 'occ-v2'
+    const legacyEvents: NativeEventInput[] = [
+      {
+        type: 'user', uuid: 'direct-user', session_id: id, parent_tool_use_id: null, timestamp: TS_ISO,
+        message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment: direct }] },
+      },
+      {
+        type: 'user', uuid: 'tool-user', session_id: id, parent_tool_use_id: 'agent-1', timestamp: TS_ISO,
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'read-1', content: [{ type: 'text', text: 'Read' }, { type: 'file', attachment: nested }] }],
+        },
+      },
+      { type: 'session/attachments', attachments: [catalog], timestamp: TS_ISO },
+    ]
+    const seeded = NativeSessionLog.open({
+      stateDir: dir, id, cwd: dir, resume: false,
+      seed: { events: [], inheritedEventCount: 0, isSeeded: false, version: 2 },
+    })
+    for (const event of legacyEvents) seeded.append(event)
+    await seeded.flush()
+    await seeded.close()
+    const snapshot = loadNativeSessionLogSync(dir, id)!
+    expect(snapshot.header.v).toBe(2)
+    expect(snapshot.neutralEvents).toBeUndefined()
+
+    // The exact transformation the core applies: neutral read + catalog exclusion.
+    const got = neutralFileOccurrences(neutralEventsOf(snapshot))
+      .filter((occ) => occ.messageUuid !== '')
+      .map(({ messageUuid, blockPath, attachment }) => ({ messageUuid, blockPath, attachment }))
+    expect(got).toEqual(legacyOccurrenceScan(snapshot.events))
+    expect(got).toEqual([
+      { messageUuid: 'direct-user', blockPath: [1], attachment: direct },
+      { messageUuid: 'tool-user', blockPath: [0, 1], attachment: nested },
+    ])
+  })
+
+  it('host join pin: compact-attachments hydrates the emitted occurrences by uuid+blockPath', async () => {
+    const dir = await tempDir('native-occ-hostjoin-')
+    const store = new UploadStore({ stateDir: dir })
+    const bodyA = 'DIRECT ATTACHMENT BODY'
+    const bodyB = 'TOOL RESULT ATTACHMENT BODY'
+    const a = await addRealUpload(store, dir, 'join-direct', bodyA)
+    const b = await addRealUpload(store, dir, 'join-tool', bodyB)
+    const events: NativeSessionEvent[] = [
+      neutralUser(0, 'u-direct', null, [{ type: 'text', text: 'see attached' }, { type: 'file', attachment: a }]),
+      neutralToolResult(1, 'u-tool', 'read-1', null, [{ type: 'text', text: 'Read' }, { type: 'file', attachment: b }]),
+    ]
+    const { session } = await resumedCore(dir, 'hostjoin', events, store)
+    // The SDK-shaped handle surface the host actually consumes.
+    const occurrences = session.getAttachmentOccurrences!()
+    expect(occurrences).toEqual([
+      { messageUuid: 'u-direct', blockPath: [1], attachment: a },
+      { messageUuid: 'u-tool', blockPath: [0, 1], attachment: b },
+    ])
+
+    // The public SDK merged transcript at the same uuid+block positions.
+    const transcript: SDKMessage[] = [
+      sdkUser('u-direct', [{ type: 'text', text: 'see attached' }, publicFile(a)]),
+      sdkUser('u-tool', [{ type: 'tool_result', tool_use_id: 'read-1', content: [{ type: 'text', text: 'Read' }, publicFile(b)] }]),
+    ]
+    const hydrated = await buildCompactAttachmentContent(transcript, occurrences, { uploadStore: store, stateDir: dir })
+    expect(hydrated.hasAttachments).toBe(true)
+    const json = JSON.stringify(hydrated.content)
+    expect(json).toContain(bodyA)
+    expect(json).toContain(bodyB)
+    expect(json).not.toContain('no exact provider occurrence')
+    expect(json).not.toContain(a.path)
+    expect(json).not.toContain(b.path)
+
+    // Control: without the provider occurrences the same public blocks stay unread.
+    const unjoined = await buildCompactAttachmentContent(transcript, [], { uploadStore: store, stateDir: dir })
+    expect(JSON.stringify(unjoined.content)).toContain('no exact provider occurrence')
+    await session.destroy()
+  })
+
+  async function addRealUpload(store: UploadStore, stateDir: string, id: string, body: string): Promise<NativeFileAttachment> {
+    const bytes = Buffer.from(body)
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    const name = `${id}.txt`
+    const path = aliasPathOf(attachmentRoot(stateDir), digest, name)
+    await mkdir(join(path, '..'), { recursive: true })
+    await writeFile(path, bytes)
+    store.record([{
+      id, path, cwd: stateDir, name, size: bytes.length, digest,
+      uploadedAt: 1, sessionTitle: '', sessionId: 'hostjoin-source',
+    }])
+    return { id, name, size: bytes.length, digest, path, modelForm: 'handle' }
+  }
+
+  function sdkUser(uuid: string, content: unknown[]): SDKMessage {
+    return { type: 'user', uuid, parent_tool_use_id: null, message: { role: 'user', content } } as unknown as SDKMessage
+  }
+
+  function publicFile(attachment: NativeFileAttachment) {
+    return { type: 'file', attachment: { id: attachment.id, name: attachment.name, size: attachment.size, digest: attachment.digest } }
+  }
 })
