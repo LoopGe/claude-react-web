@@ -49,7 +49,7 @@
  */
 import type { SdkMessage } from '../../types'
 import type { ActiveSubagent, TranscriptItem } from '../../session-store/types'
-import type { DraftState, FrozenDraft } from '../../session-store/draft-state'
+import type { DraftState, FrozenDraft, ThinkingDraftState } from '../../session-store/draft-state'
 import { getBlocks, userMessageHasToolResult } from '../../session-store/normalize'
 import { QUESTION_TOOL_NAME } from '../../utils/question-answers'
 import { MARKER_TOOL_NAMES, PLAN_TOOL_NAMES } from '../../constants/toolNames'
@@ -115,15 +115,18 @@ export interface TranscriptRow {
  *  mirror.draftRowKeys, so the hand-off never remounts — see
  *  docs/superpowers/specs/2026-10-28-inplace-streaming-card-design.md §5.1).
  *  Frozen rows first (one ordered list, text and thinking interleaved by
- *  interrupt time), live draft last. `renderableIndex` is relative to the
- *  returned group — the caller offsets it when appending after settled rows.
- *  `msg.message.content` is a placeholder: the draft body renders from the
- *  store (`draft.text`), not from the message. Frozen thinking half-cards
- *  carry a thinking placeholder + `isThinkingDraft` (MessageView's draft
- *  branch renders them via ThinkingDraftBody). */
+ *  interrupt time), then the live THINKING row, then the live text draft
+ *  (block order: thinking precedes text within a response). `renderableIndex`
+ *  is relative to the returned group — the caller offsets it when appending
+ *  after settled rows. `msg.message.content` is a placeholder: the draft body
+ *  renders from the store (`draft.text` / `thinkingDraft.text`), not from the
+ *  message. Frozen thinking half-cards carry a thinking placeholder +
+ *  `isThinkingDraft` (MessageView's draft branch renders them via
+ *  ThinkingDraftBody). */
 export function buildDraftRows(
   draft: DraftState | null,
   frozenDrafts: readonly FrozenDraft[],
+  thinkingDraft: ThinkingDraftState | null = null,
 ): TranscriptRow[] {
   const rows: TranscriptRow[] = frozenDrafts.map((d, i) => ({
     id: d.key,
@@ -145,6 +148,25 @@ export function buildDraftRows(
     renderableIndex: i,
     itemIndex: -1,
   }))
+  if (thinkingDraft) {
+    rows.push({
+      id: thinkingDraft.key,
+      msg: {
+        type: 'assistant',
+        uuid: thinkingDraft.key,
+        isDraft: true,
+        isThinkingDraft: true,
+        parent_tool_use_id: null,
+        // The live row passes '' (the body leaf reads the store's
+        // thinkingDraft.text) — same convention as the live text draft.
+        message: { role: 'assistant', content: [{ type: 'thinking', thinking: '' }] },
+      } as unknown as SdkMessage,
+      isCompactSummary: false,
+      plainText: '',
+      renderableIndex: rows.length,
+      itemIndex: -1,
+    })
+  }
   if (draft) {
     rows.push({
       id: draft.key,

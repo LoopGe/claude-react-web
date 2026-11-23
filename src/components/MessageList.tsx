@@ -609,10 +609,17 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   const draftKey = useOptionalSessionField(draftSessionId, 'draftKey')
   const frozenDrafts = useOptionalSessionField(draftSessionId, 'frozenDrafts')
   const draftRowKeys = useOptionalSessionField(draftSessionId, 'draftRowKeys')
+  // Stable key projection of the streaming thinking row (same discipline as
+  // draftKey — the body leaf owns the flush-rate churn, not the row layer).
+  const thinkingDraftKey = useOptionalSessionField(draftSessionId, 'thinkingDraftKey')
   const { rows: renderableItems, firstItemId, lastItemId, nextItemTypeMap } = useMemo(() => {
     const base = builtRows
     const drafts = showsRootDrafts
-      ? buildDraftRows(draftKey != null ? { key: draftKey, text: '' } : null, frozenDrafts ?? [])
+      ? buildDraftRows(
+          draftKey != null ? { key: draftKey, text: '' } : null,
+          frozenDrafts ?? [],
+          thinkingDraftKey != null ? { key: thinkingDraftKey, text: '', done: false } : null,
+        )
       : []
     if (drafts.length === 0) return base
     const offset = base.rows.length
@@ -626,7 +633,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     if (base.rows.length > 0) nextItemTypeMap.set(base.rows[base.rows.length - 1]!.id, 'assistant')
     for (let i = 0; i < drafts.length - 1; i++) nextItemTypeMap.set(drafts[i]!.id, 'assistant')
     return { rows, firstItemId: base.firstItemId, lastItemId: rows[rows.length - 1]!.id, nextItemTypeMap }
-  }, [builtRows, showsRootDrafts, draftKey, frozenDrafts])
+  }, [builtRows, showsRootDrafts, draftKey, frozenDrafts, thinkingDraftKey])
 
   // The easter-egg game can only open from the default empty state, so fetch
   // its lazy chunk once that state is on screen: the triple-click then swaps
