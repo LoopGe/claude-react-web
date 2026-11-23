@@ -8,6 +8,7 @@ import { NativeSessionLog, deleteNativeSessionLog, hasNativeSessionLog, loadNati
 import { brandString } from '../vocabulary/brand.js'
 import { NativeSessionStorageError } from './errors.js'
 import { nativeSessionDir, nativeSessionLogPath, nativeSessionMigrationTempPath } from './paths.js'
+import { neutralEventsOf } from './neutral-read.js'
 
 const fsMigration = vi.hoisted(() => ({
   beforeRename: null as (() => void) | null,
@@ -396,8 +397,14 @@ describe('NativeSessionLog', () => {
       })).rejects.toThrow(/superseded/)
       expect(original.events.some((event) => event.type === 'session/agent')).toBe(false)
       const persisted = loadNativeSessionLogSync(stateDir, 's1')!
-      expect(persisted.events.map((event) => event.type)).toEqual(['user', 'turn/end'])
-      expect(persisted.events.map((event) => event.seq)).toEqual([0, 1])
+      // The replacement's resume eagerly migrates v1→v3, but the original writer
+      // still holds an open handle: the rename succeeds on POSIX (v3, `.events`
+      // dropped) and fails EPERM on Windows (pre-rename fallback reopens v1). Read
+      // the canonical neutral content version-agnostically — the takeover outcome
+      // (committed user + replacement turn/end survive, rejected session/agent does
+      // not) is identical either way.
+      expect(neutralEventsOf(persisted).map((event) => event.type)).toEqual(['user/message', 'turn/end'])
+      expect(neutralEventsOf(persisted).map((event) => event.seq)).toEqual([0, 1])
     } finally {
       await original.close()
       if (replacement) await replacement.close()
@@ -794,7 +801,11 @@ describe('NativeSessionLog', () => {
       a.append(userEvent('stale'))
       b.append({ type: 'session/end-seed' })
       await b.flush()
-      expect(loadNativeSessionLogSync(stateDir, 's1')!.events.map((e) => e.type)).toEqual(['user', 'session/end-seed'])
+      // Version-agnostic: `a` holds an open handle, so the resume's eager v3
+      // migration renames on POSIX (v3) but falls back to v1 on Windows (EPERM).
+      // neutralEventsOf gives the same content either way (u1 + end-seed survive,
+      // a's stale post-takeover append does not).
+      expect(neutralEventsOf(loadNativeSessionLogSync(stateDir, 's1')!).map((e) => e.type)).toEqual(['user/message', 'session/end-seed'])
     } finally {
       await a.close()
       if (b) await b.close()
