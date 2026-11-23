@@ -21,7 +21,7 @@ const counts = vi.hoisted(() => ({
   SessionWorkingBubble: 0,
   LiveWorkingBubble: 0,
   DraftTextBody: 0,
-  ThinkingDraftBody: 0,
+  ThinkingBody: 0,
 }))
 type CountKey = keyof typeof counts
 
@@ -70,9 +70,9 @@ vi.mock('./message-list/draft-body', async (orig) => {
   const mod = await orig<typeof import('./message-list/draft-body')>()
   return { ...mod, DraftTextBody: counted('DraftTextBody', mod.DraftTextBody) }
 })
-vi.mock('./message-list/thinking-draft-body', async (orig) => {
-  const mod = await orig<typeof import('./message-list/thinking-draft-body')>()
-  return { ...mod, ThinkingDraftBody: counted('ThinkingDraftBody', mod.ThinkingDraftBody) }
+vi.mock('./message-list/thinking-body', async (orig) => {
+  const mod = await orig<typeof import('./message-list/thinking-body')>()
+  return { ...mod, ThinkingBody: counted('ThinkingBody', mod.ThinkingBody) }
 })
 
 // Virtuoso needs layout; render a fixed tail window like a real viewport.
@@ -517,7 +517,7 @@ describe('live-turn streaming re-renders only the leaves', () => {
     expect(counts.SessionMessageList).toBeGreaterThan(0)
   }, 30_000)
 
-  it('thinking-only flushes re-render only the ThinkingDraftBody leaf (MessageList / DraftTextBody stay at 0)', async () => {
+  it('thinking-only flushes re-render only the ThinkingBody leaf (MessageList / DraftTextBody stay at 0)', async () => {
     const SID = 'stream-thinking-iso'
     const store = getSessionStore(SID)
     await act(async () => {
@@ -575,13 +575,13 @@ describe('live-turn streaming re-renders only the leaves', () => {
     expect(counts.SessionMessageList).toBe(0)
     expect(counts.DraftTextBody).toBe(0)
     // …while the thinking body leaf re-rendered once per published flush.
-    expect(counts.ThinkingDraftBody).toBeGreaterThanOrEqual(flushes)
+    expect(counts.ThinkingBody).toBeGreaterThanOrEqual(flushes)
     // Thinking never feeds the text accumulator: streamingContent is unchanged
     // across the whole thinking window ('' — liveTurn exists, no text flushed).
     expect(store.getSnapshot().streamingContent).toBe(contentBefore)
     // The thinking row shows the whole streamed text (expanded, done=false).
-    const pre = container.querySelector('[data-message-id="thinking:1"] pre.thinking-body')
-    expect(pre?.textContent).toContain('thought0')
-    expect(pre?.textContent).toContain(`thought${DELTAS}`)
+    const body = container.querySelector('[data-message-id="thinking:1"] .thinking-body')
+    expect(body?.textContent).toContain('thought0')
+    expect(body?.textContent).toContain(`thought${DELTAS}`)
   }, 30_000)
 })

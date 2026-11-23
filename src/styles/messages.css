@@ -315,11 +315,11 @@
    <div> Markdown.tsx always wraps its output in, so this covers every
    <Markdown> site — chat message bodies, RecapWindow, Composer preview,
    plugin command results — whether or not it sits inside a .msg-body.
-   Non-Markdown <pre>/<code> in the message body (tool cards, thinking
-   blocks, worktree markers, etc.) carry their OWN complete styling and do
-   not parasitise this base; the unscoped .code-block > pre rule below
-   (top-radius:0, flush under the bar) still wins via source order at equal
-   specificity 0,1,1. */
+   Non-Markdown <pre>/<code> in the message body (tool cards, worktree
+   markers, etc.) carry their OWN complete styling and do not parasitise this
+   base; the unscoped .code-block > pre rule below (top-radius:0, flush under
+   the bar) still wins via source order at equal specificity 0,1,1. (Thinking
+   blocks are Markdown now, so they DO use this base.) */
 .md code {
   font-family: var(--mono);
   background: var(--bg-elev-2);

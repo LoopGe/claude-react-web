@@ -6086,12 +6086,14 @@ describe('in-place draft rows (store-backed)', () => {
     expect(container.querySelector('[data-message-id^="draft:"]')).toBeNull()
   })
 
-  it('settled thinking frame keeps the thinking row DOM node via the alias table (computeItemKey zero-change pin)', () => {
+  it('settled thinking frame keeps the thinking row DOM node AND details instance via the alias table (computeItemKey zero-change pin)', () => {
     thinkingDelta('ponder')
     flush()
     const { container, rerender } = renderList()
     const before = container.querySelector('[data-message-id="thinking:1"]') as HTMLElement
     expect(before).toBeTruthy()
+    const detailsBefore = before.querySelector('details')
+    expect(detailsBefore).toBeTruthy()
     // Same batch discipline as the text-draft hand-off test: dispatch + prop
     // refresh in ONE act so no intermediate stale-items render unmounts the row.
     act(() => {
@@ -6110,6 +6112,12 @@ describe('in-place draft rows (store-backed)', () => {
     const after = container.querySelector('[data-message-id="a-think"]') as HTMLElement
     expect(after).toBeTruthy()
     expect(after).toBe(before)
+    // The DETAILS node is the one that carries the fold animation: it must be
+    // the SAME instance across the hand-off. A Fragment (or any different
+    // element type) at the .msg-body slot remounts it and pins height 0,
+    // silently turning the fold into an instant snap.
+    expect(after.querySelector('details')).toBe(detailsBefore)
+    expect(after.querySelector('details')?.getAttribute('data-state')).toBe('closed')
   })
 
   it('interrupt during thinking freezes the row in place: same DOM node, folded, partial text kept', () => {
@@ -6119,11 +6127,10 @@ describe('in-place draft rows (store-backed)', () => {
     const before = container.querySelector('[data-message-id="thinking:1"]') as HTMLElement
     expect(before).toBeTruthy()
     expect(before.querySelector('details')?.getAttribute('data-state')).toBe('open')
-    // The frozen row keeps the SAME key (thinking:1) — the mounted
-    // ThinkingDraftBody instance crosses controlled→uncontrolled (frozenText
-    // appears). Correctness relies on AnimatedDetails never writing
-    // uncontrolledOpen while controlled (it stays defaultOpen=false), so the
-    // freeze folds closed. This test pins that invariant end-to-end.
+    // The frozen row keeps the SAME key (thinking:1) — the mounted ThinkingBody
+    // instance crosses live→frozen (frozenText appears), so its controlled
+    // `open` flips true→false and the row folds closed. This test pins that
+    // invariant end-to-end.
     act(() => {
       dispatch({
         type: 'MESSAGE',
@@ -6134,7 +6141,7 @@ describe('in-place draft rows (store-backed)', () => {
     const after = container.querySelector('[data-message-id="thinking:1"]') as HTMLElement
     expect(after).toBe(before)
     expect(after.querySelector('details')?.getAttribute('data-state')).toBe('closed')
-    expect(after.querySelector('pre.thinking-body')?.textContent).toBe('partial thought')
+    expect(after.querySelector('.thinking-body')?.textContent).toBe('partial thought')
   })
 
   it('static does not append root draft rows', () => {

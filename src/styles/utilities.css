@@ -1598,9 +1598,9 @@ button.tool-group-failed-jump:focus-visible {
 /* Shared measured-height collapse used by details/accordion UI.
    overflow-y: clip clips content during the height animation without
    creating a scroll container (unlike hidden, which coerces
-   overflow-x: visible to auto per CSS spec). This keeps horizontal
-   scrollbars on the inner <pre> elements (thinking-body, tool-input)
-   instead of being clipped by the collapse's animated height.
+   overflow-x: visible to auto per CSS spec). This keeps the horizontal
+   scrollbars of inner scrollers (Markdown `.md pre` code blocks,
+   `.tool-input`) instead of being clipped by the collapse's animated height.
 
    display: flow-root establishes a block formatting context so the inner
    content's top/bottom margins can't collapse *through* this container.

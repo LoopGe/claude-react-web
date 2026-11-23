@@ -62,6 +62,11 @@
    pre-JS fallback only and stays in sync with the server default. */
 :root {
   --chat-row-gap: var(--space-3);
+  /* Vertical cap of the thinking text viewport (streaming block and settled
+     fold share it). The body wraps and scrolls internally past this height,
+     so a long reasoning block can never push the transcript apart; tune it
+     here. */
+  --thinking-stream-max-height: min(40vh, 320px);
 }
 @supports (width: round(1px, 1px)) {
   .chat,
@@ -2001,16 +2006,18 @@ button.chat-empty-env-chip:hover {
 /* When collapsed, show a one-line preview of the reasoning, ellipsized.
    When expanded, the preview line is hidden so only the full body shows.
 
-   The preview's DOM text is the reasoning UNBOUNDED — blocks.tsx deliberately
-   does not cap it, because a hard `slice()` cut the text with no "…" whenever
-   the cap happened to fit inside the panel width (a clipped preview looked
-   identical to a complete one). Two costs are accepted with that, measured on
-   a Chromium probe of this exact flex row at 900px / below:
+   The preview's DOM text is the reasoning UNBOUNDED — thinking-preview.ts
+   deliberately does not cap it, because a hard `slice()` cut the text with no
+   "…" whenever the cap happened to fit inside the panel width (a clipped
+   preview looked identical to a complete one). It is computed only while the
+   details is CLOSED (the open summary hides the line), so the streaming
+   window never pays it per flush. Two costs are accepted while a collapsed
+   card relayouts, measured on a Chromium probe of this exact flex row at
+   900px / below:
    - the line is a SECOND full layout of the reasoning text: ~0.2ms at 2k
-     chars, ~2.1ms at 20k, ~4.2ms at 50k, on every relayout of a visible card.
-     Dropping text-overflow only takes 20k from 2.1ms to 1.9ms, so the cost is
-     the text layout itself, not the ellipsis — the always-mounted
-     `.thinking-body` <pre> does NOT absorb it.
+     chars, ~2.1ms at 20k, ~4.2ms at 50k. Dropping text-overflow only takes
+     20k from 2.1ms to 1.9ms, so the cost is the text layout itself, not the
+     ellipsis — the always-mounted `.thinking-body` viewport does NOT absorb it.
    - the whole text sits in the <summary>: it is the collapse toggle's
      accessible name, and a triple-click / select-all hands all of it to the
      copy-selection and to Chat.tsx's search seed (which rejects >200 chars).
@@ -2030,23 +2037,50 @@ button.chat-empty-env-chip:hover {
 .thinking-details[data-state='open'] .thinking-preview {
   display: none;
 }
-/* Thinking-text <pre>. Self-sufficient: carries its own code-block chrome
-   (background, border, radius, padding, overflow, mono font, size) so it no
-   longer leans on a shared `.msg-body pre` base. Only a small top gap below
-   the summary; the bottom is zeroed so no bottom margin is trapped inside the
-   collapse's flow-root. The gap below the card comes from the next block and
-   the transcript row gap — nothing in this card carries spacing of its own any
-   more (see the note on .thinking-details). */
+/* Thinking-text body. One viewport serves the live streaming row and the
+   settled fold (same component): the reasoning renders through the shared
+   markdown pipeline (prose, lists, code blocks — not an unbounded mono pre),
+   inside a vertically capped scroll region that follows the newest line while
+   streaming. The left rule keeps it visually distinct from the answer body;
+   prose wrapping/overflow comes from the `.md` rules (messages.css), so this
+   box only owns its own inset and the cap. Nothing in this card carries
+   spacing of its own beyond that (see the note on .thinking-details). */
 .thinking-body {
   margin: var(--space-1-5) 0 0;
-  padding: var(--space-2-5) var(--space-3);
-  background: var(--code-bg);
-  border: 1px solid var(--code-block-border);
-  border-radius: var(--radius-sm);
-  overflow-x: auto;
-  font-family: var(--mono);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border);
+  color: var(--fg-muted);
   font-size: var(--fs-sm);
-  color: var(--code-fg);
+  overflow-x: hidden;
+  overflow-y: auto;
+  max-height: var(--thinking-stream-max-height);
+}
+/* Content-above and content-below affordances for the capped viewport (the
+   scrollbar is intentionally hidden like every other small scroller here).
+   Sticky strips in the bubble's own background colour fade the first/last
+   visible line; the negative margins negate their height so they never grow
+   the content. useStickToBottom owns both flags (scrollTop > 0 / at bottom). */
+.thinking-body[data-scrolled='true']::before {
+  content: '';
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: block;
+  height: var(--space-3-5);
+  margin-bottom: calc(-1 * var(--space-3-5));
+  background: linear-gradient(to bottom, var(--bg-elev), transparent);
+  pointer-events: none;
+}
+.thinking-body[data-at-bottom='false']::after {
+  content: '';
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: block;
+  height: var(--space-3-5);
+  margin-top: calc(-1 * var(--space-3-5));
+  background: linear-gradient(to top, var(--bg-elev), transparent);
+  pointer-events: none;
 }
 .msg-header {
   font-size: var(--fs-xs);

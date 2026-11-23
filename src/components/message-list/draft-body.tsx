@@ -29,8 +29,9 @@ function fenceSource(seg: Extract<StreamSegment, { type: 'code' }>): string {
 /** Bare-block markdown body. `animate` enables the left-to-right reveal on
  *  live text; frozen interrupted half-cards render statically. Block-level
  *  tails (fenced code, tables, images, rules, display math) appear whole —
- *  see isRevealableTail. */
-export function DraftBlocks({ text, animate = false }: { text: string; animate?: boolean }): ReactElement {
+ *  see isRevealableTail. `cursor` renders the blinking typing caret when the
+ *  body is empty; thinking rows pass false (their block carries no cursor). */
+export function DraftBlocks({ text, animate = false, cursor = true }: { text: string; animate?: boolean; cursor?: boolean }): ReactElement {
   const blocks = splitStreamBlocks(text)
   const rootRef = useRef<HTMLDivElement>(null)
   const tailBlock = blocks.length > 0 ? blocks[blocks.length - 1]! : null
@@ -43,7 +44,7 @@ export function DraftBlocks({ text, animate = false }: { text: string; animate?:
         const source = seg.type === 'code' ? fenceSource(seg) : seg.content
         return <Fragment key={i}>{compileMarkdown(source, { transient: tail })}</Fragment>
       })}
-      {blocks.length === 0 && <span className="streaming-cursor streaming-cursor-fallback" />}
+      {blocks.length === 0 && cursor && <span className="streaming-cursor streaming-cursor-fallback" />}
     </div>
   )
 }

@@ -122,7 +122,7 @@ export interface TranscriptRow {
  *  renders from the store (`draft.text` / `thinkingDraft.text`), not from the
  *  message. Frozen thinking half-cards carry a thinking placeholder +
  *  `isThinkingDraft` (MessageView's draft branch renders them via
- *  ThinkingDraftBody). */
+ *  ThinkingBody). */
 export function buildDraftRows(
   draft: DraftState | null,
   frozenDrafts: readonly FrozenDraft[],

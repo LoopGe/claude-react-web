@@ -21,11 +21,15 @@ reasoning 披露形态，但按用户裁决采用「全文实时渲染」而非 
 ## 2. Goals
 
 1. **流式可见**：主线程 thinking 块的第一条 `thinking_delta` 到达时，转写尾部出现
-   thinking 行，全文以 ≤80ms 节奏实时生长（与正文草稿同节奏）。纯文本渲染，样式与
-   今天展开后的 thinking 体（`pre.thinking-body`）一致。
-2. **结束折叠**：thinking 块完成（`content_block_stop`）时该行折叠，折叠形态与今天
-   定稿的 thinking 折叠行**像素一致**（同 `AnimatedDetails`、同 summary 标签 + 单行
-   预览、同展开体）。折叠后用户可手动展开（与定稿行为一致）。
+   thinking 行，全文以 ≤80ms 节奏实时生长（与正文草稿同节奏）。专用流式块：推理文本
+   按 **markdown** 渲染（段落/列表/代码块），**换行**（不再横向增长出看不见的滚动
+   区）、高度**封顶**（`--thinking-stream-max-height`，默认 `min(40vh, 320px)`）并在
+   内部自动滚动到最新行（手动上滚暂停跟随，回到底部恢复），上方有内容时顶部渐隐；
+   左→右揭示动画与正文草稿同款。
+2. **结束折叠**：thinking 块完成时该行折叠，折叠形态与今天定稿的 thinking 折叠行
+   **像素一致**（同 `AnimatedDetails`、同 summary 标签 + 单行预览、同展开体）。折叠
+   动画由**定稿交接**驱动（同一 `ThinkingBody` 实例的 `open` 翻转，见 §5.5），折叠后
+   用户可手动展开（与定稿行为一致，展开即同一个封顶/换行块）。
 3. **定稿交接零重排**：thinking 块的定稿 assistant 帧到达时，行 key 别名接管
    （与正文草稿同机制），折叠态 → 折叠态交接，DOM 不变。
 4. **渲染隔离不破**：thinking flush 只重渲染 thinking 行 body 叶子；Chat /
@@ -144,50 +148,76 @@ mirror.thinkingDraftKey: string | null       // 稳定字符串投影（MessageL
   `applyMessage` 照常定格/接管。SESSION_TERMINATED 跑 sweep 但**不 freeze**
   （draft 原样存活，thinking 对称继承）。
 
-### 5.4 渲染：叶子订阅 + 两态
+### 5.4 渲染：一个 `ThinkingBody` 组件，三种状态
 
-`ThinkingDraftBody`（新叶子，`message-list/thinking-draft-body.tsx`）：
+`ThinkingBody`（`message-list/thinking-body.tsx`，本轮由 `ThinkingDraftBody` 重命名）
+是 live 流式行、定稿行、冻结半截行**共用的唯一组件**，且在 **MessageView 的同一树
+位置**渲染：live 草稿行与 settled 单-thinking 块行都直接渲染它（后者不经
+`BlockView`，且**该分支不能包 `<Fragment>`**——槽位元素类型一变，React 就会重挂，
+折叠动画随之变成瞬时 snap）；`BlockView` 的 thinking 分支委托给同一组件，供 split /
+合并帧 / 历史 / raw-report 使用。
 
-- 订阅 `thinkingDraft` 的**投影**（text/done），不订阅整个 mirror——thinking flush
-  只重渲染本叶子。正文 `DraftTextBody` 的订阅改为投影 `draft.text`（字符串值稳定），
-  使 thinking-only flush 不触发正文叶子重渲染（反向亦然：text flush 不动 thinking
-  叶子——flush 保持对方 section 引用不变）。
-- **两态共用一个受控 `AnimatedDetails`**（my call，builder-check 定夺——关键：
-  若实现为两个不同子树，完成态是新挂载的闭合组件，**不会播放收拢动画**，
-  AnimatedCollapse 初 mount 闭合路径直接 pin 0）：`open = !done || userOpened`。
-  流式期受控 open=true，summary 点击被受控机制天然吞掉（强制展开，非目标达成）；
-  done 翻转触发**同一实例**的既有收拢动画；完成态用户可手动展开（userOpened）。
-- **流式态**（done=false）：展开的 thinking 体——`thinking-summary` 标签行 +
-  `pre.thinking-body` 全文（纯文本，不做 markdown 编译——thinking 定稿体本就是
-  `<pre>`）。无游标（区别于正文草稿；thinking 是原始推理文本）。文本实时生长。
-- **完成态**（done=true 且未手动展开）：闭合的 `AnimatedDetails`（`thinking-details`），
-  summary = 「thinking」标签 + 单行预览（**复用 `blocks.tsx` 现有的预览计算**：
-  空白压成一行、CSS 省略号、不截断长度——预览 helper 从 BlockView 内联代码提取），
-  body = `pre.thinking-body` 全文。闭合态 DOM 与定稿 BlockView 输出一致。
-- **像素一致契约**：完成态 DOM == 定稿 thinking 块 DOM（同组件、同 props、同文本 →
-  同 summary 预览）。前提：累积 delta 文本 === 定稿块 thinking 文本（探针已证文本
-  全经 delta 到达；signature 不参与渲染）。builder 用测试钉住：给定同一文本，
-  完成态与 `BlockView(thinking block)` 渲染输出一致。
+- **live 模式**（传 `sessionId`）：订阅 `thinkingDraft` 投影（text/done），streaming
+  flush 只重渲染本叶。正文 `DraftTextBody` 的订阅改为投影 `draft.text`（字符串值
+  稳定），使 thinking-only flush 不触发正文叶子重渲染（反向亦然）。
+- **settled 模式**（传 `text`）：定稿帧 / 磁盘历史的静态全文，默认折叠。
+- **frozen 模式**（传 `frozenText`）：打断定格半截文本，默认折叠，订阅 INERT。
 
-### 5.5 折叠时机：块完成即折，独立于定稿帧到达
+**专用流式块**（`.thinking-body` 即滚动视口，内容走与正文草稿**同一套 markdown
+管线** `DraftBlocks`；`.md` 根承载揭示动画）：
 
-`content_block_stop`（thinking 块）→ done=true → `AnimatedDetails` 从展开动画收拢
-（复用现有折叠动画机制）。**不等定稿帧**——用户裁决「结束后折叠」指思考结束，
-不是响应结束；正文随后流式期间 thinking 行已是折叠态。
+- 推理文本按 **markdown** 渲染（段落 / 列表 / 粗体 / 代码块），不再是等宽 `<pre>`；
+  换行/长词折行由 `.md` 的 `pre-wrap` + `overflow-wrap: anywhere` 规则负责，不再产生
+  横向滚动区。
+- **body 懒编译**：已定稿/冻结且未展开的行不渲染 `DraftBlocks`（历史首屏不为每个
+  thinking 行付 markdown 解析）；`bodyShown` 在首次可见（流式或展开）后锁定，收拢
+  动画期间内容不会消失。
+- `max-height: var(--thinking-stream-max-height)`（默认 `min(40vh, 320px)`）+
+  `overflow-y: auto`；streaming 时 `useStickToBottom` 每次 flush 钉到底部，手动上滚
+  暂停跟随、回到底部恢复；`data-scrolled` / `data-at-bottom` 驱动**顶部 / 底部**
+  渐隐（sticky 伪元素，背景用 `--bg-elev`；滚动条按仓库惯例隐藏，渐隐就是提示）。
+  定稿/冻结不跟随；用户展开时回到顶部（折叠动画期间保持流式视口，不跳内容）。
+- 揭示动画由 `DraftBlocks` 的 `animate` 开关驱动（mask 挂在它自己的 `.md` 根上）；
+  thinking 传 `cursor=false`（无游标）。
+- summary =「thinking」标签 + 单行预览（`thinkingPreviewText`，仅在闭合态计算——
+  展开/流式期间 summary 的预览被 CSS 隐藏，逐 flush 跑全串空白折叠是纯浪费）。
+- **像素一致契约为字面同一 DOM**：live 完成态与定稿行是同一个组件、同一份渲染，
+  不再有两套渲染器可比。
 
-定稿帧到达时完成态→完成态交接（像素一致，§5.4）。**已接受边**（均不加补偿代码）：
+### 5.5 折叠时机：定稿交接驱动（实测帧序修正）
 
-- 定稿帧在收拢动画进行中到达（块完成即发帧的时机下可能发生）：交接瞬间有
-  ≤ 剩余动画高度的一次小跳——与旧文档「thinking 插行正文小移一次」同类。builder
-  实测帧时机后若跳变明显，再议。
-- done 后用户手动展开、定稿帧才到：交接瞬间收拢一次（定稿 BlockView 非受控
-  `defaultOpen=false`，不可动）——唯一合规行为，接受。
-- done 翻转可能先于最后一次 flush ≤80ms：收拢启动时预览文本缺尾，flush 落地即
-  补齐；定稿帧带全文，交接无损——节奏固有。
+**实测（2026-11-23 WS 探针，claude provider 真实回合）**：thinking 块的定稿
+assistant 帧与 `content_block_stop` 同一毫秒到达，且**定稿帧先到**：
 
-**浏览器实测（2026-11-23）**：三场景通过——普通 thinking 回合（全文生长→动画
-收拢→定稿无跳变）、工具调用回合、thinking 中打断（折叠半截行定格、可展开）；
-无 thinking 回合零回归。上述接受边无需再议。
+```
+content_block_start  index=0 thinking
+ASSISTANT 帧          blocks=["thinking"]   ← 定稿帧
+content_block_stop   index=0                ← 同毫秒，紧随其后
+```
+
+因此 `content_block_stop` 驱动的 `done=true`（`live-turn.ts`）在真实流中**永远不会
+在 draft 存在时发生**——supersede 已先清空 `thinkingDraft`。旧设计「块完成即折、
+同一实例动画收拢」依赖的正是这个不会发生的顺序；实测旧实现从不播放收拢动画。
+
+**折叠改由交接驱动**：定稿帧到达 → `thinkingDraft` 清除 + 别名接管 → settled 行在
+live 草稿行的**同一树位置**渲染同一 `ThinkingBody`；同一 `AnimatedDetails` 实例的
+`open` 从 true→false，播放既有 240ms 收拢动画。（`MessageView` 对「单 thinking 块的
+settled 行」必须直接渲染 `ThinkingBody` 而非经 `BlockView`——后者会在该位置插入
+不同组件，重挂一个初始闭合的 `AnimatedCollapse`，pin 0 且不播放动画；同理该分支
+不能包 `<Fragment>`。）
+
+**已接受边**（均不加补偿代码）：
+
+- live 合并帧（thinking+text 在同一帧，罕见）走 split 渲染，树位置不同 → 无实例
+  连续性、无收拢动画；磁盘 replay 无草稿，不受影响。
+- 定稿帧带全文且先于 stop：交接时文本已是最终版，不存在「预览缺尾」窗口。
+- done 后用户手动展开在真实帧序下不可达（done 只在交接时成立）；交接后的手动展开
+  是正常路径（展开即封顶/换行块，从头读）。
+
+**浏览器实测**：2026-11-23 的旧记录（「动画收拢」）前提有误——同日的 WS 探针证明
+定稿帧先于 stop，旧实现从未播放收拢动画。折叠改为交接驱动、专用流式块（换行/
+封顶/自动跟随）落地后，需要重新做一次真实 thinking 回合的浏览器复验（生长→换行
+不横向溢出→封顶跟随→收拢→定稿无跳变；工具回合；打断定格）。
 
 ### 5.6 定稿交接（supersede）
 
@@ -195,7 +225,8 @@ thinking 块的定稿 assistant 帧（主线程、content 含 thinking 块）到
 （`message-pipeline.ts` MESSAGE 路径）：
 
 - `thinkingDraft` 非空 → 别名 `messageUuid → thinking:<n>` 进 `draftRowKeys`，
-  `thinkingDraft = null`。定稿行经现有 split / BlockView 路径渲染折叠 thinking 块。
+  `thinkingDraft = null`。单 thinking 块的定稿行在草稿行的同一树位置直接渲染
+  `ThinkingBody`（实例连续性 → 收拢动画，§5.5）；其余分帧走 split / `BlockView`。
 - 正文草稿的 supersede 条件**收紧**：今天「任何主线程 assistant + draft 存在」即
   接管；改为按帧内容判定——含 text 块的帧接管正文草稿，含 thinking 块的帧接管
   thinking 行。每块一帧的实证节奏下两者互不干扰。收紧严格优于现状：今天
@@ -259,6 +290,7 @@ thinking 块的定稿 assistant 帧（主线程、content 含 thinking 块）到
 2. 状态层：liveTurn.thinkingChunks + mirror.thinkingDraft + flush/prune/重置
    （纯函数 + 单测，TDD）。
 3. 行层：thinkingDraftKey 投影 + buildDraftRows thinking 行 + MessageView 分支。
-4. 叶子：ThinkingDraftBody 两态 + DraftTextBody 订阅投影化 + 像素一致测试。
+4. 叶子：`ThinkingBody` 三态（live/settled/frozen）+ DraftTextBody 订阅投影化 +
+   专用流式块（换行/封顶/跟随）+ 交接实例连续性 + 像素一致测试。
 5. supersede 收紧 + 打断定格 + lifecycle 补全。
 6. 隔离测试扩展 + 无 thinking 零回归验证 + 浏览器实测（真实 thinking 回合）。

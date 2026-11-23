@@ -154,7 +154,8 @@
    tables, tool inputs, diffs, command output, raw JSON, question previews)
    where a thumb is more noise than value. Wheel/trackpad swipe still scrolls.
    Same pattern as the existing .global-settings-tabs rule (utilities.css).
-   `.thinking-body` and `.bash-tool-full` are the non-Markdown <pre> in
+   `.thinking-body` (the thinking scroll viewport, Markdown-rendered) and
+   `.bash-tool-full` are the non-Markdown-scroller <pre>/viewport boxes in
    message bodies that may scroll; they're listed explicitly (there is no
    shared `.msg-body pre` base anymore). `.md pre` extends the hide to
    <Markdown> rendered outside a message body (RecapWindow, Composer preview,

@@ -18,7 +18,7 @@ import { countMatches, extractPlainText, extractMessagePlainText, extractToolUse
 import { getBlocks, isHumanUserMessage, userMessageOriginKind } from '../../session-store/normalize'
 import { BlockView, ToolResultBlock } from './blocks'
 import { DraftTextBody } from './draft-body'
-import { ThinkingDraftBody } from './thinking-draft-body'
+import { ThinkingBody } from './thinking-body'
 import { TurnChangesCard } from './TurnChangesCard'
 import { useResultConsumed } from './result-consumed-context'
 import { blockRendersContent, willRenderEmpty } from './rendering'
@@ -589,7 +589,7 @@ export const MessageView = memo(function MessageView({
       ? blocks.map((b) => (b as { type?: string; text?: string }).type === 'text' ? (b as { text?: string }).text ?? '' : '').join('')
       : ''
     // Frozen THINKING half-card: its partial text rides a thinking placeholder
-    // (buildDraftRows), rendered statically by ThinkingDraftBody.
+    // (buildDraftRows), rendered statically by ThinkingBody.
     const draftFrozenThinking = msg.isDraft && (msg as { isThinkingDraft?: boolean }).isThinkingDraft
       ? blocks.map((b) => (b as { type?: string; thinking?: string }).type === 'thinking' ? (b as { thinking?: string }).thinking ?? '' : '').join('')
       : ''
@@ -633,6 +633,27 @@ export const MessageView = memo(function MessageView({
         </div>
       )
     }
+    // A settled frame whose only visible content is a thinking block renders
+    // through ThinkingBody DIRECTLY, at the exact tree position the live draft
+    // row uses. The finalize hand-off removes the draft row and the settled
+    // row adopts its alias key + row identity (computeItemKey), so the same
+    // ThinkingBody / AnimatedDetails instance receives the flip to `done` and
+    // plays the fold animation. Routing it through BlockView instead inserts a
+    // different component at that position, remounting a fresh closed details
+    // that pins height 0 and never animates. BlockView's thinking branch
+    // delegates to the same component, so the closed DOM is unchanged.
+    const settledThinkingText = (() => {
+      // Count VISIBLE blocks, not raw blocks: a frame carrying an empty sibling
+      // (e.g. a whitespace text block beside its thinking block) still has one
+      // visible part and must take the same direct slot, or the hand-off
+      // remounts and snaps. `splitParts` is that renderable-only list; it is
+      // empty for drafts / structured reports, which take other branches.
+      if (splitParts.length !== 1) return null
+      const block = splitParts[0]!.block
+      if (block.type !== 'thinking') return null
+      if (typeof block.thinking !== 'string' || block.thinking.trim().length === 0) return null
+      return block.thinking
+    })()
     return (
       <HoverHint label={formatFullTimestamp(msg.receivedAt)} side="top" disabled={msg.receivedAt == null}>
         <div className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}>
@@ -643,10 +664,22 @@ export const MessageView = memo(function MessageView({
         >
           {msg.isDraft ? (
             (msg as { isThinkingDraft?: boolean }).isThinkingDraft ? (
-              <ThinkingDraftBody sessionId={sessionId} frozenText={draftFrozenThinking || undefined} />
+              draftFrozenThinking
+                ? <ThinkingBody frozenText={draftFrozenThinking} />
+                // Draft rows are only built when the store-backed session id
+                // exists (MessageList gates them on it), so the live variant's
+                // id is real; the `!` is a TS-only claim, not a fallback.
+                : <ThinkingBody sessionId={sessionId!} />
             ) : (
               <DraftTextBody sessionId={sessionId} frozenText={draftFrozenText || undefined} />
             )
+          ) : settledThinkingText != null ? (
+            // SAME child slot as the live draft row's ThinkingBody (position 0
+            // of .msg-body) — this is what keeps the component instance alive
+            // across the hand-off and lets the fold animate. Do NOT wrap this
+            // branch (or the draft branch) in a Fragment: a different element
+            // type at the slot remounts the block.
+            <ThinkingBody text={settledThinkingText} />
           ) : (
             <>
             {/* Structured twins of `/context` and `/usage` (SDK 0.3.232 / 0.3.273)
