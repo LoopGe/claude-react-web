@@ -8,8 +8,9 @@
 //      (user/message → [i], tool/result → [0, inner], catalog → []), the
 //      messageUuid identity (data.id / data.message.id), and sidechain
 //      parentToolUseId preservation.
-//   3. Behavior preservation — the neutral scan yields the SAME attachments
-//      as the legacy nativeAttachmentOccurrences scan on the same log.
+//   3. Consumer agreement — the attachment index's neutral read
+//      (nativeAttachmentOccurrences) yields the SAME attachments as the
+//      shared helper on the same log.
 
 import { describe, expect, it } from 'vitest'
 import { neutralEventsOf, neutralFileOccurrences } from './neutral-read.js'
@@ -165,16 +166,18 @@ describe('neutralFileOccurrences — host SDK-transcript coordinates', () => {
   })
 })
 
-describe('neutralFileOccurrences — behavior preservation vs the legacy scan', () => {
+describe('neutralFileOccurrences — agreement with the attachment-index consumer', () => {
+  // The deep legacy-scan equivalence pin lives in attachment-reference-index.test.ts
+  // (the consumer keeps the pre-neutralization scan as its reference); here we
+  // pin that the consumer's neutral read drops/reorders nothing relative to the
+  // shared helper.
   it('yields the same attachments as nativeAttachmentOccurrences on a migrated v1/v2 log', () => {
-    const events = legacyCorpus()
-    const legacy = nativeAttachmentOccurrences(events)
-    const neutral = neutralFileOccurrences(events.map(migrateEventToV3)).map((o) => o.attachment)
-    expect(neutral).toEqual(legacy)
+    const neutral = legacyCorpus().map(migrateEventToV3)
+    expect(neutralFileOccurrences(neutral).map((o) => o.attachment)).toEqual(nativeAttachmentOccurrences(neutral))
   })
 
   it('yields the same attachments reading a hand-built neutral v3 baseline directly', () => {
-    const legacy = nativeAttachmentOccurrences(legacyCorpus())
-    expect(neutralFileOccurrences(neutralFixture()).map((o) => o.attachment)).toEqual(legacy)
+    const neutral = neutralFixture()
+    expect(neutralFileOccurrences(neutral).map((o) => o.attachment)).toEqual(nativeAttachmentOccurrences(neutral))
   })
 })

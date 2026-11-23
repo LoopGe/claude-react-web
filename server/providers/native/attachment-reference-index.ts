@@ -9,50 +9,20 @@ import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createLogger } from '../../log.js'
 import { loadNativeSessionLog } from './session-log/log.js'
-import type {
-  NativeEventInput,
-  NativeFileAttachment,
-  NativeFileBlock,
-  NativeLogEvent,
-} from './session-log/format.js'
+import { neutralEventsOf, neutralFileOccurrences } from './session-log/neutral-read.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
+import type { NativeFileAttachment } from '../../../shared/attachment-types.js'
 
 const log = createLogger('attachment-references')
 
-type AttachmentEvent = NativeLogEvent | NativeEventInput
-
-function isNativeFileBlock(value: unknown): value is NativeFileBlock {
-  return typeof value === 'object' && value !== null
-    && (value as { type?: unknown }).type === 'file'
-    && typeof (value as { attachment?: unknown }).attachment === 'object'
-    && (value as { attachment?: unknown }).attachment !== null
-}
-
 /** Extract every structured occurrence that authorizes AttachmentRead: direct
- * user blocks, one-level tool-result blocks, and hidden handoff catalogs. */
+ * user blocks, tool/result inner blocks, and hidden handoff catalogs. Reads
+ * the canonical NEUTRAL events (callers pass `neutralEventsOf(snapshot/log)`);
+ * every occurrence is kept in log order, exactly as the legacy scan did. */
 export function nativeAttachmentOccurrences(
-  events: readonly AttachmentEvent[],
+  events: readonly NativeSessionEvent[],
 ): NativeFileAttachment[] {
-  const occurrences: NativeFileAttachment[] = []
-  for (const event of events) {
-    if (event.type === 'session/attachments') {
-      occurrences.push(...event.attachments)
-      continue
-    }
-    if (event.type !== 'user') continue
-    for (const block of event.message.content) {
-      if (isNativeFileBlock(block)) {
-        occurrences.push(block.attachment)
-        continue
-      }
-      if (typeof block !== 'object' || block === null) continue
-      const candidate = block as { type?: unknown; content?: unknown }
-      if (candidate.type !== 'tool_result' || !Array.isArray(candidate.content)) continue
-      for (const inner of candidate.content) {
-        if (isNativeFileBlock(inner)) occurrences.push(inner.attachment)
-      }
-    }
-  }
-  return occurrences
+  return neutralFileOccurrences(events).map((occurrence) => occurrence.attachment)
 }
 
 export interface NativeAttachmentReferenceIndexOptions {
@@ -97,7 +67,10 @@ export class NativeAttachmentReferenceIndex {
       if (!entry.isDirectory()) continue
       try {
         const snapshot = await loadNativeSessionLog(this.stateDir, entry.name)
-        if (snapshot) this.persisted.set(entry.name, nativeAttachmentOccurrences(snapshot.events))
+        // An arbitrary on-disk log may be an unmigrated v1/v2 (no neutralEvents);
+        // neutralEventsOf falls back to the lossless migration, never dropping
+        // occurrences.
+        if (snapshot) this.persisted.set(entry.name, nativeAttachmentOccurrences(neutralEventsOf(snapshot)))
       } catch (err) {
         this.unreadableSessions.add(entry.name)
         log.warn(`native attachment index could not read session ${entry.name}: ${err instanceof Error ? err.message : String(err)}`)
@@ -106,8 +79,8 @@ export class NativeAttachmentReferenceIndex {
   }
 
   /** Replace one live session's derived view after open, fork, or a
-   * reference-bearing append. */
-  replaceSession(id: string, events: readonly AttachmentEvent[]): void {
+   * reference-bearing append. Takes the canonical neutral events. */
+  replaceSession(id: string, events: readonly NativeSessionEvent[]): void {
     const occurrences = nativeAttachmentOccurrences(events)
     if (occurrences.length === 0) this.persisted.delete(id)
     else this.persisted.set(id, occurrences)

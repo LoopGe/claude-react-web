@@ -568,7 +568,7 @@ export class NativeSession implements NativeSessionCore {
     } else {
       this.log = this.openFreshLog(opts)
     }
-    this.pdfBudgets.rebuildFromEvents(this.log.events)
+    this.pdfBudgets.rebuildFromEvents(neutralEventsOf(this.log))
     this.syncAttachmentReferences()
     // session-health's stuck-GC force-unloads sessions whose init never
     // lands — push it first, before any turn output. `fast_mode_state` is
@@ -1217,7 +1217,7 @@ export class NativeSession implements NativeSessionCore {
   }
 
   private syncAttachmentReferences(): void {
-    this.opts.attachmentReferences?.replaceSession(this.opts.id, this.log.events)
+    this.opts.attachmentReferences?.replaceSession(this.opts.id, neutralEventsOf(this.log))
   }
 
   private persistToolResult(record: PersistedToolResult, parentToolUseId: string | null): void {
@@ -1688,7 +1688,7 @@ export class NativeSession implements NativeSessionCore {
   getAttachmentCatalog(): readonly NativeFileAttachment[] {
     const seen = new Set<string>()
     const catalog: NativeFileAttachment[] = []
-    for (const attachment of nativeAttachmentOccurrences(this.log.events)) {
+    for (const attachment of nativeAttachmentOccurrences(neutralEventsOf(this.log))) {
       const key = `${attachment.id}\0${attachment.digest}`
       if (seen.has(key)) continue
       seen.add(key)
@@ -1778,7 +1778,7 @@ export class NativeSession implements NativeSessionCore {
       data: { text: summary, context, uuid: opts.uuid, timestamp: opts.timestamp },
     })
     await this.log.flush()
-    this.pdfBudgets.rebuildFromEvents(this.log.events)
+    this.pdfBudgets.rebuildFromEvents(neutralEventsOf(this.log))
     // History is a readonly array mutated in place; splice keeps every holder
     // of the reference (the pump loop) looking at the compacted conversation.
     this.history.splice(

@@ -4,11 +4,17 @@ import {
   assignPdfModelForms,
   PDF_MAX_BASE64_CHARS,
   PDF_MAX_BYTES,
+  pdfBase64Length,
   PdfBudgetLedger,
   PreparedPdfStore,
   type PdfDocumentBlock,
 } from './pdf-documents.js'
+import { neutralEventsOf } from './session-log/neutral-read.js'
+import { projectNeutralEventToLegacy } from './session-log/format.js'
 import type { NativeFileAttachment, NativeLogEvent } from './session-log/format.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
+import type { ContentBlock } from './vocabulary/types.js'
+import { brandString } from './vocabulary/brand.js'
 
 function digestOf(value: string): string {
   return createHash('sha256').update(value).digest('hex')
@@ -33,8 +39,90 @@ function rawPdf(overrides: Partial<NativeFileAttachment> = {}): NativeFileAttach
   return raw as NativeFileAttachment
 }
 
-function fileBlock(attachment: NativeFileAttachment) {
+function fileBlock(attachment: NativeFileAttachment): { type: 'file'; attachment: NativeFileAttachment } {
   return { type: 'file', attachment }
+}
+
+const TS_ISO = '2026-11-23T00:00:00.000Z'
+const TS = Date.parse(TS_ISO)
+
+function neutralUser(seq: number, uuid: string, parent: string | null, content: ContentBlock[]): NativeSessionEvent {
+  return {
+    type: 'user/message',
+    seq,
+    time: TS,
+    parentToolUseId: parent,
+    data: { role: 'user', id: brandString<'MessageId'>(uuid), content, source: { kind: 'user' } },
+  }
+}
+
+function neutralToolResult(seq: number, uuid: string, callId: string, parent: string | null, content: ContentBlock[]): NativeSessionEvent {
+  return {
+    type: 'tool/result',
+    seq,
+    time: TS,
+    parentToolUseId: parent,
+    data: {
+      message: {
+        role: 'tool',
+        id: brandString<'MessageId'>(uuid),
+        source: { kind: 'tool', callId: brandString<'ToolCallId'>(callId) },
+        toolCallId: brandString<'ToolCallId'>(callId),
+        content,
+        isError: false,
+      },
+    },
+  }
+}
+
+interface PdfPartitionView {
+  usedBase64Chars: number
+  documentDigests: Set<string>
+}
+
+/** The ledger's private partition map, for the deep-equal behavior pin. */
+function partitionsOf(ledger: PdfBudgetLedger): Map<string, PdfPartitionView> {
+  return (ledger as unknown as { partitions: Map<string, PdfPartitionView> }).partitions
+}
+
+/** The pre-neutralization rebuild, kept verbatim as the behavior-preservation
+ *  reference: the neutral rebuild must produce exactly the partitions this
+ *  legacy scan produced on the same log's legacy events. */
+function legacyPdfPartitions(events: readonly NativeLogEvent[]): Map<string, PdfPartitionView> {
+  const isFileBlock = (value: unknown): value is { type: 'file'; attachment: NativeFileAttachment } =>
+    typeof value === 'object' && value !== null
+    && (value as { type?: unknown }).type === 'file'
+    && typeof (value as { attachment?: unknown }).attachment === 'object'
+    && (value as { attachment?: unknown }).attachment !== null
+  const partitions = new Map<string, PdfPartitionView>()
+  const record = (historyKey: string, block: unknown): void => {
+    if (!isFileBlock(block) || block.attachment.modelForm !== 'pdf-document') return
+    const partition = partitions.get(historyKey) ?? { usedBase64Chars: 0, documentDigests: new Set<string>() }
+    if (partition.documentDigests.has(block.attachment.digest)) return
+    partition.usedBase64Chars += pdfBase64Length(block.attachment.size)
+    partition.documentDigests.add(block.attachment.digest)
+    partitions.set(historyKey, partition)
+  }
+  let floor = 0
+  for (let index = events.length - 1; index >= 0; index--) {
+    if (events[index].type === 'session/compact') {
+      floor = index + 1
+      break
+    }
+  }
+  for (let index = floor; index < events.length; index++) {
+    const event = events[index]
+    if (event.type !== 'user') continue
+    const historyKey = event.parent_tool_use_id ?? 'main'
+    for (const block of event.message.content) {
+      record(historyKey, block)
+      if (typeof block !== 'object' || block === null) continue
+      const candidate = block as { type?: unknown; content?: unknown }
+      if (candidate.type !== 'tool_result' || !Array.isArray(candidate.content)) continue
+      for (const inner of candidate.content) record(historyKey, inner)
+    }
+  }
+  return partitions
 }
 
 describe('PDF model-form assignment', () => {
@@ -111,19 +199,18 @@ describe('PdfBudgetLedger', () => {
 
   it('counts a repeated persisted digest once per partition when rebuilding', () => {
     const repeated = pdf({ digest: digestOf('repeated'), size: PDF_MAX_BYTES, modelForm: 'pdf-document' })
-    const event = (uuid: string, parent: string | null) => ({
-      seq: parent === null ? 0 : 1,
-      type: 'user',
-      uuid,
-      session_id: 's',
-      parent_tool_use_id: parent,
-      timestamp: 't',
-      message: { role: 'user', content: [fileBlock(repeated), fileBlock(repeated)] },
-    }) as NativeLogEvent
+    const events: NativeSessionEvent[] = [
+      neutralUser(0, 'main', null, [fileBlock(repeated), fileBlock(repeated)]),
+      neutralUser(1, 'agent', 'agent-1', [fileBlock(repeated), fileBlock(repeated)]),
+    ]
     const ledger = new PdfBudgetLedger()
 
-    ledger.rebuildFromEvents([event('main', null), event('agent', 'agent-1')])
+    ledger.rebuildFromEvents(events)
 
+    // Behavior pin: deep-equal to the legacy rebuild on the legacy projection.
+    expect(partitionsOf(ledger)).toEqual(
+      legacyPdfPartitions(events.map((event) => projectNeutralEventToLegacy(event, 's'))),
+    )
     expect(ledger.reservePdfBudget('main', 3, digestOf('next-main')).ok).toBe(true)
     expect(ledger.reservePdfBudget('agent-1', 3, digestOf('next-agent')).ok).toBe(true)
   })
@@ -131,26 +218,58 @@ describe('PdfBudgetLedger', () => {
   it('rebuilds main and sidechain partitions from the post-compact floor only', () => {
     const oldDigest = digestOf('old')
     const currentDigest = digestOf('current')
-    const events = [
-      {
-        seq: 0, type: 'user', uuid: 'old', session_id: 's', parent_tool_use_id: null, timestamp: 't',
-        message: { role: 'user', content: [fileBlock(pdf({ digest: oldDigest, modelForm: 'pdf-document' }))] },
-      },
-      { seq: 1, type: 'session/compact', text: 'summary', context: 'context', uuid: 'c', timestamp: 't' },
-      {
-        seq: 2, type: 'user', uuid: 'main', session_id: 's', parent_tool_use_id: null, timestamp: 't',
-        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'main-read', content: [fileBlock(pdf({ digest: currentDigest, modelForm: 'pdf-document' }))] }] },
-      },
-      {
-        seq: 3, type: 'user', uuid: 'agent', session_id: 's', parent_tool_use_id: 'agent-1', timestamp: 't',
-        message: { role: 'user', content: [fileBlock(pdf({ digest: currentDigest, modelForm: 'pdf-document' }))] },
-      },
-    ] as NativeLogEvent[]
+    const catalogDigest = digestOf('catalog')
+    const handleDigest = digestOf('handle')
+    const events: NativeSessionEvent[] = [
+      neutralUser(0, 'old', null, [fileBlock(pdf({ digest: oldDigest, modelForm: 'pdf-document' }))]),
+      { type: 'session/compact', seq: 1, time: TS, data: { text: 'summary', context: 'context', uuid: 'c', timestamp: TS_ISO } },
+      neutralToolResult(2, 'main', 'main-read', null, [fileBlock(pdf({ digest: currentDigest, modelForm: 'pdf-document' }))]),
+      neutralUser(3, 'agent', 'agent-1', [fileBlock(pdf({ digest: currentDigest, modelForm: 'pdf-document' }))]),
+      // A post-floor hidden catalog and a handle-form occurrence hold no budget.
+      { type: 'session/attachments', seq: 4, time: TS, data: { attachments: [pdf({ id: 'cat', digest: catalogDigest, modelForm: 'pdf-document' })], timestamp: TS_ISO } },
+      neutralUser(5, 'handle-user', null, [fileBlock(pdf({ id: 'h', digest: handleDigest, modelForm: 'handle' }))]),
+    ]
     const ledger = new PdfBudgetLedger()
     ledger.rebuildFromEvents(events)
+    expect(partitionsOf(ledger)).toEqual(
+      legacyPdfPartitions(events.map((event) => projectNeutralEventToLegacy(event, 's'))),
+    )
     expect(ledger.reservePdfBudget('main', 3, oldDigest).ok).toBe(true)
     expect(ledger.reservePdfBudget('main', 3, currentDigest)).toMatchObject({ ok: false, reason: 'duplicate' })
     expect(ledger.reservePdfBudget('agent-1', 3, currentDigest)).toMatchObject({ ok: false, reason: 'duplicate' })
+    expect(ledger.reservePdfBudget('main', 3, catalogDigest).ok).toBe(true)
+    expect(ledger.reservePdfBudget('main', 3, handleDigest).ok).toBe(true)
+  })
+
+  it('rebuilds an unmigrated v1/v2 log identically through the neutralEventsOf fallback (v1/v2 fixture pin)', () => {
+    const oldDigest = digestOf('old')
+    const sideDigest = digestOf('side')
+    const catalogDigest = digestOf('catalog')
+    const legacyEvents = [
+      {
+        seq: 0, type: 'user', uuid: 'old', session_id: 's', parent_tool_use_id: null, timestamp: TS_ISO,
+        message: { role: 'user', content: [fileBlock(pdf({ digest: oldDigest, modelForm: 'pdf-document' }))] },
+      },
+      { seq: 1, type: 'session/compact', text: 'summary', context: 'context', uuid: 'c', timestamp: TS_ISO },
+      {
+        seq: 2, type: 'user', uuid: 'side-read', session_id: 's', parent_tool_use_id: 'agent-1', timestamp: TS_ISO,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'side-call', content: [fileBlock(pdf({ digest: sideDigest, modelForm: 'pdf-document' }))] }] },
+      },
+      {
+        seq: 3, type: 'user', uuid: 'side-direct', session_id: 's', parent_tool_use_id: 'agent-1', timestamp: TS_ISO,
+        message: { role: 'user', content: [fileBlock(pdf({ digest: sideDigest, modelForm: 'pdf-document' })), fileBlock(pdf({ digest: sideDigest, modelForm: 'pdf-document' }))] },
+      },
+      { seq: 4, type: 'session/attachments', attachments: [pdf({ id: 'cat', digest: catalogDigest, modelForm: 'pdf-document' })], timestamp: TS_ISO },
+    ] as NativeLogEvent[]
+    const ledger = new PdfBudgetLedger()
+
+    // neutralEvents undefined: the fallback migrates the legacy read view.
+    ledger.rebuildFromEvents(neutralEventsOf({ events: legacyEvents }))
+
+    expect(partitionsOf(ledger)).toEqual(legacyPdfPartitions(legacyEvents))
+    expect(ledger.reservePdfBudget('main', 3, oldDigest).ok).toBe(true)
+    expect(ledger.reservePdfBudget('agent-1', 3, sideDigest)).toMatchObject({ ok: false, reason: 'duplicate' })
+    expect(ledger.reservePdfBudget('main', 3, catalogDigest).ok).toBe(true)
   })
 })
 

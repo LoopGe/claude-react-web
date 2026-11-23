@@ -1,8 +1,9 @@
 import { HttpError } from '../../errors.js'
 import { AttachmentStoreError } from '../../../shared/attachment-store-error.js'
-import type { ResolvedFileAttachment } from '../../../shared/attachment-types.js'
+import type { NativeFileAttachment, ResolvedFileAttachment } from '../../../shared/attachment-types.js'
 import type { NativeAttachmentPort } from './ports.js'
-import type { NativeFileAttachment, NativeLogEvent } from './session-log/format.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
+import { neutralFileOccurrences } from './session-log/neutral-read.js'
 
 export const PDF_MAX_BYTES = 20 * 1024 * 1024
 export const PDF_MAX_BASE64_CHARS = 28_000_000
@@ -94,8 +95,10 @@ export class PdfBudgetLedger {
   }
 
   /** Rebuild from the same compact floor as model replay. Hidden authorization
-   * catalogs do not count; sidechains use their spawning agent tool-use id. */
-  rebuildFromEvents(events: readonly NativeLogEvent[]): void {
+   * catalogs do not count; sidechains use their spawning agent tool-use id.
+   * Reads the canonical NEUTRAL events (callers pass `neutralEventsOf(log)`);
+   * the flat tool/result scan covers the legacy tool_result inner blocks. */
+  rebuildFromEvents(events: readonly NativeSessionEvent[]): void {
     this.partitions.clear()
     let floor = 0
     for (let index = events.length - 1; index >= 0; index--) {
@@ -104,29 +107,23 @@ export class PdfBudgetLedger {
         break
       }
     }
-    for (let index = floor; index < events.length; index++) {
-      const event = events[index]
-      if (event.type !== 'user') continue
-      const historyKey = event.parent_tool_use_id ?? 'main'
-      for (const block of event.message.content) {
-        this.recordBlock(historyKey, block)
-        if (typeof block !== 'object' || block === null) continue
-        const candidate = block as { type?: unknown; content?: unknown }
-        if (candidate.type !== 'tool_result' || !Array.isArray(candidate.content)) continue
-        for (const inner of candidate.content) this.recordBlock(historyKey, inner)
-      }
+    for (const occurrence of neutralFileOccurrences(events.slice(floor))) {
+      // Catalog entries (messageUuid '') authorize reads but never entered
+      // model history, so they hold no budget.
+      if (occurrence.messageUuid === '') continue
+      this.recordAttachment(occurrence.parentToolUseId ?? 'main', occurrence.attachment)
     }
   }
 
-  private recordBlock(historyKey: string, block: unknown): void {
-    if (!isNativeFileBlock(block) || block.attachment.modelForm !== 'pdf-document') return
+  private recordAttachment(historyKey: string, attachment: NativeFileAttachment): void {
+    if (attachment.modelForm !== 'pdf-document') return
     const partition = this.partitions.get(historyKey) ?? {
       usedBase64Chars: 0,
       documentDigests: new Set<string>(),
     }
-    if (partition.documentDigests.has(block.attachment.digest)) return
-    partition.usedBase64Chars += pdfBase64Length(block.attachment.size)
-    partition.documentDigests.add(block.attachment.digest)
+    if (partition.documentDigests.has(attachment.digest)) return
+    partition.usedBase64Chars += pdfBase64Length(attachment.size)
+    partition.documentDigests.add(attachment.digest)
     this.partitions.set(historyKey, partition)
   }
 }
