@@ -9,6 +9,8 @@
  * Ported from Claude Code's `src/history.ts`.
  */
 
+import { MENTION_PATTERN_G, parseFileMention } from '../../shared/file-mention'
+
 export type PastedText = {
   id: number
   content: string
@@ -103,27 +105,60 @@ export function parseReferences(input: string): PastedRef[] {
 }
 
 /**
- * One piece of composer content: literal text, or a reference the rich editor
- * draws as a chip.
+ * One piece of composer content: literal text, a collapsed-paste reference, or
+ * an `@file`/`@folder` mention — both chip kinds the rich editor draws as one
+ * atomic element.
+ *
+ * A mention's `text` is the exact matched substring (its serialized form), so
+ * `joinTokens` stays lossless even for a hand-typed backslash path; `path`/`dir`
+ * are the normalized facts parsed from it (canonicalization of the TEXT happens
+ * at pick time via `formatFileMention`, never here).
  */
 export type PastedTextToken =
   | { kind: 'text'; text: string }
   | { kind: 'ref'; id: number; label: string }
+  | { kind: 'mention'; text: string; path: string; dir: boolean }
 
 /**
- * Split composer text into literal runs and reference tokens.
+ * Split composer text into literal runs, paste-ref tokens and mention tokens.
  *
  * `joinTokens` is its exact inverse, which is what lets a DOM editor round-trip
  * through markup without the canonical string ever losing information: the
  * string stays the single source of truth, and the editor is only a view.
+ *
+ * Both matchers scan the whole string; their hits are merged in document order
+ * and a hit that starts inside an earlier token is dropped (first start wins),
+ * so the two kinds never overlap or double-count.
  */
 export function tokenize(text: string): PastedTextToken[] {
+  const hits: Array<{ index: number; length: number; token: PastedTextToken }> = []
+  for (const ref of parseReferences(text)) {
+    hits.push({
+      index: ref.index,
+      length: ref.match.length,
+      token: { kind: 'ref', id: ref.id, label: ref.match },
+    })
+  }
+  // matchAll, not .exec/.test on the shared global regex (it carries lastIndex).
+  for (const m of text.matchAll(MENTION_PATTERN_G)) {
+    // Every MENTION_PATTERN_G hit is exactly one of parseFileMention's two
+    // accepted forms (quoted span or `@` + non-space run), so this never nulls.
+    const parsed = parseFileMention(m[0])!
+    hits.push({
+      index: m.index!,
+      length: m[0].length,
+      token: { kind: 'mention', text: m[0], path: parsed.path, dir: parsed.dir },
+    })
+  }
+  hits.sort((a, b) => a.index - b.index)
+
   const tokens: PastedTextToken[] = []
   let cursor = 0
-  for (const ref of parseReferences(text)) {
-    if (ref.index > cursor) tokens.push({ kind: 'text', text: text.slice(cursor, ref.index) })
-    tokens.push({ kind: 'ref', id: ref.id, label: ref.match })
-    cursor = ref.index + ref.match.length
+  for (const hit of hits) {
+    if (hit.index < cursor) continue // overlaps an earlier token — first start wins
+    if (hit.index > cursor) tokens.push({ kind: 'text', text: text.slice(cursor, hit.index) })
+    tokens.push(hit.token)
+    cursor = hit.index + hit.length
   }
   if (cursor < text.length) tokens.push({ kind: 'text', text: text.slice(cursor) })
   return tokens
@@ -131,6 +166,8 @@ export function tokenize(text: string): PastedTextToken[] {
 
 /** Inverse of `tokenize`: `joinTokens(tokenize(s)) === s` for any `s`. */
 export function joinTokens(tokens: PastedTextToken[]): string {
+  // ref → its label; text and mention → their `text` (a mention's text IS its
+  // serialized `@path` form).
   return tokens.map((t) => (t.kind === 'ref' ? t.label : t.text)).join('')
 }
 

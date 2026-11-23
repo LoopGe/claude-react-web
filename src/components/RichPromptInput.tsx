@@ -286,24 +286,29 @@ export function RichPromptInput({
     const el = ref.current
     if (!el) return
     if (composingRef.current) return
-    if (domRepresentsValue(el, tokenize(value))) return
-    // Rebuilding detaches the node the caret sits in, and a detached selection
-    // collapses to the start of the editor — so the next keystroke would be
-    // written in front of the whole draft. Remember where the caret was and
-    // put it back once the new DOM exists.
+    // Measure the caret BEFORE the check: a mention spanning it must stay
+    // editable text (the forming `@query`), so both the equality check and the
+    // rebuild render with the same caret gate. No caret (unfocused / draft
+    // restore) → every mention is settled and chipifies.
     const doc = el.ownerDocument
     const selection = doc.getSelection()
     const hadCaret =
       selection !== null && selection.rangeCount > 0 && el.contains(selection.anchorNode)
     const caret = hadCaret
       ? offsetOf(el, selection!.anchorNode!, selection!.anchorOffset)
-      : 0
-    el.replaceChildren(renderTokens(doc, tokenize(value)))
+      : null
+    const tokens = tokenize(value)
+    if (domRepresentsValue(el, tokens, caret ?? undefined)) return
+    // Rebuilding detaches the node the caret sits in, and a detached selection
+    // collapses to the start of the editor — so the next keystroke would be
+    // written in front of the whole draft. Put the caret back once the new DOM
+    // exists.
+    el.replaceChildren(renderTokens(doc, tokens, caret ?? undefined))
     // On an empty rebuild there are no segments for the caret to sit in, so
     // placeCaretAtOffset reports failure without placing anything — collapse
     // explicitly rather than trusting every engine to drop a detached
     // selection at the editor start.
-    if (hadCaret && !placeCaretAtOffset(el, caret)) selection!.collapse(el, 0)
+    if (caret !== null && !placeCaretAtOffset(el, caret)) selection!.collapse(el, 0)
   }, [value, ref])
 
   useLayoutEffect(() => {

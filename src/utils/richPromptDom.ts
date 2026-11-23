@@ -28,6 +28,22 @@ import { type PastedTextToken } from './pastedText'
 export const CHIP_ATTR = 'data-pasted-ref'
 export const CHIP_CLASS = 'pasted-text-chip'
 
+/**
+ * Marks an `@file`/`@folder` mention chip. `MENTION_CHIP_ATTR` carries the
+ * URI-component-encoded mention path (decode with `decodeURIComponent`);
+ * `data-dir` is '1' for a directory, '0' for a file. The chip's label text IS
+ * the serialized mention (`@path`), so the string value stays the source of
+ * truth and the attrs only carry the parsed facts.
+ */
+export const MENTION_CHIP_ATTR = 'data-file-mention'
+export const MENTION_CHIP_CLASS = 'file-mention-chip'
+const MENTION_DIR_ATTR = 'data-dir'
+
+/** Both chip kinds are opaque atomic units to the DOM → text walk. */
+function isChipElement(element: Element): boolean {
+  return element.hasAttribute(CHIP_ATTR) || element.hasAttribute(MENTION_CHIP_ATTR)
+}
+
 // Numeric node types rather than the `Node` globals, so this module needs no
 // DOM globals in scope to be imported.
 const ELEMENT_NODE = 1
@@ -125,12 +141,12 @@ export function collectSegments(root: Node, stop?: StopPoint): DomSegment[] {
     }
     if (node.nodeType !== ELEMENT_NODE) return
     const element = node as Element
-    if (element.hasAttribute(CHIP_ATTR)) {
+    if (isChipElement(element)) {
       const label = element.textContent ?? ''
-      // Opaque: one reference, whatever the chip renders. A stop point inside
-      // it still has to be honoured — a real double-click on a chip selects
-      // INSIDE it (its text node), and ignoring that made `offsetOf` report
-      // the offset past the whole value instead of the caret's.
+      // Opaque: one token (paste-ref or mention), whatever the chip renders. A
+      // stop point inside it still has to be honoured — a real double-click on a
+      // chip selects INSIDE it (its text node), and ignoring that made `offsetOf`
+      // report the offset past the whole value instead of the caret's.
       if (stop !== undefined && (stop.container === element || element.contains(stop.container))) {
         const inner = stop.container === element ? 0 : stop.offset
         push(label.slice(0, inner), null, element)
@@ -172,7 +188,7 @@ export function collectSegments(root: Node, stop?: StopPoint): DomSegment[] {
       const childIsBlock =
         childElement !== null &&
         BLOCK_TAGS.has(childElement.tagName) &&
-        !childElement.hasAttribute(CHIP_ATTR)
+        !isChipElement(childElement)
       // A block opens a line (so a break before it), and anything after a
       // block starts a new line too.
       if (i > 0 && childIsBlock) push('\n', null, childElement)
@@ -189,21 +205,85 @@ export function collectSegments(root: Node, stop?: StopPoint): DomSegment[] {
   return out
 }
 
-/** Build DOM for `tokens`. The caller owns `doc` (usually `document`). */
-export function renderTokens(doc: Document, tokens: PastedTextToken[]): DocumentFragment {
-  const fragment = doc.createDocumentFragment()
+/**
+ * Demote any mention whose serialized range spans the caret to editable text.
+ *
+ * An unquoted mention has no closing delimiter — every prefix (`@s`, `@sr`,
+ * `@src/`) is grammatically complete — so a context-free chipify would turn the
+ * forming query into an atomic chip on the second keystroke. The caret gate is
+ * `start < caretOffset <= end`: end-INCLUSIVE because a forming word's caret
+ * sits at its end, start-EXCLUSIVE because a caret resting before a settled
+ * chip is not forming it (and must not de-chipify it). A picked mention is
+ * therefore settled by leaving the caret PAST its end (the pick appends a
+ * trailing space). With no caret (unfocused editor / draft restore) every
+ * mention is settled.
+ */
+function demoteCaretMentions(
+  tokens: PastedTextToken[],
+  caretOffset: number | undefined,
+): PastedTextToken[] {
+  if (caretOffset === undefined) return tokens
+  let start = 0
+  let demoted = false
+  const out = tokens.map((token) => {
+    const length = token.kind === 'ref' ? token.label.length : token.text.length
+    const end = start + length
+    const spansCaret = start < caretOffset && caretOffset <= end
+    start = end
+    if (token.kind === 'mention' && spansCaret) {
+      demoted = true
+      return { kind: 'text', text: token.text } as PastedTextToken
+    }
+    return token
+  })
+  return demoted ? out : tokens
+}
+
+/** Merge adjacent text tokens (demotion can create them; `tokenize` never does). */
+function mergeAdjacentText(tokens: PastedTextToken[]): PastedTextToken[] {
+  const out: PastedTextToken[] = []
   for (const token of tokens) {
+    const last = out[out.length - 1]
+    if (token.kind === 'text' && last !== undefined && last.kind === 'text') {
+      last.text += token.text
+    } else {
+      out.push({ ...token })
+    }
+  }
+  return out
+}
+
+/**
+ * Build DOM for `tokens`. The caller owns `doc` (usually `document`).
+ *
+ * `caretOffset` applies the same caret gate as `domRepresentsValue`: a mention
+ * spanning the caret renders as editable text, every other mention as a chip.
+ */
+export function renderTokens(
+  doc: Document,
+  tokens: PastedTextToken[],
+  caretOffset?: number,
+): DocumentFragment {
+  const fragment = doc.createDocumentFragment()
+  for (const token of demoteCaretMentions(tokens, caretOffset)) {
     if (token.kind === 'text') {
       fragment.appendChild(doc.createTextNode(token.text))
       continue
     }
     const chip = doc.createElement('span')
-    chip.className = CHIP_CLASS
-    chip.setAttribute(CHIP_ATTR, String(token.id))
     // Not editable: the chip must behave as one unit for the caret and for
     // Backspace, which is precisely what an offset-based textarea could not do.
     chip.setAttribute('contenteditable', 'false')
-    chip.textContent = token.label
+    if (token.kind === 'mention') {
+      chip.className = MENTION_CHIP_CLASS
+      chip.setAttribute(MENTION_CHIP_ATTR, encodeURIComponent(token.path))
+      chip.setAttribute(MENTION_DIR_ATTR, token.dir ? '1' : '0')
+      chip.textContent = token.text
+    } else {
+      chip.className = CHIP_CLASS
+      chip.setAttribute(CHIP_ATTR, String(token.id))
+      chip.textContent = token.label
+    }
     fragment.appendChild(chip)
   }
   return fragment
@@ -218,9 +298,20 @@ export function renderTokens(doc: Document, tokens: PastedTextToken[]): Document
 export function serializeTokens(root: Node): PastedTextToken[] {
   const tokens: PastedTextToken[] = []
   for (const segment of collectSegments(root)) {
-    const rawId = segment.element?.getAttribute(CHIP_ATTR)
+    const element = segment.element
+    const rawId = element?.getAttribute(CHIP_ATTR)
     if (rawId != null) {
       tokens.push({ kind: 'ref', id: Number(rawId), label: segment.text })
+      continue
+    }
+    const encodedPath = element?.getAttribute(MENTION_CHIP_ATTR)
+    if (encodedPath != null) {
+      tokens.push({
+        kind: 'mention',
+        text: segment.text,
+        path: decodeURIComponent(encodedPath),
+        dir: element!.getAttribute(MENTION_DIR_ATTR) === '1',
+      })
       continue
     }
     const last = tokens[tokens.length - 1]
@@ -228,6 +319,21 @@ export function serializeTokens(root: Node): PastedTextToken[] {
     else tokens.push({ kind: 'text', text: segment.text })
   }
   return tokens
+}
+
+/** Structural equality of two tokens (kind + payload), for the reconcile check. */
+function tokensEqual(a: PastedTextToken, b: PastedTextToken): boolean {
+  if (a.kind !== b.kind) return false
+  switch (a.kind) {
+    case 'text':
+      return a.text === (b as { text: string }).text
+    case 'ref':
+      return a.id === (b as { id: number }).id
+    case 'mention': {
+      const bm = b as { text: string; path: string; dir: boolean }
+      return a.text === bm.text && a.path === bm.path && a.dir === bm.dir
+    }
+  }
 }
 
 /**
@@ -242,7 +348,11 @@ export function serializeTokens(root: Node): PastedTextToken[] {
  * the model. Comparing the token structure catches that: a reference in
  * `value` must be an element in the DOM.
  */
-export function domRepresentsValue(root: Node, valueTokens: PastedTextToken[]): boolean {
+export function domRepresentsValue(
+  root: Node,
+  valueTokens: PastedTextToken[],
+  caretOffset?: number,
+): boolean {
   // An empty value is represented ONLY by a truly empty editor. When the
   // browser's content is deleted it keeps a caret-host element behind — a
   // lone `<br>` at the root, or nested inside the block container it
@@ -250,13 +360,12 @@ export function domRepresentsValue(root: Node, valueTokens: PastedTextToken[]): 
   // for every one of those shapes, so a token-count comparison would call
   // them in sync and leave the placeholder CSS `:empty` permanently defeated.
   if (valueTokens.length === 0) return root.childNodes.length === 0
+  // A mention spanning the caret is expected as editable TEXT, not a chip, so
+  // the forming query is left alone. Demotion can merge it into neighbouring
+  // text, so both sides are compared in merged canonical form (the serializer
+  // already merges adjacent DOM text).
+  const expected = mergeAdjacentText(demoteCaretMentions(valueTokens, caretOffset))
   const domTokens = serializeTokens(root)
-  if (domTokens.length !== valueTokens.length) return false
-  return domTokens.every((domToken, i) => {
-    const valueToken = valueTokens[i]!
-    if (domToken.kind !== valueToken.kind) return false
-    return domToken.kind === 'text'
-      ? domToken.text === (valueToken as { text: string }).text
-      : domToken.id === (valueToken as { id: number }).id
-  })
+  if (domTokens.length !== expected.length) return false
+  return domTokens.every((domToken, i) => tokensEqual(domToken, expected[i]!))
 }

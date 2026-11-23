@@ -237,6 +237,82 @@ describe('joinTokens', () => {
   })
 })
 
+describe('tokenize mentions', () => {
+  it('splits a leading mention from the text that follows it', () => {
+    expect(tokenize('@src/a.ts hi')).toEqual([
+      { kind: 'mention', text: '@src/a.ts', path: 'src/a.ts', dir: false },
+      { kind: 'text', text: ' hi' },
+    ])
+  })
+
+  it('parses a quoted path with spaces and a directory marker', () => {
+    expect(tokenize('see @"my dir/" now')).toEqual([
+      { kind: 'text', text: 'see ' },
+      { kind: 'mention', text: '@"my dir/"', path: 'my dir', dir: true },
+      { kind: 'text', text: ' now' },
+    ])
+  })
+
+  it('keeps the raw matched text (identity) while normalizing path/dir', () => {
+    // A hand-typed backslash path serializes verbatim (joinTokens identity);
+    // only `path` is normalized. Canonicalization of the TEXT happens at pick
+    // time via formatFileMention, not here.
+    expect(tokenize('@src\\a.ts')).toEqual([
+      { kind: 'mention', text: '@src\\a.ts', path: 'src/a.ts', dir: false },
+    ])
+  })
+
+  it('does not match an @ without a preceding whitespace boundary', () => {
+    expect(tokenize('email@x')).toEqual([{ kind: 'text', text: 'email@x' }])
+  })
+
+  it('does not match a bare @ with nothing after it', () => {
+    expect(tokenize('@')).toEqual([{ kind: 'text', text: '@' }])
+    expect(tokenize('hi @')).toEqual([{ kind: 'text', text: 'hi @' }])
+  })
+
+  it('chipifies prose mentions too (DSH parity, no path-shape constraint)', () => {
+    expect(tokenize('@bob')).toEqual([
+      { kind: 'mention', text: '@bob', path: 'bob', dir: false },
+    ])
+  })
+
+  it('interleaves mentions and paste-refs in document order', () => {
+    expect(tokenize('@bob [Pasted text #1] @src/a.ts')).toEqual([
+      { kind: 'mention', text: '@bob', path: 'bob', dir: false },
+      { kind: 'text', text: ' ' },
+      { kind: 'ref', id: 1, label: '[Pasted text #1]' },
+      { kind: 'text', text: ' ' },
+      { kind: 'mention', text: '@src/a.ts', path: 'src/a.ts', dir: false },
+    ])
+  })
+
+  it('lets the earlier-starting token win an overlap (no double-count)', () => {
+    // `@a[Pasted` is one unquoted mention run; the ref starting inside it is
+    // swallowed, and the remainder stays literal text. Identity still holds.
+    const text = '@a[Pasted text #1]'
+    expect(joinTokens(tokenize(text))).toBe(text)
+  })
+})
+
+describe('joinTokens mentions', () => {
+  it('round-trips mixed mention + paste-ref text exactly', () => {
+    const samples = [
+      '@src/a.ts hi',
+      '@bob [Pasted text #1] @src/a.ts',
+      'see @"my dir/" now',
+      '@src\\a.ts',
+      'email@x',
+      '@a[Pasted text #1]',
+      '[Pasted text #1] @dir/ tail',
+      '@"a b" @"c d"',
+    ]
+    for (const text of samples) {
+      expect(joinTokens(tokenize(text))).toBe(text)
+    }
+  })
+})
+
 describe('shouldCollapsePaste', () => {
   it('collapses a paste that reaches the line threshold', () => {
     // The threshold is expressed in newlines — the same number the
