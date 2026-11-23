@@ -136,9 +136,10 @@ interface Props {
    *  `toolGroupCards` is on. */
   autoExpandRunningGroups?: boolean
   /** True while a /clear is in flight (trigger → session-cleared frame).
-   *  Adds a blur-fade-out to the transcript and a "Clearing…" veil so the
-   *  ~1.7s server teardown+respawn reads as an intentional transition
-   *  instead of a frozen screen followed by a hard snap to empty. */
+   *  Adds a blur-fade-out to the transcript so the server teardown+respawn
+   *  reads as an intentional transition instead of a frozen screen followed
+   *  by a hard snap to empty. The centered "Clearing…" pill is NOT owned
+   *  here — Chat mounts ResetOverlay for it. */
   clearing?: boolean
   /** Bottom-anchored overlay content rendered *below* the live streaming
    *  bubble inside `.chat-bottom-stack` (currently the task checklist and the
@@ -402,8 +403,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // --- /clear blur ----------------------------------------------------
   // MessageList applies `.chat-messages-clearing` (see messagesClassName
   // below) while `clearing` is true — the view-only blur that signals a
-  // clear in progress during the POST. There is no panel-level veil anymore;
-  // the fresh session Y plays `.entering` on mount.
+  // clear in progress during the POST. The centered "Clearing…" pill is
+  // Chat's ResetOverlay, not owned here; the fresh session Y plays `.entering`
+  // on mount.
   // A single committed number on purpose: the stack and the overlay it
   // contains are resized by the SAME ResizeObserver burst (a fold moves both
   // in lockstep), so separate `useState`s meant two state writes per frame for

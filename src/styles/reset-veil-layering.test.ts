@@ -1,13 +1,13 @@
 // @vitest-environment node
-// Pins the /handoff wait pill's stacking order over the bottom overlay stack.
-// `.handoff-veil` is a sibling of the bottom cards inside the same real
+// Pins the reset wait pill's stacking order over the bottom overlay stack.
+// `.reset-veil` is a sibling of the bottom cards inside the same real
 // stacking context (the intermediate .chat-messages-area / .chat-messages-wrap
 // rules are position:relative with z-index:auto — containing blocks, NOT
 // stacking contexts), so the two z-index values compete directly. The pill is
 // centered (spans roughly 50%±18px) and `.chat-bottom-stack` reaches up to 45%
 // of the panel — on a short panel they overlap. A veil below the stack paints
-// under MonitorBar / task-checklist cards, hiding the only "Handing off…"
-// signal during a wait that can run tens of seconds.
+// under MonitorBar / task-checklist cards, hiding the only reset-in-progress
+// signal during the wait.
 // Pure file reading — same pattern as bottom-dock.test.ts.
 
 import { readFileSync } from 'node:fs'
@@ -28,8 +28,8 @@ function zIndexOf(selector: string): number {
   return Math.max(...zs)
 }
 
-describe('handoff wait pill vs bottom overlay stack', () => {
-  it('.handoff-veil paints ABOVE .chat-bottom-stack', () => {
-    expect(zIndexOf('.handoff-veil')).toBeGreaterThan(zIndexOf('.chat-bottom-stack'))
+describe('reset wait pill vs bottom overlay stack', () => {
+  it('.reset-veil paints ABOVE .chat-bottom-stack', () => {
+    expect(zIndexOf('.reset-veil')).toBeGreaterThan(zIndexOf('.chat-bottom-stack'))
   })
 })

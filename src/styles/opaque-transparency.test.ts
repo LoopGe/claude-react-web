@@ -54,7 +54,7 @@ describe('opaque transparency mode', () => {
     ['.app-empty-state', '--bg-elev-solid'],
     ['.app-loading-card', '--bg-elev-solid'],
     ['.composer-card', '--bg-elev-solid'],
-    ['.handoff-veil::before', '--bg-elev-solid'],
+    ['.reset-veil::before', '--bg-elev-solid'],
     ['.working-bar::before', '--bg-elev-solid'],
     ['.pinned-user-message', '--bg-solid'],
     ['.chat-older-float-pill', '--bg-solid'],
