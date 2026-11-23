@@ -633,7 +633,7 @@ describe('pruneFinalizedLiveTurnText: thinking', () => {
   })
 
   it('thinking-only pending chunks trigger the prune (hasMainThread gate includes thinking)', () => {
-    let m = updateLiveTurnMirror(fresh(), thinkingDeltaMsg('se-1', 'main'))
+    const m = updateLiveTurnMirror(fresh(), thinkingDeltaMsg('se-1', 'main'))
     const pruned = pruneFinalizedLiveTurnText(m, asstMsg('a-1', 'final'))
     expect(pruned.liveTurn?.thinkingChunks).toEqual([])
   })

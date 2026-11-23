@@ -21,6 +21,7 @@ const counts = vi.hoisted(() => ({
   SessionWorkingBubble: 0,
   LiveWorkingBubble: 0,
   DraftTextBody: 0,
+  ThinkingDraftBody: 0,
 }))
 type CountKey = keyof typeof counts
 
@@ -68,6 +69,10 @@ vi.mock('./message-list/WorkingBubble', async (orig) => {
 vi.mock('./message-list/draft-body', async (orig) => {
   const mod = await orig<typeof import('./message-list/draft-body')>()
   return { ...mod, DraftTextBody: counted('DraftTextBody', mod.DraftTextBody) }
+})
+vi.mock('./message-list/thinking-draft-body', async (orig) => {
+  const mod = await orig<typeof import('./message-list/thinking-draft-body')>()
+  return { ...mod, ThinkingDraftBody: counted('ThinkingDraftBody', mod.ThinkingDraftBody) }
 })
 
 // Virtuoso needs layout; render a fixed tail window like a real viewport.
@@ -510,5 +515,62 @@ describe('live-turn streaming re-renders only the leaves', () => {
       <SessionMessageList sessionId={SID} loadingOlder={true} loadOlder={stableLoadOlder} />,
     )
     expect(counts.SessionMessageList).toBeGreaterThan(0)
+  }, 30_000)
+
+  it('thinking-only flushes re-render only the ThinkingDraftBody leaf (MessageList / DraftTextBody stay at 0)', async () => {
+    const SID = 'stream-thinking-iso'
+    const store = getSessionStore(SID)
+    await act(async () => {
+      store.dispatch({ type: 'REPLAY_REPLACE', messages: history(4) as never, permissions: [] })
+    })
+    const { container } = render(
+      <MessageList items={store.getSnapshot().items} sessionId={SID} />,
+    )
+    // Seed: thinking block start + first delta → the thinking row appears
+    // (one legitimate row-layer render, BEFORE the count window).
+    await act(async () => {
+      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 't-start', parent_tool_use_id: null, event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } } as never })
+      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 't-seed', parent_tool_use_id: null, event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'thought0 ' } } } as never })
+      await sleep(150)
+    })
+    expect(container.querySelector('[data-message-id="thinking:1"]')).toBeTruthy()
+
+    // Count flushes by thinkingDraft.text changes — thinking-only flushes do
+    // NOT move streamingContent (thinking never feeds flushedText), so the
+    // text-window test's streamingContent counter cannot be reused here.
+    const seen = new Set<string>()
+    const seedText = store.getSnapshot().thinkingDraft?.text
+    const contentBefore = store.getSnapshot().streamingContent
+    const unsub = store.subscribe(() => {
+      const t = store.getSnapshot().thinkingDraft?.text
+      if (t && t !== seedText) seen.add(t)
+    })
+    for (const k of Object.keys(counts) as CountKey[]) counts[k] = 0
+
+    const DELTAS = 36
+    for (let i = 1; i <= DELTAS; i++) {
+      await act(async () => {
+        store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: `t-${i}`, parent_tool_use_id: null, event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: `thought${i} ` } } } as never })
+        await sleep(25)
+      })
+    }
+    await act(() => sleep(150)) // trailing flush
+    unsub()
+
+    const flushes = seen.size
+    expect(flushes).toBeGreaterThanOrEqual(5)
+    // The row layer and the TEXT leaf never rendered during thinking churn…
+    expect(counts.MessageList).toBe(0)
+    expect(counts.SessionMessageList).toBe(0)
+    expect(counts.DraftTextBody).toBe(0)
+    // …while the thinking body leaf re-rendered once per published flush.
+    expect(counts.ThinkingDraftBody).toBeGreaterThanOrEqual(flushes)
+    // Thinking never feeds the text accumulator: streamingContent is unchanged
+    // across the whole thinking window ('' — liveTurn exists, no text flushed).
+    expect(store.getSnapshot().streamingContent).toBe(contentBefore)
+    // The thinking row shows the whole streamed text (expanded, done=false).
+    const pre = container.querySelector('[data-message-id="thinking:1"] pre.thinking-body')
+    expect(pre?.textContent).toContain('thought0')
+    expect(pre?.textContent).toContain(`thought${DELTAS}`)
   }, 30_000)
 })
