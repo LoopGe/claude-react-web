@@ -441,7 +441,11 @@ const [userOpened, setUserOpened] = useState(false)
 // body：<pre className="thinking-body">{text}</pre>
 // 外层 AnimatedDetails className="thinking-details" summaryClassName="thinking-summary"
 ```
-受控/非受控切换注意：frozen 与 live 是不同行实例（frozen 行 key 独立），同一实例不会跨模式——AnimatedDetails 的 isControlled 判定稳定。
+受控/非受控切换注意（终审更正）：frozen 行与 live 行**共用同一 key**（`thinking:<n>`），
+同一 ThinkingDraftBody 实例在冻结瞬间从受控切到非受控（frozenText 出现）。正确性依赖
+AnimatedDetails 的隐式不变量——受控期间 `setNextOpen` 从不写 `uncontrolledOpen`
+（保持 defaultOpen=false），冻结即折叠。该转换由 MessageList.test.tsx 的挂载态
+live→result→frozen 测试钉住（DOM 节点同一 + data-state closed + partial 文本）。
 
 - [ ] **Step 4: 跑测试确认通过**
 

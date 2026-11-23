@@ -6112,6 +6112,31 @@ describe('in-place draft rows (store-backed)', () => {
     expect(after).toBe(before)
   })
 
+  it('interrupt during thinking freezes the row in place: same DOM node, folded, partial text kept', () => {
+    thinkingDelta('partial thought')
+    flush()
+    const { container, rerender } = renderList()
+    const before = container.querySelector('[data-message-id="thinking:1"]') as HTMLElement
+    expect(before).toBeTruthy()
+    expect(before.querySelector('details')?.getAttribute('data-state')).toBe('open')
+    // The frozen row keeps the SAME key (thinking:1) — the mounted
+    // ThinkingDraftBody instance crosses controlled→uncontrolled (frozenText
+    // appears). Correctness relies on AnimatedDetails never writing
+    // uncontrolledOpen while controlled (it stays defaultOpen=false), so the
+    // freeze folds closed. This test pins that invariant end-to-end.
+    act(() => {
+      dispatch({
+        type: 'MESSAGE',
+        message: { type: 'result', uuid: 'r-int', subtype: 'aborted_streaming', is_error: true } as unknown as SdkMessage,
+      })
+      rerender(list())
+    })
+    const after = container.querySelector('[data-message-id="thinking:1"]') as HTMLElement
+    expect(after).toBe(before)
+    expect(after.querySelector('details')?.getAttribute('data-state')).toBe('closed')
+    expect(after.querySelector('pre.thinking-body')?.textContent).toBe('partial thought')
+  })
+
   it('static does not append root draft rows', () => {
     streamDelta('preview only')
     flush()

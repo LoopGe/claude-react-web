@@ -538,6 +538,26 @@ describe('updateLiveTurnMirror: thinking accumulation', () => {
     expect(m.thinkingDraft?.done).toBe(false)
   })
 
+  it('sidechain block stop at the SAME index does NOT fold the main-thread thinking row', () => {
+    let m = updateLiveTurnMirror(fresh(), thinkingStartMsg('se-0', 0))
+    m = updateLiveTurnMirror(m, thinkingDeltaMsg('se-1', 'x'))
+    m = flushLiveTurn(m)
+    // A running subagent's thinking block 0 overlaps the parent's in time;
+    // its stop carries the same index but a non-null parent_tool_use_id.
+    m = updateLiveTurnMirror(m, {
+      type: 'stream_event',
+      uuid: 'se-sub-stop',
+      parent_tool_use_id: 'toolu_sub_1',
+      event: { type: 'content_block_stop', index: 0 },
+    } as unknown as SdkMessage)
+    expect(m.liveTurn?.thinkingBlockIndex).toBe(0)
+    expect(m.thinkingDraft?.done).toBe(false)
+    // The parent's own stop still folds it.
+    m = updateLiveTurnMirror(m, blockStopMsg('se-2', 0))
+    expect(m.liveTurn?.thinkingBlockIndex).toBeNull()
+    expect(m.thinkingDraft?.done).toBe(true)
+  })
+
   it('stop BEFORE first flush carries done through the flush (whole block inside the 80ms window)', () => {
     let m = updateLiveTurnMirror(fresh(), thinkingStartMsg('se-0', 0))
     m = updateLiveTurnMirror(m, thinkingDeltaMsg('se-1', 'fast'))

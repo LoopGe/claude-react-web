@@ -523,9 +523,19 @@ describe('live-turn streaming re-renders only the leaves', () => {
     await act(async () => {
       store.dispatch({ type: 'REPLAY_REPLACE', messages: history(4) as never, permissions: [] })
     })
+    // Mount the SAME wrapper the text-window test mounts, so the
+    // SessionMessageList zero-render assertion is a real pin, not vacuous.
+    const stableLoadOlder = async () => 0
     const { container } = render(
-      <MessageList items={store.getSnapshot().items} sessionId={SID} />,
+      <SessionMessageList sessionId={SID} loadingOlder={false} loadOlder={stableLoadOlder} />,
     )
+    // Seed a TEXT draft first so DraftTextBody is actually mounted — its
+    // zero-render assertion during the thinking window is then non-vacuous
+    // (the two drafts coexisting is a design-supported shape).
+    await act(async () => {
+      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 'txt-seed', parent_tool_use_id: null, event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'text0 ' } } } as never })
+      await sleep(150)
+    })
     // Seed: thinking block start + first delta → the thinking row appears
     // (one legitimate row-layer render, BEFORE the count window).
     await act(async () => {
@@ -534,6 +544,7 @@ describe('live-turn streaming re-renders only the leaves', () => {
       await sleep(150)
     })
     expect(container.querySelector('[data-message-id="thinking:1"]')).toBeTruthy()
+    expect(container.querySelector('[data-message-id="draft:1"]')).toBeTruthy()
 
     // Count flushes by thinkingDraft.text changes — thinking-only flushes do
     // NOT move streamingContent (thinking never feeds flushedText), so the

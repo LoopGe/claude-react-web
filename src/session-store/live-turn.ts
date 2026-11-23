@@ -200,8 +200,11 @@ export function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage):
     // The thinking block's stop folds its row closed. Flip thinkingDraft.done
     // immediately when the draft exists; when the stop lands BEFORE the first
     // fold (whole block inside the 80ms flush window), thinkingDone carries
-    // the signal to the flush and dirty arms it.
-    if (liveTurn.thinkingBlockIndex != null && event.index === liveTurn.thinkingBlockIndex) {
+    // the signal to the flush and dirty arms it. Main-thread gate (same
+    // discipline as the start branch): a running subagent's thinking block
+    // shares index 0 with the parent's — its stop must not fold the parent's
+    // row mid-thought.
+    if (message.parent_tool_use_id == null && liveTurn.thinkingBlockIndex != null && event.index === liveTurn.thinkingBlockIndex) {
       liveTurn = { ...liveTurn, thinkingBlockIndex: null, thinkingDone: true, dirty: true }
       if (thinkingDraft && !thinkingDraft.done) {
         thinkingDraft = { ...thinkingDraft, done: true }
