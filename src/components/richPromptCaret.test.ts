@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { slashWordBefore, caretOnFirstLine, offsetOf, placeCaretAtOffset } from './richPromptCaret'
+import { slashWordBefore, atWordBefore, caretOnFirstLine, offsetOf, placeCaretAtOffset } from './richPromptCaret'
 
 describe('richPromptCaret pure helpers', () => {
   it('reads the /word ending at the caret', () => {
@@ -20,6 +20,66 @@ describe('richPromptCaret pure helpers', () => {
   it('detects the first line', () => {
     expect(caretOnFirstLine('one\ntwo', 3)).toBe(true)
     expect(caretOnFirstLine('one\ntwo', 5)).toBe(false)
+  })
+})
+
+describe('atWordBefore (quote-aware @ trigger scan)', () => {
+  it('reads the unquoted @word ending at the caret', () => {
+    expect(atWordBefore('@src/a', 6)).toEqual({ word: '@src/a', start: 0, quoted: false })
+  })
+
+  it('reads a bare @ after prose', () => {
+    expect(atWordBefore('hi @', 4)).toEqual({ word: '@', start: 3, quoted: false })
+  })
+
+  it('reads a bare @ at the start', () => {
+    expect(atWordBefore('@', 1)).toEqual({ word: '@', start: 0, quoted: false })
+  })
+
+  it('reads an open-quote drill word spanning spaces', () => {
+    expect(atWordBefore('@"my dir/', 9)).toEqual({ word: '@"my dir/', start: 0, quoted: true })
+  })
+
+  it('reads an open-quote drill word after prose', () => {
+    expect(atWordBefore('hi @"my dir/', 12)).toEqual({ word: '@"my dir/', start: 3, quoted: true })
+  })
+
+  it('reads an open quote with no directory yet', () => {
+    expect(atWordBefore('@"my', 4)).toEqual({ word: '@"my', start: 0, quoted: true })
+  })
+
+  it('takes the LAST opener when an earlier quoted span already closed', () => {
+    expect(atWordBefore('@"a" @"b/', 9)).toEqual({ word: '@"b/', start: 5, quoted: true })
+  })
+
+  it('returns null for a CLOSED quoted span (the mention is complete)', () => {
+    expect(atWordBefore('@"my dir/a.ts"', 14)).toBeNull()
+    expect(atWordBefore('@"my dir/" ', 11)).toBeNull()
+  })
+
+  it('returns null once a space closes the unquoted word', () => {
+    expect(atWordBefore('@src/a ', 7)).toBeNull()
+  })
+
+  it('returns null once a newline closes the word', () => {
+    expect(atWordBefore('@src/a\n', 7)).toBeNull()
+  })
+
+  it('returns null without a whitespace boundary before the @ (email-like)', () => {
+    expect(atWordBefore('email@x', 7)).toBeNull()
+    expect(atWordBefore('x@"my dir/', 10)).toBeNull()
+  })
+
+  it('rejects an open quote whose span crosses a newline', () => {
+    expect(atWordBefore('@"a\nb', 5)).toBeNull()
+  })
+
+  it('reads the prefix when the caret sits mid-word', () => {
+    expect(atWordBefore('@src/a.ts', 5)).toEqual({ word: '@src/', start: 0, quoted: false })
+  })
+
+  it('reads an unquoted @word after prose', () => {
+    expect(atWordBefore('x @src/a', 8)).toEqual({ word: '@src/a', start: 2, quoted: false })
   })
 })
 

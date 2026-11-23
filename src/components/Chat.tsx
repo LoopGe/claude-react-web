@@ -2502,6 +2502,7 @@ export const Chat = memo(function Chat({
               history={history}
               onRecallImages={historyImageRecallApi}
               commands={mergedCommands}
+              sessionId={session.id}
               pastedImages={pastedImages.images}
               imagesPending={pastedImages.pending}
               files={fileDrafts.files}

@@ -91,6 +91,46 @@ export function slashWordBefore(text: string, offset: number): string | null {
   return word.startsWith('/') && !word.includes(' ') ? word : null
 }
 
+/**
+ * The `@…` word ending at `offset`, or null when there isn't one.
+ *
+ * Quote-aware, unlike {@link slashWordBefore}: a path may contain spaces, so an
+ * opened `@"…` span (the folder-drill state) is ONE word reaching the caret even
+ * across spaces. `quoted` reports that open-quote form; `start` is the offset of
+ * the leading `@`. A CLOSED quoted span (`@"…"`) is a complete mention, not a
+ * forming word, so it returns null — the closing quote is the delimiter that
+ * settles it, exactly as a trailing space settles an unquoted word.
+ *
+ * The `@` must sit at a whitespace boundary (the grammar's `(?<!\S)`), so
+ * `email@x` never triggers.
+ */
+export function atWordBefore(
+  text: string,
+  offset: number,
+): { word: string; start: number; quoted: boolean } | null {
+  const before = text.slice(0, offset)
+  // Open quoted span: the LAST `@"` opener whose span reaches the caret without
+  // a closing quote or a newline. An earlier closed span (`@"a" @"b/`) must not
+  // shadow the opener the caret is actually inside.
+  const opener = before.lastIndexOf('@"')
+  if (opener !== -1 && (opener === 0 || /\s/.test(text[opener - 1]!))) {
+    const inner = before.slice(opener + 2)
+    if (!inner.includes('"') && !inner.includes('\n')) {
+      return { word: before.slice(opener), start: opener, quoted: true }
+    }
+  }
+  // Unquoted: the trailing non-whitespace run. It must start with `@` and carry
+  // no quote (a quote belongs to the quoted form above; a closed span that fell
+  // through is complete, and an embedded quote is unformattable). The maximal
+  // `\S*` run is preceded by whitespace or the string start by construction, so
+  // the boundary condition already holds.
+  const run = /(\S*)$/.exec(before)![1]!
+  if (run.startsWith('@') && !run.includes('"')) {
+    return { word: run, start: offset - run.length, quoted: false }
+  }
+  return null
+}
+
 /** True when nothing before `offset` spans a line break. */
 export function caretOnFirstLine(text: string, offset: number): boolean {
   return !text.slice(0, offset).includes('\n')

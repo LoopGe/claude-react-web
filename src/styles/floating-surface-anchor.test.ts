@@ -47,6 +47,7 @@ function standaloneRule(css: string, selector: string): string {
 // (standaloneRule fails loudly instead, which is the point of carrying the file).
 const PICKERS = [
   { selector: '.cmd-picker', file: 'session-list.css' },
+  { selector: '.file-picker', file: 'session-list.css' },
   { selector: '.ctx-menu', file: 'session-list.css' },
   { selector: '.model-picker', file: 'session-list.css' },
   { selector: '.subagent-swarm-pop', file: 'chat.css' },

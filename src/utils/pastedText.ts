@@ -11,6 +11,11 @@
 
 import { MENTION_PATTERN_G, parseFileMention } from '../../shared/file-mention'
 
+/** The grammar's quoted alternative (`@"[^"\n]+"`): a COMPLETE quoted mention.
+ *  Used to tell a settled `@"…"` span from an open-quote opener fragment that the
+ *  unquoted alternative also matches. Mirrors shared/file-mention's MENTION_SOURCE. */
+const CLOSED_QUOTED_MENTION = /^@"[^"\n]+"$/
+
 export type PastedText = {
   id: number
   content: string
@@ -141,8 +146,16 @@ export function tokenize(text: string): PastedTextToken[] {
   }
   // matchAll, not .exec/.test on the shared global regex (it carries lastIndex).
   for (const m of text.matchAll(MENTION_PATTERN_G)) {
-    // Every MENTION_PATTERN_G hit is exactly one of parseFileMention's two
-    // accepted forms (quoted span or `@` + non-space run), so this never nulls.
+    // An open-quote opener (`@"my` in the forming drill `@"my dir/`) is matched
+    // by the grammar's UNQUOTED alternative because the quoted alternative needs
+    // a closing quote. That fragment is not a mention — it is the head of an
+    // unfinished quoted span — so it stays editable text. Without this, the
+    // caret gate (which only demotes the token spanning the caret) would chipify
+    // `@"my` the moment the caret moved past it into ` dir/`, breaking the
+    // folder drill. A COMPLETE quoted span (`@"…"`) is kept: it is a real mention.
+    if (m[0].startsWith('@"') && !CLOSED_QUOTED_MENTION.test(m[0])) continue
+    // Every remaining hit is exactly one of parseFileMention's two accepted
+    // forms (closed quoted span or `@` + non-space run), so this never nulls.
     const parsed = parseFileMention(m[0])!
     hits.push({
       index: m.index!,

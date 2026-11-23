@@ -6,7 +6,7 @@
 // history, bare ↑/↓ walks history only at the text edge so multi-line
 // drafts stay editable.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
 import { toPersistedImage, type PersistedImage } from '../state/inputHistoryImages'
 import type { HistoryImageRecallApi } from '../hooks/useHistoryImageRecall'
@@ -22,6 +22,9 @@ import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker, pickerFlatCommands } from './CommandPicker'
+import { atWordBefore } from './richPromptCaret'
+import { formatFileMention } from '../../shared/file-mention'
+import { useFileSearch, type FileSearchResult } from '../hooks/useFileSearch'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -46,6 +49,17 @@ const WHEEL_ACCUM_TTL = WHEEL_STEP_MS * 4 // a pause longer than this discards s
  *  The server routes, the useScheduledSends hook, and Chat wiring stay
  *  active either way, so re-enabling is a one-constant change. */
 const SCHEDULE_SEND_ENABLED = false
+
+// The @file/@folder menu is a lazy chunk so the startup bundle never carries it.
+const FilePicker = lazy(() => import('./FilePicker'))
+
+/** The editable open-quote drill string for a folder: `@dir/`, or `@"dir/` when
+ *  the path needs quoting (the closing quote is left off so the word stays a
+ *  forming trigger the picker keeps consuming). Settling adds the quote back. */
+function openDrillMention(path: string): string {
+  const settled = formatFileMention(path, true)
+  return settled.startsWith('@"') ? settled.slice(0, -1) : settled
+}
 
 interface Props {
   input: string
@@ -102,6 +116,10 @@ interface Props {
   onRecallImages?: HistoryImageRecallApi
   /** Slash commands from the SDK, fetched by the parent. */
   commands?: SlashCommand[]
+  /** Session whose cwd the @file/@folder picker searches. The @ trigger is
+   *  inert without it (search is session-scoped); hosts that don't wire it keep
+   *  the slash picker only. */
+  sessionId?: string
   /** Pending pasted images to send inline. */
   pastedImages: PastedImage[]
   /** True while at least one image is still being decoded. Sending and
@@ -224,6 +242,7 @@ export const Composer = memo(function Composer({
   history,
   onRecallImages,
   commands,
+  sessionId,
   pastedImages,
   imagesPending,
   files,
@@ -331,6 +350,18 @@ export const Composer = memo(function Composer({
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
   const [pickerIndex, setPickerIndex] = useState(0)
+
+  // ---- @ file/folder picker state (parallel to the slash block) ----
+  const [atPickerOpen, setAtPickerOpen] = useState(false)
+  const [atQuery, setAtQuery] = useState('')
+  /** The forming word is an open quoted span (`@"…`): restricts to files unless
+   *  it is a trailing-slash drill, and drives the drill string's quoting. */
+  const [atQuoted, setAtQuoted] = useState(false)
+  const [atIndex, setAtIndex] = useState(0)
+  /** The query at the last Esc/Shift+Tab dismissal. The picker stays closed
+   *  while the query equals this (no flicker on caret restore); the first
+   *  different query clears it and reopens. Null = not dismissed. */
+  const atDismissedQueryRef = useRef<string | null>(null)
   /** `!` bash mode is active when the input starts with `!`. Driven from
    *  input (not a separate setter) so paste/undo/programmatic edits stay in
    *  sync. While active: a mode indicator shows, slash-command autocomplete
@@ -376,6 +407,47 @@ export const Composer = memo(function Composer({
     h.replaceSlashWord('/' + cmd.name + ' ')
     setPickerOpen(false)
   }, [pickerIndex, pickerCommands])
+
+  // ---- @ file/folder picker: search, flat order, settle/drill/dismiss ----
+  const fileSearch = useFileSearch(sessionId ?? null, atQuery, atPickerOpen)
+  /** The picker's flat render/nav order: folders first, then files. An open
+   *  quoted span that is not a trailing-slash drill restricts to files. The
+   *  keyboard-selected index resolves against THIS order (CommandPicker parity). */
+  const atFlat = useMemo(() => {
+    const visible = atQuoted && !atQuery.endsWith('/')
+      ? fileSearch.results.filter((r) => !r.dir)
+      : fileSearch.results
+    return [...visible.filter((r) => r.dir), ...visible.filter((r) => !r.dir)]
+  }, [fileSearch.results, atQuoted, atQuery])
+
+  /** Settle a candidate: splice the canonical mention + a trailing space so the
+   *  caret lands past its end and the chip forms immediately (Task 2 gate). */
+  const settleAtResult = useCallback((r: FileSearchResult) => {
+    const h = editorRef.current as unknown as RichPromptHandle | null
+    if (!h) return
+    h.replaceAtWord(formatFileMention(r.path, r.dir) + ' ')
+    setAtPickerOpen(false)
+    atDismissedQueryRef.current = null
+  }, [])
+
+  const confirmAtPicker = useCallback(() => {
+    const r = atFlat[atIndex]
+    if (r) settleAtResult(r)
+  }, [atFlat, atIndex, settleAtResult])
+
+  /** Drill into a folder: splice the editable open `@dir/` form. replaceAtWord
+   *  restores the caret and its onChange re-scans it, so the picker stays open
+   *  on the drilled directory's listing. An empty path is the root breadcrumb. */
+  const drillAtResult = useCallback((r: FileSearchResult) => {
+    const h = editorRef.current as unknown as RichPromptHandle | null
+    if (!h) return
+    h.replaceAtWord(r.path === '' ? '@' : openDrillMention(r.path))
+  }, [])
+
+  const dismissAtPicker = useCallback(() => {
+    atDismissedQueryRef.current = atQuery
+    setAtPickerOpen(false)
+  }, [atQuery])
 
   // After a history step the textarea's caret is still where it was,
   // which on a multi-line recall puts you in the middle of the prompt.
@@ -1007,8 +1079,28 @@ export const Composer = memo(function Composer({
                 setPickerOpen(true)
                 setPickerQuery(word.slice(1))
                 setPickerIndex(0)
-              } else if (pickerOpen) {
-                setPickerOpen(false)
+                // The two pickers are mutually exclusive — a slash word wins here
+                // and closes any @ picker.
+                setAtPickerOpen(false)
+                atDismissedQueryRef.current = null
+                return
+              }
+              if (pickerOpen) setPickerOpen(false)
+              // @ file/folder trigger (quote-aware; inert without a session).
+              const at = !val.startsWith('!') && sessionId != null ? atWordBefore(val, caret) : null
+              if (at) {
+                const q = at.quoted ? at.word.slice(2) : at.word.slice(1)
+                // Dismissed stays dismissed until the query changes.
+                if (atDismissedQueryRef.current !== q) {
+                  atDismissedQueryRef.current = null
+                  setAtPickerOpen(true)
+                  setAtQuery(q)
+                  setAtQuoted(at.quoted)
+                  setAtIndex(0)
+                }
+              } else {
+                atDismissedQueryRef.current = null
+                setAtPickerOpen(false)
               }
             }}
             ariaLabel="Message input"
@@ -1080,6 +1172,50 @@ export const Composer = memo(function Composer({
                   return
                 }
               }
+              // @ file/folder picker routing (mirrors the slash block). The
+              // editor keeps focus; arrows wrap, Enter settles, Tab drills a
+              // folder / settles a file, Shift+Tab and Escape dismiss.
+              if (atPickerOpen) {
+                if (e.key === 'ArrowUp' && !e.ctrlKey && !e.metaKey) {
+                  e.preventDefault()
+                  setAtIndex((i) => {
+                    const n = atFlat.length
+                    if (n <= 1) return 0
+                    return i > 0 ? i - 1 : n - 1
+                  })
+                  return
+                }
+                if (e.key === 'ArrowDown' && !e.ctrlKey && !e.metaKey) {
+                  e.preventDefault()
+                  setAtIndex((i) => {
+                    const n = atFlat.length
+                    if (n <= 1) return 0
+                    return i < n - 1 ? i + 1 : 0
+                  })
+                  return
+                }
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  confirmAtPicker()
+                  return
+                }
+                if (e.key === 'Tab') {
+                  e.preventDefault()
+                  if (e.shiftKey) {
+                    dismissAtPicker()
+                    return
+                  }
+                  const r = atFlat[atIndex]
+                  if (r?.dir) drillAtResult(r)
+                  else if (r) settleAtResult(r)
+                  return
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  dismissAtPicker()
+                  return
+                }
+              }
               // Bare Tab with an empty input fills the predicted prompt
               // suggestion (if any).
               if (
@@ -1131,6 +1267,20 @@ export const Composer = memo(function Composer({
             }}
             onClose={() => setPickerOpen(false)}
           />
+        )}
+        {atPickerOpen && (
+          <Suspense fallback={null}>
+            <FilePicker
+              results={atFlat}
+              loading={fileSearch.loading}
+              query={atQuery}
+              selectedIndex={atIndex}
+              anchorRef={editorRef}
+              onPick={settleAtResult}
+              onDrill={drillAtResult}
+              onClose={dismissAtPicker}
+            />
+          </Suspense>
         )}
       </div>
       {/* Bottom toolbar inside the floating card. Replaces the old right-side

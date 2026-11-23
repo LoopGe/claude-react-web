@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 
 import { joinTokens, tokenize } from '../utils/pastedText'
 import { renderTokens, serializeTokens, domRepresentsValue } from '../utils/richPromptDom'
 import { syncEditorHeight } from '../utils/editor-height'
-import { offsetOf, slashWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
+import { offsetOf, slashWordBefore, atWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
 import { isSupportedImageMediaType } from '../../shared/image-media'
 import { selectionOffsets, placeCaretIn, selectAll } from './richPromptApi'
 
@@ -28,6 +28,9 @@ export interface RichPromptHandle {
   getSlashWordAtCaret(): string | null
   caretOnFirstLine(): boolean
   replaceSlashWord(text: string): void
+  /** Splice the forming `@word` before the caret with `text` (a picked mention
+   *  or an open-quote drill string), leaving the caret at the replacement's end. */
+  replaceAtWord(text: string): void
   /** Offset pair for the current selection, or null when nothing is selected. */
   selectionOffsets(): { start: number; end: number } | null
   /** Focus the element and place a collapsed caret at the given character offset. */
@@ -165,6 +168,32 @@ export function RichPromptInput({
       if (!el) return
       placeCaretAtOffset(el, start + text.length)
     })
+  }
+
+  /** Replace the forming `@word` before the caret with `text`, leaving the caret
+   *  at the end of the replacement.
+   *
+   *  Unlike {@link replaceSlashWord}, this rebuilds the DOM and places the caret
+   *  BEFORE reporting the new value. A mention chip settles only when the caret
+   *  is past its end (the caret gate is end-inclusive), so the value-driven
+   *  reconcile must measure the RESTORED caret — not the stale pre-splice one.
+   *  Reporting first and restoring the caret a frame later (the slash pattern,
+   *  harmless there because commands are not chips) would reconcile against the
+   *  old caret and demote the picked chip back to editable text. Placing the
+   *  caret up front also means the parent's onChange scans the correct caret, so
+   *  a folder drill derives its new `@dir/` query without a second pass. */
+  const replaceAtWord = (text: string) => {
+    const el = ref.current
+    const off = caretOffset()
+    if (!el || off === null) return
+    const at = atWordBefore(value, off)
+    if (at === null) return
+    const next = value.slice(0, at.start) + text + value.slice(off)
+    const target = at.start + text.length
+    const doc = el.ownerDocument
+    el.replaceChildren(renderTokens(doc, tokenize(next), target))
+    placeCaretAtOffset(el, target)
+    onChange(next)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -396,6 +425,7 @@ export function RichPromptInput({
     handle.getSlashWordAtCaret = getSlashWordAtCaret
     handle.caretOnFirstLine = isCaretOnFirstLine
     handle.replaceSlashWord = replaceSlashWord
+    handle.replaceAtWord = replaceAtWord
     handle.selectionOffsets = () => selectionOffsets(el)
     handle.placeCaretIn = (offset: number) => placeCaretIn(el, offset)
     handle.selectAll = () => selectAll(el)

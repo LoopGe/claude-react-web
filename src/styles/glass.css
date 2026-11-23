@@ -178,6 +178,7 @@
 .ctx-menu          { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
 .model-picker      { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
 .cmd-picker        { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
+.file-picker       { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
 .appearance-panel  { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
 .hover-pop         { box-shadow: var(--glass-edge-highlight), var(--tooltip-shadow); }
 /* Toasts additionally carry a soft kind-tint glow so success/error/info
