@@ -36,13 +36,19 @@ spill 定位符的第二条 user 消息），复杂度同终端，不是"加个�
   跨空格算一个形成词；闭合 span 已落定）+ Composer 的并行 picker 状态 +
   懒加载 `FilePicker.tsx`（portal，CommandPicker 同构，焦点留在编辑器）；与
   slash picker 互斥；Esc 退出且保持关闭直到查询变化；文件夹 Tab 下钻成可编辑
-  `@dir/`/`@"dir/` + 面包屑，Enter 落定；开放引号 span 只搜文件。
+  `@dir/`/`@"dir/` + 面包屑，Enter 落定；开放引号 span 只搜文件。**Enter 直通**：
+  当前查询的搜索已落定为空（或裸 `@`，从不搜索）时 Enter 不吞、直通发送——
+  语法把散文 `@bob` 也 chip 化，无候选 Enter 是设计内常态；防抖/在途仍吞
+  （快打字不发半截查询，旧候选仍可落定）。`useFileSearch.settledQuery` 回声
+  产出 results 的那个查询，Composer 据此区分"已落定为空"与"防抖窗口旧结果"。
 - **搜索**：`GET /api/sessions/:id/file-search`（`server/routes/sessions.ts`），
   live/dormant 皆可（只需 `meta.cwd`）。`server/file-search.ts` 的 `searchFiles`：
   git 仓库走 `runGit ls-files -z --cached --others --exclude-standard`（尊重
   .gitignore，优于 DSH 的无-gitignore fs walk），非仓库/git 失败走有界 fs walk
   （`WALK_ENTRY_CAP` 50k + 排除目录表）；尾 `/` 查询切 live `readdir`（下钻态）；
   模糊排序 exact > prefix > substring > subsequence（目录加成），≤20 条；
+  下钻目录不可列（ENOENT 缺失 / ENOTDIR 文件名后敲 `/` / EACCES/EPERM 无权限）
+  皆普通输入态 → []，与 walk 的不可读子目录跳过同一契约；
   `..`/绝对查询直接拒绝；出口双重围栏：`isPathInside` 包含校验 +
   `isMentionExpressible`（POSIX 引号/控制字符文件名不可序列化，过滤掉使 pick
   永远到不了 throw）；绝不读内容。客户端 `useFileSearch` 150ms 防抖 + abort，
@@ -68,7 +74,8 @@ spill 定位符的第二条 user 消息），复杂度同终端，不是"加个�
   `UserProseRun` 把连续 text+mention 段渲成一条 inline 流（边界空白保留为字面
   文本；片段内多 `<p>` 经 `p + p::before` 保留段落断行；块级 markdown 保持块
   布局）；`UserMentionChip` 可点击；MessageView 搜索 `countMatches` 加 mention
-  分支；`exportConversation` 把 mention 文本并回散文行。
+  分支；`exportConversation` 把 mention 文本**按文本块**并回散文行（块内
+  mention 片段不断行；块边界结束当前 prose 行，图片两侧/相邻文本块保持独立行）。
 
 完整语法、token 往返、搜索/提示/预览接口见
 [@file 引用设计](../../../../docs/superpowers/specs/2026-11-23-file-reference-design.md)。
@@ -116,15 +123,19 @@ spill 定位符的第二条 user 消息），复杂度同终端，不是"加个�
 
 - 单元：`shared/file-mention.test.ts`（语法 + 谓词与 format 的一致性）、
   `pastedText`/`richPromptDom`/`richPromptCaret` 往返与 caret 门、
-  `RichPromptInput.mention` / `Composer.file-picker` / `useFileSearch`、
-  `server/file-search.test.ts`（git/walk/排序/围栏 + dormant 真实 manager 路由）、
+  `RichPromptInput.mention` / `Composer.file-picker`（含 Enter 直通）/
+  `useFileSearch`（settledQuery 回声）、
+  `server/file-search.test.ts`（git/walk/排序/围栏/不可列目录 + dormant 真实
+  manager 路由）、
   `file-reference-guidance.test.ts` + `session-manager.test.ts` 接线（spawn /
-  resume / fork / clear / side-chat / native 双通道）、
+  resume / fork / clear / side-chat / native 双通道；spawn/respawn 各钉单次
+  出现计数，toContain 抓不到重复注入）、
   `file-blocks` / `mention-resource` / `MessageView.mention` / `exportConversation`。
 - 浏览器 E2E：`tests/browser/file-reference.spec.ts`（app-config fixture harness，
   受控 git-repo + 非仓库 cwd）：pick→chip→send→可点击 sent chip→ResourceModal
   预览、引号下钻 + 面包屑、空格路径引号、Windows 反斜杠归一、.gitignore、
   walk 兜底、原子 Backspace、undo 完整性、段落断行与长 chip 溢出（视觉断言，
-  innerText 对 `<p>` 的换行是 Chromium 伪影，不作证据）。
+  innerText 对 `<p>` 的换行是 Chromium 伪影，不作证据）；长 chip 流等搜索
+  落定为空后 Enter 直接发送（钉住直通）。
 - live 探针：persona × guidance 合成（spawn 差分对照）+ resume 重注入（引文
   从未进入对话，排除历史回声）。

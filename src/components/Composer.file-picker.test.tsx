@@ -94,12 +94,23 @@ const activeRow = () => document.querySelector('.file-picker-item.active')
 
 beforeEach(() => {
   vi.clearAllMocks()
-  fileSearchMock.mockReturnValue({ results: [], loading: false })
+  fileSearchMock.mockReturnValue({ results: [], loading: false, settledQuery: null })
 })
+
+/** A settled search for whatever query is typed: the state after the
+ *  debounce + request land. `settledQuery` echoes the query (the hook's
+ *  contract) so Enter fall-through reads a genuinely-settled picker. */
+function settled(results: Array<{ path: string; dir: boolean }>) {
+  fileSearchMock.mockImplementation((_s: unknown, q: string) => ({
+    results,
+    loading: false,
+    settledQuery: q,
+  }))
+}
 
 describe('Composer @ file picker', () => {
   it('opens the lazy picker when @ is typed', async () => {
-    fileSearchMock.mockReturnValue({ results: [{ path: 'README.md', dir: false }], loading: false })
+    settled([{ path: 'README.md', dir: false }])
     const { container } = render(<Harness />)
     // A bare '@' opens the picker with an empty query (the "type to search"
     // hint); a query character brings the candidate rows.
@@ -111,10 +122,7 @@ describe('Composer @ file picker', () => {
   })
 
   it('ArrowDown + Enter picks the highlighted file and inserts a settled chip', async () => {
-    fileSearchMock.mockReturnValue({
-      results: [{ path: 'src/a.ts', dir: false }, { path: 'src/b.ts', dir: false }],
-      loading: false,
-    })
+    settled([{ path: 'src/a.ts', dir: false }, { path: 'src/b.ts', dir: false }])
     const { container } = render(<Harness />)
     const editor = getEditor(container)
     setEditorText(editor, '@src')
@@ -133,7 +141,7 @@ describe('Composer @ file picker', () => {
   })
 
   it('Escape dismisses and stays dismissed until the query changes', async () => {
-    fileSearchMock.mockReturnValue({ results: [{ path: 'src/a.ts', dir: false }], loading: false })
+    settled([{ path: 'src/a.ts', dir: false }])
     const { container } = render(<Harness />)
     const editor = getEditor(container)
     setEditorText(editor, '@src')
@@ -152,7 +160,7 @@ describe('Composer @ file picker', () => {
   })
 
   it('Shift+Tab dismisses the picker', async () => {
-    fileSearchMock.mockReturnValue({ results: [{ path: 'src/a.ts', dir: false }], loading: false })
+    settled([{ path: 'src/a.ts', dir: false }])
     const { container } = render(<Harness />)
     const editor = getEditor(container)
     setEditorText(editor, '@src')
@@ -167,6 +175,7 @@ describe('Composer @ file picker', () => {
     fileSearchMock.mockImplementation((_s: unknown, q: string) => ({
       results: q.endsWith('/') ? DRILLED : ROOT,
       loading: false,
+      settledQuery: q,
     }))
     const { container } = render(<Harness />)
     const editor = getEditor(container)
@@ -190,6 +199,7 @@ describe('Composer @ file picker', () => {
     fileSearchMock.mockImplementation((_s: unknown, q: string) => ({
       results: q.endsWith('/') ? DRILLED : ROOT,
       loading: false,
+      settledQuery: q,
     }))
     const { container } = render(<Harness />)
     const editor = getEditor(container)
@@ -208,7 +218,7 @@ describe('Composer @ file picker', () => {
   })
 
   it('mousedown on a file row picks it', async () => {
-    fileSearchMock.mockReturnValue({ results: [{ path: 'src/a.ts', dir: false }], loading: false })
+    settled([{ path: 'src/a.ts', dir: false }])
     const { container } = render(<Harness />)
     const editor = getEditor(container)
     setEditorText(editor, '@src')
@@ -221,10 +231,7 @@ describe('Composer @ file picker', () => {
   })
 
   it('an open quoted span restricts candidates to files', async () => {
-    fileSearchMock.mockReturnValue({
-      results: [{ path: 'my file.txt', dir: false }, { path: 'my folder', dir: true }],
-      loading: false,
-    })
+    settled([{ path: 'my file.txt', dir: false }, { path: 'my folder', dir: true }])
     const { container } = render(<Harness />)
     setEditorText(getEditor(container), '@"my')
     await waitFor(() => expect(picker()).not.toBeNull())
@@ -233,7 +240,7 @@ describe('Composer @ file picker', () => {
   })
 
   it('keeps the slash and @ pickers mutually exclusive', async () => {
-    fileSearchMock.mockReturnValue({ results: [{ path: 'README.md', dir: false }], loading: false })
+    settled([{ path: 'README.md', dir: false }])
     const commands = [{ name: 'help', description: 'Show help', argumentHint: '' }] as SlashCommand[]
     const { container } = render(<Harness commands={commands} />)
     const editor = getEditor(container)
@@ -245,6 +252,116 @@ describe('Composer @ file picker', () => {
     setEditorText(editor, '@')
     await waitFor(() => expect(picker()).not.toBeNull())
     expect(document.querySelector('.cmd-picker')).toBeNull()
+  })
+})
+
+// The grammar chipifies ANY @non-space word (prose "thanks @bob" included),
+// so a no-match picker is a common state, not an edge: once the search has
+// SETTLED empty for the typed query, Enter must send — not swallow. While the
+// search is debounce-pending or in flight the swallow stays (a fast typist
+// must not send a half-formed query).
+describe('Composer @ picker Enter fall-through (settled-empty sends)', () => {
+  function SendHarness({ onSend }: { onSend: () => void }) {
+    const [input, setInput] = useState('')
+    return <Composer {...defaultProps} input={input} setInput={setInput} onSend={onSend} />
+  }
+
+  it('Enter sends when the search settled empty for the current query', async () => {
+    settled([])
+    const onSend = vi.fn()
+    const { container } = render(<SendHarness onSend={onSend} />)
+    const editor = getEditor(container)
+    setEditorText(editor, 'thanks @bob')
+    await waitFor(() => expect(picker()).not.toBeNull())
+    await waitFor(() => expect(picker()!.textContent).toContain('No matching files'))
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledTimes(1)
+    // The picker closes with the send: the value-driven clear on send never
+    // runs onChange's at-word scan, so the fall-through owns the close.
+    await waitFor(() => expect(picker()).toBeNull())
+  })
+
+  it('Enter does NOT send while the query is debounce-pending (nothing settled yet)', async () => {
+    // beforeEach default: results [], loading false, settledQuery null —
+    // the debounce window before the first search fires.
+    const onSend = vi.fn()
+    const { container } = render(<SendHarness onSend={onSend} />)
+    const editor = getEditor(container)
+    setEditorText(editor, 'thanks @bob')
+    await waitFor(() => expect(picker()).not.toBeNull())
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(onSend).not.toHaveBeenCalled()
+    expect(picker()).not.toBeNull()
+  })
+
+  it('Enter does NOT send while the search is in flight', async () => {
+    fileSearchMock.mockReturnValue({ results: [], loading: true, settledQuery: null })
+    const onSend = vi.fn()
+    const { container } = render(<SendHarness onSend={onSend} />)
+    const editor = getEditor(container)
+    setEditorText(editor, 'thanks @bob')
+    await waitFor(() => expect(picker()).not.toBeNull())
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(onSend).not.toHaveBeenCalled()
+    expect(picker()).not.toBeNull()
+  })
+
+  it('Enter does NOT send when only an OLDER query has settled (stale-visible window)', async () => {
+    // 'bo' settled empty; 'bob' is typed and its search has not landed. The
+    // empty results on screen belong to 'bo' — they do not authorize 'bob'.
+    fileSearchMock.mockReturnValue({ results: [], loading: false, settledQuery: 'bo' })
+    const onSend = vi.fn()
+    const { container } = render(<SendHarness onSend={onSend} />)
+    const editor = getEditor(container)
+    setEditorText(editor, 'thanks @bob')
+    await waitFor(() => expect(picker()).not.toBeNull())
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(onSend).not.toHaveBeenCalled()
+    expect(picker()).not.toBeNull()
+  })
+
+  it('bare @ + Enter sends (the empty query never searches)', async () => {
+    const onSend = vi.fn()
+    const { container } = render(<SendHarness onSend={onSend} />)
+    const editor = getEditor(container)
+    setEditorText(editor, '@')
+    await waitFor(() => expect(picker()).not.toBeNull())
+    expect(picker()!.textContent).toContain('Type to search')
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(picker()).toBeNull())
+  })
+
+  it('a real candidate + Enter still picks (no send)', async () => {
+    settled([{ path: 'bob.ts', dir: false }])
+    const onSend = vi.fn()
+    const { container } = render(<SendHarness onSend={onSend} />)
+    const editor = getEditor(container)
+    setEditorText(editor, 'thanks @bob')
+    await waitFor(() => expect(picker()!.textContent).toContain('bob.ts'))
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(onSend).not.toHaveBeenCalled()
+    expect(editor.querySelector('.file-mention-chip')!.textContent).toBe('@bob.ts')
+    expect(getEditorValue(editor)).toBe('thanks @bob.ts ')
+    expect(picker()).toBeNull()
+  })
+
+  it('Shift+Enter never sends through the fall-through (newline stays a newline)', async () => {
+    settled([])
+    const onSend = vi.fn()
+    const { container } = render(<SendHarness onSend={onSend} />)
+    const editor = getEditor(container)
+    setEditorText(editor, 'thanks @bob')
+    await waitFor(() => expect(picker()).not.toBeNull())
+
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
+    expect(onSend).not.toHaveBeenCalled()
   })
 })
 

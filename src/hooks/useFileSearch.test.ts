@@ -63,10 +63,13 @@ describe('useFileSearch', () => {
     // A late resolution of the aborted request must not overwrite state.
     await act(async () => { resolveFirst({ results: [{ path: 'stale.ts', dir: false }] }) })
     expect(result.current.results).not.toContainEqual({ path: 'stale.ts', dir: false })
+    // …and an aborted request never settles its query.
+    expect(result.current.settledQuery).toBeNull()
 
     await act(async () => { vi.advanceTimersByTime(150) })
     expect(mockGet).toHaveBeenCalledTimes(2)
     expect(result.current.results).toEqual([{ path: 'b.ts', dir: false }])
+    expect(result.current.settledQuery).toBe('ab')
   })
 
   it('does not fetch while disabled and returns empty results', () => {
@@ -75,6 +78,7 @@ describe('useFileSearch', () => {
     expect(mockGet).not.toHaveBeenCalled()
     expect(result.current.results).toEqual([])
     expect(result.current.loading).toBe(false)
+    expect(result.current.settledQuery).toBeNull()
   })
 
   it('does not fetch for an empty query', () => {
@@ -96,5 +100,54 @@ describe('useFileSearch', () => {
     await act(async () => { vi.advanceTimersByTime(150) })
     expect(result.current.results).toEqual([])
     expect(result.current.loading).toBe(false)
+  })
+
+  // settledQuery is the "settled for THIS query" signal the composer's Enter
+  // fall-through reads: results alone cannot tell a genuinely-empty search
+  // from the debounce window / an in-flight request showing stale rows.
+  it('echoes the resolved query once settled; null before the first settle', async () => {
+    mockGet.mockResolvedValue({ results: [] })
+    const { result } = renderHook(() => useFileSearch('s1', 'bob', true))
+    expect(result.current.settledQuery).toBeNull()
+    act(() => { vi.advanceTimersByTime(149) })
+    expect(result.current.settledQuery).toBeNull()
+    await act(async () => { vi.advanceTimersByTime(1) })
+    expect(result.current.settledQuery).toBe('bob')
+    expect(result.current.loading).toBe(false)
+  })
+
+  it('keeps the PREVIOUS settled query during the next debounce window (stale-visible)', async () => {
+    mockGet.mockResolvedValue({ results: [{ path: 'a.ts', dir: false }] })
+    const { result, rerender } = renderHook(({ q }) => useFileSearch('s1', q, true), {
+      initialProps: { q: 'a' },
+    })
+    await act(async () => { vi.advanceTimersByTime(150) })
+    expect(result.current.settledQuery).toBe('a')
+
+    // Query change: stale results stay visible, but the echo still names the
+    // query that produced them — NOT the one being typed.
+    rerender({ q: 'ab' })
+    expect(result.current.results).toEqual([{ path: 'a.ts', dir: false }])
+    expect(result.current.settledQuery).toBe('a')
+    act(() => { vi.advanceTimersByTime(149) })
+    expect(result.current.settledQuery).toBe('a')
+
+    await act(async () => { vi.advanceTimersByTime(1) })
+    expect(result.current.settledQuery).toBe('ab')
+  })
+
+  it('a failed search settles its query too (empty candidates, not stuck pending)', async () => {
+    mockGet.mockRejectedValue(new Error('boom'))
+    const { result } = renderHook(() => useFileSearch('s1', 'bob', true))
+    await act(async () => { vi.advanceTimersByTime(150) })
+    expect(result.current.settledQuery).toBe('bob')
+    expect(result.current.results).toEqual([])
+    expect(result.current.loading).toBe(false)
+  })
+
+  it('an empty query never settles (nothing is searched)', () => {
+    const { result } = renderHook(() => useFileSearch('s1', '', true))
+    act(() => { vi.advanceTimersByTime(300) })
+    expect(result.current.settledQuery).toBeNull()
   })
 })

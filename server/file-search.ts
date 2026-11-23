@@ -112,7 +112,10 @@ async function walkFiles(cwd: string): Promise<string[]> {
 }
 
 /** Live listing of one directory (the `a/b/` drill state). The resolved dir
- *  must stay inside cwd; a missing dir is the ordinary typing state → [].
+ *  must stay inside cwd; a dir that cannot be listed is the ordinary typing
+ *  state → []: missing (ENOENT), a filename typed then `/` (ENOTDIR — readdir
+ *  on a file), or permission-denied (EACCES/EPERM — the same state as the
+ *  walk's unreadable-subdir skip).
  *  `.` / empty segments are normalized away so `./` lists the cwd root and
  *  every result path stays canonical (no `./` prefix, no `/./` mid-path). */
 async function listDir(cwd: string, relDir: string, cap: number): Promise<FileSearchResult[]> {
@@ -123,7 +126,8 @@ async function listDir(cwd: string, relDir: string, cap: number): Promise<FileSe
   try {
     dirents = await fs.readdir(abs, { withFileTypes: true })
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EACCES' || code === 'EPERM') return []
     throw err
   }
   return dirents

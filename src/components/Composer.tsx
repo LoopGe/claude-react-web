@@ -1179,8 +1179,9 @@ export const Composer = memo(function Composer({
                 }
               }
               // @ file/folder picker routing (mirrors the slash block). The
-              // editor keeps focus; arrows wrap, Enter settles, Tab drills a
-              // folder / settles a file, Shift+Tab and Escape dismiss.
+              // editor keeps focus; arrows wrap, Enter settles (or sends when
+              // the search settled empty), Tab drills a folder / settles a
+              // file, Shift+Tab and Escape dismiss.
               if (atPickerOpen) {
                 if (e.key === 'ArrowUp' && !e.ctrlKey && !e.metaKey) {
                   e.preventDefault()
@@ -1201,6 +1202,25 @@ export const Composer = memo(function Composer({
                   return
                 }
                 if (e.key === 'Enter') {
+                  // Settled-empty for the CURRENT query (or bare `@`, which
+                  // never searches): nothing to pick, so Enter falls through
+                  // to send. The grammar chipifies ANY @non-space word (prose
+                  // "thanks @bob" included), so no-match Enter is a common
+                  // case, not an edge. While the search is debounce-pending or
+                  // in flight the swallow stays — a fast typist must not send
+                  // a half-formed query, and stale-visible rows still settle.
+                  if (
+                    !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing &&
+                    atFlat[atIndex] == null && !fileSearch.loading &&
+                    (atQuery === '' || fileSearch.settledQuery === atQuery)
+                  ) {
+                    // Own the close here: the editor's Enter handler sends
+                    // next, and the value-driven clear on send never runs
+                    // onChange's at-word scan.
+                    setAtPickerOpen(false)
+                    atDismissedQueryRef.current = null
+                    return
+                  }
                   e.preventDefault()
                   confirmAtPicker()
                   return

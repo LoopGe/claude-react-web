@@ -386,9 +386,18 @@ test('reference: inline-flow visuals — paragraphs, long chip, indented code', 
 
   // ---- R6 carry: a long mention chip must not overflow its bubble ----
   const longPath = `@${'longsegment'.repeat(20)}.ts`
+  // No candidate matches: once the search settles empty, Enter sends
+  // directly (the settled-empty fall-through). The FINAL query's response
+  // is the settle signal — the picker's empty text is query-agnostic, so an
+  // intermediate prefix settling empty during a typing stall must not
+  // authorize the send.
+  // The endpoint receives the query WITHOUT the leading `@` (the composer
+  // strips the trigger before searching).
+  const finalSearch = page.waitForResponse((r) =>
+    r.url().includes(`/api/sessions/${F}/file-search?q=${encodeURIComponent(longPath.slice(1))}`))
   await typeQuery(page, F, longPath)
-  // No candidate matches; Esc closes the picker so Enter sends.
-  await page.keyboard.press('Escape')
+  await finalSearch
+  await expectNoMatches(page)
   await page.keyboard.press('Enter')
   const longMsg = panel.locator('.msg.user', { hasText: 'longsegment' })
   await expect(longMsg).toBeVisible()

@@ -17754,6 +17754,8 @@ describe('file-reference guidance (spawn + resume wiring)', () => {
     const sp = mockHandles[0].options.systemPrompt as Record<string, unknown>
     expect(sp).toMatchObject({ type: 'preset', preset: 'claude_code', snapshot: false })
     expect(sp.append).toContain(FILE_REFERENCE_GUIDANCE)
+    // Exactly ONE occurrence: toContain alone cannot catch double-application.
+    expect((sp.append as string).split(FILE_REFERENCE_GUIDANCE).length).toBe(2)
   })
 
   it('create() with a start-as agent keeps the persona AND carries the guidance', async () => {
@@ -17780,6 +17782,8 @@ describe('file-reference guidance (spawn + resume wiring)', () => {
     expect(mockHandles).toHaveLength(2)
     expect(mockHandles[1].options.resume).toBe(info.id)
     expect(appendOf(mockHandles[1])).toContain(FILE_REFERENCE_GUIDANCE)
+    // Exactly ONE occurrence on the respawn too (single-application pin).
+    expect(appendOf(mockHandles[1]).split(FILE_REFERENCE_GUIDANCE).length).toBe(2)
   })
 
   it('fork() carries the guidance onto the forked spawn', async () => {

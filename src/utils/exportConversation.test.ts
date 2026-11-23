@@ -125,6 +125,62 @@ describe('exportConversation', () => {
     vi.unstubAllGlobals()
   })
 
+  it('keeps distinct text blocks on separate lines (no prose gluing)', () => {
+    const texts: string[] = []
+    vi.stubGlobal('Blob', class {
+      constructor(parts: string[]) { texts.push(parts.join('')) }
+    })
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn(() => 'blob:two-text-test'),
+      revokeObjectURL: vi.fn(),
+    })
+    const messages = [{
+      type: 'user',
+      uuid: 'two-text',
+      message: { role: 'user', content: [
+        { type: 'text', text: 'first' },
+        { type: 'text', text: 'second' },
+      ] },
+    }] as unknown as SdkMessage[]
+
+    exportConversation(messages, 'two-text-test')
+
+    // The mention prose-merge keeps ONE block's fragments on one line; it
+    // must not glue two distinct blocks.
+    expect(texts[0]).toContain('first\nsecond')
+    expect(texts[0]).not.toContain('firstsecond')
+    vi.unstubAllGlobals()
+  })
+
+  it('text–image–text exports each text on its own line', () => {
+    const texts: string[] = []
+    vi.stubGlobal('Blob', class {
+      constructor(parts: string[]) { texts.push(parts.join('')) }
+    })
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn(() => 'blob:image-split-test'),
+      revokeObjectURL: vi.fn(),
+    })
+    const messages = [{
+      type: 'user',
+      uuid: 'image-split',
+      message: { role: 'user', content: [
+        { type: 'text', text: 'before' },
+        { type: 'image', source: { type: 'base64', data: 'AAAA', media_type: 'image/png' } },
+        { type: 'text', text: 'after' },
+      ] },
+    }] as unknown as SdkMessage[]
+
+    exportConversation(messages, 'image-split-test')
+
+    // Images export nothing themselves, but they separate the prose runs.
+    expect(texts[0]).toContain('before\nafter')
+    expect(texts[0]).not.toContain('beforeafter')
+    vi.unstubAllGlobals()
+  })
+
   it('exports text and attachments in their original order', () => {
     const texts: string[] = []
     vi.stubGlobal('Blob', class {

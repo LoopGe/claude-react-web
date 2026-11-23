@@ -14,7 +14,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Hono } from 'hono'
 import { searchFiles } from './file-search.js'
@@ -128,6 +128,32 @@ describe('searchFiles', () => {
     expect(await searchFiles(dir, 'no/such/')).toEqual([])
     expect(await searchFiles(dir, 'a/../../')).toEqual([])
   })
+
+  it('directory-scoped query on a FILE path → empty (ENOTDIR is ordinary typing)', async () => {
+    // Typing `@alpha.ts/` (filename then slash) drills into a file: readdir
+    // throws ENOTDIR. Same ordinary-input state as a missing dir → [], not a
+    // 500. A deeper path THROUGH a file is the same state.
+    write(dir, 'alpha.ts')
+    write(dir, 'src/beta.ts')
+    expect(await searchFiles(dir, 'alpha.ts/')).toEqual([])
+    expect(await searchFiles(dir, 'src/beta.ts/x/')).toEqual([])
+  })
+
+  // A permission-denied drill dir is the same ordinary state as the walk's
+  // unreadable-subdir skip. Windows has no POSIX mode bits (and root bypasses
+  // them), so the fs-level pin is POSIX-non-root-only.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'directory-scoped query on an unreadable dir → empty (EACCES is ordinary typing)',
+    async () => {
+      write(dir, 'locked/inside.ts')
+      chmodSync(join(dir, 'locked'), 0o000)
+      try {
+        expect(await searchFiles(dir, 'locked/')).toEqual([])
+      } finally {
+        chmodSync(join(dir, 'locked'), 0o755)
+      }
+    },
+  )
 
   it('scoped ./ lists the cwd root with canonical paths (no ./ prefix)', async () => {
     write(dir, 'a.ts')

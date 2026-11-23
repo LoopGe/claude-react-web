@@ -18,18 +18,27 @@ const FILE_SEARCH_DEBOUNCE_MS = 150
 const FILE_SEARCH_LIMIT = 20
 
 /**
- * Search `sessionId`'s cwd for `query`. Returns `{results, loading}`; both are
- * empty/false unless `enabled` with a session and a non-empty query. Stale
- * results are kept visible during the debounce window (no flicker between
- * keystrokes) and replaced when the new search lands.
+ * Search `sessionId`'s cwd for `query`. Returns `{results, loading,
+ * settledQuery}`; results/loading are empty/false unless `enabled` with a
+ * session and a non-empty query. Stale results are kept visible during the
+ * debounce window (no flicker between keystrokes) and replaced when the new
+ * search lands.
+ *
+ * `settledQuery` is the query that produced `results` (null until the first
+ * search settles; a failed search settles too — empty candidates). During a
+ * debounce/in-flight window it still names the PREVIOUS query, so comparing
+ * it against the live query tells "settled for what's typed now" apart from
+ * "pending, showing older results" — the composer's Enter fall-through reads
+ * exactly that distinction.
  */
 export function useFileSearch(
   sessionId: string | null,
   query: string,
   enabled: boolean,
-): { results: FileSearchResult[]; loading: boolean } {
+): { results: FileSearchResult[]; loading: boolean; settledQuery: string | null } {
   const [results, setResults] = useState<FileSearchResult[]>([])
   const [loading, setLoading] = useState(false)
+  const [settledQuery, setSettledQuery] = useState<string | null>(null)
 
   useEffect(() => {
     if (!enabled || sessionId == null || query === '') return
@@ -45,6 +54,7 @@ export function useFileSearch(
           if (controller.signal.aborted) return
           setResults(r.results)
           setLoading(false)
+          setSettledQuery(query)
         })
         .catch(() => {
           // An abort is intentional cancellation (a newer query superseded this
@@ -54,6 +64,7 @@ export function useFileSearch(
           if (controller.signal.aborted) return
           setResults([])
           setLoading(false)
+          setSettledQuery(query)
         })
     }, FILE_SEARCH_DEBOUNCE_MS)
     return () => {
@@ -63,5 +74,9 @@ export function useFileSearch(
   }, [sessionId, query, enabled])
 
   const active = enabled && sessionId != null && query !== ''
-  return { results: active ? results : [], loading: active && loading }
+  return {
+    results: active ? results : [],
+    loading: active && loading,
+    settledQuery: active ? settledQuery : null,
+  }
 }
