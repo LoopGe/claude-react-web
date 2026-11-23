@@ -73,20 +73,67 @@ function stubSpawnEvent(event: 'spawn' | 'error', error?: Error) {
   })
 }
 
+/** A deterministic "the handler reached spawn()" signal. Tests that assert
+ *  on the watch window must not advance fake timers while waiting for the
+ *  handler's fs/microtask chain, and a bounded budget of real setImmediate
+ *  turns proved load-sensitive on CI (the chain can outlast any fixed turn
+ *  count). Awaiting the call itself removes the tunable: the promise
+ *  resolves from inside the spawn mock, which never touches a fake timer. */
+function spawnCallSignal(): { spawned: Promise<void>; resolve: () => void } {
+  let resolve!: () => void
+  const spawned = new Promise<void>((r) => {
+    resolve = r
+  })
+  return { spawned, resolve }
+}
+
+/** Wait for the handler to reach spawn(). The call itself is the signal, so
+ *  there is no turn-count budget to outrun. If the request settles FIRST
+ *  (the handler took another branch — validation 4xx, empty candidate
+ *  chain), fail with that status instead of stalling to the test timeout. */
+async function awaitHandlerSpawn(
+  spawned: Promise<void>,
+  pending: Response | Promise<Response>,
+): Promise<void> {
+  const status = await Promise.race([spawned, Promise.resolve(pending).then((res) => res.status)])
+  if (typeof status === 'number') {
+    throw new Error(`request settled with ${status} before the handler reached spawn`)
+  }
+}
+
+/** The plain "spawn returns a silent child" stub plus its spawn-call signal.
+ *  The child is reachable once the signal resolved. */
+function stubSpawnSilent(): { spawned: Promise<void>; child: () => SpawnChild } {
+  const signal = spawnCallSignal()
+  let launched: SpawnChild | null = null
+  spawnMock.mockImplementation(() => {
+    const child = new EventEmitter() as SpawnChild
+    child.unref = vi.fn()
+    launched = child
+    signal.resolve()
+    return child
+  })
+  return { spawned: signal.spawned, child: () => launched! }
+}
+
 /** A launcher that SPAWNS and then stays alive — the first-instance editor
  *  case (the Electron main process lives as long as its window). `kill` is a
- *  spy so a test can pin that the server never terminates it. */
-function stubSpawnLongLived(): { kills: Array<() => void> } {
+ *  spy so a test can pin that the server never terminates it. `spawned`
+ *  resolves at the spawn CALL, not at the later `spawn` EVENT (which arms
+ *  LAUNCH_WATCH_MS) — the distinction the watch-window tests turn on. */
+function stubSpawnLongLived(): { kills: Array<() => void>; spawned: Promise<void> } {
   const kills: Array<() => void> = []
+  const signal = spawnCallSignal()
   spawnMock.mockImplementation(() => {
     const child = new EventEmitter() as SpawnChild & { kill: () => void }
     child.unref = vi.fn()
     child.kill = vi.fn()
     kills.push(child.kill)
+    signal.resolve()
     process.nextTick(() => child.emit('spawn'))
     return child
   })
-  return { kills }
+  return { kills, spawned: signal.spawned }
 }
 
 
@@ -654,19 +701,13 @@ describe('brand targets', () => {
 
   it('the watch window starts at the spawn event, not the spawn call', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    let launched: EventEmitter | null = null
-    spawnMock.mockImplementation(() => {
-      const child = new EventEmitter() as SpawnChild
-      child.unref = vi.fn()
-      launched = child
-      return child
-    })
+    const { spawned, child } = stubSpawnSilent()
     try {
       platformMock.mockReturnValue('linux')
       const pending = req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
-      for (let i = 0; i < 100 && spawnMock.mock.calls.length === 0; i++) {
-        await new Promise((r) => setImmediate(r))
-      }
+      // Wait for the handler to REACH spawn (the call itself is the signal —
+      // no turn-count budget, which was load-sensitive on CI).
+      await awaitHandlerSpawn(spawned, pending)
       // A slow spawn (AV scan, network path): the window must not run out
       // before the process exists.
       await vi.advanceTimersByTimeAsync(1500)
@@ -676,7 +717,7 @@ describe('brand targets', () => {
       })
       await new Promise((r) => setImmediate(r))
       expect(settled).toBe(false)
-      launched!.emit('spawn')
+      child().emit('spawn')
       await vi.advanceTimersByTimeAsync(1500)
       const res = await pending
       expect(res.status).toBe(200)
@@ -687,21 +728,13 @@ describe('brand targets', () => {
 
   it('a spawn failure after the would-be window is still a failure', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    let launched: EventEmitter | null = null
-    spawnMock.mockImplementation(() => {
-      const child = new EventEmitter() as SpawnChild
-      child.unref = vi.fn()
-      launched = child
-      return child
-    })
+    const { spawned, child } = stubSpawnSilent()
     try {
       platformMock.mockReturnValue('linux')
       const pending = req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
-      for (let i = 0; i < 100 && spawnMock.mock.calls.length === 0; i++) {
-        await new Promise((r) => setImmediate(r))
-      }
+      await awaitHandlerSpawn(spawned, pending)
       await vi.advanceTimersByTimeAsync(1500)
-      launched!.emit('error', new Error('spawn failed late'))
+      child().emit('error', new Error('spawn failed late'))
       const res = await pending
       expect(res.status).toBe(500)
     } finally {
@@ -713,14 +746,13 @@ describe('brand targets', () => {
     const file = `${tmpDir}/page.html`
     await writeFile(file, '<h1>Hello</h1>')
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    stubSpawnLongLived()
+    const { spawned } = stubSpawnLongLived()
     try {
       const pending = req(makeApp(), 'POST', '/open-path', { path: file, target: 'browser' }, '127.0.0.1')
-      // Real setImmediate turns (not faked) let the handler reach spawn;
-      // vi.waitFor would advance the faked timers and hide the distinction.
-      for (let i = 0; i < 100 && spawnMock.mock.calls.length === 0; i++) {
-        await new Promise((r) => setImmediate(r))
-      }
+      // Wait for the handler to REACH spawn without touching a fake timer
+      // (vi.waitFor would advance them and hide the distinction; a bounded
+      // setImmediate budget was load-sensitive on CI).
+      await awaitHandlerSpawn(spawned, pending)
       expect(spawnMock).toHaveBeenCalled()
       // No timer advance: the spawn event alone must settle the request.
       const res = await pending
