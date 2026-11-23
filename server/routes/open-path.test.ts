@@ -120,20 +120,23 @@ function stubSpawnSilent(): { spawned: Promise<void>; child: () => SpawnChild } 
  *  case (the Electron main process lives as long as its window). `kill` is a
  *  spy so a test can pin that the server never terminates it. `spawned`
  *  resolves at the spawn CALL, not at the later `spawn` EVENT (which arms
- *  LAUNCH_WATCH_MS) — the distinction the watch-window tests turn on. */
-function stubSpawnLongLived(): { kills: Array<() => void>; spawned: Promise<void> } {
+ *  LAUNCH_WATCH_MS) — the distinction the watch-window tests turn on. The
+ *  spawned child is reachable via `child()` once `spawned` resolved. */
+function stubSpawnLongLived(): { kills: Array<() => void>; spawned: Promise<void>; child: () => SpawnChild } {
   const kills: Array<() => void> = []
   const signal = spawnCallSignal()
+  let launched: SpawnChild | null = null
   spawnMock.mockImplementation(() => {
     const child = new EventEmitter() as SpawnChild & { kill: () => void }
     child.unref = vi.fn()
     child.kill = vi.fn()
     kills.push(child.kill)
+    launched = child
     signal.resolve()
     process.nextTick(() => child.emit('spawn'))
     return child
   })
-  return { kills, spawned: signal.spawned }
+  return { kills, spawned: signal.spawned, child: () => launched! }
 }
 
 
@@ -301,11 +304,13 @@ describe('POST /open-path', () => {
 
   it('a first-instance terminal (long-lived wt) is never killed', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const { kills } = stubSpawnLongLived()
+    const { kills, spawned } = stubSpawnLongLived()
     try {
       platformMock.mockReturnValue('win32')
       const pending = req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'terminal' }, '127.0.0.1')
-      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+      // vi.waitFor advances the faked timers while polling — await the spawn
+      // call itself so the watch window can only start at the `spawn` event.
+      await awaitHandlerSpawn(spawned, pending)
       await vi.advanceTimersByTimeAsync(1500)
       const res = await pending
       expect(res.status).toBe(200)
@@ -613,11 +618,13 @@ describe('brand targets', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     process.env.LOCALAPPDATA = '/w/LocalAppData'
     process.env.ProgramFiles = '/w/ProgramFiles'
-    const { kills } = stubSpawnLongLived()
+    const { kills, spawned } = stubSpawnLongLived()
     try {
       platformMock.mockReturnValue('win32')
       const pending = req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
-      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+      // vi.waitFor advances the faked timers while polling — await the spawn
+      // call itself so the watch window can only start at the `spawn` event.
+      await awaitHandlerSpawn(spawned, pending)
       await vi.advanceTimersByTimeAsync(1500)
       const res = await pending
       expect(res.status).toBe(200)
@@ -640,24 +647,19 @@ describe('brand targets', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     process.env.LOCALAPPDATA = '/w/LocalAppData'
     process.env.ProgramFiles = '/w/ProgramFiles'
-    let launched: EventEmitter | null = null
-    spawnMock.mockImplementation(() => {
-      const child = new EventEmitter() as SpawnChild
-      child.unref = vi.fn()
-      launched = child
-      process.nextTick(() => child.emit('spawn'))
-      return child
-    })
+    const { spawned, child } = stubSpawnLongLived()
     try {
       platformMock.mockReturnValue('win32')
       const pending = req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
-      await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+      // vi.waitFor advances the faked timers while polling — await the spawn
+      // call itself so the watch window can only start at the `spawn` event.
+      await awaitHandlerSpawn(spawned, pending)
       await vi.advanceTimersByTimeAsync(1500)
       const res = await pending
       expect(res.status).toBe(200)
       // The window already counted the launcher launched; its late exit is
       // swallowed, never turned into a failure or an unhandled rejection.
-      launched!.emit('exit', 1, null)
+      child().emit('exit', 1, null)
       expect(res.status).toBe(200)
     } finally {
       vi.useRealTimers()
