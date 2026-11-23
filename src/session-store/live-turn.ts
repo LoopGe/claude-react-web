@@ -17,7 +17,7 @@
 
 import type { SdkMessage } from '../types'
 import type { LiveTurnState, ServerMirror } from './types'
-import { appendDraftText } from './draft-state'
+import { appendDraftText, appendDraftThinking } from './draft-state'
 
 // ── Token-rate sliding window ──────────────────────────────────────
 /** Sliding-window span (balanced responsiveness). Samples older than this are
@@ -85,11 +85,15 @@ export function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage):
   if (!event || typeof event.type !== 'string') return mirror
 
   let liveTurn = mirror.liveTurn
+  let thinkingDraft = mirror.thinkingDraft
   if (!liveTurn) {
     liveTurn = {
       turnId: typeof message.uuid === 'string' ? message.uuid : `turn:${mirror.eventCount + 1}`,
       phase: null,
       textChunks: [],
+      thinkingChunks: [],
+      thinkingBlockIndex: null,
+      thinkingDone: false,
       flushedText: [],
       tokenRate: null,
       startedAt: Date.now(),
@@ -133,10 +137,11 @@ export function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage):
       // redacted_thinking is the block the thinking-tokens estimate was
       // originally built for — without this the phase stays null/stale and
       // the WorkingBubble labels the estimate's own phase "Working". Skip the
-      // spread when the phase already matches so the identity short-circuit
-      // below still holds for a no-op start (thinking → thinking).
-      if (liveTurn.phase !== 'thinking') {
-        liveTurn = { ...liveTurn, phase: 'thinking' }
+      // spread when nothing changes so the identity short-circuit below still
+      // holds for a no-op start (thinking → thinking, same index).
+      const index = typeof event.index === 'number' ? event.index : null
+      if (liveTurn.phase !== 'thinking' || liveTurn.thinkingBlockIndex !== index || liveTurn.thinkingDone) {
+        liveTurn = { ...liveTurn, phase: 'thinking', thinkingBlockIndex: index, thinkingDone: false }
       }
     } else if (block?.type === 'text') {
       // Mark when actual writing starts (skip thinking phase)
@@ -180,6 +185,27 @@ export function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage):
         lastDeltaAt: now,
         dirty: true,
       }
+    } else if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+      // Thinking text feeds ONLY the thinking accumulator — never totalChars /
+      // textChunks / flushedText / token rate (the rate's writingStartedAt gate
+      // semantics stay unchanged). Sidechain thinking is tagged and dropped at
+      // flush, exactly like sidechain text.
+      liveTurn = {
+        ...liveTurn,
+        thinkingChunks: [...liveTurn.thinkingChunks, { text: delta.thinking, sidechain: message.parent_tool_use_id != null }],
+        dirty: true,
+      }
+    }
+  } else if (event.type === 'content_block_stop') {
+    // The thinking block's stop folds its row closed. Flip thinkingDraft.done
+    // immediately when the draft exists; when the stop lands BEFORE the first
+    // fold (whole block inside the 80ms flush window), thinkingDone carries
+    // the signal to the flush and dirty arms it.
+    if (liveTurn.thinkingBlockIndex != null && event.index === liveTurn.thinkingBlockIndex) {
+      liveTurn = { ...liveTurn, thinkingBlockIndex: null, thinkingDone: true, dirty: true }
+      if (thinkingDraft && !thinkingDraft.done) {
+        thinkingDraft = { ...thinkingDraft, done: true }
+      }
     }
   } else if (event.type === 'message_stop') {
     liveTurn = {
@@ -189,12 +215,14 @@ export function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage):
   }
 
   // Identity short-circuit (same discipline as the other early returns
-  // above): when nothing touched liveTurn — a sidechain thinking/tool_use
-  // start, an unrecognised event type — return the ORIGINAL mirror so
-  // withMirror's reference-equality check skips the SessionState clone.
-  // The spread path stays for the case where liveTurn was freshly
+  // above): when nothing touched liveTurn or thinkingDraft — a sidechain
+  // thinking/tool_use start, an unrecognised event type — return the ORIGINAL
+  // mirror so withMirror's reference-equality check skips the SessionState
+  // clone. The spread path stays for the case where liveTurn was freshly
   // initialized above (mirror.liveTurn was null).
-  return liveTurn === mirror.liveTurn ? mirror : { ...mirror, liveTurn }
+  return liveTurn === mirror.liveTurn && thinkingDraft === mirror.thinkingDraft
+    ? mirror
+    : { ...mirror, liveTurn, thinkingDraft }
 }
 
 /** Prune finalized main-thread text from the live turn's accumulator.
@@ -225,7 +253,9 @@ export function pruneFinalizedLiveTurnText(mirror: ServerMirror, message: SdkMes
   const liveTurn = mirror.liveTurn
   if (!liveTurn) return mirror
   const hasMainThread =
-    liveTurn.flushedText.some((s) => !s.sidechain) || liveTurn.textChunks.some((s) => !s.sidechain)
+    liveTurn.flushedText.some((s) => !s.sidechain) ||
+    liveTurn.textChunks.some((s) => !s.sidechain) ||
+    liveTurn.thinkingChunks.some((s) => !s.sidechain)
   if (!hasMainThread) return mirror
   return {
     ...mirror,
@@ -233,57 +263,83 @@ export function pruneFinalizedLiveTurnText(mirror: ServerMirror, message: SdkMes
       ...liveTurn,
       flushedText: liveTurn.flushedText.filter((s) => s.sidechain),
       textChunks: liveTurn.textChunks.filter((s) => s.sidechain),
+      thinkingChunks: liveTurn.thinkingChunks.filter((s) => s.sidechain),
     },
   }
 }
 
 /** Fold the unflushed `textChunks` into `flushedText` (coalescing adjacent
  *  same-origin segments) and into the in-place draft (main-thread text only),
- *  at the 80ms flush cadence.
+ *  and the unflushed `thinkingChunks` into the thinking draft, at the 80ms
+ *  flush cadence.
  *
  *  Identity-stable: a mirror with no `liveTurn`, or a non-dirty liveTurn, is
  *  returned verbatim so `withMirror` skips the SessionState clone on every
  *  flush tick that has nothing to do. A prune may have emptied the unflushed
- *  tail (finalized assistant landed inside the flush window): in that case the
- *  dirty flag is cleared without rebuilding flushed. */
+ *  tails (finalized assistant landed inside the flush window): in that case
+ *  the dirty flag is cleared without rebuilding flushed. A thinking-only
+ *  flush leaves flushedText / draft references UNTOUCHED (and vice versa) —
+ *  the leaf subscriptions on either side never churn on the other's flush. */
 export function flushLiveTurn(mirror: ServerMirror): ServerMirror {
   const liveTurn = mirror.liveTurn
   if (!liveTurn || !liveTurn.dirty) return mirror
-  // Prune may have emptied the tail (finalized assistant landed inside the
+  // Prune may have emptied both tails (finalized assistant landed inside the
   // 80ms flush window): clear the dirty flag without rebuilding flushed.
-  if (liveTurn.textChunks.length === 0) {
+  if (liveTurn.textChunks.length === 0 && liveTurn.thinkingChunks.length === 0) {
     return { ...mirror, liveTurn: { ...liveTurn, dirty: false } }
   }
-  // Merge unflushed chunks into the tail of the flushed segment list,
-  // coalescing adjacent same-origin segments so the segment count tracks
-  // main↔sidechain alternations, not flush ticks or delta counts.
-  const flushed = liveTurn.flushedText.slice()
-  for (const chunk of liveTurn.textChunks) {
-    const tail = flushed[flushed.length - 1]
-    if (tail && tail.sidechain === chunk.sidechain) {
-      flushed[flushed.length - 1] = { text: tail.text + chunk.text, sidechain: tail.sidechain }
-    } else {
-      flushed.push(chunk)
+  let flushed = liveTurn.flushedText
+  let draft = mirror.draft
+  let draftSeq = mirror.draftSeq
+  if (liveTurn.textChunks.length > 0) {
+    // Merge unflushed chunks into the tail of the flushed segment list,
+    // coalescing adjacent same-origin segments so the segment count tracks
+    // main↔sidechain alternations, not flush ticks or delta counts.
+    flushed = liveTurn.flushedText.slice()
+    for (const chunk of liveTurn.textChunks) {
+      const tail = flushed[flushed.length - 1]
+      if (tail && tail.sidechain === chunk.sidechain) {
+        flushed[flushed.length - 1] = { text: tail.text + chunk.text, sidechain: tail.sidechain }
+      } else {
+        flushed.push(chunk)
+      }
+    }
+    // Fold the flushed MAIN-THREAD text into the in-place draft (the
+    // growing inline card) at the same 80ms cadence — per-delta folding
+    // would recompile the card's tail at delta rate. Sidechain text never
+    // enters the draft (the settled card never contains it either).
+    const mainText = liveTurn.textChunks
+      .filter((c) => !c.sidechain)
+      .map((c) => c.text)
+      .join('')
+    if (mainText) {
+      draftSeq = draft ? draftSeq : draftSeq + 1
+      draft = appendDraftText(draft, draftSeq, mainText)
     }
   }
-  // Fold the flushed MAIN-THREAD text into the in-place draft (the
-  // growing inline card) at the same 80ms cadence — per-delta folding
-  // would recompile the card's tail at delta rate. Sidechain text never
-  // enters the draft (the settled card never contains it either).
-  const mainText = liveTurn.textChunks
+  // Thinking fold (parallel, independent key namespace). thinkingDone carries
+  // a stop that landed before the first fold (whole block inside the window).
+  let thinkingDraft = mirror.thinkingDraft
+  let thinkingSeq = mirror.thinkingSeq
+  const mainThinking = liveTurn.thinkingChunks
     .filter((c) => !c.sidechain)
     .map((c) => c.text)
     .join('')
-  const next: ServerMirror = {
+  if (mainThinking) {
+    thinkingSeq = thinkingDraft ? thinkingSeq : thinkingSeq + 1
+    thinkingDraft = appendDraftThinking(thinkingDraft, thinkingSeq, mainThinking)
+  }
+  if (thinkingDraft && liveTurn.thinkingDone && !thinkingDraft.done) {
+    thinkingDraft = { ...thinkingDraft, done: true }
+  }
+  return {
     ...mirror,
-    liveTurn: { ...liveTurn, flushedText: flushed, textChunks: [], dirty: false },
+    draft,
+    draftSeq,
+    thinkingDraft,
+    thinkingSeq,
+    liveTurn: { ...liveTurn, flushedText: flushed, textChunks: [], thinkingChunks: [], dirty: false },
   }
-  if (mainText) {
-    const draftSeq = next.draft ? next.draftSeq : next.draftSeq + 1
-    next.draft = appendDraftText(next.draft, draftSeq, mainText)
-    next.draftSeq = draftSeq
-  }
-  return next
 }
 
 /** Flatten a tool_result `content` payload to a plain string for signature

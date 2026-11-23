@@ -3,7 +3,7 @@ import type { RebuildBlocker } from '../../shared/ws-protocol'
 import type { ContextUsage } from '../types/context-usage'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { emptyWindow, type WindowState } from './seq-window'
-import type { DraftState } from './draft-state'
+import type { DraftState, ThinkingDraftState } from './draft-state'
 
 export interface TranscriptItem {
   id: string
@@ -377,6 +377,23 @@ export interface LiveTurnState {
   /** Unflushed stream-event text deltas, in arrival order, origin-tagged
    *  (see LiveTurnSegment). Drained into `flushedText` by LIVE_TURN_FLUSH. */
   textChunks: LiveTurnSegment[]
+  /** Unflushed stream-event THINKING deltas, origin-tagged like textChunks.
+   *  Drained into `mirror.thinkingDraft` by LIVE_TURN_FLUSH (main-thread
+   *  only; sidechain chunks are dropped). Never feeds flushedText /
+   *  totalChars / token rate — the rate's writingStartedAt gate semantics
+   *  are unchanged. See 2026-11-23-streaming-thinking-design.md §5.3. */
+  thinkingChunks: LiveTurnSegment[]
+  /** Block index of the main-thread thinking block currently streaming
+   *  (set at its content_block_start, cleared at the matching
+   *  content_block_stop — which also flips thinkingDraft.done). Null when
+   *  no thinking block is in flight. */
+  thinkingBlockIndex: number | null
+  /** The current thinking block's stop has arrived. Carries the done signal
+   *  to the flush when the stop lands BEFORE the first thinkingDraft fold
+   *  (whole block inside the 80ms window); reset at the next thinking start.
+   *  When thinkingDraft already exists at stop, its done flips immediately
+   *  and this flag is redundant-but-consistent. */
+  thinkingDone: boolean
   /** Flushed streamed text, coalesced into origin-tagged segments and joined
    *  by the store into `streamingContent` (the Side Chat's auto-scroll growth
    *  signal). Main-thread segments are pruned when their finalized assistant
@@ -537,6 +554,16 @@ export interface ServerMirror {
   draftRowKeys: Readonly<Record<string, string>>
   /** Last draft key sequence used (drives `draft:<n>` keys). */
   draftSeq: number
+  /** In-place streaming thinking row (parallel to `draft`, independent key
+   *  namespace `thinking:<n>`): the in-flight response's main-thread thinking
+   *  text since its first thinking_delta. Folds at LIVE_TURN_FLUSH; `done`
+   *  flips at the thinking block's content_block_stop (the row folds closed);
+   *  cleared on the thinking-bearing finalized frame (supersede) or frozen at
+   *  turn end. Survives benign REPLAY_REPLACE like draft. See
+   *  2026-11-23-streaming-thinking-design.md §5.3. */
+  thinkingDraft: ThinkingDraftState | null
+  /** Last thinking key sequence used (drives `thinking:<n>` keys). */
+  thinkingSeq: number
   pidToToolUseId: Map<string, string>
   planStatus: Map<string, PlanStatus>
   /** Plan body text extracted from ExitPlanMode tool_result output.
@@ -933,6 +960,8 @@ export function createInitialServerMirror(): ServerMirror {
     frozenDrafts: [],
     draftRowKeys: {},
     draftSeq: 0,
+    thinkingDraft: null,
+    thinkingSeq: 0,
     pidToToolUseId: new Map(),
     planStatus: new Map(),
     planContent: new Map(),
