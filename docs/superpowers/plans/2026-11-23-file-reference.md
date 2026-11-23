@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript, React 19 (contenteditable rich composer), Hono, vitest (happy-dom client / Node server), Playwright, existing runGit / ResourceModal / SDK preset-append systemPrompt.
 
-**Spec:** `docs/superpowers/specs/2026-11-23-file-reference-design.md` (read fully; the agent note `.agents/notes/proposed/feature/2026-11-23-file-reference.md` carries rationale).
+**Spec:** `docs/superpowers/specs/2026-11-23-file-reference-design.md` (read fully; the agent note `.agents/notes/implemented/feature/2026-11-23-file-reference.md` carries rationale).
 
 ## Global Constraints
 

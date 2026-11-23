@@ -1,8 +1,8 @@
 # @file / @folder Composer References — Phase 1 Design
 
 Date: 2026-11-23
-Status: proposed (awaiting approval)
-Agent Note: [.agents/notes/proposed/feature/2026-11-23-file-reference.md](../../../.agents/notes/proposed/feature/2026-11-23-file-reference.md)
+Status: implemented
+Agent Note: [.agents/notes/implemented/feature/2026-11-23-file-reference.md](../../../.agents/notes/implemented/feature/2026-11-23-file-reference.md)
 
 ## Intent
 

@@ -15,6 +15,16 @@
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/
 
 /**
+ * True when `path` is expressible as a mention token: no control character,
+ * no embedded quote. Both are legal in POSIX filenames but unformattable —
+ * {@link formatFileMention} throws on them. The file-search fence filters
+ * candidates through this predicate so a pick can never reach that throw.
+ */
+export function isMentionExpressible(path: string): boolean {
+  return !CONTROL_CHARS.test(path) && !path.includes('"')
+}
+
+/**
  * Canonicalize a mention path: `\` → `/`, collapse redundant separator runs.
  * Deliberately NOT `..` resolution — path containment is the server's job.
  * A single trailing `/` survives (it is the directory marker); drive-letter

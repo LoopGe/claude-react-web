@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { render as rtlRender, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render as rtlRender, fireEvent, waitFor } from '@testing-library/react'
 import { Composer } from './Composer'
 import { ToastProvider } from './ToastProvider'
 import type { SlashCommand } from '../types'
@@ -17,7 +17,8 @@ vi.mock('../hooks/useFileSearch', () => ({
 // happy-dom lacks scrollIntoView; the picker scrolls its highlighted row.
 Element.prototype.scrollIntoView = vi.fn()
 
-afterEach(() => cleanup())
+// No per-file afterEach(cleanup): src/test-setup.ts registers it globally
+// (CLAUDE.md — globals:false means RTL's auto-cleanup never self-registers).
 
 function render(ui: ReactElement) {
   return rtlRender(<ToastProvider>{ui}</ToastProvider>)

@@ -9,13 +9,15 @@
 // directory bonus inside each tier.
 //
 // Hard rules: never read file contents (path strings only), every result is
-// containment-checked against the session cwd, and `..`-segment / absolute
-// queries are rejected outright (root-escape guard).
+// containment-checked against the session cwd AND mention-expressible (the
+// grammar cannot serialize embedded quotes / control chars), and `..`-segment
+// / absolute queries are rejected outright (root-escape guard).
 
 import { promises as fs, type Dirent } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { runGit } from './git.js'
 import { isPathInside } from '../shared/app-plugins/path-security.js'
+import { isMentionExpressible } from '../shared/file-mention.js'
 import { createLogger } from './log.js'
 
 const log = createLogger('file-search')
@@ -52,7 +54,12 @@ export async function searchFiles(cwd: string, q: string, limit = MAX_RESULTS): 
     ? await listDir(cwd, query.slice(0, -1), cap)
     : rank(await listFiles(cwd), query, cap)
   // Spec-mandated containment fence on the way out (cheap: ≤ cap entries).
-  return results.filter((r) => isPathInside(resolve(cwd, r.path), cwd, { isWindows: IS_WINDOWS }))
+  // Candidates the mention grammar cannot express (embedded quote / control
+  // character — legal POSIX filenames) are dropped here, the single exit
+  // point, so settling a pick never reaches formatFileMention's throw.
+  return results.filter(
+    (r) => isPathInside(resolve(cwd, r.path), cwd, { isWindows: IS_WINDOWS }) && isMentionExpressible(r.path),
+  )
 }
 
 /** Git-first file listing; non-repo (exit 128) or any git failure falls back

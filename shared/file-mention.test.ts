@@ -3,6 +3,7 @@ import {
   MENTION_PATTERN,
   MENTION_PATTERN_G,
   formatFileMention,
+  isMentionExpressible,
   normalizeMentionPath,
   parseFileMention,
 } from './file-mention'
@@ -145,5 +146,32 @@ describe('normalizeMentionPath', () => {
   it('keeps a single trailing separator but collapses a trailing run', () => {
     expect(normalizeMentionPath('a/b/')).toBe('a/b/')
     expect(normalizeMentionPath('a/b//')).toBe('a/b/')
+  })
+})
+
+describe('isMentionExpressible', () => {
+  it('accepts ordinary paths (spaces, backslashes, drive letters)', () => {
+    expect(isMentionExpressible('src/a.ts')).toBe(true)
+    expect(isMentionExpressible('my dir/a.ts')).toBe(true)
+    expect(isMentionExpressible('D:\\codes\\x.ts')).toBe(true)
+  })
+
+  it('rejects embedded quotes and control characters', () => {
+    expect(isMentionExpressible('we"ird.txt')).toBe(false)
+    expect(isMentionExpressible('bad\x01name.txt')).toBe(false)
+    expect(isMentionExpressible('tab\tname.txt')).toBe(false)
+    expect(isMentionExpressible('del\x7f.txt')).toBe(false)
+  })
+
+  it('agrees with formatFileMention on what is formattable', () => {
+    for (const p of ['a.ts', 'my dir/a.ts', 'we"ird.txt', 'bad\x01name.txt']) {
+      let formattable = true
+      try {
+        formatFileMention(p, false)
+      } catch {
+        formattable = false
+      }
+      expect(isMentionExpressible(p)).toBe(formattable)
+    }
   })
 })

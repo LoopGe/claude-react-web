@@ -1,8 +1,10 @@
 /* global process, AbortController */
+import { execFile } from 'node:child_process'
 import { rmSync } from 'node:fs'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { promisify } from 'node:util'
 import { serve } from '@hono/node-server'
 import { SessionStore } from '../../../server/persistence.ts'
 import { TranscriptSidecar } from '../../../server/transcript-sidecar.ts'
@@ -66,9 +68,59 @@ uiState.update({
 })
 await uiState.flush()
 
+// ---- @file/@folder reference fixtures (file-reference.spec.ts) ----
+// Two controlled cwd trees: a real git repo (git-first search, .gitignore
+// respected, space-named folder/file) and a non-repo dir (fs-walk fallback).
+const execFileAsync = promisify(execFile)
+const refRoot = await mkdtemp(join(tmpdir(), 'crw-file-ref-'))
+process.on('exit', () => rmSync(refRoot, { recursive: true, force: true }))
+const repoCwd = join(refRoot, 'repo')
+const walkCwd = join(refRoot, 'walk')
+const writeTree = async (root, files) => {
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = join(root, rel)
+    await mkdir(join(abs, '..'), { recursive: true })
+    await writeFile(abs, content, 'utf8')
+  }
+}
+await writeTree(repoCwd, {
+  '.gitignore': 'ignored.txt\nskipdir/\n',
+  'alpha.ts': "export const alpha = 'e2e-alpha-content'\n",
+  'gamma.ts': 'export const gamma = 3\n',
+  'src/beta.ts': 'export const beta = 2\n',
+  'my dir/inside.txt': 'inside the space-named dir\n',
+  'space file.txt': 'e2e-space-file-content\n',
+  'ignored.txt': 'ignored content\n',
+  'skipdir/hidden.txt': 'hidden content\n',
+})
+// A real repo so `git ls-files --cached --others --exclude-standard` is the
+// search path (unborn HEAD is fine: --others lists the untracked files).
+await execFileAsync('git', ['init', '--quiet', repoCwd])
+await writeTree(walkCwd, {
+  'walk.txt': 'walk fallback content\n',
+  'sub/deep.txt': 'deep content\n',
+  'node_modules/pkg/x.js': 'excluded content\n',
+})
+const refIds = [
+  'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+  'ffffffff-ffff-4fff-8fff-ffffffffffff',
+]
+for (const [sessionIndex, id] of refIds.entries()) {
+  sessions.upsert({
+    id,
+    provider: 'claude',
+    title: `References ${String.fromCharCode(69 + sessionIndex)}`,
+    cwd: sessionIndex === 0 ? repoCwd : walkCwd,
+    createdAt: now - (refIds.length - sessionIndex) * 500,
+    lastActivityAt: now - (refIds.length - sessionIndex) * 500,
+  })
+}
+await sessions.flush()
+
 class FixtureHandle {
   constructor(opts) {
     this.provider = 'claude'
+    this.cwd = opts.cwd ?? process.cwd()
     this.input = createPushable('fixture-input')
     this.output = createPushable('fixture-output')
     this.abortController = new AbortController()
@@ -97,6 +149,22 @@ class FixtureHandle {
     this.output.end()
   }
   async reloadSkills() {}
+  // SDK-shaped readFile for the ResourceModal preview (mention chip clicks).
+  // Missing/unreadable → null, the SDK's denied-or-missing contract.
+  async readFile(path, options) {
+    let buf
+    try {
+      buf = await readFile(resolve(this.cwd, path))
+    } catch (err) {
+      if (err.code === 'ENOENT' || err.code === 'EISDIR') return null
+      throw err
+    }
+    const maxBytes = options?.maxBytes ?? 1024 * 1024
+    const truncated = buf.length > maxBytes
+    const slice = truncated ? buf.subarray(0, maxBytes) : buf
+    const encoding = options?.encoding === 'base64' ? 'base64' : 'utf-8'
+    return { contents: slice.toString(encoding), truncated, encoding }
+  }
 }
 
 const capabilities = {
@@ -118,7 +186,7 @@ const capabilities = {
   supportsSessionTitle: false,
   supportsTaskControl: false,
   supportsStructuredOutput: false,
-  supportsReadFile: false,
+  supportsReadFile: true,
   supportsSubagentTranscripts: false,
   supportsSteering: false,
   // Registered as 'claude': claude-equivalent values preserve the pre-capability

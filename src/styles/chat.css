@@ -2616,6 +2616,7 @@ button.chat-empty-env-chip:hover {
    is in scope) adds the click affordance; the plain span stays inert. */
 .msg-mention-chip {
   display: inline-block;
+  max-width: 100%;
   padding: 0 var(--space-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-3xs);
@@ -2624,7 +2625,10 @@ button.chat-empty-env-chip:hover {
   font-family: var(--mono);
   font-size: var(--fs-sm);
   line-height: inherit;
-  white-space: pre;
+  /* A long path wraps INSIDE the chip instead of overflowing the bubble
+     (pre-wrap keeps any literal spaces; anywhere breaks the unbroken run). */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   vertical-align: baseline;
 }
 
@@ -2651,6 +2655,16 @@ button.msg-mention-chip:hover {
 
 .msg-prose-run .md-inline p {
   display: inline;
+}
+
+/* A fragment spanning a paragraph break compiles to multiple <p>s; forcing
+   them inline would glue the paragraphs (para1para2). Break the line before
+   each non-first paragraph — two line feeds in the run's pre-wrap flow are
+   the blank line the source had — while each paragraph keeps its inline flow
+   with the chips around it. */
+.msg-prose-run .md-inline p + p::before {
+  content: '\A\A';
+  white-space: pre-wrap;
 }
 
 /* Fallback for markdown image references that can't be rendered as <img>
@@ -4199,13 +4213,17 @@ button.msg-mention-chip:hover {
    pointer/hover affordance never promises a click that does nothing. */
 .file-mention-chip {
   display: inline-block;
+  max-width: 100%;
   padding: 0 var(--space-1);
   border: 1px solid var(--msg-user-border);
   border-radius: var(--radius-3xs);
   background: var(--msg-user-bg);
   color: var(--msg-user-header-fg);
   font-weight: 600;
-  white-space: pre;
+  /* Same overflow fence as the sent chip: a long path wraps inside the chip
+     rather than overflowing the editor's clipped box. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   user-select: none;
 }
 

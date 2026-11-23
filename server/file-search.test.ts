@@ -184,6 +184,29 @@ describe('searchFiles', () => {
     const results = await searchFiles(dir, 'src\\components\\')
     expect(results).toContainEqual({ path: 'src/components/a.ts', dir: false })
   })
+
+  // POSIX filenames may contain quotes / control characters that the mention
+  // grammar cannot express (formatFileMention throws). The search fence must
+  // drop such candidates so a pick never reaches that throw. Windows cannot
+  // create these names, so the fs-level pin is POSIX-only; the predicate
+  // itself is unit-tested cross-platform in shared/file-mention.test.ts.
+  it.skipIf(process.platform === 'win32')(
+    'POSIX quote/control-named candidates are filtered from search and drill',
+    async () => {
+      write(dir, 'we"ird.txt')
+      write(dir, 'weird.txt')
+      write(dir, 'bad\x01name.txt')
+      write(dir, 'q"dir/inside.txt')
+      write(dir, 'okdir/inside.txt')
+      // Fuzzy search: the clean twin surfaces, the unformattable ones never do.
+      expect(paths(await searchFiles(dir, 'weird'))).toEqual(['weird.txt'])
+      expect(paths(await searchFiles(dir, 'bad'))).toEqual([])
+      // Drill listing: a quote-named dir's children carry the quote in their
+      // path and are dropped; a clean dir lists normally.
+      expect(await searchFiles(dir, 'q"dir/')).toEqual([])
+      expect(await searchFiles(dir, 'okdir/')).toEqual([{ path: 'okdir/inside.txt', dir: false }])
+    },
+  )
 })
 
 describe('GET /sessions/:id/file-search (dormant session, real manager + store)', () => {
