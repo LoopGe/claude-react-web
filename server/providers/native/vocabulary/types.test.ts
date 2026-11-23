@@ -1,7 +1,9 @@
 import { describe, it, expect, expectTypeOf } from 'vitest'
 import { brandString, type MessageId, type ToolCallId } from './brand.js'
 import {
+  finishReasonOf,
   isRetainedThinkingBlock,
+  parseToolInput,
   type ContentBlock,
   type ContentBlockMap,
   type ContentBlockType,
@@ -91,6 +93,44 @@ describe('isRetainedThinkingBlock', () => {
     expect(isRetainedThinkingBlock({ type: 'reasoning', redacted: true, data: 'ENC' })).toBe(true)
     expect(isRetainedThinkingBlock({ type: 'reasoning', redacted: true, data: '' })).toBe(false)
     expect(isRetainedThinkingBlock({ type: 'reasoning', redacted: true })).toBe(false)
+  })
+})
+
+describe('parseToolInput (shared boundary parse)', () => {
+  it('parses a JSON object into the tool input', () => {
+    expect(parseToolInput('{"command":"ls","n":2}')).toEqual({ command: 'ls', n: 2 })
+    expect(parseToolInput('{}')).toEqual({})
+  })
+
+  it('empty, invalid and non-object JSON become {}', () => {
+    expect(parseToolInput('')).toEqual({})
+    expect(parseToolInput('not json')).toEqual({})
+    expect(parseToolInput('{broken')).toEqual({})
+    expect(parseToolInput('5')).toEqual({})
+    expect(parseToolInput('"str"')).toEqual({})
+    expect(parseToolInput('true')).toEqual({})
+    expect(parseToolInput('null')).toEqual({})
+  })
+
+  it('a JSON array passes through as-is (typeof object, non-null)', () => {
+    // The shared parse keeps arrays — the wire projection pin asserts the
+    // same shape end-to-end (wire-projection.test.ts).
+    expect(parseToolInput('[1,2]')).toEqual([1, 2])
+  })
+})
+
+describe('finishReasonOf (shared settlement mapping)', () => {
+  it('maps tool_use and max_tokens to their settlement kinds', () => {
+    expect(finishReasonOf('tool_use')).toEqual({ kind: 'tool-calls' })
+    expect(finishReasonOf('max_tokens')).toEqual({ kind: 'max-tokens' })
+  })
+
+  it('every other reason — including null and unknown strings — maps to stop', () => {
+    expect(finishReasonOf('end_turn')).toEqual({ kind: 'stop' })
+    expect(finishReasonOf('stop_sequence')).toEqual({ kind: 'stop' })
+    expect(finishReasonOf(null)).toEqual({ kind: 'stop' })
+    expect(finishReasonOf('')).toEqual({ kind: 'stop' })
+    expect(finishReasonOf('unknown')).toEqual({ kind: 'stop' })
   })
 })
 

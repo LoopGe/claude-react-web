@@ -60,7 +60,7 @@ import type { FileAttachmentRef } from '../../shared/attachments.js'
 import type { ImageAttachmentRef, LegacyImageBlock } from '../../shared/image-attachment.js'
 import { freezeMessage, type RequestMessage, type ToolResultMessage } from './native/vocabulary/message.js'
 import { brandString } from './native/vocabulary/brand.js'
-import type { ContentBlock, TokenUsage } from './native/vocabulary/types.js'
+import { parseToolInput, type ContentBlock, type TokenUsage } from './native/vocabulary/types.js'
 import type { NativeLiveFrame } from './native/vocabulary/stream.js'
 import type { NativeSessionEvent } from './native/vocabulary/session-event.js'
 import type { RawLine } from '../../shared/transcript-format.js'
@@ -114,19 +114,6 @@ function sdkUsage(usage: TokenUsage): Record<string, unknown> {
     output_tokens: usage.outputTokens,
     ...(usage.cacheReadTokens !== undefined ? { cache_read_input_tokens: usage.cacheReadTokens } : {}),
     ...(usage.cacheWriteTokens !== undefined ? { cache_creation_input_tokens: usage.cacheWriteTokens } : {}),
-  }
-}
-
-/** Parse a tool-call's raw-JSON arguments into the SDK tool_use.input. Mirrors
- *  loop.ts's parseJsonInput: empty/invalid/non-object JSON becomes {} (the model
- *  sees an empty input, never a crash). Parsing is a boundary job (R3). */
-function parseToolInput(json: string): Record<string, unknown> {
-  if (!json) return {}
-  try {
-    const parsed = JSON.parse(json)
-    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
-  } catch {
-    return {}
   }
 }
 

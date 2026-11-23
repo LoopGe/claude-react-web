@@ -40,7 +40,7 @@ import type {
   SessionEventMap,
 } from '../vocabulary/session-event.js'
 import type { AssistantMessage, ToolResultMessage, UserMessage } from '../vocabulary/message.js'
-import type { ContentBlock, FinishReason, TokenUsage } from '../vocabulary/types.js'
+import { finishReasonOf, type ContentBlock, type TokenUsage } from '../vocabulary/types.js'
 import type { ImageAttachmentRef } from '../../../../shared/image-attachment.js'
 import type { FileAttachmentRef } from '../../../../shared/attachments.js'
 import { brandString } from '../vocabulary/brand.js'
@@ -68,17 +68,6 @@ function timeOf(timestamp: string): number {
     throw new Error(`native migration: event timestamp is not a parseable ISO string: ${JSON.stringify(timestamp)}`)
   }
   return time
-}
-
-/** Map the API stop reason to the neutral FinishReason the packed finish record
- *  carries (mirrors the core settlement mapping). Rare reasons map to `stop`;
- *  the verbatim string is preserved separately on `rawStopReason`. */
-function finishReasonOf(stopReason: string): FinishReason {
-  switch (stopReason) {
-    case 'tool_use': return { kind: 'tool-calls' }
-    case 'max_tokens': return { kind: 'max-tokens' }
-    default: return { kind: 'stop' }
-  }
 }
 
 /** One SDK assistant content block → neutral. Reasoning keeps the thinking

@@ -13,6 +13,7 @@
 
 import type { NativeAgentProfile } from '../agent-profile.js'
 import type { NativeSessionEvent, SessionEvent } from '../vocabulary/session-event.js'
+import { parseToolInput } from '../vocabulary/types.js'
 import { NativeSessionStorageError } from './errors.js'
 
 /** The admitted launching-tool names (the v3 descriptor parser validates the
@@ -71,19 +72,6 @@ type StatefulCatalog = NativeSubagentCatalog & {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** Parse a tool-call's raw-JSON arguments into its input object. Mirrors the
- *  loop/wire boundary parse: empty/invalid/non-object JSON becomes {} (the
- *  catalog then sees no description/prompt, never a crash). */
-function parseToolInput(json: string): Record<string, unknown> {
-  if (!json) return {}
-  try {
-    const parsed = JSON.parse(json)
-    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
-  } catch {
-    return {}
-  }
 }
 
 function emptyState(sessionId: string): FoldState {

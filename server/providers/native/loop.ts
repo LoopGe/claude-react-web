@@ -17,7 +17,7 @@ import {
   type RequestMessage,
   type ToolResultMessage,
 } from './vocabulary/message.js'
-import type { ContentBlock, FinishReason, TokenUsage, ToolCallBlock } from './vocabulary/types.js'
+import { finishReasonOf, parseToolInput, type ContentBlock, type TokenUsage, type ToolCallBlock } from './vocabulary/types.js'
 import type { StreamChunk } from './vocabulary/stream.js'
 import type { NativeCoreFrame } from './vocabulary/live-frame.js'
 import { BlockAssembler } from './vocabulary/assembler.js'
@@ -311,31 +311,6 @@ export async function runTurn(
 /** Concatenate the text blocks of an assembled round (the turn's final text). */
 function textOf(blocks: readonly ContentBlock[]): string {
   return blocks.filter((b): b is { type: 'text'; text: string } => b.type === 'text').map((b) => b.text).join('')
-}
-
-/** Parse a tool-call's raw-JSON arguments into the tool input. Mirrors the wire
- *  adapter's parseToolInput: empty/invalid/non-object JSON becomes {} (the model
- *  sees an empty input, never a crash). Parsing is a boundary job (R3). */
-function parseToolInput(json: string): Record<string, unknown> {
-  if (!json) return {}
-  try {
-    const parsed = JSON.parse(json)
-    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
-  } catch {
-    return {}
-  }
-}
-
-/** Map the API stop reason to the neutral FinishReason the assembler settles
- *  over. Only `max_tokens` changes settlement (it drops unsafe truncated tool
- *  calls); every other reason keeps all blocks. The AssistantFrame.stopReason
- *  stays the raw string (F2) — this mapping is for block settlement only. */
-function finishReasonOf(stopReason: string | null): FinishReason {
-  switch (stopReason) {
-    case 'tool_use': return { kind: 'tool-calls' }
-    case 'max_tokens': return { kind: 'max-tokens' }
-    default: return { kind: 'stop' }
-  }
 }
 
 /** Merge a protocol usage partial into the round's running neutral totals.

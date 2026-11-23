@@ -17,7 +17,7 @@ import type {
   NativeSessionEvent,
   SessionEventMap,
 } from '../vocabulary/session-event.js'
-import type { ContentBlock, TokenUsage } from '../vocabulary/types.js'
+import { parseToolInput, type ContentBlock, type TokenUsage } from '../vocabulary/types.js'
 import type { AssistantMessage, ToolResultMessage, UserMessage } from '../vocabulary/message.js'
 
 export const NATIVE_SESSION_LOG_VERSION = 1
@@ -1150,16 +1150,6 @@ export function eventRequiresV3(event: NativeSessionEvent): boolean {
 // the three durable message events to SDK RawLines, and the log's legacy read
 // view for the metadata consumers (usage / agent selection / attachment index /
 // subagent catalog) that phase 4 neutralizes.
-
-function parseToolInput(json: string): Record<string, unknown> {
-  if (!json) return {}
-  try {
-    const parsed = JSON.parse(json)
-    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
-  } catch {
-    return {}
-  }
-}
 
 function sdkUsageOf(usage: TokenUsage): NativeUsage & { cache_read_input_tokens?: number; cache_creation_input_tokens?: number } {
   return {

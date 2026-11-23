@@ -315,6 +315,44 @@ describe('BlockAssembler: max-tokens settlement + replay prune', () => {
     a.push({ type: 'finish', reason: { kind: 'max-tokens' } })
     expect(a.blocks()).toEqual([text('before'), text('after')])
   })
+
+  it('drops tool-calls assembled from an interleaved delta stream and prunes the aligned envelope', () => {
+    const a = new BlockAssembler()
+    // Interleaved text/tool deltas with no block-start/block-end: the dropped
+    // tool-calls are assembled from accumulated deltas, not closed blocks.
+    a.push({ type: 'text-delta', index: 0, text: 'before ' })
+    a.push({ type: 'tool-call-delta', index: 1, id: callId('toolu_1'), name: 'Read', argumentsDelta: '{"file":' })
+    a.push({ type: 'text-delta', index: 2, text: 'middle' })
+    a.push({ type: 'tool-call-delta', index: 3, id: callId('toolu_2'), name: 'Bash', argumentsDelta: '{"cmd":' })
+    a.push({ type: 'text-delta', index: 0, text: 'after' })
+    a.push({ type: 'tool-call-delta', index: 1, id: callId('toolu_1'), argumentsDelta: '"a.ts"}' })
+    a.push({ type: 'tool-call-delta', index: 3, id: callId('toolu_2'), argumentsDelta: '"ls"}' })
+    const envelope: ReplayEnvelope = { response: { id: 'resp_1' }, blocks: ['e0', 'e1', 'e2', 'e3'] }
+    a.push({ type: 'finish', reason: { kind: 'max-tokens' }, replayState: envelope })
+    expect(a.blocks()).toEqual([text('before after'), text('middle')])
+    expect(a.replayState).toEqual({ response: { id: 'resp_1' }, blocks: ['e0', 'e2'] })
+  })
+
+  it('prune positions follow first-seen stream order, not numeric index order', () => {
+    const a = new BlockAssembler()
+    a.push({ type: 'block-end', index: 2, block: text('seen-first') })
+    a.push({ type: 'block-end', index: 0, block: tool('toolu_1') })
+    a.push({ type: 'block-end', index: 1, block: text('seen-last') })
+    const envelope: ReplayEnvelope = { response: { id: 'resp_1' }, blocks: ['e2', 'e0', 'e1'] }
+    a.push({ type: 'finish', reason: { kind: 'max-tokens' }, replayState: envelope })
+    expect(a.blocks()).toEqual([text('seen-first'), text('seen-last')])
+    expect(a.replayState).toEqual({ response: { id: 'resp_1' }, blocks: ['e2', 'e1'] })
+  })
+
+  it('an all-tool-call round settles to empty blocks and an empty pruned envelope', () => {
+    const a = new BlockAssembler()
+    a.push({ type: 'block-end', index: 0, block: tool('toolu_1') })
+    a.push({ type: 'block-end', index: 1, block: tool('toolu_2') })
+    const envelope: ReplayEnvelope = { response: { id: 'resp_1' }, blocks: ['e0', 'e1'] }
+    a.push({ type: 'finish', reason: { kind: 'max-tokens' }, replayState: envelope })
+    expect(a.blocks()).toEqual([])
+    expect(a.replayState).toEqual({ response: { id: 'resp_1' }, blocks: [] })
+  })
 })
 
 describe('BlockAssembler: usage / finish accessors', () => {

@@ -21,23 +21,9 @@
 // Grouping is a WIRE concern, not a vocabulary one: the neutral history keeps
 // tool results first-class; only the request shape needs them merged.
 
-import { isRetainedThinkingBlock, type ContentBlock } from '../vocabulary/types.js'
+import { isRetainedThinkingBlock, parseToolInput, type ContentBlock } from '../vocabulary/types.js'
 import type { RequestMessage, ToolResultMessage } from '../vocabulary/message.js'
 import { projectNativeMessages, type NativeProjectionOptions } from '../attachment-projection.js'
-
-/** Parse a tool-call's raw-JSON arguments into tool_use.input. Mirrors loop.ts's
- *  parseJsonInput and the host adapter's parseToolInput verbatim: empty/invalid/
- *  non-object JSON becomes {} (the model sees an empty input, never a crash).
- *  Parsing is a boundary job (R3) — the vocabulary keeps arguments raw. */
-function parseToolInput(json: string): Record<string, unknown> {
-  if (!json) return {}
-  try {
-    const parsed = JSON.parse(json)
-    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
-  } catch {
-    return {}
-  }
-}
 
 /** Project one neutral assistant block to its API shape. Only text / reasoning
  *  / tool-call occur in assistant output; any other kind is a contract violation

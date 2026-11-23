@@ -32,7 +32,8 @@
 //
 // The core WRITE path is pinned here too: every object-literal argument to
 // log.append / log.appendDurable in core production code must carry the
-// neutral v3 `data:` envelope. Legacy v1/v2 inputs (top-level `message` /
+// neutral v3 `data:` envelope as a TOP-LEVEL key (a nested object's `data:`
+// field does not count). Legacy v1/v2 inputs (top-level `message` /
 // `reason` / `text`, no `data`) are the write-compat residual option C
 // removed — the core appends neutral events directly; the writer's
 // legacy-input migration remains only for reading/migrating legacy logs and
@@ -74,6 +75,10 @@ const HOST_FRAME_TYPES = new Set([
   'ProviderInputContentBlock',
   'SubagentTranscriptFrame',
   'SubagentTranscriptSub',
+  // The legacy SDK frame type of the former native/frames.ts (now the
+  // adapter-side native-frames.ts) — a core import of it couples the core to
+  // the SDK frame union exactly like the names above.
+  'Frame',
 ])
 
 /** The boundary importers — the ONLY files allowed to import the SDK package
@@ -241,13 +246,28 @@ describe('native core neutrality (option C structural pin)', () => {
       for (const m of src.matchAll(/\.(append|appendDurable)\(\s*\{/g)) {
         sites++
         const literal = balancedLiteral(src, m.index! + m[0].length - 1)
-        if (!/\bdata\s*:/.test(literal)) {
-          violations.push(`${rel(file)}: ${m[1]}(...) object literal has no neutral 'data:' envelope`)
+        if (!hasTopLevelDataEnvelope(literal)) {
+          violations.push(`${rel(file)}: ${m[1]}(...) object literal has no top-level neutral 'data:' envelope`)
         }
       }
     }
     expect(sites).toBeGreaterThan(0)
     expect(violations).toEqual([])
+  })
+
+  it('the envelope check is top-level only: a nested data: key is a violation', () => {
+    // A nested object's data: field must NOT satisfy the envelope check (the
+    // former any-depth /\bdata\s*:/ regex wrongly accepted these).
+    expect(hasTopLevelDataEnvelope(`{ type: 'assistant/message', message: { data: { blocks: [] } } }`)).toBe(false)
+    expect(hasTopLevelDataEnvelope(`{ type: 'tool/result', result: { data: 'x' } }`)).toBe(false)
+    // String contents and comments cannot fake the key either.
+    expect(hasTopLevelDataEnvelope(`{ type: 'x', note: 'data: fake' }`)).toBe(false)
+    expect(hasTopLevelDataEnvelope(`{ type: 'x', /* data: fake */ other: 1 }`)).toBe(false)
+    // Positive shapes stay green: a real top-level envelope, including one
+    // that ALSO nests a data: field, and the shorthand key form.
+    expect(hasTopLevelDataEnvelope(`{ type: 'tool/result', data: { content: [] } }`)).toBe(true)
+    expect(hasTopLevelDataEnvelope(`{ type: 'x', data: { inner: { data: 1 } } }`)).toBe(true)
+    expect(hasTopLevelDataEnvelope(`{ type: 'x', data }`)).toBe(true)
   })
 })
 
@@ -281,4 +301,89 @@ function balancedLiteral(src: string, start: number): string {
     i++
   }
   throw new Error(`unbalanced object literal at offset ${start}`)
+}
+
+/** The neutral v3 envelope check for one append object literal: `data` must be
+ *  a TOP-LEVEL key (depth 1) — a nested object's `data:` field does not satisfy
+ *  it, nor does a `data:` inside a string or comment. */
+function hasTopLevelDataEnvelope(literal: string): boolean {
+  return topLevelKeys(literal).includes('data')
+}
+
+/** Top-level keys of an object literal, reusing balancedLiteral's
+ *  string/comment-skipping walk. Tracks brace/bracket/paren depth and reads a
+ *  key only in key position (right after the opening `{` or a depth-1 `,`), so
+ *  a ternary's `:` or a nested object's keys cannot pose as top-level keys.
+ *  Shorthand keys count; spread (`...x`) and computed (`[expr]`) keys carry no
+ *  statically known name and are skipped. */
+function topLevelKeys(literal: string): string[] {
+  const keys: string[] = []
+  let depth = 0
+  let atKey = false
+  let i = 0
+  while (i < literal.length) {
+    const ch = literal[i]
+    if (ch === '\'' || ch === '"' || ch === '`') {
+      const quote = ch
+      const start = i
+      i++
+      while (i < literal.length && literal[i] !== quote) {
+        if (literal[i] === '\\') i++
+        i++
+      }
+      if (atKey && depth === 1) {
+        let j = i + 1
+        while (j < literal.length && /\s/.test(literal[j])) j++
+        if (literal[j] === ':') keys.push(literal.slice(start + 1, i))
+        atKey = false
+      }
+      i++
+      continue
+    }
+    if (ch === '/' && literal[i + 1] === '/') {
+      while (i < literal.length && literal[i] !== '\n') i++
+      continue
+    }
+    if (ch === '/' && literal[i + 1] === '*') {
+      i += 2
+      while (i < literal.length && !(literal[i] === '*' && literal[i + 1] === '/')) i++
+      i += 2
+      continue
+    }
+    if (ch === '{' || ch === '[' || ch === '(') {
+      depth++
+      atKey = ch === '{' && depth === 1
+      i++
+      continue
+    }
+    if (ch === '}' || ch === ']' || ch === ')') {
+      depth--
+      i++
+      continue
+    }
+    if (depth === 1 && ch === ',') {
+      atKey = true
+      i++
+      continue
+    }
+    if (atKey && depth === 1) {
+      if (/[A-Za-z_$]/.test(ch)) {
+        const start = i
+        while (i < literal.length && /[\w$]/.test(literal[i])) i++
+        let j = i
+        while (j < literal.length && /\s/.test(literal[j])) j++
+        // `key:` plus the shorthand forms `key,` / `key}` are top-level keys.
+        if (literal[j] === ':' || literal[j] === ',' || literal[j] === '}') keys.push(literal.slice(start, i))
+        atKey = false
+        continue
+      }
+      if (ch === '.') {
+        atKey = false // spread `...expr` — no statically known key
+        i++
+        continue
+      }
+    }
+    i++
+  }
+  return keys
 }

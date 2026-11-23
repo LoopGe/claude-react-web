@@ -40,7 +40,7 @@ import type {
 import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
 import { createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
-import type { ContentBlock, FinishReason, TokenUsage, Usage } from './vocabulary/types.js'
+import { finishReasonOf, type ContentBlock, type TokenUsage, type Usage } from './vocabulary/types.js'
 import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './vocabulary/session-event.js'
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
@@ -165,16 +165,6 @@ function neutralUsageOf(usage: Usage): TokenUsage {
 // `chunk` record carries the stop reason so the legacy compat projection can
 // reconstruct the turn-boundary signal. The neutral→legacy projection itself
 // lives in session-log/format.ts (version compat), never in the core.
-
-/** Map the API stop reason to the neutral FinishReason the packed finish record
- *  carries (mirrors the loop's settlement mapping). */
-function finishReasonOf(stopReason: string): FinishReason {
-  switch (stopReason) {
-    case 'tool_use': return { kind: 'tool-calls' }
-    case 'max_tokens': return { kind: 'max-tokens' }
-    default: return { kind: 'stop' }
-  }
-}
 
 /** Pack the settled assistant content into AssistantStreamRecord runs. Each
  *  block becomes one run with dt=[0] (inter-arrival convention); redacted

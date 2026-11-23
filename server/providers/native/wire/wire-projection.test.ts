@@ -204,7 +204,7 @@ describe('projectNativeHistoryToWire — direct projection', () => {
     expect(messages[0].content[0]).toEqual({ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls', n: 2 } })
   })
 
-  it('empty / invalid / non-object arguments become {} (mirrors loop parseJsonInput)', async () => {
+  it('empty / invalid / non-object arguments become {} (shared vocabulary parseToolInput)', async () => {
     const history = [assistant([
       toolCall('e', 'T', ''),
       toolCall('i', 'T', 'not json'),

@@ -4,7 +4,8 @@
 // this directory). Mirrors DSH dsh-llm's block shapes, native-tailored:
 // reasoning blocks keep the thinking signature / redacted data the
 // Anthropic API needs on replay, and tool-call arguments stay RAW JSON
-// strings end-to-end (parsing belongs to the wire adapter).
+// strings end-to-end (parsing is a boundary job — the shared parseToolInput
+// below, imported by the core and both adapters).
 
 import type { ImageAttachmentRef, LegacyImageBlock } from '../../../../shared/image-attachment.js'
 import type { FileAttachmentRef } from '../../../../shared/attachments.js'
@@ -140,4 +141,35 @@ export function isRetainedThinkingBlock(block: { type?: unknown; signature?: unk
   if (block.type === 'thinking') return typeof block.signature === 'string' && block.signature !== ''
   if (block.type === 'redacted_thinking') return typeof block.data === 'string' && block.data !== ''
   return true
+}
+
+/** Parse a tool-call's raw-JSON arguments into the tool input object.
+ *  Empty/invalid/non-object JSON becomes {} (the model sees an empty input,
+ *  never a crash). The single shared copy: the core (loop execution, log
+ *  projection, subagent catalog) and both adapters import it so the former
+ *  five verbatim copies cannot drift. The ToolCallBlock itself still carries
+ *  RAW JSON — this is the boundary parse, not vocabulary-internal parsing. */
+export function parseToolInput(json: string): Record<string, unknown> {
+  if (!json) return {}
+  try {
+    const parsed = JSON.parse(json)
+    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Map the API stop reason to the neutral FinishReason the assembler settles
+ *  over. Only `max_tokens` changes settlement (it drops unsafe truncated tool
+ *  calls); every other reason — including null — keeps all blocks. The raw
+ *  stop-reason string stays on AssistantFrame.stopReason (F2); this mapping is
+ *  for block settlement only. The single shared copy: the loop, the live
+ *  stream packer, and the v1/v2 migration import it so the former three
+ *  verbatim copies cannot drift. */
+export function finishReasonOf(stopReason: string | null): FinishReason {
+  switch (stopReason) {
+    case 'tool_use': return { kind: 'tool-calls' }
+    case 'max_tokens': return { kind: 'max-tokens' }
+    default: return { kind: 'stop' }
+  }
 }
