@@ -22,6 +22,7 @@ import { HttpError } from '../errors.js'
 import type { TranscriptPageResponse } from '../../shared/transcript-page.js'
 import { createSessionSearchIndex } from '../session-search-index.js'
 import { worktreeIsDirty } from '../git.js'
+import { searchFiles } from '../file-search.js'
 import { worktreePathOf } from '../session-worktree.js'
 import { imagePayloadOfMessage } from '../../shared/user-frames.js'
 import { metrics } from '../metrics.js'
@@ -1316,6 +1317,24 @@ export function buildSessionRouter(
     if (encoding === 'base64') opts.encoding = 'base64'
     const result = await sm.readFile(id, path, opts)
     return c.json(result)
+  })
+
+  // Composer @file/@folder mention search. cwd comes from session meta —
+  // live OR dormant (sm.get is the live-or-meta resolver; search needs no
+  // Query). Git-first with a bounded fs-walk fallback; never reads file
+  // contents. Empty/missing q → empty results; limit is capped at 20.
+  app.get('/sessions/:id/file-search', async (c) => {
+    const info = sm.get(c.req.param('id')) // 404 for unknown sessions
+    const q = c.req.query('q') ?? ''
+    if (!q.trim()) return c.json({ results: [] })
+    if (!info.cwd) return c.json({ error: 'session has no cwd — cannot search files' }, 400)
+    const limitParam = c.req.query('limit')
+    const limit = limitParam === undefined ? undefined : Number(limitParam)
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+      return c.json({ error: 'limit must be a positive integer' }, 400)
+    }
+    const results = await searchFiles(info.cwd, q, limit)
+    return c.json({ results })
   })
 
   // List subagent ids persisted under this session's transcript dir (reads
