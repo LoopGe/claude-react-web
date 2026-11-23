@@ -164,8 +164,10 @@ function makeChannel(
   const close = vi.fn()
   const channel: TerminalChannel = {
     supported: opts.supported ?? true,
-    state: opts.state ?? state(),
-    snapshot: opts.snapshot ?? snapshot(),
+    // Honor an explicit null (the pre-seed state) — `??` would coalesce it to
+    // the default running snapshot and mask the snapshot-null ordering guard.
+    state: opts.state === undefined ? state() : opts.state,
+    snapshot: opts.snapshot === undefined ? snapshot() : opts.snapshot,
     error: opts.error ?? null,
     subscribeOutput,
     subscribeAnchor,
@@ -384,21 +386,122 @@ describe('TerminalOverlay — exited state (case d)', () => {
   })
 })
 
-describe('TerminalOverlay — idle create dimensions (E2E catch)', () => {
-  it('a never-created slot (cols/rows 0) spawns at the 80x24 default, not 0x0', async () => {
+describe('TerminalOverlay — auto-spawn on open (fresh idle)', () => {
+  const idleChannel = () =>
+    makeChannel({
+      state: state({ status: 'idle', cols: 120, rows: 30 }),
+      snapshot: snapshot({ terminalId: '', seq: 0, screen: '', state: state({ status: 'idle', cols: 120, rows: 30 }) }),
+    })
+
+  it('a never-created slot (cols/rows 0) auto-spawns at the 80x24 default, not 0x0', async () => {
     // The server's idle seed reports cols:0 rows:0 (WS-probe-verified). `??`
     // would ride the 0 into terminal-create and the server's bounds check
-    // rejects it, leaving the slot idle forever — the "New terminal" button
-    // was dead on a fresh session. `||` falls through to the default.
+    // rejects it, leaving the slot idle forever. `||` falls through to the
+    // default. Opening the overlay auto-spawns (no click needed).
     const mock = makeChannel({
       state: state({ status: 'idle', cols: 0, rows: 0 }),
       snapshot: snapshot({ terminalId: '', seq: 0, screen: '', state: state({ status: 'idle', cols: 0, rows: 0 }) }),
     })
     await renderOverlay({ open: true, channel: mock })
     await waitForBody()
+    await waitFor(() => expect(mock.create).toHaveBeenCalledTimes(1))
+    expect(mock.create).toHaveBeenCalledWith(80, 24)
+  })
+
+  it('auto-spawns when the subscribe seed arrives AFTER mount (null → seed)', async () => {
+    // The real first-open path: the child overlay effect runs before Chat's
+    // subscribe seed exists (snapshot null), then the seed lands and must
+    // trigger spawn. Pins `snapshot` in the effect deps — a regression dropping
+    // it would pass every seed-present-at-mount test but break real first open.
+    const mock = makeChannel({ state: state({ status: 'idle', cols: 0, rows: 0 }), snapshot: null })
+    const { view } = await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    expect(mock.create).not.toHaveBeenCalled()
+    const seed = snapshot({ terminalId: '', seq: 0, screen: '', state: state({ status: 'idle', cols: 0, rows: 0 }) })
+    mock.channel.state = seed.state
+    mock.channel.snapshot = seed
+    mock.emitAnchor(seed)
+    view.rerender(<TerminalOverlay sessionId="s1" open onClose={vi.fn()} supported channel={mock.channel} />)
+    await waitFor(() => expect(mock.create).toHaveBeenCalledTimes(1))
+    expect(mock.create).toHaveBeenCalledWith(80, 24)
+  })
+
+  it('opening a fresh idle session spawns once at the last-known size', async () => {
+    const mock = idleChannel()
+    await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    await waitFor(() => expect(mock.create).toHaveBeenCalledTimes(1))
+    expect(mock.create).toHaveBeenCalledWith(120, 30)
+  })
+
+  it('does not auto-spawn before the subscribe seed arrives (snapshot null)', async () => {
+    // The overlay is a CHILD component; its passive effect runs before Chat's
+    // subscribe effect. Auto-create must wait for the snapshot seed so it never
+    // sends terminal-create ahead of terminal-subscribe.
+    const mock = makeChannel({ state: state({ status: 'idle' }), snapshot: null })
+    await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mock.create).not.toHaveBeenCalled()
+  })
+
+  it('fires once per open episode — re-renders while idle do not re-spawn', async () => {
+    const mock = idleChannel()
+    const { view } = await renderOverlay({ open: true, channel: mock })
+    await waitFor(() => expect(mock.create).toHaveBeenCalledTimes(1))
+    view.rerender(<TerminalOverlay sessionId="s1" open onClose={vi.fn()} supported channel={mock.channel} />)
+    view.rerender(<TerminalOverlay sessionId="s1" open onClose={vi.fn()} supported channel={mock.channel} />)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mock.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('kill WHILE open stays dead (no immediate respawn); close→reopen auto-spawns', async () => {
+    const mock = makeChannel() // default running
+    const { view } = await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    expect(mock.create).not.toHaveBeenCalled()
+    // A real kill flips state/snapshot on the SAME channel object (the hook's
+    // subscribe identities are stable); model that, not a channel swap.
+    mock.channel.state = state({ status: 'idle', cols: 0, rows: 0 })
+    mock.channel.snapshot = snapshot({ terminalId: '', seq: 0, screen: '', state: state({ status: 'idle', cols: 0, rows: 0 }) })
+    view.rerender(<TerminalOverlay sessionId="s1" open onClose={vi.fn()} supported channel={mock.channel} />)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mock.create).not.toHaveBeenCalled()
+    // Close, then reopen → a fresh open episode auto-spawns.
+    view.rerender(<TerminalOverlay sessionId="s1" open={false} onClose={vi.fn()} supported channel={mock.channel} />)
+    view.rerender(<TerminalOverlay sessionId="s1" open onClose={vi.fn()} supported channel={mock.channel} />)
+    await waitFor(() => expect(mock.create).toHaveBeenCalledTimes(1))
+  })
+
+  it('the fresh-idle New terminal button remains a reachable manual fallback', async () => {
+    // Pre-seed (snapshot null) → no auto-spawn; the button still creates manually.
+    const mock = makeChannel({ state: state({ status: 'idle', cols: 0, rows: 0 }), snapshot: null })
+    await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    expect(mock.create).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: /new terminal/i }))
     expect(mock.create).toHaveBeenCalledTimes(1)
     expect(mock.create).toHaveBeenCalledWith(80, 24)
+  })
+
+  it('exited does NOT auto-spawn (Restart stays manual)', async () => {
+    const mock = makeChannel({
+      state: state({ status: 'exited', exitCode: 0 }),
+      snapshot: snapshot({ state: state({ status: 'exited', exitCode: 0 }) }),
+    })
+    await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mock.create).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /restart/i }))
+    expect(mock.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('supported=false does NOT auto-spawn', async () => {
+    const mock = makeChannel({ supported: false, state: state({ status: 'idle' }), snapshot: snapshot({ state: state({ status: 'idle' }) }) })
+    await renderOverlay({ open: true, supported: false, channel: mock })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mock.create).not.toHaveBeenCalled()
   })
 })
 
@@ -545,6 +648,25 @@ describe('TerminalOverlay — body mechanics', () => {
     Object.defineProperty(body, 'clientWidth', { configurable: true, value: 800 })
     Object.defineProperty(body, 'clientHeight', { configurable: true, value: 600 })
     fireResize(body)
+    expect(mock.resize).toHaveBeenCalledWith(100, 30)
+  })
+
+  it('refits to the viewport when a live generation anchors (auto-spawn dimension sync)', async () => {
+    // Auto-spawn creates the PTY at the 80x24 default while the reveal-fit's
+    // resize was swallowed (idle anchor). When the running create-answer anchors,
+    // the body must refit so the PTY matches the viewport — else full-screen
+    // programs draw mis-sized until a manual window resize.
+    const mock = makeChannel({
+      state: state({ status: 'idle', cols: 0, rows: 0 }),
+      snapshot: snapshot({ terminalId: '', seq: 0, screen: '', state: state({ status: 'idle', cols: 0, rows: 0 }) }),
+    })
+    await renderOverlay({ open: true, channel: mock })
+    await waitForBody()
+    const body = document.querySelector('.terminal-body') as HTMLElement
+    Object.defineProperty(body, 'clientWidth', { configurable: true, value: 800 })
+    Object.defineProperty(body, 'clientHeight', { configurable: true, value: 600 })
+    mock.resize.mockClear()
+    mock.emitAnchor(snapshot({ terminalId: 'gen-live', seq: 1, screen: 'prompt', state: state({ status: 'running', cols: 80, rows: 24 }) }))
     expect(mock.resize).toHaveBeenCalledWith(100, 30)
   })
 

@@ -135,6 +135,40 @@ escape 序列）。
   `files` 增携 `scripts/postinstall.mjs`。xterm 全族精确 pin（M2）：
   screen==seq 依赖 headless/serialize 内部行为，浏览器 xterm 须同步解析。
 
+## 打开即自动 spawn（2026-11-23）
+
+shipped 的 idle 面板对**全新会话**也要求点 "New terminal"——把"恢复历史的
+陌生 tab 手动新建"泛化到了所有 idle 态，偏离了已批准的入口设计（"无进程 →
+直接 spawn 默认 shell，无 guide 页"）。用户报告后修正：
+
+- **全新 idle（无 restored 历史、非 exited）打开即自动 spawn**，每个 open
+  episode 一次；**kill 后再打开也自动 spawn**（用户确认）。`TerminalOverlay`
+  的 `spawnedRef` effect 实现：open 翻 false 重置闩锁；见到非 idle 态或
+  restored 历史即标记本 episode"已有终端"，故**开着时 kill 不会立即 respawn**。
+  闩锁在 overlay 任何 hidden→shown 转换重新武装——显式 close→reopen，**或兄弟
+  overlay（git/settings 等）替换后再关闭**（union 在兄弟打开时置 open=false）；
+  回到 idle 终端视图即 spawn，与"打开=要终端"一致。条件含 `snapshot` 非空守卫
+  ——overlay 是子组件，其 passive effect 先于 Chat 的 subscribe effect 运行，
+  snapshot 只在 subscribe seed 到达后存在，故 terminal-create 绝不抢在
+  terminal-subscribe 前。
+- **exited（Restart）与 restored 历史的陌生 tab 保持手动**：自然退出不自动
+  respawn（DSH  parity），恢复的历史不被静默覆盖。
+- **自动 spawn 所有权按触发源拆分**（有意）：hook 持 restored+binding 的重启
+  自动新建（对快照触发，不论 overlay 可见性）；overlay 持全新 idle 的打开自动
+  spawn（每 open episode）。两者触发条件与闩锁粒度不同，合并为单一决策点需把
+  open/episode 事实传入 hook 并重做闩锁——列为后续可选清理，非缺陷。
+- 落选：保留手动 idle 按钮（多一次点击，违背已批准入口设计）；把两类自动
+  spawn 合并进 hook（推迟，理由如上）。
+- **维度同步**：自动 spawn 在 idle 种子（cols/rows 0）下以 80×24 创建 PTY，
+  而 reveal-fit 的 resize 在 idle 锚下被活锚守卫吞掉——`TerminalBody` 的锚
+  监听在 running 锚到达时补一次 fit（hook 先设 anchorRef/statusRef 再派发，
+  故 onResize→channel.resize 通行），使 PTY 与 xterm 视口尺寸一致，全屏程序
+  不再错位。
+- **已知窄边界（推迟）**：kill 后**快于本地 idle 帧往返**地 close→reopen，
+  重开瞬间通道仍持 kill 前的 running 快照，闩锁误判本 episode"已有终端"，
+  该次重开不自动 spawn（显示 idle，可点 New terminal）。常规路径（等 idle
+  再开）正确，单元/E2E 钉住；彻底消除需服务端 episode 身份，超出本期范围。
+
 ## Alternatives considered
 
 - **给 `!` exec 加 stdin。** 无 TTY 就没有 alternate screen/resize/行规程，
@@ -189,10 +223,11 @@ terminal-error 瞬态 notice、同步锚 + idle 合成清空锚）、
 `terminal-ansi-contrast`（两主题白 ≥4.5:1、浅色全色 ≥3:1）/
 `scripts/postinstall`（缺 node-pty 干净跳过）/ `terminal-shortcut`。
 真实 xterm 往返由浏览器 E2E `tests/browser/terminal.spec.ts`
-（`playwright.app.config.ts`）覆盖：idle 打开无错误栏 → spawn → type → resize →
+（`playwright.app.config.ts`）覆盖：打开即自动 spawn（无错误栏）→ type → resize →
 reload 后未开 overlay 即见 composer 按钮 → 旁观 tab → exit → restart →
-sleep 409 blame → kill → sleep 200 → dormant → resume → 新终端往返 → exit；
-读屏走 `.xterm-rows`（@xterm/xterm 6 核心是 DOM 渲染器，无生产测试钩子）。
+sleep 409 blame → kill → kill 后重开自动 spawn → 再 kill → sleep 200 → dormant →
+resume → 新终端往返 → exit；读屏走 `.xterm-rows`（@xterm/xterm 6 核心是 DOM
+渲染器，无生产测试钩子）。
 
 手动验收（Windows 11 开发机，真实 server + 真实 node-pty，仅 provider 边界为
 fake）：交互式 stdin 提示（`cmd /c set /p`，ssh/sudo 的同类路径——本机无 :22

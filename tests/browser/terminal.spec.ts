@@ -12,8 +12,8 @@
 // paints the viewport only, which is fine here: the echoed command and its
 // output stay near the cursor, inside the visible rows.
 //
-// Flow: open session → Ctrl+` → idle overlay with NO error bar (the C2
-// repro: an idle fit must not send a doomed resize) → create → type
+// Flow: open session → Ctrl+` → auto-spawned overlay with NO error bar (the C2
+// repro: the brief idle fit must not send a doomed resize) → type
 // `echo crw-e2e-marker` + Enter → marker renders → resize window → a second
 // command round-trips → reload → composer button visible BEFORE reopening
 // the overlay (the I2 lifecycle fact) → reopen → screen restored → a second
@@ -76,25 +76,22 @@ test('terminal: spawn, type, resize, reload-reattach, exit, kill, revive', async
   const composerButton = panel.locator('button.composer-terminal')
   const errorBar = panel.locator('.error-bar')
 
-  // Ctrl+` opens the overlay; no shell exists yet, so the idle banner offers
-  // creation and the composer carries no terminal button.
+  // Ctrl+` opens the overlay; a fresh idle session AUTO-SPAWNS (approved entry
+  // design: no process → spawn directly, no guide page). The brief idle window
+  // before the create frame lands is the C2 repro: the idle body's FitAddon
+  // fires onResize while no generation is live.
   await toggleTerminal(page)
   await expect(overlay).toBeVisible()
-  await expect(status).toHaveAttribute('data-status', 'idle')
-  await expect(composerButton).toHaveCount(0)
+  await expect(status).toHaveAttribute('data-status', 'running')
+  // The running shell is the composer button's only visibility condition.
+  await expect(composerButton).toBeVisible()
 
-  // C2 repro: the idle body's FitAddon fires onResize while no generation is
-  // live. The channel guard must swallow it — no doomed frame, no persistent
-  // chat error bar, no terminal-local notice. Give the fit/observer a beat.
+  // C2 repro: the channel guard must swallow the idle fit's doomed resize — no
+  // persistent chat error bar, no terminal-local notice. Give the fit a beat.
   await page.waitForTimeout(600)
   await expect(errorBar).toHaveClass(/error-bar-empty/)
   expect((await errorBar.innerText()).trim()).toBe('')
   await expect(overlay.locator('.terminal-error-notice')).toHaveCount(0)
-
-  await overlay.getByRole('button', { name: 'New terminal' }).click()
-  await expect(status).toHaveAttribute('data-status', 'running')
-  // The running shell is the composer button's only visibility condition.
-  await expect(composerButton).toBeVisible()
 
   // Wait for the shell prompt (cmd.exe prints its cwd prompt ending in '>'),
   // then type the marker command. Clicking the body focuses xterm's textarea.
@@ -169,6 +166,18 @@ test('terminal: spawn, type, resize, reload-reattach, exit, kill, revive', async
   // No error bar from the kill either — close is a normal control op.
   await expect(errorBar).toHaveClass(/error-bar-empty/)
 
+  // Kill-then-REOPEN auto-spawns (confirmed refinement): hiding the overlay and
+  // reopening it starts a fresh shell with no click. The kill above transitioned
+  // to idle (asserted) and did not respawn while open; only a close→reopen
+  // re-arms the auto-spawn (the per-episode latch is unit-pinned).
+  await overlay.getByRole('button', { name: 'Close terminal' }).click()
+  await expect(overlay).toBeHidden()
+  await toggleTerminal(page)
+  await expect(status).toHaveAttribute('data-status', 'running')
+  // Kill again so the sleep guard below is unblocked.
+  await overlay.getByRole('button', { name: 'Kill terminal' }).click()
+  await expect(status).toHaveAttribute('data-status', 'idle')
+
   const slept = await request.post(`/api/sessions/${D}/sleep`)
   expect(slept.status()).toBe(200)
 
@@ -190,8 +199,7 @@ test('terminal: spawn, type, resize, reload-reattach, exit, kill, revive', async
   // when it is not revealed — a blind Ctrl+` would CLOSE it.
   if (!(await overlay.isVisible())) await toggleTerminal(page)
   await expect(overlay).toBeVisible()
-  await expect(status).toHaveAttribute('data-status', 'idle')
-  await overlay.getByRole('button', { name: 'New terminal' }).click()
+  // Resumed fresh idle (the kill removed the persisted screen) auto-spawns.
   await expect(status).toHaveAttribute('data-status', 'running')
   await expect(composerButton).toBeVisible()
   await expect.poll(async () => (await screenText(page)).includes('>'), { timeout: 20_000 }).toBe(true)

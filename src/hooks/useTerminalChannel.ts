@@ -29,8 +29,15 @@
 // the terminalId last seen running. A remembered tab meeting a restored-idle
 // snapshot (server restart killed the shell, screen persisted) auto-sends
 // terminal-create ONCE per snapshot; a fresh tab with no binding sees the
-// history and creates manually. Close — local or server-confirmed idle —
-// clears the binding.
+// restored history and creates manually (the restored-history case stays
+// manual so recovered output is never silently overwritten). Close — local or
+// server-confirmed idle — clears the binding.
+//
+// Auto-spawn ownership is split by trigger, deliberately: THIS hook owns the
+// restored+binding restart auto-create (fires on the snapshot, regardless of
+// overlay visibility); TerminalOverlay owns the fresh-idle auto-spawn on open
+// (a brand-new session, or a reopen after an explicit kill — once per open
+// episode, gated on the subscribe seed so create never races subscribe).
 //
 // Screen anchoring is SYNCHRONOUS: subscribeAnchor listeners run inside the
 // snapshot dispatch (and an idle state frame synthesizes the cleared anchor),

@@ -12,7 +12,7 @@
 // instead of closing. The floating-surface registry gives a true modal opened
 // over the terminal topmost Esc, and ignores Esc during IME composition.
 
-import { Suspense, lazy, useCallback } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef } from 'react'
 import { Overlay } from '../Overlay'
 import { IconTerminal, IconTrash, IconX } from '../icons/ToolIcons'
 import type { TerminalChannel } from '../../hooks/useTerminalChannel'
@@ -56,15 +56,45 @@ export function TerminalOverlay({ sessionId, open, onClose, supported, channel }
     channel.close()
   }, [channel])
 
-  // Spawn at the last known size; the body refits and resizes once revealed.
-  // `||`, not `??`: a never-created slot's state reports cols/rows 0 (the
-  // server's idle seed — WS-probe-verified), and 0 must fall through to the
-  // default, not ride into terminal-create where bounds reject it (E2E catch).
+  // Spawn at the last known size; the body refits to the viewport when the
+  // running generation anchors (TerminalBody's anchor listener), syncing the
+  // PTY to xterm. `||`, not `??`: a never-created slot's state reports cols/rows
+  // 0 (the server's idle seed — WS-probe-verified), and 0 must fall through to
+  // the default, not ride into terminal-create where bounds reject it (E2E catch).
   const handleCreate = useCallback(() => {
     const cols = state?.cols || snapshot?.state.cols || 80
     const rows = state?.rows || snapshot?.state.rows || 24
     channel.create(cols, rows)
   }, [channel, state, snapshot])
+
+  // Auto-spawn on open (approved entry design: "no process → spawn directly",
+  // no guide page). A fresh idle slot with no restored history spawns once per
+  // open episode — including a reopen after an explicit kill. Exited (Restart)
+  // and restored-history fresh tabs stay manual. The latch marks an episode
+  // "has a terminal" as soon as a non-idle state or restored history is seen,
+  // so a kill WHILE open does not immediately respawn. The latch re-arms on any
+  // hidden→shown transition of the overlay — explicit close→reopen OR a sibling
+  // overlay (git/settings/…) replacing it and then being closed (the union sets
+  // open=false while a sibling is up). Returning to an idle terminal view thus
+  // spawns, consistent with "open = want a terminal". The `snapshot` guard orders
+  // this AFTER the subscribe seed: the overlay is a child component whose passive
+  // effect runs before Chat's subscribe effect, and the snapshot only exists once
+  // the seed arrives — so terminal-create can never race ahead of terminal-subscribe.
+  const spawnedRef = useRef(false)
+  useEffect(() => {
+    if (!open) {
+      spawnedRef.current = false
+      return
+    }
+    if (status !== 'idle' || restored) {
+      spawnedRef.current = true
+      return
+    }
+    if (supported && snapshot && !spawnedRef.current) {
+      spawnedRef.current = true
+      handleCreate()
+    }
+  }, [open, supported, status, restored, snapshot, handleCreate])
 
   return (
     <Overlay

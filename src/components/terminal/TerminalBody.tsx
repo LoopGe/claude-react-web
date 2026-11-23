@@ -103,22 +103,33 @@ export function TerminalBody({ channel, visible }: TerminalBodyProps) {
     termRef.current = term
     fitRef.current = fit
 
-    // Screen anchor first (its registration seed writes the current screen),
-    // then live output — both synchronous, so dispatch order is write order.
-    const offAnchor = channelRef.current.subscribeAnchor((snap) => {
-      term.reset()
-      if (snap.screen) term.write(snap.screen)
-    })
-    const offOutput = channelRef.current.subscribeOutput((data) => term.write(data))
-    const dataDisposable = term.onData((data) => channelRef.current.input(data))
-    const resizeDisposable = term.onResize(({ cols, rows }) => channelRef.current.resize(cols, rows))
-
     // Fit stands down while hidden (clientWidth 0) and re-runs on reveal.
+    // Defined BEFORE subscribeAnchor so the anchor listener's refit works even
+    // on the synchronous registration seed (mount into an already-running
+    // generation), not just on later dispatches.
     const fitNow = () => {
       if (container.clientWidth === 0) return
       fit.fit()
     }
     fitNowRef.current = fitNow
+
+    // Screen anchor first (its registration seed writes the current screen),
+    // then live output — both synchronous, so dispatch order is write order.
+    const offAnchor = channelRef.current.subscribeAnchor((snap) => {
+      term.reset()
+      if (snap.screen) term.write(snap.screen)
+      // A live generation must match the viewport. On auto-spawn the reveal-fit
+      // fires while the anchor is still idle, so its resize is swallowed; refit
+      // now that the anchor is live (the hook sets anchorRef/statusRef before
+      // dispatching here, so onResize → channel.resize goes through). Without
+      // this the PTY stays at the create default (80×24) while xterm renders the
+      // viewport size, mis-sizing full-screen programs until a window resize.
+      if (snap.state.status === 'running' && snap.terminalId) fitNow()
+    })
+    const offOutput = channelRef.current.subscribeOutput((data) => term.write(data))
+    const dataDisposable = term.onData((data) => channelRef.current.input(data))
+    const resizeDisposable = term.onResize(({ cols, rows }) => channelRef.current.resize(cols, rows))
+
     const resizeObserver = new ResizeObserver(fitNow)
     resizeObserver.observe(container)
 

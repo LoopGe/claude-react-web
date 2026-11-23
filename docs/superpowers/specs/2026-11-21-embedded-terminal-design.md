@@ -239,6 +239,15 @@ Phase-1 simplifications vs DSH, deliberate [builder calls]:
     (DSH registers the toggle in `['page','editable','terminal']` regions
     and blocks it under modals — mirror that: toggle works inside the
     terminal, not under a modal).
+- **Fresh idle auto-spawn** (user-confirmed 2026-11-23, restoring the approved
+  entry design "no process → spawn directly"): opening the overlay on a fresh
+  idle slot (no restored history, not exited) auto-spawns once per open
+  episode — including a reopen after an explicit kill. A kill WHILE open stays
+  dead (the episode latch marks "has a terminal" on any non-idle/restored
+  state); only close→reopen re-arms. The auto-create is gated on the snapshot
+  seed so it never races ahead of `terminal-subscribe` (the overlay is a child
+  component whose passive effect runs before Chat's subscribe effect). The
+  idle "New terminal" button remains as the manual fallback.
 - **Exited state**: exit-code banner + "Restart" button (new generation);
   never auto-respawn on natural exit (DSH parity).
 - **Unavailable state** (node-pty missing only): localized panel, creation
