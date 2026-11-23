@@ -28,8 +28,19 @@ import { NativeSession } from './native-session.js'
 import { makeNativePorts } from '../native-host-adapters.js'
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import { loadNativeSessionLogSync } from './session-log/log.js'
-import { serializeEvent, serializeHeader } from './session-log/format.js'
+import { projectNeutralEventToLegacy, serializeEvent, serializeHeader } from './session-log/format.js'
 import type { NativeLogEvent, NativeSessionHeader } from './session-log/format.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
+
+// T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
+// the legacy shape from the canonical neutral baseline via the pinned compat
+// projection (a v1/v2 log keeps its canonical list); a null snapshot → [].
+function legacyEventsOf(snapshot: { header: { id: string }; events: NativeLogEvent[]; neutralEvents?: NativeSessionEvent[] } | null | undefined): NativeLogEvent[] {
+  if (!snapshot) return []
+  return snapshot.neutralEvents
+    ? snapshot.neutralEvents.map((event) => projectNeutralEventToLegacy(event, snapshot.header.id))
+    : snapshot.events
+}
 import { nativeSessionDir, nativeSessionLogPath } from './session-log/paths.js'
 import { fileHandleText } from '../../../shared/upload-handle.js'
 import { __setConfigForTest, config } from '../../config.js'
@@ -160,7 +171,7 @@ function fileUserMsg(dir: string, uuid: string, text = 'read the file') {
 /** The durable user events a session logged (the core's post-projection input). */
 function loggedUserEvents(stateDir: string, id: string): Array<{ uuid: string; message: { content: any[] } }> {
   const log = loadNativeSessionLogSync(stateDir, id)!
-  return log.events.filter((event) => event.type === 'user') as any[]
+  return legacyEventsOf(log).filter((event) => event.type === 'user') as any[]
 }
 
 /** Write a minimal real-shaped v2 log: context + one completed text turn. */
@@ -369,8 +380,9 @@ describe('NativeProvider core + adapter composition (T14)', () => {
     await vi.waitFor(() => {
       expect(loadNativeSessionLogSync(dir, 'resume-migrate')!.header.v).toBe(3)
     }, { timeout: 5000 })
-    // Parsed-line round-trip: the legacy read view is unchanged by migration.
-    expect(loadNativeSessionLogSync(dir, 'resume-migrate')!.events).toEqual(sourceEvents)
+    // Parsed-line round-trip: the compat projection of the neutral baseline is
+    // unchanged by migration (T6: no live legacy read view).
+    expect(legacyEventsOf(loadNativeSessionLogSync(dir, 'resume-migrate'))).toEqual(sourceEvents)
 
     // The resumed handle replays the source turn into model history and works.
     const core = nativeCoreOf(handle) as unknown as { history: unknown[] }
@@ -381,7 +393,7 @@ describe('NativeProvider core + adapter composition (T14)', () => {
     await waitForResult(frames, 'after-resume')
   })
 
-  it('fork seeds the child from the source; a later resume upgrades the child to v3', async () => {
+  it('fork seeds the child from the source as neutral v3; a later resume keeps it v3', async () => {
     __setConfigForTest({ nativeAttachmentFidelity: true })
     const dir = await tempDir('native-provider-fork-migrate-')
     await writeV2Log(dir, 'fork-source', 'fork-prompt', 'fork-reply')
@@ -394,16 +406,17 @@ describe('NativeProvider core + adapter composition (T14)', () => {
     expect(nativeCoreOf(child)).toBeInstanceOf(NativeSession)
 
     // The child log carries the inherited source turn (readable through the
-    // adapter history projection even while the seed is still v2).
+    // adapter history projection).
     await vi.waitFor(async () => {
       const page = await provider.readHistoryPage('fork-child', { limit: 20 })
       expect(JSON.stringify(page.messages)).toContain('fork-reply')
     }, { timeout: 5000 })
-    // T12: a fresh fork seed PRESERVES its source version until migrated.
-    expect(loadNativeSessionLogSync(dir, 'fork-child')!.header.v).toBe(2)
+    // T5: a fork seed is always neutral v3 — buildForkSeed migrates a legacy
+    // source in memory, so the child never inherits the source's v2 version.
+    expect(loadNativeSessionLogSync(dir, 'fork-child')!.header.v).toBe(3)
     await child.destroy('fork phase done')
 
-    // Resuming the child triggers the eager-at-open v3 upgrade.
+    // Resuming the child keeps the neutral v3 baseline (no upgrade needed).
     armStream(provider, [textTurn('child-after-resume')])
     const resumed = track(provider.createSession({ id: 'fork-child', cwd: dir, model: 'test-model', resume: 'fork-child' }))
     await vi.waitFor(() => {

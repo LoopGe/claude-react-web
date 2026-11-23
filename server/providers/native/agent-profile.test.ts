@@ -7,7 +7,8 @@ import {
   unsupportedAgentFields,
 } from './agent-profile.js'
 import type { NativeAgentSelectionEvent } from './agent-profile.js'
-import type { NativeLogEvent } from './session-log/format.js'
+import { projectNeutralEventToLegacy } from './session-log/format.js'
+import type { NativeSessionEvent, SessionEvent } from './vocabulary/session-event.js'
 
 function definition(overrides: Partial<StoredAgentDefinition> = {}): StoredAgentDefinition {
   return {
@@ -38,13 +39,33 @@ function selection(seq: number, name: string | null): NativeAgentSelectionEvent 
   }
 }
 
-const compact = (seq: number): NativeLogEvent => ({
+/** The neutral v3 form of the legacy selection fixture above — the durable
+ *  language agentSelectionFromEvents reads (option C read-side). */
+function neutralSelection(seq: number, name: string | null): SessionEvent<'session/agent'> {
+  const legacy = selection(seq, name)
+  return {
+    seq,
+    type: 'session/agent',
+    time: Date.parse(legacy.timestamp),
+    data: {
+      name: legacy.name,
+      ...(legacy.definition !== undefined ? { definition: legacy.definition } : {}),
+      base: legacy.base,
+      timestamp: legacy.timestamp,
+    },
+  }
+}
+
+const compact = (seq: number): NativeSessionEvent => ({
   seq,
   type: 'session/compact',
-  text: 'SUMMARY',
-  context: 'CONTEXT',
-  uuid: `compact-${seq}`,
-  timestamp: '2026-11-11T00:00:00.000Z',
+  time: Date.parse('2026-11-11T00:00:00.000Z'),
+  data: {
+    text: 'SUMMARY',
+    context: 'CONTEXT',
+    uuid: `compact-${seq}`,
+    timestamp: '2026-11-11T00:00:00.000Z',
+  },
 })
 
 describe('native agent profiles', () => {
@@ -171,17 +192,52 @@ describe('native agent profiles', () => {
   })
 })
 
-describe('agentSelectionFromEvents', () => {
-  it('returns the last selection and returns undefined when none exists', () => {
-    const first = selection(0, 'reviewer')
-    const last = selection(2, null)
-    expect(agentSelectionFromEvents([first, compact(1), last])).toBe(last)
+describe('agentSelectionFromEvents (neutral read)', () => {
+  it('returns the last selection as the legacy snapshot shape and undefined when none exists', () => {
+    const first = neutralSelection(0, 'reviewer')
+    const last = neutralSelection(2, null)
+    expect(agentSelectionFromEvents([first, compact(1), last])).toEqual(selection(2, null))
     expect(agentSelectionFromEvents([compact(0)])).toBeUndefined()
     expect(agentSelectionFromEvents([])).toBeUndefined()
   })
 
   it('does not treat compact as a floor for selection state', () => {
-    const selected = selection(0, 'reviewer')
-    expect(agentSelectionFromEvents([selected, compact(1)])).toBe(selected)
+    const selected = neutralSelection(0, 'reviewer')
+    expect(agentSelectionFromEvents([selected, compact(1)])).toEqual(selection(0, 'reviewer'))
+  })
+
+  it('maps the neutral selection to exactly the legacy read-view event (behavior pin)', () => {
+    const events: NativeSessionEvent[] = [
+      compact(0),
+      neutralSelection(1, 'reviewer'),
+      neutralSelection(2, null),
+    ]
+    // The legacy read the old scan performed: the log's legacy projection,
+    // last top-level 'session/agent' event returned verbatim.
+    const legacyView = events.map((event) => projectNeutralEventToLegacy(event, 's'))
+    const legacySelection = [...legacyView].reverse().find((event) => event.type === 'session/agent')
+    expect(agentSelectionFromEvents(events)).toEqual(legacySelection)
+  })
+
+  it('carries a dropped-agent refusal through the neutral data payload', () => {
+    const dropped: SessionEvent<'session/agent'> = {
+      seq: 0,
+      type: 'session/agent',
+      time: Date.parse('2026-11-11T00:00:00.000Z'),
+      data: {
+        name: null,
+        droppedAgent: { name: 'reviewer', unsupportedFields: ['background', 'memory'] },
+        base: { model: 'claude-sonnet-4-5', permissionMode: 'default' },
+        timestamp: '2026-11-11T00:00:00.000Z',
+      },
+    }
+    expect(agentSelectionFromEvents([dropped])).toEqual({
+      seq: 0,
+      type: 'session/agent',
+      name: null,
+      droppedAgent: { name: 'reviewer', unsupportedFields: ['background', 'memory'] },
+      base: { model: 'claude-sonnet-4-5', permissionMode: 'default' },
+      timestamp: '2026-11-11T00:00:00.000Z',
+    })
   })
 })

@@ -554,8 +554,11 @@ describe('uploads routes', () => {
       store.attachmentReferences.replaceSession('native-1', [{
         seq: 0,
         type: 'session/attachments',
-        attachments: [{ ...entry, digest: entry.digest!, modelForm: 'handle' }],
-        timestamp: '2026-11-13T00:00:00.000Z',
+        time: Date.parse('2026-11-13T00:00:00.000Z'),
+        data: {
+          attachments: [{ ...entry, digest: entry.digest!, modelForm: 'handle' }],
+          timestamp: '2026-11-13T00:00:00.000Z',
+        },
       }])
 
       expect((await deleteById(entry.id)).status).toBe(409)

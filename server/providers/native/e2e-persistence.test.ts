@@ -25,7 +25,20 @@ import { makeNativePorts } from '../native-host-adapters.js'
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import type { ProviderSessionHandle } from '../types.js'
 import { hasNativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
+import { projectNeutralEventToLegacy } from './session-log/format.js'
+import type { NativeLogEvent } from './session-log/format.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
 import type { CanonicalEvent } from './canonical.js'
+
+// T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
+// the legacy shape from the canonical neutral baseline via the pinned compat
+// projection (a v1/v2 log keeps its canonical list); a null snapshot → [].
+function legacyEventsOf(snapshot: { header: { id: string }; events: NativeLogEvent[]; neutralEvents?: NativeSessionEvent[] } | null | undefined): NativeLogEvent[] {
+  if (!snapshot) return []
+  return snapshot.neutralEvents
+    ? snapshot.neutralEvents.map((event) => projectNeutralEventToLegacy(event, snapshot.header.id))
+    : snapshot.events
+}
 
 // Auto-compact (P1.1 Task 4) summarizes through the shared LLM helper. The
 // manager imports `./compact-summary.js`, which resolves to this same module —
@@ -337,7 +350,7 @@ describe('native provider persistence through SessionManager', () => {
     expect(JSON.stringify(s.history)).not.toContain(REPLY)
 
     const log = loadNativeSessionLogSync(dir, info.id)!
-    expect(log.events.some((e) => e.type === 'session/compact')).toBe(true)
+    expect(legacyEventsOf(log).some((e) => e.type === 'session/compact')).toBe(true)
     const page = await sm.getHistoryPage(info.id, { limit: 10 })
     expect(JSON.stringify(page)).not.toContain(PROMPT)
 
@@ -368,7 +381,7 @@ describe('native provider persistence through SessionManager', () => {
     // gate on the raw events (which survive compaction) instead.
     await vi.waitFor(() => {
       const log = loadNativeSessionLogSync(dir, info.id)!
-      expect(JSON.stringify(log.events)).toContain(REPLY)
+      expect(JSON.stringify(legacyEventsOf(log))).toContain(REPLY)
     }, { timeout: 5000 })
 
     await vi.waitFor(() => {

@@ -41,6 +41,15 @@
 // (the synthetic repair events, the turn-end record) are neutral by
 // construction — repairInterruptedTurn returns SessionEvent[] and the
 // turn-end record is built with the neutral envelope.
+//
+// The core READ path is pinned here too (T6 read-side shrink): a v3 log no
+// longer maintains a live projected legacy read view, so core production files
+// outside the session-log allowlist may import NO legacy read-view vocabulary
+// (NativeLogEvent / NativeEventInput / projectNeutralEventToLegacy) and may not
+// read the log's `.events` view. Every core consumer reads the canonical neutral
+// events via neutralEventsOf; the writer keeps the legacy projection only for
+// its v1/v2 write-compat, the eager migration, the host history seam and the
+// migration round-trip pin.
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
@@ -99,6 +108,43 @@ function isWireAdapter(file: string): boolean {
   const rel = relative(nativeDir, file).split(sep).join('/')
   return rel.startsWith('wire/') || rel === 'attachment-projection.ts'
 }
+
+/** The legacy read-view vocabulary (T6 read-side shrink). A v3 log no longer
+ *  maintains a live projected legacy view: `log.events` is the v1/v2 canonical
+ *  list only, and `append` returns the neutral event. These names are the
+ *  legacy coupling a core consumer would reintroduce by reading that view, so
+ *  they are banned as named bindings (value AND type-only) in core production
+ *  files OUTSIDE the session-log allowlist below. The writer's own v1/v2
+ *  write-compat, the eager migration and the neutral-read fallback are the
+ *  residual legitimate legacy users. */
+const LEGACY_VIEW_NAMES = new Set([
+  'NativeLogEvent',
+  'NativeEventInput',
+  'projectNeutralEventToLegacy',
+])
+
+/** Core production files allowed to import the legacy read-view vocabulary:
+ *  the session-log writer/format/migration machinery plus the neutral-read
+ *  helper (whose v1/v2 fallback parameter is typed `NativeLogEvent`). Every
+ *  other core file reads the canonical neutral events (`neutralEventsOf`). */
+const LEGACY_VIEW_ALLOWLIST = new Set([
+  'server/providers/native/session-log/format.ts',
+  'server/providers/native/session-log/log.ts',
+  'server/providers/native/session-log/migration.ts',
+  'server/providers/native/session-log/neutral-read.ts',
+])
+
+/** True for a production file under native/session-log/ — the writer domain,
+ *  which legitimately reads its own `events` (v1/v2 canonical list, migration
+ *  splices, durable rollback). The `.events` read ban below exempts it whole. */
+function isSessionLog(file: string): boolean {
+  return relative(nativeDir, file).split(sep).join('/').startsWith('session-log/')
+}
+
+/** Neutral fork-seed receivers whose `.events` field is the NEUTRAL seed list
+ *  (NativeForkSeed.events), NOT the log's dropped legacy read view. The only
+ *  core `.events` read outside session-log is `forkSeed.events`. */
+const SEED_EVENTS_RECEIVERS = new Set(['forkSeed'])
 
 interface ImportRef {
   specifier: string
@@ -189,6 +235,9 @@ describe('native core neutrality (option C structural pin)', () => {
     for (const adapter of ADAPTER_FILES) {
       expect(existsSync(adapter), rel(adapter)).toBe(true)
     }
+    for (const allowed of LEGACY_VIEW_ALLOWLIST) {
+      expect(existsSync(join(repoRoot, allowed)), allowed).toBe(true)
+    }
   })
 
   it('core production files import no SDK / agent-message / host frame vocabulary (value AND type-only)', () => {
@@ -202,6 +251,48 @@ describe('native core neutrality (option C structural pin)', () => {
         }
       }
     }
+    expect(violations).toEqual([])
+  })
+
+  it('core production files outside the session-log allowlist import no legacy read-view vocabulary (T6)', () => {
+    const files = prodFiles(nativeDir).filter(f => !isWireAdapter(f) && !LEGACY_VIEW_ALLOWLIST.has(rel(f)))
+    expect(files.length).toBeGreaterThan(0)
+    const violations: string[] = []
+    for (const file of files) {
+      for (const ref of importRefs(file)) {
+        const legacy = ref.names.filter(name => LEGACY_VIEW_NAMES.has(name))
+        if (legacy.length > 0) {
+          violations.push(`${rel(file)} imports legacy read-view ${legacy.join(', ')} from '${ref.specifier}'${ref.typeOnly ? ' (type-only)' : ''}`)
+        }
+      }
+    }
+    expect(violations).toEqual([])
+  })
+
+  it('no core consumer reads the log legacy `.events` view outside session-log (T6)', () => {
+    const files = prodFiles(nativeDir).filter(f => !isWireAdapter(f) && !isSessionLog(f))
+    expect(files.length).toBeGreaterThan(0)
+    const violations: string[] = []
+    let seedReads = 0
+    for (const file of files) {
+      const sf = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest)
+      const visit = (node: ts.Node): void => {
+        if (ts.isPropertyAccessExpression(node) && node.name.text === 'events') {
+          const receiver = node.expression.getText(sf)
+          if (SEED_EVENTS_RECEIVERS.has(receiver)) {
+            // A neutral fork-seed read (NativeForkSeed.events), not the log view.
+            seedReads++
+          } else {
+            violations.push(`${rel(file)} reads '${receiver}.events' (the dropped v3 legacy read view)`)
+          }
+        }
+        ts.forEachChild(node, visit)
+      }
+      visit(sf)
+    }
+    // Non-vacuous: the neutral fork-seed read still exists (a rename must update
+    // the allowlist, and the ban must keep catching a reintroduced log.events).
+    expect(seedReads).toBeGreaterThan(0)
     expect(violations).toEqual([])
   })
 

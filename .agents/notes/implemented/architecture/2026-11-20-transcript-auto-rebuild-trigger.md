@@ -4,11 +4,10 @@ Status: implemented
 
 ## Problem
 
-The ordered-reconcile design (spec
-`docs/superpowers/specs/2026-11-16-transcript-ordered-reconcile-design.md` §8.1,
-referenced as plain text while that design doc is untracked) rebuilds a transcript
-projection when a result/completion frame belongs before the published tail (a
-chronology inversion) or revises a same-uuid result.
+The [ordered-reconcile architecture](2026-11-16-transcript-ordered-reconcile.md)
+(spec §8.1) rebuilds a transcript projection when a result/completion frame
+belongs before the published tail (a chronology inversion) or revises a same-uuid
+result.
 Before this feature the rebuild only ran on an explicit user Retry or a passive
 resume reconcile; a live inversion stayed suppressed with admission closed and no
 automatic path to a committed generation. A long-term quiesce blocker (a running
@@ -126,6 +125,8 @@ the rebuild exactly once, payload include-once in the projection).
 
 ## Related
 
+- [Ordered transcript reconciliation](2026-11-16-transcript-ordered-reconcile.md)
+  — the umbrella ordered-projection architecture this live trigger schedules.
 - [Ordered rebuild aligns wire/disk twins by uuid+frameKind](../bug-fix/2026-11-20-ordered-rebuild-wire-disk-twin-dedup.md)
   — the occurrence-identity alignment the forced rebuild relies on for include-once.
 - [Sidecar crash recovery](2026-11-19-sidecar-crash-recovery.md) — the durable

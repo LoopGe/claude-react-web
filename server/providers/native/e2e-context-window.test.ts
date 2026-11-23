@@ -14,7 +14,20 @@ import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
 import { NativeModelContextResolver } from './model-context.js'
 import { loadNativeSessionLogSync } from './session-log/log.js'
+import { projectNeutralEventToLegacy } from './session-log/format.js'
+import type { NativeLogEvent } from './session-log/format.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
 import type { CanonicalEvent } from './canonical.js'
+
+// T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
+// the legacy shape from the canonical neutral baseline via the pinned compat
+// projection (a v1/v2 log keeps its canonical list); a null snapshot → [].
+function legacyEventsOf(snapshot: { header: { id: string }; events: NativeLogEvent[]; neutralEvents?: NativeSessionEvent[] } | null | undefined): NativeLogEvent[] {
+  if (!snapshot) return []
+  return snapshot.neutralEvents
+    ? snapshot.neutralEvents.map((event) => projectNeutralEventToLegacy(event, snapshot.header.id))
+    : snapshot.events
+}
 
 const { order } = vi.hoisted(() => ({ order: [] as string[] }))
 
@@ -123,12 +136,12 @@ describe('native model-window compaction', () => {
       expect(replacement).not.toContain('large reply')
 
       await vi.waitFor(() => {
-        const events = loadNativeSessionLogSync(dir, info.id)!.events
+        const events = legacyEventsOf(loadNativeSessionLogSync(dir, info.id))
         expect(events.some((event) =>
           event.type === 'session/compact' && event.text === 'MOCK SUMMARY')).toBe(true)
         expect(JSON.stringify(events)).toContain('small reply')
       }, { timeout: 5000 })
-      const events = loadNativeSessionLogSync(dir, info.id)!.events
+      const events = legacyEventsOf(loadNativeSessionLogSync(dir, info.id))
       expect(events.some((event) => /capacity|model-context|context-window/i.test(event.type))).toBe(false)
     } finally {
       sub.unsubscribe()

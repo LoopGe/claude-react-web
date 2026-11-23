@@ -1147,9 +1147,10 @@ export function eventRequiresV3(event: NativeSessionEvent): boolean {
 // the verbatim rawStopReason (or the packed finish record) so the legacy
 // turn-boundary signal survives. This is also the lossless inverse the host
 // adapter's history-read seam (projectNativeEventToSdkLine) reuses to project
-// the three durable message events to SDK RawLines, and the log's legacy read
-// view for the metadata consumers (usage / agent selection / attachment index /
-// subagent catalog) that phase 4 neutralizes.
+// the three durable message events to SDK RawLines, and the migration
+// round-trip pin's inverse. The core read consumers (usage / agent selection /
+// attachment index / subagent catalog) read the canonical NEUTRAL events, not
+// a projected legacy view (T6 read-side shrink).
 
 function sdkUsageOf(usage: TokenUsage): NativeUsage & { cache_read_input_tokens?: number; cache_creation_input_tokens?: number } {
   return {
@@ -1205,10 +1206,12 @@ function stopReasonOfStream(stream: readonly AssistantStreamRecord[]): string | 
 }
 
 /** Project a neutral v3 event to the legacy v1/v2 NativeLogEvent shape. Used
- *  to write neutral appends into a not-yet-migrated v1/v2 log, to expose the
- *  log's legacy read view for metadata consumers, and (for the three message
- *  events) by the host adapter's history-read seam as the SDK RawLine shape.
- *  `sessionId` stamps the legacy event-level session_id. */
+ *  to write neutral appends into a not-yet-migrated v1/v2 log (the writer's
+ *  v1/v2 write-compat), as the migration round-trip pin's inverse, and (for the
+ *  three message events) by the host adapter's history-read seam as the SDK
+ *  RawLine shape. It is NOT a live read view: core consumers read the canonical
+ *  neutral events (T6 read-side shrink). `sessionId` stamps the legacy
+ *  event-level session_id. */
 export function projectNeutralEventToLegacy(event: NativeSessionEvent, sessionId: string): NativeLogEvent {
   const seq = event.seq
   const timestamp = new Date(event.time).toISOString()

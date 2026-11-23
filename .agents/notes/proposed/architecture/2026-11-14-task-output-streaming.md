@@ -43,3 +43,5 @@ Status: proposed
 本提案扩展[统一 native 后台任务所有权](../../implemented/architecture/2026-11-11-native-background-tasks.md)中 final-output-only、无跨进程输出恢复的现状；当前 native 执行与恢复决策在该提案实施前仍然有效。
 
 [状态型 task-notification 注入默认隐藏](../../implemented/bug-fix/2026-11-06-hide-resume-task-notification-noise.md)保留 neutral card 作为无路由 payload 的展示入口；本提案新增 output-ref 作为其大结果读取路径，不改变 status-only 注入隐藏或小型 orphan 在预算内内联的规则。
+
+[任务输出实时流上游阻塞调研](../../../../docs/research/2026-11-23-task-output-upstream-workflow-event.md)以 pinned SDK 0.3.311 / CLI 2.1.311 的二进制级证据证实上游现状：`workflow_log`（脚本 `log()` 与 `console` 同源）在唯一实时 SDK 发射路径被双重过滤、无 `workflow_event` 及任何 `event_seq`/绝对 offset/`source_revision` 契约字段、resume journal 仅 agent() memoization、失败路径不写 artifact。本提案 phase 2 冻结仍成立，§9 的每条缺口现在有 pinned 二进制出处；该文件亦给出 SDK/CLI 升级时的解冻哨兵检索清单。

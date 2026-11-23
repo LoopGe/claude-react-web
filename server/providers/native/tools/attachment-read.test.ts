@@ -78,12 +78,15 @@ async function fixture(options: {
   if (options.references !== false) {
     index.replaceSession('session-1', [{
       seq: 0,
-      type: 'user',
-      uuid: 'user-1',
-      session_id: 'session-1',
-      parent_tool_use_id: null,
-      timestamp: '2026-11-13T00:00:00.000Z',
-      message: { role: 'user', content: [{ type: 'file', attachment: occurrence }] },
+      type: 'user/message',
+      time: Date.parse('2026-11-13T00:00:00.000Z'),
+      parentToolUseId: null,
+      data: {
+        role: 'user',
+        id: brandString<'MessageId'>('user-1'),
+        content: [{ type: 'file', attachment: occurrence }],
+        source: { kind: 'user' },
+      },
     }])
   }
   const pdfBudgets = options.shared?.pdfBudgets ?? new PdfBudgetLedger()

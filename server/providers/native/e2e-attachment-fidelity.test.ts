@@ -24,6 +24,19 @@ import type { CanonicalEvent } from './canonical.js'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
+import { projectNeutralEventToLegacy } from './session-log/format.js'
+import type { NativeLogEvent } from './session-log/format.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
+
+// T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
+// the legacy shape from the canonical neutral baseline via the pinned compat
+// projection (a v1/v2 log keeps its canonical list); a null snapshot → [].
+function legacyEventsOf(snapshot: { header: { id: string }; events: NativeLogEvent[]; neutralEvents?: NativeSessionEvent[] } | null | undefined): NativeLogEvent[] {
+  if (!snapshot) return []
+  return snapshot.neutralEvents
+    ? snapshot.neutralEvents.map((event) => projectNeutralEventToLegacy(event, snapshot.header.id))
+    : snapshot.events
+}
 
 vi.mock('../../anthropic-api.js', () => ({
   callAnthropicMessages: vi.fn(),
@@ -400,16 +413,16 @@ describe('native attachment fidelity end to end', () => {
 
     await vi.waitFor(() => {
       const log = loadNativeSessionLogSync(stateDir, id)!
-      expect(log.events.some((event) => event.type === 'user' && event.uuid === initial.uuid)).toBe(true)
+      expect(legacyEventsOf(log).some((event) => event.type === 'user' && event.uuid === initial.uuid)).toBe(true)
     })
     const sourceLog = loadNativeSessionLogSync(stateDir, id)!
     // T12: fresh logs are neutral v3 (the legacy read view still carries the
     // structured file blocks / modelForm / skill adjacency asserted below).
     expect(sourceLog.header.v).toBe(3)
-    const rawIndex = sourceLog.events.findIndex(
+    const rawIndex = legacyEventsOf(sourceLog).findIndex(
       (event) => event.type === 'user' && event.uuid === initial.uuid,
     )
-    const durableRaw = sourceLog.events[rawIndex]
+    const durableRaw = legacyEventsOf(sourceLog)[rawIndex]
     expect(durableRaw.type).toBe('user')
     if (durableRaw.type !== 'user') throw new Error('expected raw user event')
     const durableBlocks = durableRaw.message.content as Frame[]
@@ -417,9 +430,9 @@ describe('native attachment fidelity end to end', () => {
     expect(
       durableBlocks.filter((block) => block.type === 'file').map((block) => block.attachment.modelForm),
     ).toEqual(['handle', 'pdf-document', 'handle'])
-    expect(sourceLog.events[rawIndex + 1]).toMatchObject({ type: 'session/skill', name: 'demo' })
-    expect(JSON.stringify(sourceLog.events)).not.toContain(pdfBytes.toString('base64'))
-    expect(JSON.stringify(sourceLog.events)).not.toContain('"type":"document"')
+    expect(legacyEventsOf(sourceLog)[rawIndex + 1]).toMatchObject({ type: 'session/skill', name: 'demo' })
+    expect(JSON.stringify(legacyEventsOf(sourceLog))).not.toContain(pdfBytes.toString('base64'))
+    expect(JSON.stringify(legacyEventsOf(sourceLog))).not.toContain('"type":"document"')
 
     const disk = await first.provider.readHistoryPage(id, { limit: 100 })
     const diskRaw = userFrameByUuid(disk.messages as Frame[], initial.uuid)
@@ -490,11 +503,11 @@ describe('native attachment fidelity end to end', () => {
     expect(JSON.stringify(manualInput)).not.toContain(text.path)
     expect(JSON.stringify(manualInput)).not.toContain(pdf.path)
     const manualLog = loadNativeSessionLogSync(stateDir, manual.id)!
-    const catalogIndex = manualLog.events.findIndex((event) => event.type === 'session/attachments')
+    const catalogIndex = legacyEventsOf(manualLog).findIndex((event) => event.type === 'session/attachments')
     expect(catalogIndex).toBeGreaterThanOrEqual(0)
-    expect(manualLog.events[catalogIndex + 1]).toMatchObject({ type: 'user', isCompactSummary: true })
-    expect(JSON.stringify(manualLog.events[catalogIndex])).toContain(text.id)
-    expect(JSON.stringify(manualLog.events[catalogIndex])).toContain(pdf.id)
+    expect(legacyEventsOf(manualLog)[catalogIndex + 1]).toMatchObject({ type: 'user', isCompactSummary: true })
+    expect(JSON.stringify(legacyEventsOf(manualLog)[catalogIndex])).toContain(text.id)
+    expect(JSON.stringify(legacyEventsOf(manualLog)[catalogIndex])).toContain(pdf.id)
 
     const manualSeen = collect(resumed.sm, manual.id)
     resumed.scripts.push(attachmentReadTurn('read-manual', text.id), textTurn('MANUAL READ DONE'))
@@ -523,8 +536,8 @@ describe('native attachment fidelity end to end', () => {
     expect(JSON.stringify(autoInput)).toContain('ATTACHMENT TEXT BODY')
     expect(JSON.stringify(autoInput)).toContain(pdfBytes.toString('base64'))
     const autoLog = loadNativeSessionLogSync(stateDir, fork.id)!
-    expect(autoLog.events.some((event) => event.type === 'session/compact')).toBe(true)
-    expect(autoLog.events.filter((event) => event.type === 'session/attachments')).toHaveLength(0)
+    expect(legacyEventsOf(autoLog).some((event) => event.type === 'session/compact')).toBe(true)
+    expect(legacyEventsOf(autoLog).filter((event) => event.type === 'session/attachments')).toHaveLength(0)
 
     liveSession(resumed.sm, fork.id).autoCompactWindow = Number.MAX_SAFE_INTEGER
     resumed.scripts.push(attachmentReadTurn('read-auto', text.id), textTurn('AUTO READ DONE'))
@@ -589,12 +602,12 @@ describe('native attachment fidelity end to end', () => {
     expect(sent.result.is_error).not.toBe(true)
     const migrated = loadNativeSessionLogSync(stateDir, id)!
     expect(migrated.header.v).toBe(3)
-    const legacyEvent = migrated.events.find((event) => event.type === 'user' && event.uuid === 'legacy-user')
+    const legacyEvent = legacyEventsOf(migrated).find((event) => event.type === 'user' && event.uuid === 'legacy-user')
     expect(legacyEvent).toBeDefined()
     expect(legacyEvent!.type === 'user' ? legacyEvent!.message.content : undefined).toEqual([
       { type: 'text', text: legacyHandle },
     ])
-    const structured = migrated.events.find((event) => event.type === 'user' && event.uuid === sent.uuid)
+    const structured = legacyEventsOf(migrated).find((event) => event.type === 'user' && event.uuid === sent.uuid)
     expect(structured).toBeDefined()
     expect(JSON.stringify(structured)).toContain('"type":"file"')
     expect(JSON.stringify(structured)).toContain(upload.digest)
@@ -639,7 +652,7 @@ describe('native attachment fidelity end to end', () => {
     await waitForResult(seen.frames, 0)
     expect(liveSession(fx.sm, id).history.some((frame) => frame.uuid === sent.uuid)).toBe(false)
     expect(
-      loadNativeSessionLogSync(stateDir, id)!.events.some(
+      legacyEventsOf(loadNativeSessionLogSync(stateDir, id)).some(
         (event) => event.type === 'user' && event.uuid === sent.uuid,
       ),
     ).toBe(false)
@@ -709,7 +722,7 @@ describe('native attachment fidelity end to end', () => {
     expect(projected[1].text).toContain(`Upload id: ${small.id}`)
     expect(projected[2].text).toContain(`Upload id: ${large.id}`)
     const log = loadNativeSessionLogSync(stateDir, id)!
-    const raw = log.events.find((event) => event.type === 'user' && event.uuid === sent.uuid)
+    const raw = legacyEventsOf(log).find((event) => event.type === 'user' && event.uuid === sent.uuid)
     expect(raw).toBeDefined()
     const forms = (raw!.type === 'user' ? (raw!.message.content as Frame[]) : []).map(
       (block) => block.attachment.modelForm,
@@ -757,12 +770,12 @@ describe('native attachment fidelity end to end', () => {
     expect(fx.sm.get(id)).toBeDefined()
     expect(fx.sm.getHistory(id)).toEqual(historyBefore)
     expect(
-      loadNativeSessionLogSync(stateDir, id)!.events.some((event) =>
+      legacyEventsOf(loadNativeSessionLogSync(stateDir, id)).some((event) =>
         JSON.stringify(event).includes('SEED THAT MUST NOT PUBLISH'),
       ),
     ).toBe(false)
     const ghostLog = loadNativeSessionLogSync(stateDir, ghostId!)
-    expect(JSON.stringify(ghostLog?.events ?? [])).not.toContain('SEED THAT MUST NOT PUBLISH')
+    expect(JSON.stringify(legacyEventsOf(ghostLog))).not.toContain('SEED THAT MUST NOT PUBLISH')
 
     // X is not merely listed: it remains usable after the unpublished Y fails.
     vi.mocked(fx.provider.createSession).mockRestore()

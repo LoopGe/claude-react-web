@@ -188,7 +188,7 @@ async function fullParse(
     subagents: buildNativeSubagentCatalog(neutralEvents, id),
     version: snapshot.header.v,
     parsedBytes: snapshot.completeBytes,
-    nextSeq: snapshot.events.length,
+    nextSeq: neutralEvents.length,
     size,
     mtimeMs,
   })

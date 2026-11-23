@@ -8,6 +8,7 @@ import { NativeSessionLog, deleteNativeSessionLog, hasNativeSessionLog, loadNati
 import { brandString } from '../vocabulary/brand.js'
 import { NativeSessionStorageError } from './errors.js'
 import { nativeSessionDir, nativeSessionLogPath, nativeSessionMigrationTempPath } from './paths.js'
+import { neutralEventsOf } from './neutral-read.js'
 
 const fsMigration = vi.hoisted(() => ({
   beforeRename: null as (() => void) | null,
@@ -137,7 +138,9 @@ describe('NativeSessionLog', () => {
     try {
       reopened.append({ type: 'session/end-seed' })
       await reopened.flush()
-      expect(loadNativeSessionLogSync(stateDir, 's1')!.events.map((e) => e.seq)).toEqual([0, 1, 2])
+      // The resume eagerly migrated the v1 source to v3; seq contiguity is read
+      // from the neutral baseline (T6 dropped the live legacy view).
+      expect(loadNativeSessionLogSync(stateDir, 's1')!.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2])
     } finally {
       await reopened.close()
     }
@@ -394,8 +397,14 @@ describe('NativeSessionLog', () => {
       })).rejects.toThrow(/superseded/)
       expect(original.events.some((event) => event.type === 'session/agent')).toBe(false)
       const persisted = loadNativeSessionLogSync(stateDir, 's1')!
-      expect(persisted.events.map((event) => event.type)).toEqual(['user', 'turn/end'])
-      expect(persisted.events.map((event) => event.seq)).toEqual([0, 1])
+      // The replacement's resume eagerly migrates v1→v3, but the original writer
+      // still holds an open handle: the rename succeeds on POSIX (v3, `.events`
+      // dropped) and fails EPERM on Windows (pre-rename fallback reopens v1). Read
+      // the canonical neutral content version-agnostically — the takeover outcome
+      // (committed user + replacement turn/end survive, rejected session/agent does
+      // not) is identical either way.
+      expect(neutralEventsOf(persisted).map((event) => event.type)).toEqual(['user/message', 'turn/end'])
+      expect(neutralEventsOf(persisted).map((event) => event.seq)).toEqual([0, 1])
     } finally {
       await original.close()
       if (replacement) await replacement.close()
@@ -559,10 +568,12 @@ describe('NativeSessionLog', () => {
 
     replacement.append({ type: 'turn/end', reason: 'completed' })
     await replacement.flush()
-    expect(loadNativeSessionLogSync(stateDir, 's1')!.events.map((event) => event.seq)).toEqual([0])
+    // The replacement resumed the v1 source and eagerly migrated it to v3; the
+    // neutral baseline owns the event list (T6 dropped the live legacy view).
+    expect(loadNativeSessionLogSync(stateDir, 's1')!.neutralEvents!.map((event) => event.seq)).toEqual([0])
     await replacement.close()
     await expect(replacement.appendDurable(selection)).rejects.toThrow(/closed/)
-    expect(replacement.events.map((event) => event.type)).toEqual(['turn/end'])
+    expect(replacement.neutralEvents!.map((event) => event.type)).toEqual(['turn/end'])
     await original.close()
   })
 
@@ -775,8 +786,9 @@ describe('NativeSessionLog', () => {
     expect(snapped.header.isSeeded).toBe(true)
     expect(snapped.header.inheritedEventCount).toBe(1)
     expect(snapped.header.cwd).toBe('/new')
-    expect(snapped.events.map((e) => e.type)).toEqual(['user', 'session/end-seed', 'session/context'])
-    expect(snapped.events.map((e) => e.seq)).toEqual([0, 1, 2])
+    // The legacy seed normalized to neutral v3 (T6: no live legacy read view).
+    expect(snapped.neutralEvents!.map((e) => e.type)).toEqual(['user/message', 'session/end-seed', 'session/context'])
+    expect(snapped.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2])
   })
   it('takes over the writer: committed lines survive, post-takeover appends do not', async () => {
     const stateDir = await fresh()
@@ -789,7 +801,11 @@ describe('NativeSessionLog', () => {
       a.append(userEvent('stale'))
       b.append({ type: 'session/end-seed' })
       await b.flush()
-      expect(loadNativeSessionLogSync(stateDir, 's1')!.events.map((e) => e.type)).toEqual(['user', 'session/end-seed'])
+      // Version-agnostic: `a` holds an open handle, so the resume's eager v3
+      // migration renames on POSIX (v3) but falls back to v1 on Windows (EPERM).
+      // neutralEventsOf gives the same content either way (u1 + end-seed survive,
+      // a's stale post-takeover append does not).
+      expect(neutralEventsOf(loadNativeSessionLogSync(stateDir, 's1')!).map((e) => e.type)).toEqual(['user/message', 'session/end-seed'])
     } finally {
       await a.close()
       if (b) await b.close()
@@ -805,7 +821,8 @@ describe('NativeSessionLog', () => {
       b = NativeSessionLog.open({ stateDir: stateDirB, id: 's1', cwd: '/repo', resume: false })
       a.append(userEvent('u1'))
       await a.flush()
-      expect(loadNativeSessionLogSync(stateDirA, 's1')!.events.map((e) => e.type)).toEqual(['user'])
+      // Fresh opens default to neutral v3 (T6: no live legacy read view).
+      expect(loadNativeSessionLogSync(stateDirA, 's1')!.neutralEvents!.map((e) => e.type)).toEqual(['user/message'])
     } finally {
       if (a) await a.close()
       if (b) await b.close()
@@ -883,9 +900,8 @@ describe('NativeSessionLog v3 (neutral writer)', () => {
     expect(snap.neutralEvents!.map((e) => e.type)).toEqual(['user/message', 'assistant/message'])
     expect(snap.neutralEvents!.map((e) => e.seq)).toEqual([0, 1])
     expect(snap.neutralEvents![1]).toEqual({ ...neutralAssistantInput, seq: 1 })
-    // The legacy read view stays available for transitional consumers.
-    expect(snap.events.map((e) => e.type)).toEqual(['user', 'assistant'])
-    expect(snap.events[1]).toMatchObject({ type: 'assistant', uuid: 'a1', message: { id: 'msg_a1', stop_reason: 'end_turn' } })
+    // T6 read-side shrink: a v3 log exposes no live legacy read view.
+    expect(snap.events).toEqual([])
   })
 
   it('resumes a v3 log and appends more neutral events with contiguous seq', async () => {
@@ -911,15 +927,17 @@ describe('NativeSessionLog v3 (neutral writer)', () => {
       stateDir, id: 's1', cwd: '/repo', resume: false,
       seed: { events: [], inheritedEventCount: 0, isSeeded: false, version: 3 },
     })
-    // The core still emits some legacy events (neutralized in T13); a v3 writer
-    // migrates them rather than rejecting, preserving the legacy read view.
-    const legacy = log.append({ type: 'turn/end', reason: 'completed', usage: { input_tokens: 3, output_tokens: 4 } })
-    expect(legacy).toMatchObject({ type: 'turn/end', reason: 'completed', usage: { input_tokens: 3, output_tokens: 4 } })
-    expect(log.neutralEvents![0]).toMatchObject({ type: 'turn/end', seq: 0, data: { reason: 'completed', usage: { inputTokens: 3, outputTokens: 4 } } })
+    // A v3 writer migrates a legacy input losslessly rather than rejecting it
+    // (the writer's v1/v2 write-compat); append returns the canonical NEUTRAL
+    // event (T6), and no legacy read view is materialized.
+    const stored = log.append({ type: 'turn/end', reason: 'completed', usage: { input_tokens: 3, output_tokens: 4 } })
+    expect(stored).toMatchObject({ type: 'turn/end', seq: 0, data: { reason: 'completed', usage: { inputTokens: 3, outputTokens: 4 } } })
+    expect(log.neutralEvents![0]).toEqual(stored)
     await log.flush()
     const snap = loadNativeSessionLogSync(stateDir, 's1')!
     expect(snap.header.v).toBe(3)
-    expect(snap.events[0]).toEqual(legacy)
+    expect(snap.neutralEvents![0]).toEqual(stored)
+    expect(snap.events).toEqual([])
     await log.close()
   })
 
@@ -967,7 +985,8 @@ describe('NativeSessionLog v3 (neutral writer)', () => {
     expect((await stat(path)).size).toBe(selectionStartSize)
     expect(log.neutralEvents!.map((e) => e.type)).toEqual(['user/message', 'user/message', 'turn/end'])
     expect(log.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2])
-    expect(log.events.map((e) => e.seq)).toEqual([0, 1, 2])
+    // T6: the v3 legacy read view is dropped; the neutral baseline owns seq.
+    expect(log.events).toEqual([])
     await log.flush()
     const snap = loadNativeSessionLogSync(stateDir, 's1')!
     expect(snap.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2])

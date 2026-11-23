@@ -13,7 +13,7 @@ import type { NativeAuxLlmPort } from './ports.js'
 import type { NativeMcpConnections, NativeMcpServerInstance } from './mcp/connections.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
-import { nativeSessionLogPath } from './session-log/paths.js'
+import { nativeSessionDir, nativeSessionLogPath } from './session-log/paths.js'
 import { historyFromEvents } from './session-log/replay.js'
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import type { ProviderSessionHandle } from '../types.js'
@@ -21,8 +21,13 @@ import { createToolResultMessage, createUserMessage } from './vocabulary/message
 import { brandString } from './vocabulary/brand.js'
 import { readNativeHistoryEntries } from './session-log/reader.js'
 import type { NativeEventInput, NativeFileAttachment, NativeLogEvent } from './session-log/format.js'
+import { projectNeutralEventToLegacy, serializeEvent, serializeHeader } from './session-log/format.js'
 import { migrateEventToV3 } from './session-log/migration.js'
+import { neutralEventsOf, neutralFileOccurrences } from './session-log/neutral-read.js'
 import type { NativeSessionEvent } from './vocabulary/session-event.js'
+import type { ContentBlock } from './vocabulary/types.js'
+import { buildCompactAttachmentContent } from '../../compact-attachments.js'
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { projectNativeHistoryToWire } from './wire/wire-projection.js'
 import { formatSupplementInstruction } from '../steering-format.js'
 import { AGENT_GUIDANCE } from './subagent.js'
@@ -458,6 +463,22 @@ function logOf(session: unknown): LogLike {
   return (coreOf(session) as { log: LogLike }).log
 }
 
+/** T6 read-side shrink: a v3 log no longer maintains a live legacy read view
+ *  (`log.events` is empty for v3). Legacy-shape assertions reconstruct that view
+ *  from the canonical NEUTRAL baseline through the pinned compat projection; a
+ *  v1/v2 log keeps its canonical legacy list. Accepts a live log, a snapshot, or
+ *  the loose LogLike view (all carry header.id / events / neutralEvents). */
+function legacyViewOf<L extends {
+  header: { id: string }
+  events: readonly unknown[]
+  neutralEvents?: readonly NativeSessionEvent[] | null
+}>(log: L): L['events'] {
+  if (log.neutralEvents) {
+    return log.neutralEvents.map((event) => projectNeutralEventToLegacy(event, log.header.id)) as unknown as L['events']
+  }
+  return log.events as unknown as L['events']
+}
+
 /** The canonical neutral events of a session's log (v3 baseline, or the
  *  lossless in-memory migration of the legacy read view). Neutral replay
  *  (historyFromEvents) consumes these directly (T13). */
@@ -515,7 +536,7 @@ async function nestedPermissionTrace(
 
 /** Text blocks carried by persisted user events, in order. */
 function userTextsOf(log: LogLike): string[] {
-  return log.events
+  return legacyViewOf(log)
     .filter((event) => event.type === 'user')
     .flatMap((event) => event.message?.content ?? [])
     .filter((block) => block.type === 'text' && typeof block.text === 'string')
@@ -762,10 +783,10 @@ describe('NativeSession', () => {
       forkSession: fork,
     })
     try {
-      const before = structuredClone(logOf(restored).events)
+      const before = structuredClone(legacyViewOf(logOf(restored)))
       const usage = (await restored.getContextUsage?.()) as NativeContextUsage
       expect(usage).toMatchObject({ model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 800_000 })
-      expect(logOf(restored).events).toEqual(before)
+      expect(legacyViewOf(logOf(restored))).toEqual(before)
       expect(resolve).toHaveBeenCalledWith(expect.objectContaining({
         model: 'model-a', providerId: 'default', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages',
       }))
@@ -1024,7 +1045,7 @@ describe('NativeSession', () => {
     expect(delivered).toEqual([{ uuid: 'sup-1', outcome: { ok: true, boundary: 'PreToolUse' } }])
     // Durable half: the log stores the WRAPPED text, and replay rebuilds it
     // at its position (after the tool_result, before the final assistant turn).
-    const supplementEvents = logOf(session).events.filter((e) => e.type === 'session/supplement')
+    const supplementEvents = legacyViewOf(logOf(session)).filter((e) => e.type === 'session/supplement')
     expect(supplementEvents).toEqual([
       expect.objectContaining({ type: 'session/supplement', uuid: 'sup-1', text: wrapped }),
     ])
@@ -1108,7 +1129,7 @@ describe('NativeSession', () => {
       { role: 'user', content: [{ type: 'text', text: wrappedB }] },
     ])
     // One durable event per supplement, each carrying its own wrapped text.
-    const events = logOf(session).events.filter((e) => e.type === 'session/supplement')
+    const events = legacyViewOf(logOf(session)).filter((e) => e.type === 'session/supplement')
     expect(events.map((e) => e.text)).toEqual([wrappedA, wrappedB])
     expect(delivered).toEqual(['sup-a', 'sup-b'])
     await session.destroy()
@@ -1138,7 +1159,7 @@ describe('NativeSession', () => {
     const originalFlush = log.flush.bind(log)
     let failed = false
     vi.spyOn(log, 'flush').mockImplementation(async () => {
-      if (!failed && log.events.some((e) => e.type === 'session/supplement')) {
+      if (!failed && legacyViewOf(log).some((e) => e.type === 'session/supplement')) {
         failed = true
         throw new Error('flush failed')
       }
@@ -1309,7 +1330,7 @@ describe('NativeSession', () => {
 
     session.enqueueUserMessage(userMsg('delegate') as never)
     await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
-    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
+    await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
 
     // ONE terminal frame for the whole turn — the nested run emits its own
     // result only if it were given emitResult, which the Agent tool never does.
@@ -1352,7 +1373,7 @@ describe('NativeSession', () => {
     expect(requests[0].system).toContain(AGENT_GUIDANCE)
 
     // Persistence: the durable identity is written before any sidechain frame.
-    const events = logOf(session).events
+    const events = legacyViewOf(logOf(session))
     const descriptor = events.find((event) => event.type === 'subagent/descriptor')
     expect(descriptor).toMatchObject({
       type: 'subagent/descriptor',
@@ -1432,7 +1453,7 @@ describe('NativeSession', () => {
         'Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'TaskOutput', 'Skill',
         'mcp__a__read', 'mcp__b__read',
       ])
-      expect(logOf(session).events.find((event) => event.type === 'subagent/descriptor'))
+      expect(legacyViewOf(logOf(session)).find((event) => event.type === 'subagent/descriptor'))
         .toMatchObject({
           toolName: 'Agent',
           profile: {
@@ -1469,7 +1490,7 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
 
       expect(requests).toHaveLength(2)
-      expect(logOf(session).events.some((event) => event.type === 'subagent/descriptor')).toBe(false)
+      expect(legacyViewOf(logOf(session)).some((event) => event.type === 'subagent/descriptor')).toBe(false)
       expect(frames.some((frame) => frame.parent_tool_use_id === 'agent-denied')).toBe(false)
     } finally {
       await session.destroy()
@@ -1505,7 +1526,7 @@ describe('NativeSession', () => {
       expect(requests[0].system).toContain('REVIEW-PROMPT')
       expect(requests[0].system).toContain('- demo: demo description')
       expect(requests[0].system).not.toContain('- other')
-      const skillResult = logOf(session).events.find((event) =>
+      const skillResult = legacyViewOf(logOf(session)).find((event) =>
         event.type === 'user' && event.parent_tool_use_id === 'tu-parent')
       expect(skillResult?.message?.content?.[0]).toMatchObject({
         type: 'tool_result',
@@ -1675,7 +1696,7 @@ describe('NativeSession', () => {
     try {
       session.enqueueUserMessage(userMsg('delegate') as never)
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
-      await vi.waitFor(() => expect(logOf(session).events.some((event) => event.type === 'turn/end')).toBe(true))
+      await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((event) => event.type === 'turn/end')).toBe(true))
 
       const parentResult = frames.find((frame) => frame.type === 'user'
         && frame.parent_tool_use_id == null
@@ -1689,7 +1710,7 @@ describe('NativeSession', () => {
       expect(JSON.stringify(parentResult)).toContain('PARTIAL-REPORT')
       expect(permissionIds).toEqual(['agent-1'])
 
-      const sidechain = logOf(session).events.filter((event) => event.parent_tool_use_id === 'agent-1')
+      const sidechain = legacyViewOf(logOf(session)).filter((event) => event.parent_tool_use_id === 'agent-1')
       const assistantCall = sidechain.find((event) => event.type === 'assistant')
       const syntheticResult = sidechain.find((event) => event.type === 'user')
       expect(assistantCall?.message?.content?.[1]).toMatchObject({ type: 'tool_use', id: 'nested-read' })
@@ -1754,7 +1775,7 @@ describe('NativeSession', () => {
     let selectionDurableAtRequest = false
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: CapturedRequest) {
       requests.push(structuredClone(req))
-      selectionDurableAtRequest = loadNativeSessionLogSync(dir, 'preset')!.events
+      selectionDurableAtRequest = legacyViewOf(loadNativeSessionLogSync(dir, 'preset')!)
         .some((event) => event.type === 'session/agent')
       for (const ev of textTurn('done')) yield ev
     }
@@ -1773,7 +1794,7 @@ describe('NativeSession', () => {
         },
       },
     })
-    expect(loadNativeSessionLogSync(dir, 'preset')!.events.some(
+    expect(legacyViewOf(loadNativeSessionLogSync(dir, 'preset')!).some(
       (event) => event.type === 'session/agent' && event.name === 'reviewer',
     )).toBe(true)
     const frames: Frame[] = []
@@ -1798,7 +1819,7 @@ describe('NativeSession', () => {
     expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read', 'Skill'])
     expect(selectionDurableAtRequest).toBe(true)
 
-    const events = logOf(session).events
+    const events = legacyViewOf(logOf(session))
     const selectionIndex = events.findIndex((event) => event.type === 'session/agent')
     const userIndex = events.findIndex((event) => event.type === 'user')
     expect(selectionIndex).toBeGreaterThanOrEqual(0)
@@ -1833,7 +1854,7 @@ describe('NativeSession', () => {
         firstStarted.resolve()
         await releaseFirst.promise
       } else if (requests.length === 2) {
-        const selections = loadNativeSessionLogSync(dir, 'preset-switch')!.events
+        const selections = legacyViewOf(loadNativeSessionLogSync(dir, 'preset-switch')!)
           .filter((event) => event.type === 'session/agent')
         selectionDurableAtSecondRequest = selections.at(-1)?.name === 'reviewer'
       }
@@ -1912,10 +1933,10 @@ describe('NativeSession', () => {
       expect(requests[0].system).toContain('- demo: demo description')
       expect(requests[0].system).toContain('- other: other description')
       expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Bash', 'Read', 'Skill'])
-      expect(logOf(session).events.at(-1)).toMatchObject({
+      expect(legacyViewOf(logOf(session)).at(-1)).toMatchObject({
         type: 'turn/end',
       })
-      const selections = logOf(session).events.filter((event) => event.type === 'session/agent')
+      const selections = legacyViewOf(logOf(session)).filter((event) => event.type === 'session/agent')
       expect(selections.at(-1)).toMatchObject({
         name: null,
         base: {
@@ -1956,7 +1977,7 @@ describe('NativeSession', () => {
       effortLevel: 'xhigh',
       agent: 'reviewer',
     })
-    expect(logOf(original).events.filter((event) => event.type === 'session/agent')).toHaveLength(4)
+    expect(legacyViewOf(logOf(original)).filter((event) => event.type === 'session/agent')).toHaveLength(4)
     await original.destroy()
 
     const resumed = provider.createSession({ id: 'preset-latest-base', cwd: dir, resume: 'preset-latest-base' })
@@ -1974,7 +1995,7 @@ describe('NativeSession', () => {
         effortLevel: 'low',
         agent: null,
       })
-      const selections = logOf(resumed).events.filter((event) => event.type === 'session/agent')
+      const selections = legacyViewOf(logOf(resumed)).filter((event) => event.type === 'session/agent')
       expect(selections.at(-1)).toMatchObject({
         name: null,
         base: { model: 'base-new', permissionMode: 'acceptEdits', effortLevel: 'low' },
@@ -2006,7 +2027,7 @@ describe('NativeSession', () => {
         effortLevel: 'low',
         agent: 'reviewer',
       })
-      expect(logOf(session).events.filter((event) => event.type === 'session/agent')).toHaveLength(4)
+      expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'session/agent')).toHaveLength(4)
     } finally {
       await session.destroy()
     }
@@ -2029,7 +2050,7 @@ describe('NativeSession', () => {
         .rejects.toThrow(/background/)
       expect(effectiveSettingsOf(session)).toEqual(before)
       expect((coreOf(session) as unknown as { fastMode: boolean }).fastMode).toBe(false)
-      expect(logOf(session).events.some((event) => event.type === 'session/agent')).toBe(false)
+      expect(legacyViewOf(logOf(session)).some((event) => event.type === 'session/agent')).toBe(false)
     } finally {
       await session.destroy()
     }
@@ -2057,7 +2078,7 @@ describe('NativeSession', () => {
       expect(effectiveSettingsOf(session)).toEqual(before)
       await expect(session.applyFlagSettings?.({ effortLevel: 'low' })).rejects.toThrow('durable write failed')
       expect(effectiveSettingsOf(session)).toEqual(before)
-      expect(log.events.filter((event) => event.type === 'session/agent')).toHaveLength(1)
+      expect(legacyViewOf(log).filter((event) => event.type === 'session/agent')).toHaveLength(1)
     } finally {
       ;(log as unknown as { appendDurable?: unknown }).appendDurable = original
       await session.destroy()
@@ -2097,7 +2118,7 @@ describe('NativeSession', () => {
       effortLevel: 'medium',
       agent: null,
     })
-    expect(logOf(session).events.some((event) => event.type === 'session/agent')).toBe(false)
+    expect(legacyViewOf(logOf(session)).some((event) => event.type === 'session/agent')).toBe(false)
     await session.destroy()
   })
 
@@ -2273,7 +2294,7 @@ describe('NativeSession', () => {
       expect(effectiveSettingsOf(forked)).toEqual({
         model: 'base-model', permissionMode: 'default', effortLevel: 'high', agent: null,
       })
-      const selections = logOf(forked).events.filter((event) => event.type === 'session/agent')
+      const selections = legacyViewOf(logOf(forked)).filter((event) => event.type === 'session/agent')
       expect(selections).toHaveLength(1)
       expect(selections[0]).toMatchObject({
         name: null,
@@ -2284,6 +2305,68 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
       expect(requests[0].model).toBe('base-model')
       expect(requests[0].system).not.toContain('LATER-PERSONA')
+    } finally {
+      await forked.destroy()
+    }
+  })
+
+  it('seeds the pre-persona clear into a v2-source fork child as a neutral v3 seed', async () => {
+    const dir = await tempDir('native-preset-fork-legacy-clear-')
+    const definition = agentDefinition({ prompt: 'LATER-PERSONA', model: 'persona-model', tools: ['Bash'] })
+    // A real v2 source log: the cut precedes the first selection, so the fork
+    // must seed an explicit clear. The fork migrates the source to neutral in
+    // memory and writes a neutral v3 child — the clear rides the neutral
+    // envelope, and the source's later persona never leaks in.
+    const events: NativeLogEvent[] = [
+      { seq: 0, type: 'session/context', text: 'ctx' },
+      {
+        seq: 1, type: 'assistant', uuid: 'legacy-cut', session_id: 'legacy-clear-source',
+        parent_tool_use_id: null, timestamp: '2026-11-11T00:00:00.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'plain cut' }] },
+      },
+      {
+        seq: 2, type: 'session/agent', name: 'reviewer', definition,
+        base: { model: 'base-model', permissionMode: 'default', effortLevel: 'high' },
+        timestamp: '2026-11-11T00:00:01.000Z',
+      },
+    ]
+    const header = {
+      type: 'session/header' as const, v: 2, id: 'legacy-clear-source', cwd: dir,
+      createdAt: Date.now(), isSeeded: false, inheritedEventCount: 0,
+    }
+    await mkdir(nativeSessionDir(dir, 'legacy-clear-source'), { recursive: true })
+    await writeFile(
+      nativeSessionLogPath(dir, 'legacy-clear-source'),
+      serializeHeader(header) + '\n' + events.map((event) => serializeEvent(event) + '\n').join(''),
+      'utf8',
+    )
+
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
+    const forked = provider.createSession({
+      id: 'legacy-clear-child',
+      cwd: dir,
+      resume: 'legacy-clear-source',
+      forkSession: true,
+      resumeSessionAt: 'legacy-cut',
+      agent: 'reviewer',
+      model: 'fork-option-model',
+    })
+    try {
+      expect(effectiveSettingsOf(forked)).toEqual({
+        model: 'base-model', permissionMode: 'default', effortLevel: 'high', agent: null,
+      })
+      // The v2 source is migrated to a neutral v3 child carrying exactly the
+      // seeded clear (the source's later persona never leaks in).
+      const child = loadNativeSessionLogSync(dir, 'legacy-clear-child')!
+      expect(child.header.v).toBe(3)
+      const selections = child.neutralEvents!.filter(
+        (event): event is Extract<NativeSessionEvent, { type: 'session/agent' }> => event.type === 'session/agent',
+      )
+      expect(selections).toHaveLength(1)
+      expect(selections[0].data).toMatchObject({
+        name: null,
+        base: { model: 'base-model', permissionMode: 'default', effortLevel: 'high' },
+      })
     } finally {
       await forked.destroy()
     }
@@ -2330,7 +2413,7 @@ describe('NativeSession', () => {
         effortLevel: 'xhigh',
         agent: 'reviewer',
       })
-      const selections = (logOf(session).events as NativeLogEvent[])
+      const selections = (legacyViewOf(logOf(session)) as NativeLogEvent[])
         .filter((event) => event.type === 'session/agent')
       expect(selections).toHaveLength(1)
       expect(selections[0]).toMatchObject({
@@ -2400,7 +2483,7 @@ describe('NativeSession', () => {
         effortLevel: 'high',
         agent: null,
       })
-      const selections = (logOf(session).events as NativeLogEvent[])
+      const selections = (legacyViewOf(logOf(session)) as NativeLogEvent[])
         .filter((event) => event.type === 'session/agent')
       expect(selections).toHaveLength(1)
       expect(selections[0]).toMatchObject({
@@ -2444,7 +2527,7 @@ describe('NativeSession', () => {
     try {
       await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0))
       expect(effectiveSettingsOf(resumed)).toMatchObject({ model: 'snapshot-model', agent: 'reviewer' })
-      const selections = (logOf(resumed).events as NativeLogEvent[])
+      const selections = (legacyViewOf(logOf(resumed)) as NativeLogEvent[])
         .filter((event) => event.type === 'session/agent')
       expect(selections).toHaveLength(1)
       expect(selections[0]).toMatchObject({ name: 'reviewer', definition: { prompt: 'SNAPSHOT-PERSONA' } })
@@ -2460,7 +2543,7 @@ describe('NativeSession', () => {
     const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       // The first round is capped; the second ends naturally at the same cap.
-      const script = logOf(currentSession).events.some((event) => event.type === 'turn/end')
+      const script = legacyViewOf(logOf(currentSession)).some((event) => event.type === 'turn/end')
         ? textTurn('done')
         : toolTurn('capped-read')
       for (const ev of script) yield ev
@@ -2470,15 +2553,15 @@ describe('NativeSession', () => {
     void (async () => { for await (const frame of currentSession.messages) frames.push(frame as Frame) })()
 
     currentSession.enqueueUserMessage(userMsg('first') as never)
-    await vi.waitFor(() => expect(logOf(currentSession).events.some(
+    await vi.waitFor(() => expect(legacyViewOf(logOf(currentSession)).some(
       (event) => event.type === 'turn/end' && event.reason === 'error',
     )).toBe(true))
     currentSession.enqueueUserMessage(userMsg('second') as never)
-    await vi.waitFor(() => expect(logOf(currentSession).events.filter(
+    await vi.waitFor(() => expect(legacyViewOf(logOf(currentSession)).filter(
       (event) => event.type === 'turn/end',
     )).toHaveLength(2))
 
-    expect(logOf(currentSession).events.filter((event) => event.type === 'turn/end').map((event) => event.reason))
+    expect(legacyViewOf(logOf(currentSession)).filter((event) => event.type === 'turn/end').map((event) => event.reason))
       .toEqual(['error', 'completed'])
     const results = frames.filter((frame) => frame.type === 'result')
     expect(results).toHaveLength(2)
@@ -3031,7 +3114,7 @@ describe('NativeSession', () => {
         { name: 'demo', description: 'demo description', argumentHint: '' },
       ])
       session.enqueueUserMessage(userMsg('/demo do this') as never)
-      await vi.waitFor(() => expect(logOf(session).events.some((event) => event.type === 'session/skill')).toBe(true))
+      await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((event) => event.type === 'session/skill')).toBe(true))
       await session.applyFlagSettings?.({ agent: 'second' })
       expect(effectiveSettingsOf(session)).toMatchObject({ model: 'second-model', agent: 'second' })
       mcpGate.resolve()
@@ -3075,14 +3158,14 @@ describe('NativeSession', () => {
     try {
       await session.supportedCommands?.()
       session.enqueueUserMessage(userMsg('/demo do this') as never)
-      await vi.waitFor(() => expect(logOf(session).events.some((event) => event.type === 'session/skill')).toBe(true))
+      await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((event) => event.type === 'session/skill')).toBe(true))
       await writeProjectSkill(dir, 'demo', { body: '# demo v2', description: 'demo v2' })
       await session.reloadSkills?.()
       mcpGate.resolve()
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
 
       const v1 = canonicalSkillBody(dir, 'demo', '# demo v1')
-      expect(logOf(session).events.find((event) => event.type === 'session/skill')).toMatchObject({ body: v1 })
+      expect(legacyViewOf(logOf(session)).find((event) => event.type === 'session/skill')).toMatchObject({ body: v1 })
       expect(requests[0].system).toContain('- demo: demo v1')
       expect(requests[0].system).not.toContain('demo v2')
       expect(requests[0].messages.slice(-2)).toEqual([
@@ -3120,7 +3203,7 @@ describe('NativeSession', () => {
     // body. Disk stores the same pair as raw user + history-only session/skill.
     expect(requests[0].messages.slice(-2)).toEqual([raw, instruction])
     expect(userTexts(session)).toEqual(['/demo do this'])
-    expect(logOf(session).events.filter((event) => event.type === 'session/skill')).toEqual([
+    expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'session/skill')).toEqual([
       expect.objectContaining({ type: 'session/skill', name: 'demo', body: expected }),
     ])
     expect(expected).not.toContain('do this')
@@ -3129,7 +3212,7 @@ describe('NativeSession', () => {
     // A later file edit and catalog reload cannot rewrite the captured turn.
     await writeProjectSkill(dir, 'demo', { body: '# demo replacement' })
     await session.reloadSkills?.()
-    expect(logOf(session).events.find((event) => event.type === 'session/skill')).toMatchObject({ body: expected })
+    expect(legacyViewOf(logOf(session)).find((event) => event.type === 'session/skill')).toMatchObject({ body: expected })
     // The queued message is never mutated: the manager's ring and broadcast
     // keep the `/name args` text the user typed.
     expect(queued.message.content).toEqual([{ type: 'text', text: '/demo do this' }])
@@ -3160,7 +3243,7 @@ describe('NativeSession', () => {
       expect(instruction.content[0].text).toBe(canonicalSkillBody(dir, 'demo', '# demo body'))
       expect(JSON.stringify(requests[0].messages)).not.toContain('"type":"file"')
       expect(queued.message.content[0]).toMatchObject({ type: 'file' })
-      expect(logOf(session).events.filter((event) => event.type === 'user' || event.type === 'session/skill')).toEqual([
+      expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'user' || event.type === 'session/skill')).toEqual([
         expect.objectContaining({ type: 'user', uuid: 'file-skill-user' }),
         expect.objectContaining({ type: 'session/skill', name: 'demo' }),
       ])
@@ -3247,6 +3330,49 @@ describe('NativeSession', () => {
 
     expect(session.getSkillCompactionEntries?.()).toEqual([])
     await session.destroy()
+  })
+
+  it('getSkillCompactionEntries on a neutral log reproduces the legacy pairs (behavior pin)', async () => {
+    const dir = await tempDir('native-skill-neutral-pin-')
+    const timestamp = '2026-01-01T00:00:00.000Z'
+    const seed = NativeSessionLog.open({ stateDir: dir, id: 'skill-pin', cwd: dir, resume: false })
+    seed.append({ type: 'session/context', text: 'ctx' })
+    seed.append({ type: 'user', uuid: 'raw-1', session_id: 'skill-pin', parent_tool_use_id: null, timestamp, message: { role: 'user', content: [{ type: 'text', text: '/demo one' }] } })
+    seed.append({ type: 'session/skill', name: 'demo', body: 'BODY-ONE', timestamp })
+    seed.append({ type: 'assistant', uuid: 'a1', session_id: 'skill-pin', parent_tool_use_id: null, timestamp, message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } })
+    seed.append({ type: 'user', uuid: 'raw-2', session_id: 'skill-pin', parent_tool_use_id: null, timestamp, message: { role: 'user', content: [{ type: 'text', text: '/demo two' }] } })
+    seed.append({ type: 'session/skill', name: 'demo', body: 'BODY-TWO', timestamp })
+    // Sidechain user + skill: never a main-thread compaction pair.
+    seed.append({ type: 'user', uuid: 'side-1', session_id: 'skill-pin', parent_tool_use_id: 'agent-1', timestamp, message: { role: 'user', content: [{ type: 'text', text: '/demo nested' }] } })
+    seed.append({ type: 'session/skill', name: 'demo', body: 'SIDE-BODY', timestamp })
+    // Non-adjacent skill: the turn boundary breaks the pairing.
+    seed.append({ type: 'user', uuid: 'raw-3', session_id: 'skill-pin', parent_tool_use_id: null, timestamp, message: { role: 'user', content: [{ type: 'text', text: '/demo unpaired' }] } })
+    seed.append({ type: 'turn/end', reason: 'interrupted' })
+    seed.append({ type: 'session/skill', name: 'demo', body: 'UNPAIRED-BODY', timestamp })
+    await seed.flush(); await seed.close()
+
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const resumed = provider.createSession({ id: 'skill-pin', cwd: dir, resume: 'skill-pin' })
+    const entries = (coreOf(resumed) as unknown as {
+      getSkillCompactionEntries(): readonly { afterUserUuid: string; body: string }[]
+    }).getSkillCompactionEntries()
+
+    // The legacy reference scan over the log's legacy read view.
+    const legacy = legacyViewOf(loadNativeSessionLogSync(dir, 'skill-pin')!)
+    const expected: Array<{ afterUserUuid: string; body: string }> = []
+    for (let index = 0; index < legacy.length - 1; index++) {
+      const user = legacy[index]
+      const skill = legacy[index + 1]
+      if (user.type === 'user' && user.parent_tool_use_id === null && skill.type === 'session/skill') {
+        expected.push({ afterUserUuid: user.uuid, body: skill.body })
+      }
+    }
+    expect(entries).toEqual(expected)
+    expect(entries).toEqual([
+      { afterUserUuid: 'raw-1', body: 'BODY-ONE' },
+      { afterUserUuid: 'raw-2', body: 'BODY-TWO' },
+    ])
+    await resumed.destroy()
   })
 
   it('persists the consumed prompt when skill discovery fails, then replays it exactly once', async () => {
@@ -3386,7 +3512,7 @@ describe('NativeSession', () => {
     const raw = [{ type: 'text', text: '/demo look' }, image]
     // The raw user event and request keep the image block untouched; the
     // canonical body is a separate text-only instruction immediately after it.
-    expect(logOf(session).events.find((e) => e.type === 'user')?.message?.content).toEqual(raw)
+    expect(legacyViewOf(logOf(session)).find((e) => e.type === 'user')?.message?.content).toEqual(raw)
     expect(requests[0].messages.slice(-2)).toEqual([
       { role: 'user', content: raw },
       { role: 'user', content: [{ type: 'text', text: body }] },
@@ -3444,7 +3570,7 @@ describe('NativeSession', () => {
     ])
     // The log normalizes the raw user event to blocks (the parser rejects a
     // bare string).
-    expect(logOf(session).events.find((e) => e.type === 'user')?.message?.content)
+    expect(legacyViewOf(logOf(session)).find((e) => e.type === 'user')?.message?.content)
       .toEqual([{ type: 'text', text: '/demo from string' }])
     await session.destroy()
   })
@@ -3705,7 +3831,7 @@ describe('NativeSession', () => {
     first.enqueueUserMessage(userMsg('hi') as never)
     await vi.waitFor(() => {
       const log = logOf(first)
-      expect(log.events.some((e) => e.type === 'turn/end')).toBe(true)
+      expect(legacyViewOf(log).some((e) => e.type === 'turn/end')).toBe(true)
     })
     await first.destroy()
 
@@ -3728,8 +3854,8 @@ describe('NativeSession', () => {
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
     session.enqueueUserMessage(stringUserMsg('hello string') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'first')).toBe(true))
-    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
-    const persisted = logOf(session).events.find((e) => e.type === 'user')
+    await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
+    const persisted = legacyViewOf(logOf(session)).find((e) => e.type === 'user')
     expect(persisted?.message?.content).toEqual([{ type: 'text', text: 'hello string' }])
     await session.destroy()
 
@@ -3798,6 +3924,179 @@ describe('NativeSession', () => {
     await resumed.destroy()
   })
 
+  // ── Neutral usage-restore behavior pins (read-view neutralization T2) ─────
+  // The reference fold below is the PRE-neutralization restoreUsage algorithm
+  // over the LEGACY read view; the neutral read must reproduce it exactly.
+
+  type UsageShape = {
+    input_tokens: number
+    output_tokens: number
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
+  }
+
+  function legacyUsageRead(
+    events: readonly NativeLogEvent[],
+    fallbackModel: string,
+  ): { lastUsage: UsageShape; byModel: Map<string, UsageShape> } {
+    const narrow = (value: unknown): UsageShape | null => {
+      if (typeof value !== 'object' || value === null) return null
+      const usage = value as Record<string, unknown>
+      if (typeof usage.input_tokens !== 'number' || typeof usage.output_tokens !== 'number') return null
+      return {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        ...(typeof usage.cache_read_input_tokens === 'number' ? { cache_read_input_tokens: usage.cache_read_input_tokens } : {}),
+        ...(typeof usage.cache_creation_input_tokens === 'number' ? { cache_creation_input_tokens: usage.cache_creation_input_tokens } : {}),
+      }
+    }
+    const add = (a: UsageShape, b: UsageShape): UsageShape => {
+      const cacheRead = (a.cache_read_input_tokens ?? 0) + (b.cache_read_input_tokens ?? 0)
+      const cacheCreate = (a.cache_creation_input_tokens ?? 0) + (b.cache_creation_input_tokens ?? 0)
+      return {
+        input_tokens: a.input_tokens + b.input_tokens,
+        output_tokens: a.output_tokens + b.output_tokens,
+        ...(cacheRead !== 0 ? { cache_read_input_tokens: cacheRead } : {}),
+        ...(cacheCreate !== 0 ? { cache_creation_input_tokens: cacheCreate } : {}),
+      }
+    }
+    let lastAssistant: UsageShape | null = null
+    let lastEnd: UsageShape | null = null
+    const byModel = new Map<string, UsageShape>()
+    for (const event of events) {
+      if (event.type === 'session/compact') {
+        lastAssistant = null
+        lastEnd = null
+        continue
+      }
+      if (event.type === 'assistant') {
+        const usage = narrow(event.message.usage)
+        if (usage) {
+          if (event.parent_tool_use_id == null) lastAssistant = usage
+          const model = typeof event.message.model === 'string' && event.message.model
+            ? event.message.model
+            : fallbackModel
+          byModel.set(model, add(byModel.get(model) ?? { input_tokens: 0, output_tokens: 0 }, usage))
+        }
+        continue
+      }
+      if (event.type === 'turn/end' && event.usage) {
+        lastEnd = { input_tokens: event.usage.input_tokens, output_tokens: event.usage.output_tokens }
+      }
+    }
+    return { lastUsage: lastAssistant ?? lastEnd ?? { input_tokens: 0, output_tokens: 0 }, byModel }
+  }
+
+  /** Representative usage log: main + sidechain + model-less assistant rounds,
+   *  a compact boundary, and a final usage-bearing turn/end with cache buckets
+   *  (the legacy fallback reads only the counter pair). */
+  function usageFixture(sid: string): NativeEventInput[] {
+    const timestamp = '2026-11-09T00:00:00.000Z'
+    const user = (uuid: string, text: string): NativeEventInput => ({
+      type: 'user', uuid, session_id: sid, parent_tool_use_id: null, timestamp,
+      message: { role: 'user', content: [{ type: 'text', text }] },
+    })
+    const assistant = (
+      uuid: string,
+      parent: string | null,
+      model: string | undefined,
+      usage: Record<string, number>,
+    ): NativeEventInput => ({
+      type: 'assistant', uuid, session_id: sid, parent_tool_use_id: parent, timestamp,
+      message: {
+        role: 'assistant', content: [{ type: 'text', text: uuid }],
+        ...(model !== undefined ? { model } : {}), usage,
+      },
+    })
+    return [
+      { type: 'session/context', text: 'ctx' },
+      user('u1', 'hi'),
+      assistant('a1', null, 'model-a', { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 100, cache_creation_input_tokens: 20 }),
+      assistant('a-side', 'agent1', 'model-b', { input_tokens: 40, output_tokens: 9 }),
+      assistant('a-nomodel', null, undefined, { input_tokens: 1, output_tokens: 1 }),
+      { type: 'turn/end', reason: 'completed', usage: { input_tokens: 48, output_tokens: 13 } },
+      { type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp },
+      user('u2', 'after compact'),
+      assistant('a2', null, 'model-a', { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 30 }),
+      { type: 'turn/end', reason: 'completed', usage: { input_tokens: 99, output_tokens: 7, cache_read_input_tokens: 500 } },
+    ]
+  }
+
+  function expectUsageMatchesReference(
+    session: unknown,
+    reference: { lastUsage: UsageShape; byModel: Map<string, UsageShape> },
+  ): void {
+    const internals = coreOf(session) as unknown as { lastUsage: UsageShape; usageByModel: Map<string, UsageShape> }
+    expect(internals.lastUsage).toEqual(reference.lastUsage)
+    expect(Object.fromEntries(internals.usageByModel)).toEqual(Object.fromEntries(reference.byModel))
+  }
+
+  it('restoreUsage on a neutral v3 log reproduces the legacy read (behavior pin)', async () => {
+    const dir = await tempDir('native-usage-neutral-pin-')
+    const seed = NativeSessionLog.open({ stateDir: dir, id: 'usage-pin', cwd: dir, resume: false })
+    for (const event of usageFixture('usage-pin')) seed.append(event)
+    await seed.flush(); await seed.close()
+
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const resumed = provider.createSession({ id: 'usage-pin', cwd: dir, resume: 'usage-pin', model: 'fallback-model' })
+    const reference = legacyUsageRead(legacyViewOf(loadNativeSessionLogSync(dir, 'usage-pin')!), 'fallback-model')
+    expectUsageMatchesReference(resumed, reference)
+    // Explicit values anchor the reference itself: the last MAIN assistant wins
+    // (cache buckets carried), billing sums every round per model, and the
+    // model-less round bills to the session model.
+    const internals = coreOf(resumed) as unknown as { lastUsage: UsageShape; usageByModel: Map<string, UsageShape> }
+    expect(internals.lastUsage).toEqual({ input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 30 })
+    expect(Object.fromEntries(internals.usageByModel)).toEqual({
+      'model-a': { input_tokens: 12, output_tokens: 5, cache_read_input_tokens: 130, cache_creation_input_tokens: 20 },
+      'model-b': { input_tokens: 40, output_tokens: 9 },
+      'fallback-model': { input_tokens: 1, output_tokens: 1 },
+    })
+    expect((await resumed.getContextUsage?.()) as { totalTokens: number }).toMatchObject({ totalTokens: 35 })
+    await resumed.destroy()
+  })
+
+  it('restoreUsage on an unmigrated v2 log reproduces the legacy read via the neutral fallback', async () => {
+    const dir = await tempDir('native-usage-v2-pin-')
+    const events = usageFixture('usage-v2-pin').map((event, seq) => ({ ...event, seq })) as NativeLogEvent[]
+    const header = {
+      type: 'session/header' as const, v: 2, id: 'usage-v2-pin', cwd: dir,
+      createdAt: Date.now(), isSeeded: false, inheritedEventCount: 0,
+    }
+    await mkdir(nativeSessionDir(dir, 'usage-v2-pin'), { recursive: true })
+    await writeFile(
+      nativeSessionLogPath(dir, 'usage-v2-pin'),
+      serializeHeader(header) + '\n' + events.map((event) => serializeEvent(event) + '\n').join(''),
+      'utf8',
+    )
+
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    // At open the v2 writer has no neutral baseline yet (eager migration is
+    // async), so the read takes the neutralEventsOf migration fallback.
+    const resumed = provider.createSession({ id: 'usage-v2-pin', cwd: dir, resume: 'usage-v2-pin', model: 'fallback-model' })
+    expectUsageMatchesReference(resumed, legacyUsageRead(events, 'fallback-model'))
+    await resumed.destroy()
+  })
+
+  it('restoreUsage falls back to the turn/end counter pair after a compact with no later assistant', async () => {
+    const dir = await tempDir('native-usage-end-fallback-')
+    const timestamp = '2026-11-09T00:00:00.000Z'
+    const seed = NativeSessionLog.open({ stateDir: dir, id: 'end-fallback', cwd: dir, resume: false })
+    seed.append({ type: 'session/context', text: 'ctx' })
+    seed.append({ type: 'user', uuid: 'u', session_id: 'end-fallback', parent_tool_use_id: null, timestamp, message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } })
+    seed.append({ type: 'assistant', uuid: 'a', session_id: 'end-fallback', parent_tool_use_id: null, timestamp, message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 7, output_tokens: 3 } } })
+    seed.append({ type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c', timestamp })
+    // Cache buckets on a turn/end are ignored by the fallback (counter pair only).
+    seed.append({ type: 'turn/end', reason: 'completed', usage: { input_tokens: 99, output_tokens: 7, cache_read_input_tokens: 500 } })
+    await seed.flush(); await seed.close()
+
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const resumed = provider.createSession({ id: 'end-fallback', cwd: dir, resume: 'end-fallback', model: 'fallback-model' })
+    expectUsageMatchesReference(resumed, legacyUsageRead(legacyViewOf(loadNativeSessionLogSync(dir, 'end-fallback')!), 'fallback-model'))
+    const internals = coreOf(resumed) as unknown as { lastUsage: UsageShape }
+    expect(internals.lastUsage).toEqual({ input_tokens: 99, output_tokens: 7 })
+    await resumed.destroy()
+  })
+
   it('persists a live sidechain tool result with its real parent', async () => {
     const dir = await tempDir('native-side-persist-')
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
@@ -3813,10 +4112,10 @@ describe('NativeSession', () => {
     await internals.log.flush()
     const eventOf = (events: Array<{ type: string }>) =>
       events.find((e) => (e as { uuid?: string }).uuid === 'side-result') as { parent_tool_use_id?: string } | undefined
-    expect(eventOf(logOf(session).events)).toMatchObject({ type: 'user', parent_tool_use_id: 'tu-agent' })
+    expect(eventOf(legacyViewOf(logOf(session)))).toMatchObject({ type: 'user', parent_tool_use_id: 'tu-agent' })
     await session.destroy()
     // Durable too, not just in memory.
-    expect(eventOf(loadNativeSessionLogSync(dir, 'side-persist')!.events)?.parent_tool_use_id).toBe('tu-agent')
+    expect(eventOf(legacyViewOf(loadNativeSessionLogSync(dir, 'side-persist')!))?.parent_tool_use_id).toBe('tu-agent')
   })
 
   it('writes the fresh session context synchronously at open', async () => {
@@ -3845,7 +4144,7 @@ describe('NativeSession', () => {
     const internals = coreOf(session) as unknown as {
       pumpLoop: () => Promise<void>
       pumping: boolean
-      log: { flush: () => Promise<void>; events: LogEventLike[] }
+      log: { flush: () => Promise<void>; header: { id: string }; events: LogEventLike[]; neutralEvents: NativeSessionEvent[] | null }
     }
     // `enqueueUserMessage` discards the pump promise; capture it so the test
     // can assert the pump resolves instead of rejecting on a write failure.
@@ -3871,7 +4170,7 @@ describe('NativeSession', () => {
     await expect(pumpPromise!).resolves.toBeUndefined()
     await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
     expect((frames.find((f) => f.type === 'result') as Frame).result).toBe('disk full')
-    expect(internals.log.events.filter((e) => e.type === 'turn/end')).toHaveLength(1)
+    expect(legacyViewOf(internals.log).filter((e) => e.type === 'turn/end')).toHaveLength(1)
     expect(requests).toEqual([])
     await vi.waitFor(() => expect(internals.pumping).toBe(false))
 
@@ -4058,10 +4357,10 @@ describe('NativeSession', () => {
     // must answer it in BOTH the live history and the log so a later restart
     // does not append the result after the next turn.
     expect(JSON.stringify(internals.history)).toContain('tool result missing')
-    expect(JSON.stringify(logOf(session).events)).toContain('tool result missing')
+    expect(JSON.stringify(legacyViewOf(logOf(session)))).toContain('tool result missing')
     // The live stream must carry the same synthetic result the disk replay
     // will show, with the SAME uuid (no duplicate repair bubble on restart).
-    const syntheticEvent = logOf(session).events.find((e) => JSON.stringify(e).includes('tool result missing')) as unknown as { uuid: string }
+    const syntheticEvent = legacyViewOf(logOf(session)).find((e) => JSON.stringify(e).includes('tool result missing')) as unknown as { uuid: string }
     const syntheticFrame = frames.find((f) => f.type === 'user' && JSON.stringify(f).includes('tool result missing'))!
     expect(syntheticFrame.uuid).toBe(syntheticEvent.uuid)
     await session.destroy()
@@ -4091,7 +4390,7 @@ describe('NativeSession', () => {
       expect((coreOf(session) as unknown as { turnAbort: unknown }).turnAbort).not.toBeNull()
     })
     await session.interrupt?.({ cancelQueued: true })
-    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
+    await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
     expect(userTexts(session)).toEqual(['first'])
     expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
     await session.destroy()
@@ -4131,7 +4430,7 @@ describe('NativeSession', () => {
       expect(consumed).toEqual([])
       expect(requests).toEqual([])
       expect(JSON.stringify((coreOf(session) as unknown as { history: unknown[] }).history)).not.toContain('upload-1')
-      expect(logOf(session).events.some((event) => event.type === 'user')).toBe(false)
+      expect(legacyViewOf(logOf(session)).some((event) => event.type === 'user')).toBe(false)
       // The parked head keeps its arrival entry across the durable retry (the
       // retry re-reads it for the durable timestamp).
       const receivedAt = (coreOf(session) as unknown as { receivedAt: Map<string, number> }).receivedAt
@@ -4143,7 +4442,7 @@ describe('NativeSession', () => {
       expect(requests).toHaveLength(2)
       expect(JSON.stringify(requests[0].messages)).toContain('Upload id: upload-1')
       expect(JSON.stringify(requests[0].messages)).not.toContain('later input')
-      expect(logOf(session).events.filter((event) => event.type === 'user').map((event) =>
+      expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'user').map((event) =>
         (event as unknown as { uuid: string }).uuid)).toEqual(['first-attachment', 'later'])
       // Consumption is terminal for the arrival entry: the strong Map must not
       // retain one uuid→timestamp per consumed turn for the session lifetime.
@@ -4195,7 +4494,7 @@ describe('NativeSession', () => {
       expect(JSON.stringify(requests[0].messages)).toContain('Upload id: upload-1')
       expect(sentUserContent(requests[1])).toEqual([{ type: 'text', text: 'already queued' }])
       expect(sentUserContent(requests[2])).toEqual([{ type: 'text', text: 'explicit retry' }])
-      expect(logOf(session).events.filter((event) => event.type === 'user').map((event) =>
+      expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'user').map((event) =>
         (event as unknown as { uuid: string }).uuid)).toEqual(['first-attachment', 'later', 'explicit'])
     } finally {
       await session.destroy()
@@ -4222,7 +4521,7 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
       await vi.waitFor(() => expect((coreOf(session) as unknown as { pumping: boolean }).pumping).toBe(false))
       expect(sessionLog.migrateToV2).toHaveBeenCalledOnce()
-      expect(logOf(session).events.filter((event) => event.type === 'turn/end')).toHaveLength(1)
+      expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'turn/end')).toHaveLength(1)
       expect(session.queueDepth).toBe(2)
       expect(requests).toEqual([])
 
@@ -4230,7 +4529,7 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
       await vi.waitFor(() => expect((coreOf(session) as unknown as { pumping: boolean }).pumping).toBe(false))
       expect(sessionLog.migrateToV2).toHaveBeenCalledTimes(2)
-      expect(logOf(session).events.filter((event) => event.type === 'turn/end')).toHaveLength(2)
+      expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'turn/end')).toHaveLength(2)
       expect(session.queueDepth).toBe(3)
       expect(requests).toEqual([])
 
@@ -4238,7 +4537,7 @@ describe('NativeSession', () => {
         'first-attachment', 'later', 'explicit',
       ])
       expect(session.queueDepth).toBe(0)
-      expect(logOf(session).events.some((event) => event.type === 'user')).toBe(false)
+      expect(legacyViewOf(logOf(session)).some((event) => event.type === 'user')).toBe(false)
     } finally {
       await session.destroy()
       __setConfigForTest(previous)
@@ -4263,7 +4562,7 @@ describe('NativeSession', () => {
       const originalFlush = sessionLog.flush.bind(sessionLog)
       let gateTurnEnd = true
       vi.spyOn(sessionLog, 'flush').mockImplementation(async () => {
-        if (gateTurnEnd && sessionLog.events.at(-1)?.type === 'turn/end') {
+        if (gateTurnEnd && legacyViewOf(sessionLog).at(-1)?.type === 'turn/end') {
           gateTurnEnd = false
           flushStarted.resolve()
           await releaseFlush.promise
@@ -4282,7 +4581,7 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect((coreOf(session) as unknown as { pumping: boolean }).pumping).toBe(false))
       expect(sessionLog.migrateToV2).toHaveBeenCalledTimes(2)
       expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2)
-      expect(logOf(session).events.filter((event) => event.type === 'turn/end')).toHaveLength(2)
+      expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'turn/end')).toHaveLength(2)
       expect(session.queueDepth).toBe(3)
       expect(requests).toEqual([])
       expect(session.drainQueuedInput!().map((message) => message.uuid)).toEqual([
@@ -4323,7 +4622,7 @@ describe('NativeSession', () => {
           expect(session.drainQueuedInput!().map((message) => message.uuid)).toEqual(['withdraw-me'])
         } else await session.interrupt?.({ cancelQueued: true })
         expect(session.queueDepth).toBe(0)
-        expect(logOf(session).events.some((event) => event.type === 'user')).toBe(false)
+        expect(legacyViewOf(logOf(session)).some((event) => event.type === 'user')).toBe(false)
         await session.destroy()
       }
     } finally {
@@ -4363,7 +4662,7 @@ describe('NativeSession', () => {
       const history = (coreOf(session) as unknown as { history: Array<{ content: unknown[] }> }).history
       expect(history.filter((message) => JSON.stringify(message).includes('old-upload'))).toHaveLength(1)
       expect(history.filter((message) => JSON.stringify(message).includes('new prompt'))).toHaveLength(1)
-      expect(logOf(session).events.filter((event) => event.type === 'user')).toHaveLength(2)
+      expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'user')).toHaveLength(2)
     } finally {
       await session.destroy()
       __setConfigForTest(previous)
@@ -4394,8 +4693,8 @@ describe('NativeSession', () => {
       expect(JSON.stringify(requests[0].messages)).toContain('"type":"document"')
       expect(JSON.stringify(requests[0].messages)).toContain(bytes.toString('base64'))
       expect(requests[1].messages.slice(0, requests[0].messages.length)).toEqual(requests[0].messages)
-      expect(JSON.stringify(logOf(session).events)).not.toContain('"type":"document"')
-      expect(JSON.stringify(logOf(session).events)).not.toContain(bytes.toString('base64'))
+      expect(JSON.stringify(legacyViewOf(logOf(session)))).not.toContain('"type":"document"')
+      expect(JSON.stringify(legacyViewOf(logOf(session)))).not.toContain(bytes.toString('base64'))
       await session.destroy()
       active = undefined
 
@@ -4471,7 +4770,7 @@ describe('NativeSession', () => {
       expect(secondRound).toContain(bytes.toString('base64'))
       expect(secondRound).toContain('Read PDF pdf-1.pdf')
 
-      const resultEvent = logOf(session).events.find((event) => JSON.stringify(event).includes('read-pdf')
+      const resultEvent = legacyViewOf(logOf(session)).find((event) => JSON.stringify(event).includes('read-pdf')
         && JSON.stringify(event).includes('pdf-document'))
       expect(resultEvent).toBeDefined()
       expect(JSON.stringify(resultEvent)).toContain('"type":"file"')
@@ -4524,7 +4823,7 @@ describe('NativeSession', () => {
       const secondRound = JSON.stringify(requests[1].messages)
       expect(secondRound).toContain('PDF document reading is disabled for new occurrences')
       expect(secondRound).not.toContain('"type":"document"')
-      expect(JSON.stringify(logOf(session).events)).not.toContain('pdf-document')
+      expect(JSON.stringify(legacyViewOf(logOf(session)))).not.toContain('pdf-document')
     } finally {
       await session.destroy()
       __setConfigForTest(previous)
@@ -4617,23 +4916,23 @@ describe('NativeSession', () => {
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
     session.enqueueUserMessage(userMsg('use a tool') as never)
     await vi.waitFor(() => {
-      expect(logOf(session).events.some((e) => e.type === 'turn/end' && e.reason === 'error')).toBe(true)
+      expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end' && e.reason === 'error')).toBe(true)
     })
     await session.destroy()
 
     const resumed = provider.createSession({ id: 'repair', cwd: dir, resume: 'repair' })
-    const synthetic = logOf(resumed).events.find((e) => JSON.stringify(e).includes('tool result missing'))
+    const synthetic = legacyViewOf(logOf(resumed)).find((e) => JSON.stringify(e).includes('tool result missing'))
     expect(synthetic).toBeDefined()
     expect(JSON.stringify(synthetic)).toContain('t1')
     // The live turn-error repair already persisted the result, so resume reads
     // it back instead of appending a second copy at the log tail.
-    expect(logOf(resumed).events.filter((e) => JSON.stringify(e).includes('tool result missing'))).toHaveLength(1)
+    expect(legacyViewOf(logOf(resumed)).filter((e) => JSON.stringify(e).includes('tool result missing'))).toHaveLength(1)
     const history = (coreOf(resumed) as unknown as { history: unknown[] }).history
     expect(JSON.stringify(history)).toContain('tool result missing')
     await resumed.destroy()
 
     const snapshot = loadNativeSessionLogSync(dir, 'repair')!
-    expect(snapshot.events.some((e) => JSON.stringify(e).includes('tool result missing'))).toBe(true)
+    expect(legacyViewOf(snapshot).some((e) => JSON.stringify(e).includes('tool result missing'))).toBe(true)
   })
 
   it('appends synthetic results and an interrupted turn/end when resuming an open turn', async () => {
@@ -4648,13 +4947,13 @@ describe('NativeSession', () => {
 
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const resumed = provider.createSession({ id: 'open', cwd: dir, resume: 'open' })
-    expect(logOf(resumed).events.some((e) => JSON.stringify(e).includes('tool result missing'))).toBe(true)
-    expect(logOf(resumed).events.some((e) => e.type === 'turn/end' && e.reason === 'interrupted')).toBe(true)
+    expect(legacyViewOf(logOf(resumed)).some((e) => JSON.stringify(e).includes('tool result missing'))).toBe(true)
+    expect(legacyViewOf(logOf(resumed)).some((e) => e.type === 'turn/end' && e.reason === 'interrupted')).toBe(true)
     await resumed.destroy()
 
     const snapshot = loadNativeSessionLogSync(dir, 'open')!
-    expect(snapshot.events.some((e) => JSON.stringify(e).includes('tool result missing'))).toBe(true)
-    expect(snapshot.events.some((e) => e.type === 'turn/end' && e.reason === 'interrupted')).toBe(true)
+    expect(legacyViewOf(snapshot).some((e) => JSON.stringify(e).includes('tool result missing'))).toBe(true)
+    expect(legacyViewOf(snapshot).some((e) => e.type === 'turn/end' && e.reason === 'interrupted')).toBe(true)
   })
 
   it('forks from the source log and writes a seeded child log', async () => {
@@ -4668,23 +4967,23 @@ describe('NativeSession', () => {
     void (async () => { for await (const f of source.messages) sourceFrames.push(f as Frame) })()
     source.enqueueUserMessage(userMsg('hi') as never)
     await vi.waitFor(() => expect(sourceFrames.some((f) => f.type === 'result')).toBe(true))
-    await vi.waitFor(() => expect(logOf(source).events.some((e) => e.type === 'turn/end')).toBe(true))
+    await vi.waitFor(() => expect(legacyViewOf(logOf(source)).some((e) => e.type === 'turn/end')).toBe(true))
     await source.destroy()
-    const sourceEvents = loadNativeSessionLogSync(dir, 'source')!.events
+    const sourceEvents = legacyViewOf(loadNativeSessionLogSync(dir, 'source')!)
 
     const forked = provider.createSession({ id: 'child', cwd: dir, resume: 'source', forkSession: true })
     const log = logOf(forked)
     expect(log.header.isSeeded).toBe(true)
     expect(log.header.inheritedEventCount).toBe(sourceEvents.length)
-    expect(log.events.some((e) => e.type === 'session/end-seed')).toBe(true)
-    expect(log.events.some((e) => e.type === 'turn/end' && e.reason === 'forked')).toBe(true)
-    expect(log.events.some((e) => e.type === 'session/context' && (e.text ?? '').includes(dir))).toBe(true)
+    expect(legacyViewOf(log).some((e) => e.type === 'session/end-seed')).toBe(true)
+    expect(legacyViewOf(log).some((e) => e.type === 'turn/end' && e.reason === 'forked')).toBe(true)
+    expect(legacyViewOf(log).some((e) => e.type === 'session/context' && (e.text ?? '').includes(dir))).toBe(true)
     const history = (coreOf(forked) as unknown as { history: unknown[] }).history
     expect(history[0]).toMatchObject({ role: 'user' })
     expect(JSON.stringify(history)).toContain('source reply')
     // Copied events are re-owned by the child (never the source id).
     expect(
-      log.events
+      legacyViewOf(log)
         .filter((e) => JSON.stringify(e).includes('"session_id"'))
         .every((e) => JSON.stringify(e).includes('"session_id":"child"')),
     ).toBe(true)
@@ -4711,7 +5010,7 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'compact', cwd: dir })
     // seedCompactSummary sends a string-content message.
     session.sendControlMessage(stringUserMsg('compact summary') as never)
-    const compact = logOf(session).events.find((e) => JSON.stringify(e).includes('compact summary'))
+    const compact = legacyViewOf(logOf(session)).find((e) => JSON.stringify(e).includes('compact summary'))
     expect(compact).toMatchObject({ type: 'user', isCompactSummary: true })
     expect(compact?.message?.content).toEqual([{ type: 'text', text: 'compact summary' }])
     const history = (coreOf(session) as unknown as { history: unknown[] }).history
@@ -4719,7 +5018,7 @@ describe('NativeSession', () => {
     await session.destroy()
 
     const snapshot = loadNativeSessionLogSync(dir, 'compact')!
-    const persisted = snapshot.events.find((e) => JSON.stringify(e).includes('compact summary'))
+    const persisted = legacyViewOf(snapshot).find((e) => JSON.stringify(e).includes('compact summary'))
     expect(persisted).toMatchObject({ type: 'user', isCompactSummary: true })
     expect(persisted?.type === 'user' ? persisted.message.content : undefined).toEqual([
       { type: 'text', text: 'compact summary' },
@@ -4864,7 +5163,7 @@ describe('NativeSession', () => {
         uuid: 'summary-user', timestamp: '2026-11-13T00:00:02.000Z', attachments: catalog,
       })
 
-      const events = logOf(session).events
+      const events = legacyViewOf(logOf(session))
       const catalogIndex = events.findIndex((event) => event.type === 'session/attachments')
       const summaryIndex = events.findIndex((event) => event.type === 'user' && event.uuid === 'summary-user')
       expect(catalogIndex).toBeGreaterThanOrEqual(0)
@@ -4900,7 +5199,7 @@ describe('NativeSession', () => {
 
     await session.compactInPlace?.('AUTO SUMMARY', { uuid: 'auto', timestamp: '2026-11-13T00:00:01.000Z' })
 
-    expect(logOf(session).events.filter((event) => event.type === 'session/attachments')).toHaveLength(1)
+    expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'session/attachments')).toHaveLength(1)
     await session.destroy()
   })
 
@@ -4934,8 +5233,8 @@ describe('NativeSession', () => {
     ;(async () => { for await (const _ of session.messages) { /* drain */ } })()
     session.enqueueUserMessage(userMsg('hi') as never)
     await vi.waitFor(() => {
-      const log = (coreOf(session) as unknown as { log: { events: Array<{ type: string }> } }).log
-      expect(log.events.some((e) => e.type === 'turn/end')).toBe(true)
+      const log = (coreOf(session) as unknown as { log: NativeSessionLog }).log
+      expect(legacyViewOf(log).some((e) => e.type === 'turn/end')).toBe(true)
     })
     await session.destroy() // flush + close before reading the file
     const meta = { id: 'p1', cwd: dir } as never
@@ -4975,11 +5274,11 @@ describe('NativeSession', () => {
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
     session.enqueueUserMessage(userMsg('OLD-PROMPT') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'first reply')).toBe(true))
-    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
+    await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
 
     await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
 
-    const compactEvent = logOf(session).events.find((e) => e.type === 'session/compact') as unknown as {
+    const compactEvent = legacyViewOf(logOf(session)).find((e) => e.type === 'session/compact') as unknown as {
       text: string
       context: string
       uuid: string
@@ -5007,9 +5306,9 @@ describe('NativeSession', () => {
     // append-only (old events plus the compact boundary plus the new turn).
     session.enqueueUserMessage(userMsg('next') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'after')).toBe(true))
-    await vi.waitFor(() => expect(logOf(session).events.filter((e) => e.type === 'turn/end')).toHaveLength(2))
+    await vi.waitFor(() => expect(legacyViewOf(logOf(session)).filter((e) => e.type === 'turn/end')).toHaveLength(2))
     expect(userTexts(session)).toEqual(['OLD-PROMPT', 'next'])
-    expect(logOf(session).events.some((e) => e.type === 'session/compact')).toBe(true)
+    expect(legacyViewOf(logOf(session)).some((e) => e.type === 'session/compact')).toBe(true)
     const afterHistory = JSON.stringify((coreOf(session) as unknown as { history: unknown[] }).history)
     expect(afterHistory).toContain('SUMMARY')
     expect(afterHistory).toContain('next')
@@ -5027,7 +5326,7 @@ describe('NativeSession', () => {
     }
     void (async () => { for await (const _ of session.messages) { /* drain */ } })()
     session.enqueueUserMessage(userMsg('OLD') as never)
-    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
+    await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
     await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
     await session.destroy()
 
@@ -5078,7 +5377,7 @@ describe('NativeSession', () => {
     expect(session.queueDepth).toBe(0)
     await expect(compactable.compactInPlace('SUMMARY', opts)).rejects.toThrow()
     // Nothing was appended by the refused calls.
-    expect(logOf(session).events.some((e) => e.type === 'session/compact')).toBe(false)
+    expect(legacyViewOf(logOf(session)).some((e) => e.type === 'session/compact')).toBe(false)
 
     await session.interrupt?.()
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
@@ -5099,7 +5398,7 @@ describe('NativeSession', () => {
     // the next resume, so the refusal must happen BEFORE the append.
     await expect(compactable.compactInPlace('', opts)).rejects.toThrow(/empty/i)
     await expect(compactable.compactInPlace('  \n\t', opts)).rejects.toThrow(/empty/i)
-    expect(logOf(session).events.some((e) => e.type === 'session/compact')).toBe(false)
+    expect(legacyViewOf(logOf(session)).some((e) => e.type === 'session/compact')).toBe(false)
     await session.destroy()
   })
 
@@ -5114,7 +5413,7 @@ describe('NativeSession', () => {
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
     session.enqueueUserMessage(userMsg('OLD-PROMPT') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'first')).toBe(true))
-    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
+    await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
     await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
     await session.destroy()
 
@@ -5172,7 +5471,7 @@ describe('NativeSession', () => {
     await compacting
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'after')).toBe(true))
 
-    const events = logOf(session).events
+    const events = legacyViewOf(logOf(session))
     const compactIndex = events.findIndex((e) => e.type === 'session/compact')
     const promptIndex = events.findIndex((e) => e.type === 'user' && JSON.stringify(e).includes('next'))
     expect(compactIndex).toBeGreaterThanOrEqual(0)
@@ -5810,9 +6109,241 @@ describe('live assistant emitter carries rawStopReason (T13)', () => {
     expect(assistant.data.rawStopReason).toBe('stop_sequence')
     // The legacy read view reconstructs the EXACT rare reason, not the
     // finish-record fallback.
-    const legacyAssistant = logOf(session).events.find((e) => e.type === 'assistant') as
+    const legacyAssistant = legacyViewOf(logOf(session)).find((e) => e.type === 'assistant') as
       { message: { stop_reason?: string | null } }
     expect(legacyAssistant.message.stop_reason).toBe('stop_sequence')
     await session.destroy()
   })
+})
+
+// Task 4: getAttachmentOccurrences / getAttachmentCatalog read the canonical
+// NEUTRAL events (neutralEventsOf + neutralFileOccurrences), preserving the HOST
+// SDK-transcript blockPath contract that compact-attachments joins by uuid+path:
+// user/message → [i], tool/result → [0, inner]. Catalog entries (messageUuid '')
+// are excluded from occurrences; the handoff catalog keeps the full-scan dedup.
+describe('native attachment occurrence neutral read (Task 4)', () => {
+  const TS_ISO = '2026-11-13T00:00:00.000Z'
+  const TS = Date.parse(TS_ISO)
+
+  function att(id: string, digestChar = 'a'): NativeFileAttachment {
+    return {
+      id, name: `${id}.txt`, size: 4, digest: digestChar.repeat(64),
+      path: join('registry', `${id}.txt`), modelForm: 'handle',
+    }
+  }
+
+  function neutralUser(seq: number, uuid: string, parent: string | null, content: ContentBlock[]): NativeSessionEvent {
+    return {
+      type: 'user/message', seq, time: TS, parentToolUseId: parent,
+      data: { role: 'user', id: brandString<'MessageId'>(uuid), content, source: { kind: 'user' } },
+    }
+  }
+
+  function neutralToolResult(seq: number, uuid: string, callId: string, parent: string | null, content: ContentBlock[]): NativeSessionEvent {
+    return {
+      type: 'tool/result', seq, time: TS, parentToolUseId: parent,
+      data: {
+        message: {
+          role: 'tool', id: brandString<'MessageId'>(uuid),
+          source: { kind: 'tool', callId: brandString<'ToolCallId'>(callId) },
+          toolCallId: brandString<'ToolCallId'>(callId), content, isError: false,
+        },
+      },
+    }
+  }
+
+  /** The pre-neutralization occurrence scan, kept verbatim as the
+   *  behavior-preservation reference: the neutral read must emit exactly the
+   *  host SDK-transcript coordinates this legacy scan emitted. */
+  function legacyOccurrenceScan(
+    events: readonly NativeLogEvent[],
+  ): Array<{ messageUuid: string; blockPath: number[]; attachment: NativeFileAttachment }> {
+    const occurrences: Array<{ messageUuid: string; blockPath: number[]; attachment: NativeFileAttachment }> = []
+    for (const event of events) {
+      if (event.type !== 'user') continue
+      for (let outerIndex = 0; outerIndex < event.message.content.length; outerIndex++) {
+        const outer = event.message.content[outerIndex] as {
+          type?: unknown; attachment?: NativeFileAttachment; content?: unknown
+        }
+        if (outer?.type === 'file' && outer.attachment) {
+          occurrences.push({ messageUuid: event.uuid, blockPath: [outerIndex], attachment: outer.attachment })
+          continue
+        }
+        if (outer?.type !== 'tool_result' || !Array.isArray(outer.content)) continue
+        for (let innerIndex = 0; innerIndex < outer.content.length; innerIndex++) {
+          const inner = outer.content[innerIndex] as { type?: unknown; attachment?: NativeFileAttachment }
+          if (inner?.type !== 'file' || !inner.attachment) continue
+          occurrences.push({ messageUuid: event.uuid, blockPath: [outerIndex, innerIndex], attachment: inner.attachment })
+        }
+      }
+    }
+    return occurrences
+  }
+
+  type OccurrenceCore = {
+    getAttachmentOccurrences(): readonly { messageUuid: string; blockPath: readonly number[]; attachment: NativeFileAttachment }[]
+    getAttachmentCatalog(): readonly NativeFileAttachment[]
+    log: { header: { id: string }; events: unknown[]; neutralEvents: NativeSessionEvent[] | null }
+  }
+
+  /** Seed a fresh v3 log with neutral events, then resume it through the real
+   *  provider so the core reads the same neutral baseline a live session has. */
+  async function resumedCore(dir: string, id: string, events: NativeSessionEvent[], uploadStore?: UploadStore) {
+    const seeded = NativeSessionLog.open({ stateDir: dir, id, cwd: dir, resume: false })
+    for (const event of events) seeded.append(event)
+    await seeded.flush()
+    await seeded.close()
+    const provider = new NativeProvider({
+      stateDir: dir,
+      ...(uploadStore ? { uploadStore } : {}),
+      ports: makeNativePorts({ stateDir: dir, ...(uploadStore ? { uploadStore } : {}) }),
+    })
+    const session = provider.createSession({ id, cwd: dir, resume: id })
+    return { session, core: coreOf(session) as unknown as OccurrenceCore }
+  }
+
+  const direct = att('direct', 'a')
+  const nested = att('nested', 'b')
+  const catalog = att('catalog', 'c')
+  const side = att('side', 'd')
+  const neutralFixture: NativeSessionEvent[] = [
+    neutralUser(0, 'direct-user', null, [{ type: 'text', text: 'before' }, { type: 'file', attachment: direct }]),
+    neutralToolResult(1, 'tool-user', 'read-1', 'agent-1', [{ type: 'text', text: 'Read' }, { type: 'file', attachment: nested }]),
+    { type: 'session/attachments', seq: 2, time: TS, data: { attachments: [catalog], timestamp: TS_ISO } },
+    neutralUser(3, 'side-user', 'agent-2', [{ type: 'file', attachment: side }]),
+  ]
+  const expectedOccurrences = [
+    { messageUuid: 'direct-user', blockPath: [1], attachment: direct },
+    { messageUuid: 'tool-user', blockPath: [0, 1], attachment: nested },
+    { messageUuid: 'side-user', blockPath: [0], attachment: side },
+  ]
+
+  it('emits host blockPath coordinates, excludes the catalog, and deep-equals the legacy scan', async () => {
+    const dir = await tempDir('native-occ-neutral-')
+    const { session, core } = await resumedCore(dir, 'occ', neutralFixture)
+
+    const occurrences = core.getAttachmentOccurrences()
+    // user/message → [i]; tool/result → [0, inner]; sidechain direct preserved.
+    expect(occurrences).toEqual(expectedOccurrences)
+    // Catalog entries carry no message identity and never become occurrences.
+    expect(occurrences.some((occ) => occ.messageUuid === '')).toBe(false)
+    // Behavior pin: deep-equal the verbatim legacy scan on the compat projection
+    // of the neutral baseline (T6: no live legacy read view).
+    expect(occurrences).toEqual(legacyOccurrenceScan(legacyViewOf(core.log) as unknown as NativeLogEvent[]))
+    // The handoff catalog keeps the full-scan id+digest dedup in log order.
+    expect(core.getAttachmentCatalog()).toEqual([direct, nested, catalog, side])
+    await session.destroy()
+  })
+
+  it('sources occurrences from the neutral baseline, not the legacy read view', async () => {
+    const dir = await tempDir('native-occ-source-')
+    const { session, core } = await resumedCore(dir, 'occ-src', neutralFixture)
+    expect(core.getAttachmentOccurrences()).toEqual(expectedOccurrences)
+    // T6 landed: the v3 legacy read view is dropped (empty), so the occurrence
+    // read cannot depend on it. The neutral baseline stays intact and authoritative.
+    expect(core.log.events).toHaveLength(0)
+    expect(core.log.neutralEvents!.length).toBeGreaterThan(0)
+    expect(core.getAttachmentOccurrences()).toEqual(expectedOccurrences)
+    await session.destroy()
+  })
+
+  it('preserves host occurrence coordinates on an unmigrated v1/v2 log via the migration fallback', async () => {
+    const dir = await tempDir('native-occ-v2-')
+    const id = 'occ-v2'
+    const legacyEvents: NativeEventInput[] = [
+      {
+        type: 'user', uuid: 'direct-user', session_id: id, parent_tool_use_id: null, timestamp: TS_ISO,
+        message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment: direct }] },
+      },
+      {
+        type: 'user', uuid: 'tool-user', session_id: id, parent_tool_use_id: 'agent-1', timestamp: TS_ISO,
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'read-1', content: [{ type: 'text', text: 'Read' }, { type: 'file', attachment: nested }] }],
+        },
+      },
+      { type: 'session/attachments', attachments: [catalog], timestamp: TS_ISO },
+    ]
+    const seeded = NativeSessionLog.open({
+      stateDir: dir, id, cwd: dir, resume: false,
+      seed: { events: [], inheritedEventCount: 0, isSeeded: false, version: 2 },
+    })
+    for (const event of legacyEvents) seeded.append(event)
+    await seeded.flush()
+    await seeded.close()
+    const snapshot = loadNativeSessionLogSync(dir, id)!
+    expect(snapshot.header.v).toBe(2)
+    expect(snapshot.neutralEvents).toBeUndefined()
+
+    // The exact transformation the core applies: neutral read + catalog exclusion.
+    const got = neutralFileOccurrences(neutralEventsOf(snapshot))
+      .filter((occ) => occ.messageUuid !== '')
+      .map(({ messageUuid, blockPath, attachment }) => ({ messageUuid, blockPath, attachment }))
+    expect(got).toEqual(legacyOccurrenceScan(snapshot.events))
+    expect(got).toEqual([
+      { messageUuid: 'direct-user', blockPath: [1], attachment: direct },
+      { messageUuid: 'tool-user', blockPath: [0, 1], attachment: nested },
+    ])
+  })
+
+  it('host join pin: compact-attachments hydrates the emitted occurrences by uuid+blockPath', async () => {
+    const dir = await tempDir('native-occ-hostjoin-')
+    const store = new UploadStore({ stateDir: dir })
+    const bodyA = 'DIRECT ATTACHMENT BODY'
+    const bodyB = 'TOOL RESULT ATTACHMENT BODY'
+    const a = await addRealUpload(store, dir, 'join-direct', bodyA)
+    const b = await addRealUpload(store, dir, 'join-tool', bodyB)
+    const events: NativeSessionEvent[] = [
+      neutralUser(0, 'u-direct', null, [{ type: 'text', text: 'see attached' }, { type: 'file', attachment: a }]),
+      neutralToolResult(1, 'u-tool', 'read-1', null, [{ type: 'text', text: 'Read' }, { type: 'file', attachment: b }]),
+    ]
+    const { session } = await resumedCore(dir, 'hostjoin', events, store)
+    // The SDK-shaped handle surface the host actually consumes.
+    const occurrences = session.getAttachmentOccurrences!()
+    expect(occurrences).toEqual([
+      { messageUuid: 'u-direct', blockPath: [1], attachment: a },
+      { messageUuid: 'u-tool', blockPath: [0, 1], attachment: b },
+    ])
+
+    // The public SDK merged transcript at the same uuid+block positions.
+    const transcript: SDKMessage[] = [
+      sdkUser('u-direct', [{ type: 'text', text: 'see attached' }, publicFile(a)]),
+      sdkUser('u-tool', [{ type: 'tool_result', tool_use_id: 'read-1', content: [{ type: 'text', text: 'Read' }, publicFile(b)] }]),
+    ]
+    const hydrated = await buildCompactAttachmentContent(transcript, occurrences, { uploadStore: store, stateDir: dir })
+    expect(hydrated.hasAttachments).toBe(true)
+    const json = JSON.stringify(hydrated.content)
+    expect(json).toContain(bodyA)
+    expect(json).toContain(bodyB)
+    expect(json).not.toContain('no exact provider occurrence')
+    expect(json).not.toContain(a.path)
+    expect(json).not.toContain(b.path)
+
+    // Control: without the provider occurrences the same public blocks stay unread.
+    const unjoined = await buildCompactAttachmentContent(transcript, [], { uploadStore: store, stateDir: dir })
+    expect(JSON.stringify(unjoined.content)).toContain('no exact provider occurrence')
+    await session.destroy()
+  })
+
+  async function addRealUpload(store: UploadStore, stateDir: string, id: string, body: string): Promise<NativeFileAttachment> {
+    const bytes = Buffer.from(body)
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    const name = `${id}.txt`
+    const path = aliasPathOf(attachmentRoot(stateDir), digest, name)
+    await mkdir(join(path, '..'), { recursive: true })
+    await writeFile(path, bytes)
+    store.record([{
+      id, path, cwd: stateDir, name, size: bytes.length, digest,
+      uploadedAt: 1, sessionTitle: '', sessionId: 'hostjoin-source',
+    }])
+    return { id, name, size: bytes.length, digest, path, modelForm: 'handle' }
+  }
+
+  function sdkUser(uuid: string, content: unknown[]): SDKMessage {
+    return { type: 'user', uuid, parent_tool_use_id: null, message: { role: 'user', content } } as unknown as SDKMessage
+  }
+
+  function publicFile(attachment: NativeFileAttachment) {
+    return { type: 'file', attachment: { id: attachment.id, name: attachment.name, size: attachment.size, digest: attachment.digest } }
+  }
 })

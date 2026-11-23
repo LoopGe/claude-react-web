@@ -22,6 +22,19 @@ import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
 import type { CanonicalEvent } from './canonical.js'
 import { loadNativeSessionLogSync } from './session-log/log.js'
+import { projectNeutralEventToLegacy } from './session-log/format.js'
+import type { NativeLogEvent } from './session-log/format.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
+
+// T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
+// the legacy shape from the canonical neutral baseline via the pinned compat
+// projection (a v1/v2 log keeps its canonical list); a null snapshot → [].
+function legacyEventsOf(snapshot: { header: { id: string }; events: NativeLogEvent[]; neutralEvents?: NativeSessionEvent[] } | null | undefined): NativeLogEvent[] {
+  if (!snapshot) return []
+  return snapshot.neutralEvents
+    ? snapshot.neutralEvents.map((event) => projectNeutralEventToLegacy(event, snapshot.header.id))
+    : snapshot.events
+}
 
 type Frame = Record<string, any>
 type CreateOptions = Parameters<SessionManager['create']>[0]
@@ -223,7 +236,7 @@ function liveHistory(sm: SessionManager, id: string): Frame[] {
 
 async function waitForTurnEnds(stateDir: string, id: string, count: number): Promise<void> {
   await vi.waitFor(() => {
-    const events = loadNativeSessionLogSync(stateDir, id)?.events ?? []
+    const events = legacyEventsOf(loadNativeSessionLogSync(stateDir, id)) ?? []
     expect(events.filter((event) => event.type === 'turn/end')).toHaveLength(count)
   }, { timeout: 5000 })
 }
@@ -287,7 +300,7 @@ describe('native agent profiles end to end through SessionManager', () => {
     })
     expect(seen.frames.some((frame) => frame.type === 'session/agent')).toBe(false)
 
-    const selection = loadNativeSessionLogSync(stateDir, id)?.events
+    const selection = legacyEventsOf(loadNativeSessionLogSync(stateDir, id))
       .find((event) => event.type === 'session/agent')
     expect(selection).toMatchObject({
       type: 'session/agent',
@@ -364,7 +377,7 @@ describe('native agent profiles end to end through SessionManager', () => {
     expect([...toolNames(fx.requests[2])].sort()).toEqual(['Bash', 'Read'])
     seen.unsubscribe()
 
-    const selections = loadNativeSessionLogSync(stateDir, id)!.events
+    const selections = legacyEventsOf(loadNativeSessionLogSync(stateDir, id))
       .filter((event) => event.type === 'session/agent')
     expect(selections.at(-1)).toMatchObject({
       name: null,
@@ -409,7 +422,7 @@ describe('native agent profiles end to end through SessionManager', () => {
       agent: 'reviewer', model: 'persona-model', permissionMode: 'bypassPermissions', effortLevel: 'max',
     })
     expect(await fx.sm.supportedCommands(next.id)).toEqual([])
-    const selection = loadNativeSessionLogSync(stateDir, next.id)!.events
+    const selection = legacyEventsOf(loadNativeSessionLogSync(stateDir, next.id))
       .find((event) => event.type === 'session/agent')
     expect(selection).toMatchObject({
       name: 'reviewer',
@@ -456,7 +469,7 @@ describe('native agent profiles end to end through SessionManager', () => {
     const next = await fx.sm.clear(id)
     remember(fx.sm, next.id)
     expect(await fx.sm.supportedCommands(next.id)).toEqual([])
-    const selection = loadNativeSessionLogSync(stateDir, next.id)!.events
+    const selection = legacyEventsOf(loadNativeSessionLogSync(stateDir, next.id))
       .find((event) => event.type === 'session/agent')
     expect(selection?.base).not.toHaveProperty('skillPolicy')
 
@@ -535,7 +548,7 @@ describe('native agent profiles end to end through SessionManager', () => {
     })
     expect(existsSync(target)).toBe(false)
     expect(fx.sm.listPending(id)).toEqual([])
-    expect(loadNativeSessionLogSync(stateDir, id)!.events.at(-1)).toMatchObject({
+    expect(legacyEventsOf(loadNativeSessionLogSync(stateDir, id)).at(-1)).toMatchObject({
       type: 'turn/end', reason: 'error',
     })
 
@@ -543,7 +556,7 @@ describe('native agent profiles end to end through SessionManager', () => {
     await waitForTurnEnds(stateDir, id, 2)
     const results = seen.frames.filter((frame) => frame.type === 'result')
     expect(results[1]).toMatchObject({ subtype: 'success', result: 'later prompt accepted' })
-    expect(loadNativeSessionLogSync(stateDir, id)!.events
+    expect(legacyEventsOf(loadNativeSessionLogSync(stateDir, id))
       .filter((event) => event.type === 'turn/end')
       .map((event) => event.reason)).toEqual(['error', 'completed'])
     seen.unsubscribe()
@@ -639,7 +652,7 @@ describe('native agent profiles end to end through SessionManager', () => {
     for (const field of ['background', 'memory', 'effort']) expect(notice).toContain(field)
 
     await vi.waitFor(() => {
-      const selection = loadNativeSessionLogSync(stateDir, legacyId)?.events
+      const selection = legacyEventsOf(loadNativeSessionLogSync(stateDir, legacyId))
         .find((event) => event.type === 'session/agent')
       expect(selection).toMatchObject({
         name: null,

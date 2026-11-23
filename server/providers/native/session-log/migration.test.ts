@@ -9,8 +9,8 @@
 //      null-vs-string, isCompactSummary).
 //   2. migrateToV3 — the eager-at-open writer migration: a real v2 log on disk
 //      upgrades to v3 before the first append, idempotent, every event rewritten,
-//      the legacy read view + model history unchanged; fork preserves source
-//      version until migrated; fresh seeds default v3.
+//      the legacy projection of the neutral baseline + model history unchanged
+//      (T6 dropped the live legacy read view); fresh seeds default v3.
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -351,10 +351,12 @@ describe('migrateToV3 — eager-at-open writer migration', () => {
 
     const after = loadNativeSessionLogSync(stateDir, SID)!
     expect(after.header.v).toBe(3)
-    // Every event rewritten to neutral; seq contiguous; legacy read view identical.
+    // Every event rewritten to neutral; seq contiguous; the legacy projection of
+    // the neutral baseline is identical to the source (T6: no live legacy view).
     expect(after.neutralEvents!.map((e) => e.seq)).toEqual(events.map((e) => e.seq))
     expect(after.neutralEvents!.map((e) => e.type)).toEqual(events.map((e) => migrateEventToV3(e).type))
-    expect(after.events).toEqual(events)
+    expect(after.neutralEvents!.map((e) => projectNeutralEventToLegacy(e, SID))).toEqual(events)
+    expect(after.events).toEqual([])
     // The on-disk bytes are neutral v3 lines (not the legacy source bytes).
     const text = await readFile(nativeSessionLogPath(stateDir, SID), 'utf8')
     expect(text).toContain('"type":"assistant/message"')
@@ -406,8 +408,11 @@ describe('migrateToV3 — eager-at-open writer migration', () => {
     await log.close()
     const after = loadNativeSessionLogSync(stateDir, SID)!
     expect(after.neutralEvents!.map((e) => e.seq)).toEqual([...events.map((e) => e.seq), events.length, events.length + 1])
-    expect(after.events[events.length]).toMatchObject({ type: 'turn/end', reason: 'completed' })
-    expect(after.events[events.length + 1]).toMatchObject({ type: 'assistant', uuid: 'a-new', message: { stop_reason: 'end_turn' } })
+    // The write-compat projection of the post-migration appends (T6: read the
+    // neutral baseline, project to legacy for the shape assertion).
+    const afterLegacy = after.neutralEvents!.map((e) => projectNeutralEventToLegacy(e, SID))
+    expect(afterLegacy[events.length]).toMatchObject({ type: 'turn/end', reason: 'completed' })
+    expect(afterLegacy[events.length + 1]).toMatchObject({ type: 'assistant', uuid: 'a-new', message: { stop_reason: 'end_turn' } })
   })
 
   it('fresh seeds default to v3 and normalize a legacy seed losslessly', async () => {
@@ -419,16 +424,20 @@ describe('migrateToV3 — eager-at-open writer migration', () => {
     })
     expect(log.header.v).toBe(3)
     expect(log.neutralEvents![0]).toMatchObject({ type: 'session/context', seq: 0, data: { text: 'ctx' } })
-    expect(log.events[0]).toEqual(context)
+    // T6: no live legacy view; the compat projection reconstructs the seed line.
+    expect(projectNeutralEventToLegacy(log.neutralEvents![0], 'fresh')).toEqual(context)
+    expect(log.events).toEqual([])
     await log.close()
   })
 
-  it('fork preserves the source version until the eager migration upgrades it', async () => {
+  it('a legacy-version seed preserves its version until the eager migration upgrades it', async () => {
     const stateDir = await fresh()
     const events = corpus()
     await writeLegacyLog(stateDir, SID, 2, events)
-    // A fork seed carries the source version (buildForkSeed contract): open writes
-    // a v2 seed, then the eager-at-open migration upgrades it to v3.
+    // The writer's v1/v2 compat contract: an explicit legacy seed version is
+    // written as-is, then migrateToV3 upgrades it to neutral. (Fork seeds
+    // themselves are neutral v3 — buildForkSeed migrates a legacy source in
+    // memory; this pins open's seed-version handling, not the fork builder.)
     const log = NativeSessionLog.open({
       stateDir, id: 'child', cwd: '/repo', resume: false,
       seed: { events, inheritedEventCount: events.length, isSeeded: true, version: 2 },
@@ -439,9 +448,10 @@ describe('migrateToV3 — eager-at-open writer migration', () => {
     await log.close()
     const after = loadNativeSessionLogSync(stateDir, 'child')!
     expect(after.header.v).toBe(3)
-    // The neutral events carry no session_id; the legacy read view stamps the
+    // The neutral events carry no session_id; the compat projection stamps the
     // child header id on message events only (operational events have none).
-    expect(after.events).toEqual(events.map((e) =>
+    // T6: read the neutral baseline, project to legacy for the fidelity pin.
+    expect(after.neutralEvents!.map((e) => projectNeutralEventToLegacy(e, 'child'))).toEqual(events.map((e) =>
       e.type === 'user' || e.type === 'assistant' ? { ...e, session_id: 'child' } : e,
     ))
   })
@@ -460,7 +470,9 @@ describe('migrateToV3 — eager-at-open writer migration', () => {
     await log.flush()
     await log.close()
     const after = loadNativeSessionLogSync(stateDir, SID)!
-    expect(after.events).toEqual(v1Events)
+    // T6: no live legacy view; the compat projection of the neutral baseline
+    // reconstructs the v1 source lines losslessly.
+    expect(after.neutralEvents!.map((e) => projectNeutralEventToLegacy(e, SID))).toEqual(v1Events)
     expect(after.neutralEvents!.map((e) => e.type)).toEqual(['session/context', 'user/message', 'turn/end'])
   })
 })
