@@ -23,6 +23,8 @@ import { useResultConsumed } from './result-consumed-context'
 import { blockRendersContent, willRenderEmpty } from './rendering'
 import { splitUserContentSegments } from '../../utils/file-blocks'
 import { UserFileAttachments } from './UserFileAttachments'
+import { UserMentionChip } from './UserMentionChip'
+import { UserProseRun, type ProseRunItem } from './UserProseRun'
 import { HoverHint } from '../HoverHint'
 import { FoldableBody } from './FoldableBody'
 import { userBodyFoldKey } from './fold-key'
@@ -255,12 +257,22 @@ export const MessageView = memo(function MessageView({
 
   if (type === 'user') {
     const userSegments = splitUserContentSegments(blocks)
+    // Mention text stays part of the flat text view: the compact-summary,
+    // bash-detection and synthetic-frame branches below render plain text, and
+    // a mention is plain `@path` text to the model. Only the real-user segment
+    // renderer chipifies it.
     const userContent = userSegments
-      .filter((segment) => segment.type === 'text')
+      .filter((segment) => segment.type === 'text' || segment.type === 'mention')
       .map((segment) => segment.text)
       .join('') || null
     const userTextActive = new Map<number, number>()
     const userFileActive = new Set<number>()
+    const userMentionActive = new Set<number>()
+    // A mention counts on its serialized token (`@src/a.ts`), the same text the
+    // chip highlights. The server index keeps mention text inside the prose
+    // segment, so a query wholly inside a mention or the surrounding text agrees
+    // end to end; a query SPANNING a mention boundary counts server-side but has
+    // no client mark (the same accepted exception class as searchable LaTeX).
     const userQuery = searchQuery?.trim()
     if (userQuery && activeMatchInItem != null && activeMatchInItem >= 0) {
       let remaining = activeMatchInItem
@@ -270,10 +282,13 @@ export const MessageView = memo(function MessageView({
           ? countMatches(extractPlainText(segment.text), userQuery)
           : segment.type === 'file'
             ? countMatches(segment.file.name, userQuery)
-            : 0
+            : segment.type === 'mention'
+              ? countMatches(segment.text, userQuery)
+              : 0
         if (remaining < count) {
           if (segment.type === 'text') userTextActive.set(i, remaining)
           else if (segment.type === 'file') userFileActive.add(i)
+          else if (segment.type === 'mention') userMentionActive.add(i)
           break
         }
         remaining -= count
@@ -294,6 +309,17 @@ export const MessageView = memo(function MessageView({
       }
       if (segment.type === 'image') {
         return <div key={`img-${index}`} className="msg-image-row"><BlockView block={segment.block} /></div>
+      }
+      if (segment.type === 'mention') {
+        return (
+          <UserMentionChip
+            key={`mention-${index}`}
+            text={segment.text}
+            path={segment.path}
+            searchQuery={searchQuery}
+            active={userMentionActive.has(index)}
+          />
+        )
       }
       if (bash && segment.text.includes('<bash-input>')) {
         return (
@@ -325,6 +351,42 @@ export const MessageView = memo(function MessageView({
           activeMatchIdx={userTextActive.get(index)}
         />
       )
+    }
+    // Group consecutive text+mention segments into inline prose runs so a
+    // sentence with @mentions reads as one line with clickable chips. A run
+    // with NO mention renders each text segment as its own block (the
+    // mention-free look is unchanged); file/image segments break runs and keep
+    // their block layout. Only the real-user (non-bash) path uses this.
+    const renderUserBody = (segments: readonly (typeof userSegments)[number][]) => {
+      const out: React.ReactNode[] = []
+      let run: ProseRunItem[] = []
+      const flushRun = () => {
+        if (run.length === 0) return
+        if (run.some(({ segment }) => segment.type === 'mention')) {
+          out.push(
+            <UserProseRun
+              key={`prose-${run[0]!.index}`}
+              items={run}
+              searchQuery={searchQuery}
+              textActive={userTextActive}
+              mentionActive={userMentionActive}
+            />,
+          )
+        } else {
+          for (const { segment, index } of run) out.push(renderUserSegment(segment, index))
+        }
+        run = []
+      }
+      segments.forEach((segment, index) => {
+        if (segment.type === 'text' || segment.type === 'mention') {
+          run.push({ segment, index })
+        } else {
+          flushRun()
+          out.push(renderUserSegment(segment, index))
+        }
+      })
+      flushRun()
+      return out
     }
     // Tool results that have been consumed by their card (generic ToolCard
     // inline merge, or PlanCard / QuestionCard) are suppressed here. Only
@@ -433,7 +495,7 @@ export const MessageView = memo(function MessageView({
               forceOpen={foldSearchHit}
               onToggle={() => onToggleFold(userBodyFoldKey(msg))}
             >
-              {userSegments.map((segment, index) => renderUserSegment(segment, index))}
+              {renderUserBody(userSegments)}
             </FoldableBody>
           </div>
         </div>

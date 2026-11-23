@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 import { joinTokens, tokenize } from '../utils/pastedText'
-import { renderTokens, serializeTokens, domRepresentsValue } from '../utils/richPromptDom'
+import { renderTokens, serializeTokens, domRepresentsValue, mentionChipFacts, MENTION_CHIP_ATTR } from '../utils/richPromptDom'
 import { syncEditorHeight } from '../utils/editor-height'
 import { offsetOf, slashWordBefore, atWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
 import { isSupportedImageMediaType } from '../../shared/image-media'
@@ -76,6 +76,12 @@ interface Props {
   onPasteFiles?: (files: readonly File[]) => void
   /** Right-click context menu handler. */
   onContextMenu?: (e: React.MouseEvent<HTMLElement>) => void
+  /** Click on a settled @file/@folder mention chip, with its decoded path and
+   *  directory flag. The editor delegates chip clicks from its root (the chip
+   *  DOM is rebuilt on reconcile, so per-chip listeners would not survive);
+   *  the host resolves the path against the session cwd and opens the preview.
+   *  Unwired hosts keep chips inert. */
+  onMentionClick?: (mention: { path: string; dir: boolean }) => void
   /** Additional keydown handler for keys the editor does not handle itself
    *  (Enter is already handled; everything else falls through here). */
   onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void
@@ -116,6 +122,7 @@ export function RichPromptInput({
   onPasteImages,
   onPasteFiles,
   onContextMenu,
+  onMentionClick,
   onKeyDown: onKeyDownProp,
 }: Props) {
   const localRef = useRef<HTMLDivElement>(null)
@@ -444,10 +451,19 @@ export function RichPromptInput({
       suppressContentEditableWarning
       spellCheck={false}
       data-placeholder={placeholder ?? ''}
+      // Marks the editor as mention-click-wired so the chip's pointer/hover
+      // affordance only shows where a click actually opens a preview.
+      data-mention-click={onMentionClick ? '' : undefined}
       className={className}
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
       onContextMenu={onContextMenu}
+      onClick={(e) => {
+        if (!onMentionClick) return
+        const chip = (e.target as Element).closest(`[${MENTION_CHIP_ATTR}]`)
+        // closest matched the mention attr, so the facts read cannot be null.
+        if (chip !== null) onMentionClick(mentionChipFacts(chip)!)
+      }}
       onInput={(e) => {
         const el = e.currentTarget
         dropEmptyResidue(el)

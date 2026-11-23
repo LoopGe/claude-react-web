@@ -32,14 +32,28 @@ export function exportConversation(messages: SdkMessage[], title?: string): void
         ? [{ type: 'text', text: content } as Block]
         : Array.isArray(content) ? content as Block[] : []
       const segments = splitUserContentSegments(blocks)
-      if (!segments.some((segment) => segment.type === 'file' || (segment.type === 'text' && segment.text !== ''))) continue
+      if (!segments.some((segment) => segment.type === 'file' || segment.type === 'mention' || (segment.type === 'text' && segment.text !== ''))) continue
 
       lines.push('## You')
       lines.push('')
-      for (const segment of segments) {
-        if (segment.type === 'text') lines.push(segment.text)
-        else if (segment.type === 'file') lines.push(`- 📎 ${segment.file.name} (${formatBytes(segment.file.size)})`)
+      // Text and mentions are one prose run: mentions split the text into
+      // segments for the UI's chips, but the export keeps the line intact
+      // (a mention is plain `@path` text). File chips stay their own lines.
+      let prose = ''
+      const flushProse = () => {
+        if (prose !== '') {
+          lines.push(prose)
+          prose = ''
+        }
       }
+      for (const segment of segments) {
+        if (segment.type === 'text' || segment.type === 'mention') prose += segment.text
+        else if (segment.type === 'file') {
+          flushProse()
+          lines.push(`- 📎 ${segment.file.name} (${formatBytes(segment.file.size)})`)
+        }
+      }
+      flushProse()
       lines.push('')
     } else if (msg.type === 'assistant') {
       const text = extractText(msg)

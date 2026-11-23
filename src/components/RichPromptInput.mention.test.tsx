@@ -125,6 +125,36 @@ describe('RichPromptInput mention chipification', () => {
     expect(el.textContent).toBe('see @"my dir/" now')
   })
 
+  it('reports a settled chip click with its decoded path and dir flag', () => {
+    const onMentionClick = vi.fn()
+    const { container } = render(
+      <RichPromptInput value="see @src/a.ts now" onChange={vi.fn()} ariaLabel="M" onMentionClick={onMentionClick} />,
+    )
+    const el = editor(container)
+    fireEvent.click(el.querySelector(`.${MENTION_CHIP_CLASS}`)!)
+    expect(onMentionClick).toHaveBeenCalledTimes(1)
+    expect(onMentionClick).toHaveBeenCalledWith({ path: 'src/a.ts', dir: false })
+  })
+
+  it('decodes a quoted directory chip path on click', () => {
+    const onMentionClick = vi.fn()
+    const { container } = render(
+      <RichPromptInput value='@"my dir/" ' onChange={vi.fn()} ariaLabel="M" onMentionClick={onMentionClick} />,
+    )
+    const el = editor(container)
+    fireEvent.click(el.querySelector(`.${MENTION_CHIP_CLASS}`)!)
+    expect(onMentionClick).toHaveBeenCalledWith({ path: 'my dir', dir: true })
+  })
+
+  it('does not report clicks on ordinary editor text', () => {
+    const onMentionClick = vi.fn()
+    const { container } = render(
+      <RichPromptInput value="plain text" onChange={vi.fn()} ariaLabel="M" onMentionClick={onMentionClick} />,
+    )
+    fireEvent.click(editor(container))
+    expect(onMentionClick).not.toHaveBeenCalled()
+  })
+
   it('reports the serialized mention text when a chip is removed from the DOM', () => {
     // Stands in for atomic Backspace on a settled chip: the browser removes the
     // chip element, then fires input. The mention text round-trips out.

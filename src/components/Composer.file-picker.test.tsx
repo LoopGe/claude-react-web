@@ -246,3 +246,23 @@ describe('Composer @ file picker', () => {
     expect(document.querySelector('.cmd-picker')).toBeNull()
   })
 })
+
+describe('Composer mention chip click-to-preview', () => {
+  it('forwards a settled chip click to onMentionClick with decoded facts', () => {
+    const onMentionClick = vi.fn()
+    const { container } = render(
+      <Composer {...defaultProps} input="see @src/a.ts now" onMentionClick={onMentionClick} />,
+    )
+    const chip = container.querySelector('.file-mention-chip')!
+    expect(chip).toBeTruthy()
+    fireEvent.click(chip)
+    expect(onMentionClick).toHaveBeenCalledTimes(1)
+    expect(onMentionClick).toHaveBeenCalledWith({ path: 'src/a.ts', dir: false })
+  })
+
+  it('keeps chips inert when the host wires no mention click handler', () => {
+    const { container } = render(<Composer {...defaultProps} input="see @src/a.ts now" />)
+    const chip = container.querySelector('.file-mention-chip')!
+    expect(() => fireEvent.click(chip)).not.toThrow()
+  })
+})

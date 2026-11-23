@@ -2610,6 +2610,49 @@ button.chat-empty-env-chip:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* @file/@folder mention chip inline in a sent user message. Same surface
+   vocabulary as the file chip above; mono + smaller so the `@path` token reads
+   as a reference inside the prose. The button variant (a resource link context
+   is in scope) adds the click affordance; the plain span stays inert. */
+.msg-mention-chip {
+  display: inline-block;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-3xs);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: inherit;
+  white-space: pre;
+  vertical-align: baseline;
+}
+
+button.msg-mention-chip {
+  cursor: pointer;
+}
+
+button.msg-mention-chip:hover {
+  background: var(--btn-hover-bg);
+}
+
+/* Inline prose run: text fragments + mention chips flow as one sentence. The
+   fragments' markdown root and paragraphs render inline (they are prose
+   pieces, not blocks); pre-wrap keeps the literal boundary whitespace the
+   splitter preserved around each trimmed core. Block markdown inside a
+   fragment (a fenced <pre>) keeps its own block layout. */
+.msg-prose-run {
+  white-space: pre-wrap;
+}
+
+.msg-prose-run .md-inline {
+  display: inline;
+}
+
+.msg-prose-run .md-inline p {
+  display: inline;
+}
+
 /* Fallback for markdown image references that can't be rendered as <img>
    (src is neither data:image/* nor http(s) — e.g. the model writing
    `![x](/api/placeholder)`). Muted mono text instead of a broken image. */
@@ -4148,6 +4191,30 @@ button.chat-empty-env-chip:hover {
   font-weight: 600;
   white-space: pre;
   user-select: none;
+}
+
+/* @file/@folder mention chip in the composer — same visual family as the
+   paste chip it sits beside. Click opens the file preview where the host wires
+   onMentionClick; the editor carries data-mention-click only then, so the
+   pointer/hover affordance never promises a click that does nothing. */
+.file-mention-chip {
+  display: inline-block;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--msg-user-border);
+  border-radius: var(--radius-3xs);
+  background: var(--msg-user-bg);
+  color: var(--msg-user-header-fg);
+  font-weight: 600;
+  white-space: pre;
+  user-select: none;
+}
+
+[data-mention-click] .file-mention-chip {
+  cursor: pointer;
+}
+
+[data-mention-click] .file-mention-chip:hover {
+  background: var(--btn-hover-bg);
 }
 
 /* ── Lightbox (full-screen image viewer) ────────────────────────────────

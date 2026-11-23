@@ -42,6 +42,7 @@ import { RecapWindow } from './RecapWindow'
 import { ResourceModal } from '../resources/ResourceModal'
 import { useOptionalOpenResource } from '../resources/context'
 import { snapshotDiffResource } from '../../shared/resource-address'
+import { openMentionResource } from '../utils/mention-resource'
 import { PinnedUserMessageHeader } from './PinnedUserMessageHeader'
 import { PinnedMessageStore } from '../utils/pinned-message-store'
 import { api } from '../hooks/useApi'
@@ -512,6 +513,13 @@ export const Chat = memo(function Chat({
   // scheduling; a ref would break `react-hooks/refs` and also wouldn't
   // trigger the re-render that reveals the panel on first open.
   const openResource = useOptionalOpenResource()
+  // Composer mention chip click → file preview. Wired only when both the
+  // opener and the session cwd are in scope; otherwise chips stay inert.
+  const sessionCwd = session.cwd
+  const handleMentionClick = openResource && sessionCwd
+    ? (mention: { path: string; dir: boolean }) =>
+        openMentionResource(openResource, session.id, sessionCwd, mention.path)
+    : undefined
   const [settingsEverOpened, setSettingsEverOpened] = useState(false)
   if (settingsOpen && !settingsEverOpened) setSettingsEverOpened(true)
   // Terminal keep-alive latch (same pattern as settings): the overlay chrome +
@@ -2503,6 +2511,7 @@ export const Chat = memo(function Chat({
               onRecallImages={historyImageRecallApi}
               commands={mergedCommands}
               sessionId={session.id}
+              onMentionClick={handleMentionClick}
               pastedImages={pastedImages.images}
               imagesPending={pastedImages.pending}
               files={fileDrafts.files}

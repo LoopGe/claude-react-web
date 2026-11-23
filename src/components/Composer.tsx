@@ -120,6 +120,10 @@ interface Props {
    *  inert without it (search is session-scoped); hosts that don't wire it keep
    *  the slash picker only. */
   sessionId?: string
+  /** Click on a settled @file/@folder mention chip in the editor. The host
+   *  resolves the path against the session cwd and opens the resource
+   *  preview; unwired hosts keep chips inert. */
+  onMentionClick?: (mention: { path: string; dir: boolean }) => void
   /** Pending pasted images to send inline. */
   pastedImages: PastedImage[]
   /** True while at least one image is still being decoded. Sending and
@@ -243,6 +247,7 @@ export const Composer = memo(function Composer({
   onRecallImages,
   commands,
   sessionId,
+  onMentionClick,
   pastedImages,
   imagesPending,
   files,
@@ -1118,6 +1123,7 @@ export const Composer = memo(function Composer({
             onSubmit={onSend}
             onPasteText={pasteAtCaret(placePastedText)}
             onContextMenu={handleEditorContextMenu}
+            onMentionClick={onMentionClick}
             onNewline={() => {
               // Insert at the live caret (not the context-menu snapshot).
               // execCommand is a jsdom no-op (it does not exist there) but

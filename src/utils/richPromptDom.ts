@@ -44,6 +44,19 @@ function isChipElement(element: Element): boolean {
   return element.hasAttribute(CHIP_ATTR) || element.hasAttribute(MENTION_CHIP_ATTR)
 }
 
+/** Read the parsed facts back from a mention chip element — the inverse of
+ *  the attribute writes in {@link renderTokens} (the path attr is
+ *  URI-component-encoded, so it MUST be decoded here). Returns null for an
+ *  element that is not a mention chip. */
+export function mentionChipFacts(element: Element): { path: string; dir: boolean } | null {
+  const encoded = element.getAttribute(MENTION_CHIP_ATTR)
+  if (encoded === null) return null
+  return {
+    path: decodeURIComponent(encoded),
+    dir: element.getAttribute(MENTION_DIR_ATTR) === '1',
+  }
+}
+
 // Numeric node types rather than the `Node` globals, so this module needs no
 // DOM globals in scope to be imported.
 const ELEMENT_NODE = 1

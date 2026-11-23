@@ -78,6 +78,53 @@ describe('exportConversation', () => {
     vi.unstubAllGlobals()
   })
 
+  it('exports mention text verbatim as inline prose', () => {
+    const texts: string[] = []
+    vi.stubGlobal('Blob', class {
+      constructor(parts: string[]) { texts.push(parts.join('')) }
+    })
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn(() => 'blob:mention-test'),
+      revokeObjectURL: vi.fn(),
+    })
+    const messages = [{
+      type: 'user',
+      uuid: 'mention',
+      message: { role: 'user', content: 'see @src/a.ts and @bob' },
+    }] as unknown as SdkMessage[]
+
+    exportConversation(messages, 'mention-test')
+
+    // Mentions are plain text to the model; the export keeps the prose on one
+    // line instead of fragmenting it at every chip boundary.
+    expect(texts[0]).toContain('see @src/a.ts and @bob')
+    vi.unstubAllGlobals()
+  })
+
+  it('exports a mention-only message', () => {
+    const texts: string[] = []
+    vi.stubGlobal('Blob', class {
+      constructor(parts: string[]) { texts.push(parts.join('')) }
+    })
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn(() => 'blob:mention-only-test'),
+      revokeObjectURL: vi.fn(),
+    })
+    const messages = [{
+      type: 'user',
+      uuid: 'mention-only',
+      message: { role: 'user', content: '@src/a.ts' },
+    }] as unknown as SdkMessage[]
+
+    exportConversation(messages, 'mention-only-test')
+
+    expect(texts[0]).toContain('## You')
+    expect(texts[0]).toContain('@src/a.ts')
+    vi.unstubAllGlobals()
+  })
+
   it('exports text and attachments in their original order', () => {
     const texts: string[] = []
     vi.stubGlobal('Blob', class {

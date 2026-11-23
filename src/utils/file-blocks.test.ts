@@ -49,6 +49,48 @@ describe('splitUserContentSegments', () => {
   })
 })
 
+describe('splitUserContentSegments mention split', () => {
+  it('splits text into text/mention pieces in document order', () => {
+    expect(splitUserContentSegments([{ type: 'text', text: 'see @src/a.ts and @bob' }])).toEqual([
+      { type: 'text', text: 'see ' },
+      { type: 'mention', text: '@src/a.ts', path: 'src/a.ts', dir: false },
+      { type: 'text', text: ' and ' },
+      { type: 'mention', text: '@bob', path: 'bob', dir: false },
+    ])
+  })
+
+  it('parses a quoted path with spaces and the directory marker', () => {
+    expect(splitUserContentSegments([{ type: 'text', text: '@"my dir/" x' }])).toEqual([
+      { type: 'mention', text: '@"my dir/"', path: 'my dir', dir: true },
+      { type: 'text', text: ' x' },
+    ])
+  })
+
+  it('splits mentions after the file-handle split, keeping both in place', () => {
+    expect(splitUserContentSegments([{ type: 'text', text: `see ${handle} @src/a.ts` }])).toEqual([
+      { type: 'text', text: 'see ' },
+      { type: 'file', file: { id: ref.id, name: ref.name, size: ref.size } },
+      { type: 'text', text: ' ' },
+      { type: 'mention', text: '@src/a.ts', path: 'src/a.ts', dir: false },
+    ])
+  })
+
+  it('leaves an email address alone (no whitespace boundary before the @)', () => {
+    expect(splitUserContentSegments([{ type: 'text', text: 'mail bob@x.com please' }])).toEqual([
+      { type: 'text', text: 'mail bob@x.com please' },
+    ])
+  })
+
+  it('keeps bash-mode XML intact — BashMessage parses the raw tags', () => {
+    // A `@run` inside the command or stdout is code/output, not a user
+    // reference; fragmenting the tags would break extractTag's slicing.
+    const bash = '<bash-input>cat @src/a.ts</bash-input>\n<bash-stdout>@out</bash-stdout>'
+    expect(splitUserContentSegments([{ type: 'text', text: bash }])).toEqual([
+      { type: 'text', text: bash },
+    ])
+  })
+})
+
 describe('splitUserBlocks', () => {
   it('separates text, images, and structured FileBlocks in source order', () => {
     const image = { type: 'image', source: { type: 'base64', data: 'A', media_type: 'image/png' } } as Block
