@@ -112,10 +112,12 @@ describe('parseToolInput (shared boundary parse)', () => {
     expect(parseToolInput('null')).toEqual({})
   })
 
-  it('a JSON array passes through as-is (typeof object, non-null)', () => {
-    // The shared parse keeps arrays — the wire projection pin asserts the
-    // same shape end-to-end (wire-projection.test.ts).
-    expect(parseToolInput('[1,2]')).toEqual([1, 2])
+  it('a JSON array becomes {} — tool_use.input must be an object on replay', () => {
+    // Arrays are typeof 'object' but not a valid Anthropic tool_use.input;
+    // the shared parse rejects them like any other non-object JSON (the
+    // wire projection pin asserts the same shape end-to-end).
+    expect(parseToolInput('[1,2]')).toEqual({})
+    expect(parseToolInput('[]')).toEqual({})
   })
 })
 

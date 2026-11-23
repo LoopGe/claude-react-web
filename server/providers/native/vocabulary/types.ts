@@ -145,7 +145,9 @@ export function isRetainedThinkingBlock(block: { type?: unknown; signature?: unk
 
 /** Parse a tool-call's raw-JSON arguments into the tool input object.
  *  Empty/invalid/non-object JSON becomes {} (the model sees an empty input,
- *  never a crash). The single shared copy: the core (loop execution, log
+ *  never a crash) — including JSON arrays and null: the Anthropic API's
+ *  tool_use.input must be an object, so an array argument is malformed input,
+ *  not a passthrough. The single shared copy: the core (loop execution, log
  *  projection, subagent catalog) and both adapters import it so the former
  *  five verbatim copies cannot drift. The ToolCallBlock itself still carries
  *  RAW JSON — this is the boundary parse, not vocabulary-internal parsing. */
@@ -153,7 +155,7 @@ export function parseToolInput(json: string): Record<string, unknown> {
   if (!json) return {}
   try {
     const parsed = JSON.parse(json)
-    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
   } catch {
     return {}
   }

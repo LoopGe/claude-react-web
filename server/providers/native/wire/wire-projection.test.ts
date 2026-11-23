@@ -212,7 +212,7 @@ describe('projectNativeHistoryToWire — direct projection', () => {
       toolCall('a', 'T', '[1,2]'),
     ])]
     const messages = wireOf(await projectNativeHistoryToWire(history, {}, signal()))
-    expect(messages[0].content.map((b) => b.input)).toEqual([{}, {}, {}, [1, 2]])
+    expect(messages[0].content.map((b) => b.input)).toEqual([{}, {}, {}, {}])
   })
 
   it('strips unsigned thinking, keeps signed and redacted thinking', async () => {

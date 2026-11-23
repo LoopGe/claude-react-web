@@ -46,6 +46,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 
 const here = (rel: string) => fileURLToPath(new URL(rel, import.meta.url))
 const repoRoot = here('../../../..')
@@ -242,14 +243,23 @@ describe('native core neutrality (option C structural pin)', () => {
     const violations: string[] = []
     let sites = 0
     for (const file of files) {
-      const src = readFileSync(file, 'utf8')
-      for (const m of src.matchAll(/\.(append|appendDurable)\(\s*\{/g)) {
-        sites++
-        const literal = balancedLiteral(src, m.index! + m[0].length - 1)
-        if (!hasTopLevelDataEnvelope(literal)) {
-          violations.push(`${rel(file)}: ${m[1]}(...) object literal has no top-level neutral 'data:' envelope`)
+      const sf = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest)
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+          const method = node.expression.name.text
+          if ((method === 'append' || method === 'appendDurable') && node.arguments.length > 0) {
+            const arg = node.arguments[0]
+            if (ts.isObjectLiteralExpression(arg)) {
+              sites++
+              if (!hasDataEnvelope(arg)) {
+                violations.push(`${rel(file)}: ${method}(...) object literal has no top-level neutral 'data:' envelope`)
+              }
+            }
+          }
         }
+        ts.forEachChild(node, visit)
       }
+      visit(sf)
     }
     expect(sites).toBeGreaterThan(0)
     expect(violations).toEqual([])
@@ -269,121 +279,51 @@ describe('native core neutrality (option C structural pin)', () => {
     expect(hasTopLevelDataEnvelope(`{ type: 'x', data: { inner: { data: 1 } } }`)).toBe(true)
     expect(hasTopLevelDataEnvelope(`{ type: 'x', data }`)).toBe(true)
   })
+
+  it('the TS-based envelope scan is immune to the hand-rolled lexer edge cases', () => {
+    // Numeric key followed by a value identifier named `data`: the former
+    // key-position latch stayed armed after the non-identifier key token and
+    // recorded the VALUE as a top-level key (false negative). The AST reads
+    // property NAMES, so this literal has no `data` property and is flagged.
+    expect(hasTopLevelDataEnvelope(`{ 0: data, type: 'x' }`)).toBe(false)
+    // A regex literal value containing a brace desynced the former depth walk
+    // (throw / mis-scan); the TS parser tokenizes it exactly.
+    expect(hasTopLevelDataEnvelope(`{ type: 'x', filter: /{/, data: { content: [] } }`)).toBe(true)
+    // Nested template backticks and a comment between key and colon — both
+    // mishandled by the former string/comment walk.
+    expect(hasTopLevelDataEnvelope('{ type: `x`, note: `a${`b`}c`, data: {} }')).toBe(true)
+    expect(hasTopLevelDataEnvelope(`{ type: 'x', data /* envelope */ : { content: [] } }`)).toBe(true)
+  })
 })
 
-/** Extract the balanced `{...}` literal starting at `start` (the opening
- *  brace), skipping string literals and comments so a brace inside a string
- *  cannot end the scan early. */
-function balancedLiteral(src: string, start: number): string {
-  let depth = 0
-  let i = start
-  while (i < src.length) {
-    const ch = src[i]
-    if (ch === '\'' || ch === '"' || ch === '`') {
-      const quote = ch
-      i++
-      while (i < src.length && src[i] !== quote) {
-        if (src[i] === '\\') i++
-        i++
-      }
-    } else if (ch === '/' && src[i + 1] === '/') {
-      while (i < src.length && src[i] !== '\n') i++
-    } else if (ch === '/' && src[i + 1] === '*') {
-      i += 2
-      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++
-      i++
-    } else if (ch === '{') {
-      depth++
-    } else if (ch === '}') {
-      depth--
-      if (depth === 0) return src.slice(start, i + 1)
-    }
-    i++
-  }
-  throw new Error(`unbalanced object literal at offset ${start}`)
+/** The neutral v3 envelope check on a parsed append object literal: `data`
+ *  must be a TOP-LEVEL property (a PropertyAssignment or shorthand named
+ *  `data`). A nested object's `data:` field does not satisfy it, nor does a
+ *  `data:` inside a string, comment or template substitution. Spread and
+ *  computed keys carry no statically known name and are skipped — the same
+ *  contract as the former key scanner, but read from the TypeScript AST
+ *  (typescript is a devDependency) instead of a hand-rolled JS lexer, so
+ *  regex literals, nested templates and comments between key and colon are
+ *  tokenized exactly. */
+function hasDataEnvelope(obj: ts.ObjectLiteralExpression): boolean {
+  return obj.properties.some(p =>
+    (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+    (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
+    p.name.text === 'data')
 }
 
-/** The neutral v3 envelope check for one append object literal: `data` must be
- *  a TOP-LEVEL key (depth 1) — a nested object's `data:` field does not satisfy
- *  it, nor does a `data:` inside a string or comment. */
+/** Parse one object-literal source text and run the envelope check on it.
+ *  The literal is wrapped in parentheses so it parses as an expression — a
+ *  bare `{ ... }` at statement position is a block, not an object literal. */
 function hasTopLevelDataEnvelope(literal: string): boolean {
-  return topLevelKeys(literal).includes('data')
-}
-
-/** Top-level keys of an object literal, reusing balancedLiteral's
- *  string/comment-skipping walk. Tracks brace/bracket/paren depth and reads a
- *  key only in key position (right after the opening `{` or a depth-1 `,`), so
- *  a ternary's `:` or a nested object's keys cannot pose as top-level keys.
- *  Shorthand keys count; spread (`...x`) and computed (`[expr]`) keys carry no
- *  statically known name and are skipped. */
-function topLevelKeys(literal: string): string[] {
-  const keys: string[] = []
-  let depth = 0
-  let atKey = false
-  let i = 0
-  while (i < literal.length) {
-    const ch = literal[i]
-    if (ch === '\'' || ch === '"' || ch === '`') {
-      const quote = ch
-      const start = i
-      i++
-      while (i < literal.length && literal[i] !== quote) {
-        if (literal[i] === '\\') i++
-        i++
-      }
-      if (atKey && depth === 1) {
-        let j = i + 1
-        while (j < literal.length && /\s/.test(literal[j])) j++
-        if (literal[j] === ':') keys.push(literal.slice(start + 1, i))
-        atKey = false
-      }
-      i++
-      continue
-    }
-    if (ch === '/' && literal[i + 1] === '/') {
-      while (i < literal.length && literal[i] !== '\n') i++
-      continue
-    }
-    if (ch === '/' && literal[i + 1] === '*') {
-      i += 2
-      while (i < literal.length && !(literal[i] === '*' && literal[i + 1] === '/')) i++
-      i += 2
-      continue
-    }
-    if (ch === '{' || ch === '[' || ch === '(') {
-      depth++
-      atKey = ch === '{' && depth === 1
-      i++
-      continue
-    }
-    if (ch === '}' || ch === ']' || ch === ')') {
-      depth--
-      i++
-      continue
-    }
-    if (depth === 1 && ch === ',') {
-      atKey = true
-      i++
-      continue
-    }
-    if (atKey && depth === 1) {
-      if (/[A-Za-z_$]/.test(ch)) {
-        const start = i
-        while (i < literal.length && /[\w$]/.test(literal[i])) i++
-        let j = i
-        while (j < literal.length && /\s/.test(literal[j])) j++
-        // `key:` plus the shorthand forms `key,` / `key}` are top-level keys.
-        if (literal[j] === ':' || literal[j] === ',' || literal[j] === '}') keys.push(literal.slice(start, i))
-        atKey = false
-        continue
-      }
-      if (ch === '.') {
-        atKey = false // spread `...expr` — no statically known key
-        i++
-        continue
-      }
-    }
-    i++
+  const sf = ts.createSourceFile('envelope.ts', `(${literal})`, ts.ScriptTarget.Latest)
+  const stmt = sf.statements[0]
+  if (
+    !ts.isExpressionStatement(stmt) ||
+    !ts.isParenthesizedExpression(stmt.expression) ||
+    !ts.isObjectLiteralExpression(stmt.expression.expression)
+  ) {
+    throw new Error(`envelope test input is not an object literal: ${literal}`)
   }
-  return keys
+  return hasDataEnvelope(stmt.expression.expression)
 }
