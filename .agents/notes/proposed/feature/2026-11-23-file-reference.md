@@ -32,6 +32,12 @@ spill 定位符的第二条 user 消息），复杂度同终端，不是"加个�
 - **系统提示**：claude 在 spawn **和 resume** 都设 preset-append（SDK 不跨
   resume 持久 systemPrompt，模式见 session-manager:12575）；native 走
   `systemPromptAppend`。引导文案改编自 DSH FILE_REFERENCE_PROMPT。
+  preset-append 与 `Options.agent` persona **合成而非覆盖**——CLI 0.3.311
+  源码核实：主线程 agent 的 prompt 作 base，appendSystemPrompt 作为末段
+  追加（两条分支都追加）；live spawn 对照证实（persona+append 两标记都在，
+  仅 persona 时 append 标记缺失）。故 persona 会话无需把引导折进 agent
+  prompt。统一 `snapshot:false`：引导是 app 管理文本，跨版本会变，录制的
+  prompt 会在 resume 时原样重放、丢掉新引导（同 Side Chat 的理由）。
 - **点击预览**：chip onClick → `openResource(sessionId, fileResource(sessionId,
   absPath))`（ResourceModal，live-only read-file，dormant 显示既有失败帧）。
 - **发送渲染**：`splitUserContentSegments` 加 mention 段 + 可点击 chip +

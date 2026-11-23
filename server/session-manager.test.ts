@@ -363,6 +363,7 @@ const waitFor = async (cond: () => boolean | Promise<boolean>, timeoutMs = 2_000
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
 import { SessionManager, resolveConfiguredModel, backfillSubagentCompletions, mergeResultFrames, projectSeedImageRefs, sidecarImageContentByUuid } from './session-manager.js'
+import { FILE_REFERENCE_GUIDANCE } from './file-reference-guidance.js'
 import { ensureWorktreeForResume } from './session-worktree.js'
 import type { Session } from './session-types.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
@@ -17705,5 +17706,179 @@ describe('projectSeedImageRefs / sidecarImageContentByUuid (Task 6 pure projecti
     projectSeedImageRefs(seed, new Map())
     expect(contentOf(seed[0])).toBe(content) // original untouched
     expect(content).toEqual([handleBlock, b64])
+  })
+})
+
+describe('file-reference guidance (spawn + resume wiring)', () => {
+  // The model receives plain `@path` text from the composer; every spawn path
+  // must carry the guidance that tells it to read referenced paths. The
+  // claude provider gets it via Options.systemPrompt preset-append (the CLI
+  // appends it AFTER a main-thread agent's persona prompt — probe-verified,
+  // see file-reference-guidance.test.ts), the native provider via
+  // CreateSessionOptions.systemPromptAppend → renderSystem.
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+
+  const SIDE_CHAT_MARKER = 'You are in a side conversation, not the main thread.'
+
+  beforeEach(async () => {
+    mockHandles.length = 0
+    mockGetSessionInfo.mockReset()
+    mockGetSessionInfo.mockImplementation(async (id) => ({ sessionId: id }))
+    mockListSessions.mockReset()
+    mockListSessions.mockImplementation(async () => [])
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    // autoResume on: the native recovery test ends the pump cleanly and lets
+    // cleanupPump → autoResume → respawnInPlace drive the respawn (the
+    // production entry point). Inert for the claude-mock tests here — the
+    // mocked Query generator never ends on destroy.
+    sm = new SessionManager({ store, autoResume: true })
+  })
+
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+  })
+
+  function appendOf(handle: { options: Record<string, unknown> }): string {
+    const sp = handle.options.systemPrompt as { type?: string; append?: string } | undefined
+    expect(sp?.type).toBe('preset')
+    return sp?.append ?? ''
+  }
+
+  it('create() spawns with the guidance as a claude_code preset-append', async () => {
+    await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    const sp = mockHandles[0].options.systemPrompt as Record<string, unknown>
+    expect(sp).toMatchObject({ type: 'preset', preset: 'claude_code', snapshot: false })
+    expect(sp.append).toContain(FILE_REFERENCE_GUIDANCE)
+  })
+
+  it('create() with a start-as agent keeps the persona AND carries the guidance', async () => {
+    // Options.agent × preset-append compose in the CLI (the agent prompt is
+    // the base, the append lands after it) — the host must pass BOTH, never
+    // fold the guidance into a replacement prompt.
+    await sm.create({ cwd: TEST_CWD, model: 'test-model', agent: 'persona-x' } as Parameters<SessionManager['create']>[0])
+    expect(mockHandles[0].options.agent).toBe('persona-x')
+    expect(appendOf(mockHandles[0])).toContain(FILE_REFERENCE_GUIDANCE)
+  })
+
+  it('create() keeps a caller-supplied custom systemPrompt as the prefix', async () => {
+    await sm.create({ cwd: TEST_CWD, model: 'test-model', systemPrompt: 'CUSTOM-USER-PROMPT' } as Parameters<SessionManager['create']>[0])
+    const sp = mockHandles[0].options.systemPrompt as { type?: string; prompt?: string }
+    expect(sp.type).toBe('custom')
+    expect(sp.prompt?.startsWith('CUSTOM-USER-PROMPT')).toBe(true)
+    expect(sp.prompt).toContain(FILE_REFERENCE_GUIDANCE)
+  })
+
+  it('resume() re-applies the guidance on the respawned Query', async () => {
+    const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    await sm.unload(info.id)
+    await sm.resume(info.id)
+    expect(mockHandles).toHaveLength(2)
+    expect(mockHandles[1].options.resume).toBe(info.id)
+    expect(appendOf(mockHandles[1])).toContain(FILE_REFERENCE_GUIDANCE)
+  })
+
+  it('fork() carries the guidance onto the forked spawn', async () => {
+    const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    // fork() requires a completed turn (meta.lastTurnAt).
+    await sm.send(info.id, 'first')
+    await tick()
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    const forked = await sm.fork(info.id)
+    const last = mockHandles[mockHandles.length - 1]
+    expect(last.options.resume).toBe(info.id)
+    expect(last.options.forkSession).toBe(true)
+    expect(forked.id).not.toBe(info.id)
+    expect(appendOf(last)).toContain(FILE_REFERENCE_GUIDANCE)
+  })
+
+  it('clear() carries the guidance onto the fresh replacement spawn', async () => {
+    const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    await sm.clear(info.id)
+    const last = mockHandles[mockHandles.length - 1]
+    expect(appendOf(last)).toContain(FILE_REFERENCE_GUIDANCE)
+  })
+
+  it('createSideChat() composes the guidance WITH the side-conversation instructions', async () => {
+    const parent = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    await sm.createSideChat(parent.id)
+    const append = appendOf(mockHandles[mockHandles.length - 1])
+    expect(append).toContain(SIDE_CHAT_MARKER)
+    expect(append).toContain(FILE_REFERENCE_GUIDANCE)
+  })
+
+  it('buildResumeOpts (autoResume / crash-recovery / restart) carries the guidance', async () => {
+    const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    const internals = sm as unknown as {
+      sessions: Map<string, unknown>
+      buildResumeOpts: (session: unknown) => Promise<Record<string, unknown>>
+      respawnInPlace: (session: unknown, opts: Record<string, unknown>, reason: string) => Promise<void>
+    }
+    const session = internals.sessions.get(info.id)!
+    const resumeOpts = await internals.buildResumeOpts(session)
+    const sp = resumeOpts.systemPrompt as { type?: string; append?: string }
+    expect(sp?.type).toBe('preset')
+    expect(sp?.append).toContain(FILE_REFERENCE_GUIDANCE)
+    // And the in-place respawn actually hands it to the provider.
+    await internals.respawnInPlace(session, resumeOpts, 'test')
+    expect(mockHandles).toHaveLength(2)
+    expect(appendOf(mockHandles[1])).toContain(FILE_REFERENCE_GUIDANCE)
+  })
+
+  it('buildResumeOpts keeps the Side Chat instructions alongside the guidance', async () => {
+    const parent = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    const side = await sm.createSideChat(parent.id)
+    const internals = sm as unknown as {
+      sessions: Map<string, unknown>
+      buildResumeOpts: (session: unknown) => Promise<Record<string, unknown>>
+    }
+    const resumeOpts = await internals.buildResumeOpts(internals.sessions.get(side.id)!)
+    const append = (resumeOpts.systemPrompt as { append?: string })?.append ?? ''
+    expect(append).toContain(SIDE_CHAT_MARKER)
+    expect(append).toContain(FILE_REFERENCE_GUIDANCE)
+  })
+
+  it('native create() renders the guidance into the API system prompt', async () => {
+    const requests = captureNativeRequests(sm)
+    const info = await sm.create({ provider: 'native', cwd: dir, model: 'test-model' })
+    await sm.send(info.id, 'hello')
+    await waitFor(() => requests.length === 1)
+    expect(requests[0].system).toContain(FILE_REFERENCE_GUIDANCE)
+  })
+
+  it('native Side Chat renders the instructions AND the guidance', async () => {
+    const requests = captureNativeRequests(sm)
+    const parent = await sm.create({ provider: 'native', cwd: dir, model: 'test-model' })
+    const side = await sm.createSideChat(parent.id)
+    await sm.send(side.id, 'hello')
+    await waitFor(() => requests.length === 1)
+    expect(requests[0].system).toContain(SIDE_CHAT_MARKER)
+    expect(requests[0].system).toContain(FILE_REFERENCE_GUIDANCE)
+  })
+
+  it('native auto-resume (respawnInPlace) re-applies the guidance on the recovered session', async () => {
+    const requests = captureNativeRequests(sm)
+    const info = await sm.create({ provider: 'native', cwd: dir, model: 'test-model' })
+    await sm.send(info.id, 'first')
+    await waitFor(() => requests.length === 1)
+    const internals = sm as unknown as {
+      sessions: Map<string, { handle: { destroy(reason: string): Promise<void> } }>
+    }
+    const session = internals.sessions.get(info.id)!
+    const oldHandle = session.handle
+    // End the pump cleanly: cleanupPump → autoResume → buildResumeOpts →
+    // respawnInPlace is the production recovery entry point (a direct
+    // respawnInPlace on a still-live pump would race the old pump's
+    // cleanup tail).
+    await oldHandle.destroy('test clean exit')
+    await waitFor(() => session.handle !== oldHandle)
+    await sm.send(info.id, 'second')
+    await waitFor(() => requests.length === 2)
+    expect(requests[1].system).toContain(FILE_REFERENCE_GUIDANCE)
   })
 })

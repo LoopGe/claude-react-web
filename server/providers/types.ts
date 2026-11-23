@@ -123,10 +123,11 @@ export interface CreateSessionOptions {
    *  (~every 30s per subagent, served from the prompt cache — cheap). */
   agentProgressSummaries?: boolean
   providerExtras?: Record<string, unknown>
-  /** Extra text appended to the provider's own system prompt (e.g. the Side
-   *  Chat developer instructions). Introduced for the native provider, whose
-   *  prompt is built in-process; the claude provider gets the same text via
-   *  `providerExtras.sdkOptions.systemPrompt.append` and ignores this key. */
+  /** Extra text appended to the provider's own system prompt (the @-reference
+   *  guidance on every session, composed with the Side Chat developer
+   *  instructions on a side conversation). Introduced for the native provider,
+   *  whose prompt is built in-process; the claude provider gets the same text
+   *  via `providerExtras.sdkOptions.systemPrompt.append` and ignores this key. */
   systemPromptAppend?: string
   /** The resolved provider profile for this session. Threaded from the
    *  session-manager so the provider can use profile-scoped credentials

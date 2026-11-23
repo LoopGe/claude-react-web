@@ -33,6 +33,7 @@ import { isImageRefBlock, type ImageRefBlock } from '../shared/image-attachment.
 import { isResolvedImageBlock, publicAttachmentContent, resolveAttachmentContent, resolveImageBlocks, type ResolvedImageBlock } from './attachment-resolver.js'
 import type { AgentUserMessage, AnyAgentUserMessage, ProviderContentBlock, ProviderInputContentBlock, PublicAgentUserMessage } from './agent-message.js'
 import { UploadStore } from './upload-store.js'
+import { FILE_REFERENCE_GUIDANCE, withFileReferenceGuidance } from './file-reference-guidance.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
@@ -639,6 +640,15 @@ Do not modify files, source, git state, permissions, configuration, or any
 other workspace state unless the user explicitly requests that mutation in
 this side conversation. If the user explicitly requests a mutation, keep it
 minimal, local to the request, and avoid disrupting the main thread.`
+
+/** The native provider's systemPromptAppend for a session: the @-reference
+ *  guidance on every session, composed WITH the Side Chat instructions on a
+ *  side conversation. The claude provider receives the same texts through
+ *  Options.systemPrompt (withFileReferenceGuidance composes the preset
+ *  append); native builds its prompt in-process, so it gets them here. */
+function nativeSystemPromptAppend(parentId: string | undefined): string {
+  return parentId ? `${SIDE_DEVELOPER_INSTRUCTIONS}\n\n${FILE_REFERENCE_GUIDANCE}` : FILE_REFERENCE_GUIDANCE
+}
 
 function clampSearchLimit(value: number | undefined): number {
   if (!Number.isFinite(value ?? NaN)) return 30
@@ -3824,6 +3834,14 @@ export class SessionManager {
       session.onUserDialog = fullOpts.onUserDialog as Session['onUserDialog']
     }
 
+    // @-reference guidance on EVERY spawn path that passes through this
+    // funnel (create / resume / respawnFresh / fork / clear / Side Chat).
+    // Composes with whatever the caller supplied — the Side Chat preset
+    // append, a create-body custom prompt — and never replaces it. The CLI
+    // appends a preset-append AFTER a main-thread agent's persona prompt
+    // (probe-verified), so persona sessions keep their persona.
+    fullOpts.systemPrompt = withFileReferenceGuidance(fullOpts.systemPrompt)
+
     const sdkOptions = {
       ...applyToolProfile(applySkillPolicyToOptions(fullOpts, skillOverride, preserveBaseSkillPolicy), session.toolProfile),
     } as Options & { provider?: string }
@@ -3923,9 +3941,10 @@ export class SessionManager {
       supportedDialogKinds: (fullOpts as { supportedDialogKinds?: string[] }).supportedDialogKinds,
       // Side Chats carry the same developer instructions the claude provider
       // receives through Options.systemPrompt.append (set in sideChatOpts),
-      // but the native provider builds its prompt in-process and has no SDK
-      // options — so it gets the text through this provider-level field.
-      systemPromptAppend: (fullOpts as { parentId?: string }).parentId ? SIDE_DEVELOPER_INSTRUCTIONS : undefined,
+      // and every session carries the @-reference guidance — but the native
+      // provider builds its prompt in-process and has no SDK options, so it
+      // gets the texts through this provider-level field.
+      systemPromptAppend: nativeSystemPromptAppend((fullOpts as { parentId?: string }).parentId),
       providerExtras: { sdkOptions, modelGroupId: session.modelGroupId },
     })
     session.handle = handle
@@ -12579,6 +12598,10 @@ export class SessionManager {
         snapshot: false,
       }
     }
+    // The @-reference guidance rides every respawn too (the SDK does not
+    // persist systemPrompt across resume) — composed after the Side Chat
+    // boundary above when present, same as the spawn() funnel.
+    resumeOpts.systemPrompt = withFileReferenceGuidance(resumeOpts.systemPrompt)
     // Re-apply the session's OWN MCP selection (same as resume/fork).
     await this.applySessionMcpServers(resumeOpts, session.mcpServerNames, session.id)
     if (session.canUseTool) resumeOpts.canUseTool = session.canUseTool
@@ -12686,7 +12709,7 @@ export class SessionManager {
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onUserDialog: session.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,
       supportedDialogKinds: session.onUserDialog ? [...SUPPORTED_DIALOG_KINDS] : undefined,
-      systemPromptAppend: session.parentId ? SIDE_DEVELOPER_INSTRUCTIONS : undefined,
+      systemPromptAppend: nativeSystemPromptAppend(session.parentId),
       providerExtras: { sdkOptions },
     })
     } catch (err) {
