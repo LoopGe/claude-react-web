@@ -13,7 +13,7 @@ import type { NativeAuxLlmPort } from './ports.js'
 import type { NativeMcpConnections, NativeMcpServerInstance } from './mcp/connections.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
-import { nativeSessionLogPath } from './session-log/paths.js'
+import { nativeSessionDir, nativeSessionLogPath } from './session-log/paths.js'
 import { historyFromEvents } from './session-log/replay.js'
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import type { ProviderSessionHandle } from '../types.js'
@@ -21,6 +21,7 @@ import { createToolResultMessage, createUserMessage } from './vocabulary/message
 import { brandString } from './vocabulary/brand.js'
 import { readNativeHistoryEntries } from './session-log/reader.js'
 import type { NativeEventInput, NativeFileAttachment, NativeLogEvent } from './session-log/format.js'
+import { serializeEvent, serializeHeader } from './session-log/format.js'
 import { migrateEventToV3 } from './session-log/migration.js'
 import type { NativeSessionEvent } from './vocabulary/session-event.js'
 import { projectNativeHistoryToWire } from './wire/wire-projection.js'
@@ -2289,6 +2290,66 @@ describe('NativeSession', () => {
     }
   })
 
+  it('seeds the pre-persona clear into a legacy-version fork child in the child’s own version language', async () => {
+    const dir = await tempDir('native-preset-fork-legacy-clear-')
+    const definition = agentDefinition({ prompt: 'LATER-PERSONA', model: 'persona-model', tools: ['Bash'] })
+    // A real v2 source log: the cut precedes the first selection, so the fork
+    // must seed an explicit clear. The child preserves the source version, so
+    // the seeded clear must ride the legacy shape — a neutral event written
+    // under a v2 header would brick the child log on its next read.
+    const events: NativeLogEvent[] = [
+      { seq: 0, type: 'session/context', text: 'ctx' },
+      {
+        seq: 1, type: 'assistant', uuid: 'legacy-cut', session_id: 'legacy-clear-source',
+        parent_tool_use_id: null, timestamp: '2026-11-11T00:00:00.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'plain cut' }] },
+      },
+      {
+        seq: 2, type: 'session/agent', name: 'reviewer', definition,
+        base: { model: 'base-model', permissionMode: 'default', effortLevel: 'high' },
+        timestamp: '2026-11-11T00:00:01.000Z',
+      },
+    ]
+    const header = {
+      type: 'session/header' as const, v: 2, id: 'legacy-clear-source', cwd: dir,
+      createdAt: Date.now(), isSeeded: false, inheritedEventCount: 0,
+    }
+    await mkdir(nativeSessionDir(dir, 'legacy-clear-source'), { recursive: true })
+    await writeFile(
+      nativeSessionLogPath(dir, 'legacy-clear-source'),
+      serializeHeader(header) + '\n' + events.map((event) => serializeEvent(event) + '\n').join(''),
+      'utf8',
+    )
+
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
+    const forked = provider.createSession({
+      id: 'legacy-clear-child',
+      cwd: dir,
+      resume: 'legacy-clear-source',
+      forkSession: true,
+      resumeSessionAt: 'legacy-cut',
+      agent: 'reviewer',
+      model: 'fork-option-model',
+    })
+    try {
+      expect(effectiveSettingsOf(forked)).toEqual({
+        model: 'base-model', permissionMode: 'default', effortLevel: 'high', agent: null,
+      })
+      // The child log must still parse at its preserved version, with exactly
+      // the seeded clear (the source's later persona never leaks in).
+      const child = loadNativeSessionLogSync(dir, 'legacy-clear-child')!
+      expect(child.header.v).toBe(2)
+      const selections = child.events.filter((event) => event.type === 'session/agent')
+      expect(selections).toHaveLength(1)
+      expect(selections[0]).toMatchObject({
+        name: null,
+        base: { model: 'base-model', permissionMode: 'default', effortLevel: 'high' },
+      })
+    } finally {
+      await forked.destroy()
+    }
+  })
+
   it.each([
     { label: 'resume', fork: false },
     { label: 'fork', fork: true },
@@ -3249,6 +3310,49 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('getSkillCompactionEntries on a neutral log reproduces the legacy pairs (behavior pin)', async () => {
+    const dir = await tempDir('native-skill-neutral-pin-')
+    const timestamp = '2026-01-01T00:00:00.000Z'
+    const seed = NativeSessionLog.open({ stateDir: dir, id: 'skill-pin', cwd: dir, resume: false })
+    seed.append({ type: 'session/context', text: 'ctx' })
+    seed.append({ type: 'user', uuid: 'raw-1', session_id: 'skill-pin', parent_tool_use_id: null, timestamp, message: { role: 'user', content: [{ type: 'text', text: '/demo one' }] } })
+    seed.append({ type: 'session/skill', name: 'demo', body: 'BODY-ONE', timestamp })
+    seed.append({ type: 'assistant', uuid: 'a1', session_id: 'skill-pin', parent_tool_use_id: null, timestamp, message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } })
+    seed.append({ type: 'user', uuid: 'raw-2', session_id: 'skill-pin', parent_tool_use_id: null, timestamp, message: { role: 'user', content: [{ type: 'text', text: '/demo two' }] } })
+    seed.append({ type: 'session/skill', name: 'demo', body: 'BODY-TWO', timestamp })
+    // Sidechain user + skill: never a main-thread compaction pair.
+    seed.append({ type: 'user', uuid: 'side-1', session_id: 'skill-pin', parent_tool_use_id: 'agent-1', timestamp, message: { role: 'user', content: [{ type: 'text', text: '/demo nested' }] } })
+    seed.append({ type: 'session/skill', name: 'demo', body: 'SIDE-BODY', timestamp })
+    // Non-adjacent skill: the turn boundary breaks the pairing.
+    seed.append({ type: 'user', uuid: 'raw-3', session_id: 'skill-pin', parent_tool_use_id: null, timestamp, message: { role: 'user', content: [{ type: 'text', text: '/demo unpaired' }] } })
+    seed.append({ type: 'turn/end', reason: 'interrupted' })
+    seed.append({ type: 'session/skill', name: 'demo', body: 'UNPAIRED-BODY', timestamp })
+    await seed.flush(); await seed.close()
+
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const resumed = provider.createSession({ id: 'skill-pin', cwd: dir, resume: 'skill-pin' })
+    const entries = (coreOf(resumed) as unknown as {
+      getSkillCompactionEntries(): readonly { afterUserUuid: string; body: string }[]
+    }).getSkillCompactionEntries()
+
+    // The legacy reference scan over the log's legacy read view.
+    const legacy = loadNativeSessionLogSync(dir, 'skill-pin')!.events
+    const expected: Array<{ afterUserUuid: string; body: string }> = []
+    for (let index = 0; index < legacy.length - 1; index++) {
+      const user = legacy[index]
+      const skill = legacy[index + 1]
+      if (user.type === 'user' && user.parent_tool_use_id === null && skill.type === 'session/skill') {
+        expected.push({ afterUserUuid: user.uuid, body: skill.body })
+      }
+    }
+    expect(entries).toEqual(expected)
+    expect(entries).toEqual([
+      { afterUserUuid: 'raw-1', body: 'BODY-ONE' },
+      { afterUserUuid: 'raw-2', body: 'BODY-TWO' },
+    ])
+    await resumed.destroy()
+  })
+
   it('persists the consumed prompt when skill discovery fails, then replays it exactly once', async () => {
     const dir = await tempDir('native-skill-expand-fail-')
     // Fail the constructor's discovery pass; the session is otherwise healthy.
@@ -3795,6 +3899,179 @@ describe('NativeSession', () => {
     const history = JSON.stringify((coreOf(resumed) as unknown as { history: unknown[] }).history)
     expect(history).toContain('top')
     expect(history).not.toContain('inner')
+    await resumed.destroy()
+  })
+
+  // ── Neutral usage-restore behavior pins (read-view neutralization T2) ─────
+  // The reference fold below is the PRE-neutralization restoreUsage algorithm
+  // over the LEGACY read view; the neutral read must reproduce it exactly.
+
+  type UsageShape = {
+    input_tokens: number
+    output_tokens: number
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
+  }
+
+  function legacyUsageRead(
+    events: readonly NativeLogEvent[],
+    fallbackModel: string,
+  ): { lastUsage: UsageShape; byModel: Map<string, UsageShape> } {
+    const narrow = (value: unknown): UsageShape | null => {
+      if (typeof value !== 'object' || value === null) return null
+      const usage = value as Record<string, unknown>
+      if (typeof usage.input_tokens !== 'number' || typeof usage.output_tokens !== 'number') return null
+      return {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        ...(typeof usage.cache_read_input_tokens === 'number' ? { cache_read_input_tokens: usage.cache_read_input_tokens } : {}),
+        ...(typeof usage.cache_creation_input_tokens === 'number' ? { cache_creation_input_tokens: usage.cache_creation_input_tokens } : {}),
+      }
+    }
+    const add = (a: UsageShape, b: UsageShape): UsageShape => {
+      const cacheRead = (a.cache_read_input_tokens ?? 0) + (b.cache_read_input_tokens ?? 0)
+      const cacheCreate = (a.cache_creation_input_tokens ?? 0) + (b.cache_creation_input_tokens ?? 0)
+      return {
+        input_tokens: a.input_tokens + b.input_tokens,
+        output_tokens: a.output_tokens + b.output_tokens,
+        ...(cacheRead !== 0 ? { cache_read_input_tokens: cacheRead } : {}),
+        ...(cacheCreate !== 0 ? { cache_creation_input_tokens: cacheCreate } : {}),
+      }
+    }
+    let lastAssistant: UsageShape | null = null
+    let lastEnd: UsageShape | null = null
+    const byModel = new Map<string, UsageShape>()
+    for (const event of events) {
+      if (event.type === 'session/compact') {
+        lastAssistant = null
+        lastEnd = null
+        continue
+      }
+      if (event.type === 'assistant') {
+        const usage = narrow(event.message.usage)
+        if (usage) {
+          if (event.parent_tool_use_id == null) lastAssistant = usage
+          const model = typeof event.message.model === 'string' && event.message.model
+            ? event.message.model
+            : fallbackModel
+          byModel.set(model, add(byModel.get(model) ?? { input_tokens: 0, output_tokens: 0 }, usage))
+        }
+        continue
+      }
+      if (event.type === 'turn/end' && event.usage) {
+        lastEnd = { input_tokens: event.usage.input_tokens, output_tokens: event.usage.output_tokens }
+      }
+    }
+    return { lastUsage: lastAssistant ?? lastEnd ?? { input_tokens: 0, output_tokens: 0 }, byModel }
+  }
+
+  /** Representative usage log: main + sidechain + model-less assistant rounds,
+   *  a compact boundary, and a final usage-bearing turn/end with cache buckets
+   *  (the legacy fallback reads only the counter pair). */
+  function usageFixture(sid: string): NativeEventInput[] {
+    const timestamp = '2026-11-09T00:00:00.000Z'
+    const user = (uuid: string, text: string): NativeEventInput => ({
+      type: 'user', uuid, session_id: sid, parent_tool_use_id: null, timestamp,
+      message: { role: 'user', content: [{ type: 'text', text }] },
+    })
+    const assistant = (
+      uuid: string,
+      parent: string | null,
+      model: string | undefined,
+      usage: Record<string, number>,
+    ): NativeEventInput => ({
+      type: 'assistant', uuid, session_id: sid, parent_tool_use_id: parent, timestamp,
+      message: {
+        role: 'assistant', content: [{ type: 'text', text: uuid }],
+        ...(model !== undefined ? { model } : {}), usage,
+      },
+    })
+    return [
+      { type: 'session/context', text: 'ctx' },
+      user('u1', 'hi'),
+      assistant('a1', null, 'model-a', { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 100, cache_creation_input_tokens: 20 }),
+      assistant('a-side', 'agent1', 'model-b', { input_tokens: 40, output_tokens: 9 }),
+      assistant('a-nomodel', null, undefined, { input_tokens: 1, output_tokens: 1 }),
+      { type: 'turn/end', reason: 'completed', usage: { input_tokens: 48, output_tokens: 13 } },
+      { type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp },
+      user('u2', 'after compact'),
+      assistant('a2', null, 'model-a', { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 30 }),
+      { type: 'turn/end', reason: 'completed', usage: { input_tokens: 99, output_tokens: 7, cache_read_input_tokens: 500 } },
+    ]
+  }
+
+  function expectUsageMatchesReference(
+    session: unknown,
+    reference: { lastUsage: UsageShape; byModel: Map<string, UsageShape> },
+  ): void {
+    const internals = coreOf(session) as unknown as { lastUsage: UsageShape; usageByModel: Map<string, UsageShape> }
+    expect(internals.lastUsage).toEqual(reference.lastUsage)
+    expect(Object.fromEntries(internals.usageByModel)).toEqual(Object.fromEntries(reference.byModel))
+  }
+
+  it('restoreUsage on a neutral v3 log reproduces the legacy read (behavior pin)', async () => {
+    const dir = await tempDir('native-usage-neutral-pin-')
+    const seed = NativeSessionLog.open({ stateDir: dir, id: 'usage-pin', cwd: dir, resume: false })
+    for (const event of usageFixture('usage-pin')) seed.append(event)
+    await seed.flush(); await seed.close()
+
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const resumed = provider.createSession({ id: 'usage-pin', cwd: dir, resume: 'usage-pin', model: 'fallback-model' })
+    const reference = legacyUsageRead(loadNativeSessionLogSync(dir, 'usage-pin')!.events, 'fallback-model')
+    expectUsageMatchesReference(resumed, reference)
+    // Explicit values anchor the reference itself: the last MAIN assistant wins
+    // (cache buckets carried), billing sums every round per model, and the
+    // model-less round bills to the session model.
+    const internals = coreOf(resumed) as unknown as { lastUsage: UsageShape; usageByModel: Map<string, UsageShape> }
+    expect(internals.lastUsage).toEqual({ input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 30 })
+    expect(Object.fromEntries(internals.usageByModel)).toEqual({
+      'model-a': { input_tokens: 12, output_tokens: 5, cache_read_input_tokens: 130, cache_creation_input_tokens: 20 },
+      'model-b': { input_tokens: 40, output_tokens: 9 },
+      'fallback-model': { input_tokens: 1, output_tokens: 1 },
+    })
+    expect((await resumed.getContextUsage?.()) as { totalTokens: number }).toMatchObject({ totalTokens: 35 })
+    await resumed.destroy()
+  })
+
+  it('restoreUsage on an unmigrated v2 log reproduces the legacy read via the neutral fallback', async () => {
+    const dir = await tempDir('native-usage-v2-pin-')
+    const events = usageFixture('usage-v2-pin').map((event, seq) => ({ ...event, seq })) as NativeLogEvent[]
+    const header = {
+      type: 'session/header' as const, v: 2, id: 'usage-v2-pin', cwd: dir,
+      createdAt: Date.now(), isSeeded: false, inheritedEventCount: 0,
+    }
+    await mkdir(nativeSessionDir(dir, 'usage-v2-pin'), { recursive: true })
+    await writeFile(
+      nativeSessionLogPath(dir, 'usage-v2-pin'),
+      serializeHeader(header) + '\n' + events.map((event) => serializeEvent(event) + '\n').join(''),
+      'utf8',
+    )
+
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    // At open the v2 writer has no neutral baseline yet (eager migration is
+    // async), so the read takes the neutralEventsOf migration fallback.
+    const resumed = provider.createSession({ id: 'usage-v2-pin', cwd: dir, resume: 'usage-v2-pin', model: 'fallback-model' })
+    expectUsageMatchesReference(resumed, legacyUsageRead(events, 'fallback-model'))
+    await resumed.destroy()
+  })
+
+  it('restoreUsage falls back to the turn/end counter pair after a compact with no later assistant', async () => {
+    const dir = await tempDir('native-usage-end-fallback-')
+    const timestamp = '2026-11-09T00:00:00.000Z'
+    const seed = NativeSessionLog.open({ stateDir: dir, id: 'end-fallback', cwd: dir, resume: false })
+    seed.append({ type: 'session/context', text: 'ctx' })
+    seed.append({ type: 'user', uuid: 'u', session_id: 'end-fallback', parent_tool_use_id: null, timestamp, message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } })
+    seed.append({ type: 'assistant', uuid: 'a', session_id: 'end-fallback', parent_tool_use_id: null, timestamp, message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 7, output_tokens: 3 } } })
+    seed.append({ type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c', timestamp })
+    // Cache buckets on a turn/end are ignored by the fallback (counter pair only).
+    seed.append({ type: 'turn/end', reason: 'completed', usage: { input_tokens: 99, output_tokens: 7, cache_read_input_tokens: 500 } })
+    await seed.flush(); await seed.close()
+
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const resumed = provider.createSession({ id: 'end-fallback', cwd: dir, resume: 'end-fallback', model: 'fallback-model' })
+    expectUsageMatchesReference(resumed, legacyUsageRead(loadNativeSessionLogSync(dir, 'end-fallback')!.events, 'fallback-model'))
+    const internals = coreOf(resumed) as unknown as { lastUsage: UsageShape }
+    expect(internals.lastUsage).toEqual({ input_tokens: 99, output_tokens: 7 })
     await resumed.destroy()
   })
 

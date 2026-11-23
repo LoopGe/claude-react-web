@@ -1,5 +1,5 @@
 import type { StoredAgentDefinition } from '../../agent-definition-store.js'
-import type { NativeLogEvent } from './session-log/format.js'
+import type { NativeSessionEvent, SessionEvent } from './vocabulary/session-event.js'
 import type { NativeAgentBase, NativeAgentEffortLevel, NativeAgentProfile } from './vocabulary/agent-profile.js'
 
 // The pure profile types live in the neutral vocabulary (host-free) so the
@@ -77,14 +77,22 @@ export function profileFromDefinition(def: StoredAgentDefinition): NativeAgentPr
   }
 }
 
+/** One neutral 'session/agent' event → the history-only selection snapshot the
+ *  session applies. The shape is exactly the legacy read-view event (the v3
+ *  compat projection spreads `data` at the top level), so consumers keep their
+ *  `.name` / `.definition` / `.base` reads unchanged. */
+export function agentSelectionOf(event: SessionEvent<'session/agent'>): NativeAgentSelectionEvent {
+  return { seq: event.seq, type: 'session/agent', ...event.data }
+}
+
 /** Compact bounds conversation messages, not session configuration, so the
- *  latest selection is found across the entire event stream. */
+ *  latest selection is found across the entire NEUTRAL event stream. */
 export function agentSelectionFromEvents(
-  events: readonly NativeLogEvent[],
+  events: readonly NativeSessionEvent[],
 ): NativeAgentSelectionEvent | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i]
-    if (event.type === 'session/agent') return event
+    if (event.type === 'session/agent') return agentSelectionOf(event)
   }
   return undefined
 }

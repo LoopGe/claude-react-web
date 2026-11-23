@@ -48,13 +48,14 @@ import type { NativeHostPorts } from './ports.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, type FrameContext } from './vocabulary/frame-context.js'
-import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
+import { NativeSessionLog, loadNativeSessionLogSync, type NativeSeed } from './session-log/log.js'
 import { buildForkSeed } from './session-log/fork.js'
 import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './session-log/replay.js'
-import { migrateEventToV3 } from './session-log/migration.js'
+import { neutralEventsOf } from './session-log/neutral-read.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
 import type { NativeFileAttachment, NativeLogEvent, NativeTurnEndReason } from './session-log/format.js'
+import { NATIVE_SESSION_LOG_V3, projectNeutralEventToLegacy } from './session-log/format.js'
 import { nativeAttachmentOccurrences } from './attachment-reference-index.js'
 import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
@@ -72,6 +73,7 @@ import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import { agentUnusableReason } from '../../../shared/agent-definitions.js'
 import {
   agentSelectionFromEvents,
+  agentSelectionOf,
   assertAgentProfileSupported,
   profileFromDefinition,
   unsupportedAgentFields,
@@ -121,15 +123,6 @@ const TITLE_PROMPT =
 function containsStructuredFile(content: unknown[]): boolean {
   return content.some((block) => typeof block === 'object' && block !== null
     && (block as { type?: unknown }).type === 'file')
-}
-
-/** The canonical NEUTRAL events of a session log: the v3 baseline when present,
- *  otherwise the lossless in-memory migration of the legacy read view (a
- *  resumed v1/v2 log whose eager-at-open migration has not completed yet, or a
- *  legacy-version fork seed). Replay and repair consume these directly — there
- *  is no SDK→neutral history bridge (T13). */
-function neutralEventsOf(log: NativeSessionLog): NativeSessionEvent[] {
-  return log.neutralEvents ?? log.events.map(migrateEventToV3)
 }
 
 /** Neutral disjoint TokenUsage → the SDK Usage shape the session's live
@@ -234,29 +227,6 @@ function skillInvocationForTurn(
  *  unhandled rejection or a second terminal frame, but it must be visible. */
 function flushInBackground(sessionLog: NativeSessionLog, sessionId: string, what: string): void {
   void sessionLog.flush().catch((err) => log.warn(`[${sessionId}] failed to flush ${what}:`, err))
-}
-
-/** Narrow an assistant event's opaque `message.usage` to the counter pair the
- *  session tracks. Old / partial logs may omit it or carry another shape. */
-function usageOf(value: unknown): Usage | null {
-  if (typeof value !== 'object' || value === null) return null
-  const usage = value as {
-    input_tokens?: unknown
-    output_tokens?: unknown
-    cache_read_input_tokens?: unknown
-    cache_creation_input_tokens?: unknown
-  }
-  if (typeof usage.input_tokens !== 'number' || typeof usage.output_tokens !== 'number') return null
-  return {
-    input_tokens: usage.input_tokens,
-    output_tokens: usage.output_tokens,
-    ...(typeof usage.cache_read_input_tokens === 'number'
-      ? { cache_read_input_tokens: usage.cache_read_input_tokens }
-      : {}),
-    ...(typeof usage.cache_creation_input_tokens === 'number'
-      ? { cache_creation_input_tokens: usage.cache_creation_input_tokens }
-      : {}),
-  }
 }
 
 /** Append the `<available_skills>` block to a system prompt, or leave it
@@ -669,7 +639,7 @@ export class NativeSession implements NativeSessionCore {
     this.applyEffectiveProfile()
   }
 
-  private restoreAgentSelection(events: readonly NativeLogEvent[], sessionLog: NativeSessionLog): void {
+  private restoreAgentSelection(events: readonly NativeSessionEvent[], sessionLog: NativeSessionLog): void {
     const selection = agentSelectionFromEvents(events)
     if (selection) {
       this.applyAgentSelection(selection)
@@ -758,7 +728,7 @@ export class NativeSession implements NativeSessionCore {
       this.applyEffectiveProfile()
       return
     }
-    const previous = agentSelectionFromEvents(this.log.events)
+    const previous = agentSelectionFromEvents(neutralEventsOf(this.log))
     if (!previous) throw new Error('agent selection state has no persisted snapshot')
     if (this.currentProfile && !previous.definition) {
       throw new Error(`agent selection "${this.currentProfile.name}" has no definition snapshot`)
@@ -801,7 +771,7 @@ export class NativeSession implements NativeSessionCore {
    *  message — history-only, per the DSH design, never a frame. An existing
    *  log for this id is left untouched: `open` throws `kind: 'exists'`. */
   private openFreshLog(opts: NativeSessionOptions): NativeSessionLog {
-    let selection: NativeAgentSelectionEvent | undefined
+    let selection: SessionEvent<'session/agent'> | undefined
     if (opts.agent !== undefined) {
       const reason = agentUnusableReason(opts.agentStore, opts.agent)
       if (reason) throw new Error(reason)
@@ -809,13 +779,17 @@ export class NativeSession implements NativeSessionCore {
       // Validate BEFORE opening the file: a rejected fresh selection must not
       // leave a turn-less log that a later resume could mistake for a session.
       assertAgentProfileSupported(definition)
+      const timestamp = new Date().toISOString()
       selection = {
         seq: 1,
         type: 'session/agent',
-        name: definition.name,
-        definition: structuredClone(definition),
-        base: this.agentBaseSnapshot(),
-        timestamp: new Date().toISOString(),
+        time: Date.parse(timestamp),
+        data: {
+          name: definition.name,
+          definition: structuredClone(definition),
+          base: this.agentBaseSnapshot(),
+          timestamp,
+        },
       }
     }
     const context: NativeLogEvent = {
@@ -834,7 +808,7 @@ export class NativeSession implements NativeSessionCore {
     if (selection) {
       // Context and selection share the initial synchronous seed write: the
       // next-turn profile is durable before createSession returns.
-      this.applyAgentSelection(selection)
+      this.applyAgentSelection(agentSelectionOf(selection))
     }
     return log
   }
@@ -845,7 +819,9 @@ export class NativeSession implements NativeSessionCore {
    *  and the repaired turn is durably closed with `turn/end { interrupted }`. */
   private openResumeLog(opts: NativeSessionOptions): NativeSessionLog {
     const log = NativeSessionLog.open({ stateDir: opts.stateDir, id: opts.id, cwd: opts.cwd, resume: true })
-    const events = log.events.slice()
+    // Snapshot the neutral prefix BEFORE the repair appends: for a v3 log the
+    // helper returns the live baseline by reference, which the repair mutates.
+    const events = neutralEventsOf(log).slice()
     const { synthetic } = repairInterruptedTurn(neutralEventsOf(log))
     if (synthetic.length > 0) {
       for (const event of synthetic) log.append(event)
@@ -856,7 +832,7 @@ export class NativeSession implements NativeSessionCore {
     // plus the synthetic results (now seq-numbered). `turn/end` is bookkeeping
     // and is skipped by `historyFromEvents`.
     this.history.push(...historyFromEvents(neutralEventsOf(log)))
-    this.restoreAgentSelection(log.events, log)
+    this.restoreAgentSelection(neutralEventsOf(log), log)
     this.restoreUsage(events)
     return log
   }
@@ -874,27 +850,49 @@ export class NativeSession implements NativeSessionCore {
         path,
       )
     }
-    const seed = buildForkSeed({
+    const forkSeed = buildForkSeed({
       source,
       sourceId,
       newId: opts.id,
       cwd: opts.cwd,
       resumeSessionAt: opts.resumeSessionAt,
     })
+    // Neutral read view of the seed: buildForkSeed still emits legacy events
+    // (fork seeds are fully neutralized in a later task) and the seed snapshot
+    // carries no neutral baseline, so neutralEventsOf takes the lossless
+    // migration fallback here.
+    const seedEvents = neutralEventsOf(forkSeed)
+    // NativeSeed accepts both event languages: the pre-persona clear below
+    // rides neutral for a v3 child (the writer normalizes each entry at open).
+    const seed: NativeSeed = forkSeed
     const firstSelection = source.events.find(
       (event): event is NativeAgentSelectionEvent => event.type === 'session/agent',
     )
-    if (firstSelection && !agentSelectionFromEvents(seed.events)) {
+    let selectionEvents = seedEvents
+    if (firstSelection && !agentSelectionFromEvents(seedEvents)) {
       // The cut predates the persona, but later source metadata must not leak
       // into the child. Preserve the pre-persona base carried by the FIRST
       // selection and synchronously seed an explicit clear for replay.
-      seed.events.push({
-        seq: seed.events.length,
+      const timestamp = new Date().toISOString()
+      const clear: SessionEvent<'session/agent'> = {
+        seq: seedEvents.length,
         type: 'session/agent',
-        name: null,
-        base: structuredClone(firstSelection.base),
-        timestamp: new Date().toISOString(),
-      })
+        time: Date.parse(timestamp),
+        data: {
+          name: null,
+          base: structuredClone(firstSelection.base),
+          timestamp,
+        },
+      }
+      // The seed speaks the child's version language until fork seeds are
+      // neutral end-to-end: a v3 child normalizes the neutral event verbatim,
+      // while a legacy child's seed is written as-is — there the clear rides
+      // the compat projection (the same write-compat the writer applies to a
+      // neutral append into a v1/v2 log).
+      seed.events.push(
+        seed.version === NATIVE_SESSION_LOG_V3 ? clear : projectNeutralEventToLegacy(clear, opts.id),
+      )
+      selectionEvents = [...seedEvents, clear]
     }
     const log = NativeSessionLog.open({
       stateDir: opts.stateDir,
@@ -904,12 +902,12 @@ export class NativeSession implements NativeSessionCore {
       seed,
     })
     this.history.push(...historyFromEvents(neutralEventsOf(log)))
-    this.restoreAgentSelection(seed.events, log)
+    this.restoreAgentSelection(selectionEvents, log)
     // Match what a restart of this child would see: its copied prefix's
     // usage-bearing `turn/end` events define last/total (the `{forked}` close
     // carries none and is skipped). Without this the fork reports 0 until the
     // next restart, then jumps to the inherited numbers.
-    this.restoreUsage(seed.events)
+    this.restoreUsage(seedEvents)
     return log
   }
 
@@ -924,7 +922,7 @@ export class NativeSession implements NativeSessionCore {
  *  carries only the captured context + summary, so the context bar must show
  *  0 like the live path does after `compactInPlace`). `usageByModel` keeps
  *  scanning the whole log: billing is cumulative across the boundary. */
-  private restoreUsage(events: readonly NativeLogEvent[]): void {
+  private restoreUsage(events: readonly NativeSessionEvent[]): void {
     let lastAssistant: Usage | null = null
     let lastEnd: Usage | null = null
     this.usageByModel.clear()
@@ -934,16 +932,14 @@ export class NativeSession implements NativeSessionCore {
         lastEnd = null
         continue
       }
-      if (event.type === 'assistant') {
-        const usage = usageOf(event.message.usage)
+      if (event.type === 'assistant/message') {
+        const usage = event.data.usage !== undefined ? sdkUsageOf(event.data.usage) : null
         if (usage) {
           // The context bar describes the MAIN conversation's last request, so
           // only a top-level assistant frame updates it. Billing is cumulative
           // across the whole session, sidechain rounds included.
-          if (event.parent_tool_use_id == null) lastAssistant = usage
-          const model = typeof event.message.model === 'string' && event.message.model
-            ? event.message.model
-            : this.model
+          if (event.parentToolUseId === null) lastAssistant = usage
+          const model = event.data.message.source.model || this.model
           this.usageByModel.set(
             model,
             addUsage(this.usageByModel.get(model) ?? { input_tokens: 0, output_tokens: 0 }, usage),
@@ -951,8 +947,8 @@ export class NativeSession implements NativeSessionCore {
         }
         continue
       }
-      if (event.type !== 'turn/end' || !event.usage) continue
-      lastEnd = { input_tokens: event.usage.input_tokens, output_tokens: event.usage.output_tokens }
+      if (event.type !== 'turn/end' || !event.data.usage) continue
+      lastEnd = { input_tokens: event.data.usage.inputTokens, output_tokens: event.data.usage.outputTokens }
     }
     this.lastUsage = lastAssistant ?? lastEnd ?? { input_tokens: 0, output_tokens: 0 }
   }
@@ -1741,12 +1737,13 @@ export class NativeSession implements NativeSessionCore {
    *  Adjacency is the pairing contract: a raw-only crash prefix or an unrelated
    *  later skill event must never synthesize an invocation. */
   getSkillCompactionEntries(): readonly { afterUserUuid: string; body: string }[] {
+    const events = neutralEventsOf(this.log)
     const entries: Array<{ afterUserUuid: string; body: string }> = []
-    for (let index = 0; index < this.log.events.length - 1; index++) {
-      const user = this.log.events[index]
-      const skill = this.log.events[index + 1]
-      if (user.type === 'user' && user.parent_tool_use_id === null && skill.type === 'session/skill') {
-        entries.push({ afterUserUuid: user.uuid, body: skill.body })
+    for (let index = 0; index < events.length - 1; index++) {
+      const user = events[index]
+      const skill = events[index + 1]
+      if (user.type === 'user/message' && user.parentToolUseId === null && skill.type === 'session/skill') {
+        entries.push({ afterUserUuid: user.data.id, body: skill.data.body })
       }
     }
     return entries
