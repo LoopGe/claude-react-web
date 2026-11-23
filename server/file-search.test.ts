@@ -129,6 +129,18 @@ describe('searchFiles', () => {
     expect(await searchFiles(dir, 'a/../../')).toEqual([])
   })
 
+  it('scoped ./ lists the cwd root with canonical paths (no ./ prefix)', async () => {
+    write(dir, 'a.ts')
+    write(dir, 'sub/b.ts')
+    const results = await searchFiles(dir, './')
+    expect(results).toContainEqual({ path: 'a.ts', dir: false })
+    expect(results).toContainEqual({ path: 'sub', dir: true })
+    expect(results.every((r) => !r.path.startsWith('./'))).toBe(true)
+    // Same normalization mid-path: ./src/ addresses src/ canonically.
+    const nested = await searchFiles(dir, './sub/')
+    expect(nested).toEqual([{ path: 'sub/b.ts', dir: false }])
+  })
+
   it('ranking: exact before prefix before substring', async () => {
     write(dir, 'foo.ts')
     write(dir, 'foo.tsx')

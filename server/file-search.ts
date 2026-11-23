@@ -105,9 +105,12 @@ async function walkFiles(cwd: string): Promise<string[]> {
 }
 
 /** Live listing of one directory (the `a/b/` drill state). The resolved dir
- *  must stay inside cwd; a missing dir is the ordinary typing state → []. */
+ *  must stay inside cwd; a missing dir is the ordinary typing state → [].
+ *  `.` / empty segments are normalized away so `./` lists the cwd root and
+ *  every result path stays canonical (no `./` prefix, no `/./` mid-path). */
 async function listDir(cwd: string, relDir: string, cap: number): Promise<FileSearchResult[]> {
-  const abs = resolve(cwd, relDir)
+  const cleanDir = relDir.split('/').filter((s) => s.length > 0 && s !== '.').join('/')
+  const abs = resolve(cwd, cleanDir)
   if (!isPathInside(abs, cwd, { isWindows: IS_WINDOWS })) return []
   let dirents: Dirent[]
   try {
@@ -117,7 +120,7 @@ async function listDir(cwd: string, relDir: string, cap: number): Promise<FileSe
     throw err
   }
   return dirents
-    .map((d) => ({ path: relDir ? `${relDir}/${d.name}` : d.name, dir: d.isDirectory() }))
+    .map((d) => ({ path: cleanDir ? `${cleanDir}/${d.name}` : d.name, dir: d.isDirectory() }))
     .sort((a, b) => Number(b.dir) - Number(a.dir) || cmp(a.path, b.path))
     .slice(0, cap)
 }
