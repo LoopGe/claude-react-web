@@ -54,7 +54,7 @@ import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './ses
 import { neutralEventsOf, neutralFileOccurrences } from './session-log/neutral-read.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
-import type { NativeFileAttachment, NativeLogEvent, NativeTurnEndReason } from './session-log/format.js'
+import type { NativeFileAttachment, NativeTurnEndReason } from './session-log/format.js'
 import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
@@ -650,8 +650,8 @@ export class NativeSession implements NativeSessionCore {
     const unsupportedFields = unsupportedAgentFields(definition)
     const dropped = unsupportedFields.length > 0
     const timestamp = new Date().toISOString()
-    const migrated = sessionLog.append({
-      type: 'session/agent',
+    const input = {
+      type: 'session/agent' as const,
       time: Date.parse(timestamp),
       data: {
         name: dropped ? null : definition.name,
@@ -661,9 +661,13 @@ export class NativeSession implements NativeSessionCore {
         base: this.agentBaseSnapshot(),
         timestamp,
       },
-    }) as NativeAgentSelectionEvent
+    }
+    // append returns the canonical stored event (neutral for a v3 log); the
+    // selection snapshot is rebuilt from the input + the log-assigned seq, the
+    // same neutral read the resume/fork paths use (agentSelectionOf).
+    const appended = sessionLog.append(input)
     flushInBackground(sessionLog, this.opts.id, 'legacy agent migration')
-    this.applyAgentSelection(migrated)
+    this.applyAgentSelection(agentSelectionOf({ ...input, seq: appended.seq } as SessionEvent<'session/agent'>))
     if (dropped) {
       this.legacyAgentDropNotice =
         `Legacy agent "${definition.name}" was dropped because the native provider does not support: ` +
@@ -691,8 +695,8 @@ export class NativeSession implements NativeSessionCore {
     base: NativeAgentBase,
   ): Promise<void> {
     const timestamp = new Date().toISOString()
-    const selection = await this.log.appendDurable({
-      type: 'session/agent',
+    const input = {
+      type: 'session/agent' as const,
       time: Date.parse(timestamp),
       data: {
         name,
@@ -700,8 +704,9 @@ export class NativeSession implements NativeSessionCore {
         base,
         timestamp,
       },
-    }) as NativeAgentSelectionEvent
-    this.applyAgentSelection(selection)
+    }
+    const appended = await this.log.appendDurable(input)
+    this.applyAgentSelection(agentSelectionOf({ ...input, seq: appended.seq } as SessionEvent<'session/agent'>))
   }
 
   /** Base-only controls append a fresh copy of the CURRENT selection so a
@@ -790,10 +795,14 @@ export class NativeSession implements NativeSessionCore {
         },
       }
     }
-    const context: NativeLogEvent = {
+    // The opening context is a neutral v3 seed event (time 0, matching the
+    // legacy migration's session/context projection byte-for-byte). The log
+    // normalizes the seed and assigns seq; no legacy read view is involved.
+    const context: SessionEvent<'session/context'> = {
       seq: 0,
       type: 'session/context',
-      text: contextSnapshot(opts.cwd),
+      time: 0,
+      data: { text: contextSnapshot(opts.cwd) },
     }
     const log = NativeSessionLog.open({
       stateDir: opts.stateDir,
@@ -855,8 +864,9 @@ export class NativeSession implements NativeSessionCore {
       resumeSessionAt: opts.resumeSessionAt,
     })
     // The seed is neutral end-to-end (a v1/v2 source was migrated in memory by
-    // buildForkSeed); the child log is v3 and stamps its own header id onto the
-    // legacy read view / SDK seam, so no session_id rewrite rides the seed.
+    // buildForkSeed); the child log is v3 and stamps its own header id at the
+    // SDK-seam / v1-v2 compat projection, so no session_id rewrite rides the
+    // seed. `forkSeed.events` is the NEUTRAL seed list, not a legacy read view.
     const seedEvents = forkSeed.events
     const seed: NativeSeed = forkSeed
     const firstSelection = neutralEventsOf(source).find(

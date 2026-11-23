@@ -11,10 +11,10 @@
 //
 // Session identity: the neutral envelope carries NO session_id (the durable
 // vocabulary has no such field) — the child log's header id owns the identity
-// and stamps it onto the legacy read view / SDK seam at projection time. So a
-// fork "rewrites session_id" structurally: the copied neutral events carry no
-// source session_id, and `NativeSessionLog.open` stamps the child id. The seed
-// is always neutral v3; a v1/v2 source is migrated to neutral in memory first
+// and stamps it at the SDK-seam / v1-v2 compat projection. So a fork "rewrites
+// session_id" structurally: the copied neutral events carry no source
+// session_id, and `NativeSessionLog.open` stamps the child id. The seed is
+// always neutral v3; a v1/v2 source is migrated to neutral in memory first
 // (neutralEventsOf), so the child never inherits a legacy version.
 //
 // Pure: no I/O and no logging.

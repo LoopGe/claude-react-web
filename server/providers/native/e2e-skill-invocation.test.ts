@@ -18,7 +18,19 @@ import { makeNativePorts } from '../native-host-adapters.js'
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import type { CanonicalEvent } from './canonical.js'
 import { loadNativeSessionLogSync, NativeSessionLog } from './session-log/log.js'
+import { projectNeutralEventToLegacy } from './session-log/format.js'
 import type { NativeLogEvent } from './session-log/format.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
+
+// T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
+// the legacy shape from the canonical neutral baseline via the pinned compat
+// projection (a v1/v2 log keeps its canonical list); a null snapshot → [].
+function legacyEventsOf(snapshot: { header: { id: string }; events: NativeLogEvent[]; neutralEvents?: NativeSessionEvent[] } | null | undefined): NativeLogEvent[] {
+  if (!snapshot) return []
+  return snapshot.neutralEvents
+    ? snapshot.neutralEvents.map((event) => projectNeutralEventToLegacy(event, snapshot.header.id))
+    : snapshot.events
+}
 
 vi.mock('../../compact-summary.js', () => ({
   summarizeForCompact: vi.fn(async () => 'COMPACT SUMMARY'),
@@ -340,11 +352,11 @@ describe('native skill invocation recovery end to end', () => {
     expect(body).not.toContain('name: demo')
 
     const sourceLog = loadNativeSessionLogSync(stateDir, id)!
-    const rawIndex = sourceLog.events.findIndex((event) =>
+    const rawIndex = legacyEventsOf(sourceLog).findIndex((event) =>
       event.type === 'user' && JSON.stringify(event.message.content).includes('/demo do X'))
     expect(rawIndex).toBeGreaterThanOrEqual(0)
-    expect(sourceLog.events[rawIndex + 1]).toMatchObject({ type: 'session/skill', name: 'demo', body })
-    const rawUuid = (sourceLog.events[rawIndex] as { uuid: string }).uuid
+    expect(legacyEventsOf(sourceLog)[rawIndex + 1]).toMatchObject({ type: 'session/skill', name: 'demo', body })
+    const rawUuid = (legacyEventsOf(sourceLog)[rawIndex] as { uuid: string }).uuid
 
     const diskPage = await first.provider.readHistoryPage(id, { limit: 50 })
     expect(framesText(diskPage.messages)).toContain('/demo do X')
@@ -379,7 +391,7 @@ describe('native skill invocation recovery end to end', () => {
     expect(projectMessages(forkRequest.messages.slice(0, first.requests[0].messages.length)))
       .toEqual(projectMessages(first.requests[0].messages))
     expect(forkRequest.messages.at(-1)).toEqual(userMessage('fork next'))
-    const forkEvents = loadNativeSessionLogSync(stateDir, fork.id)!.events
+    const forkEvents = legacyEventsOf(loadNativeSessionLogSync(stateDir, fork.id))
     const forkRaw = forkEvents.findIndex((event) => event.type === 'user' && event.uuid === rawUuid)
     expect(forkEvents[forkRaw + 1]).toMatchObject({ type: 'session/skill', name: 'demo', body })
     expect(JSON.stringify(await first.provider.readHistoryPage(fork.id, { limit: 50 })))
@@ -438,7 +450,7 @@ describe('native skill invocation recovery end to end', () => {
     fx.scripts.push(textTurn('PERSONA EXCLUDED'))
     await sendAndWait(fx, id, seen.frames, '/demo excluded')
     expect(fx.requests[1].messages.at(-1)).toEqual(userMessage('/demo excluded'))
-    expect(skillEvents(loadNativeSessionLogSync(stateDir, id)!.events)).toHaveLength(1)
+    expect(skillEvents(legacyEventsOf(loadNativeSessionLogSync(stateDir, id)))).toHaveLength(1)
 
     await fx.sm.setAgent(id, null)
     expect(await commandNames(fx.sm, id)).toContain('demo')
@@ -449,7 +461,7 @@ describe('native skill invocation recovery end to end', () => {
     expect(fx.requests[2].messages.at(-1)).toEqual({
       role: 'user', content: [{ type: 'text', text: canonicalBody(cwd, 'demo', 'DEMO-V2\n') }],
     })
-    expect(skillEvents(loadNativeSessionLogSync(stateDir, id)!.events).map((event) => event.body)).toEqual([
+    expect(skillEvents(legacyEventsOf(loadNativeSessionLogSync(stateDir, id))).map((event) => event.body)).toEqual([
       canonicalBody(cwd, 'demo', 'DEMO-V1\n'),
       canonicalBody(cwd, 'demo', 'DEMO-V2\n'),
     ])
@@ -485,7 +497,7 @@ describe('native skill invocation recovery end to end', () => {
     const unknownResult = await sendAndWait(fx, id, seen.frames, '/does-not-exist anything')
     expect(unknownResult.is_error).not.toBe(true)
     expect(fx.requests[9].messages.at(-1)).toEqual(userMessage('/does-not-exist anything'))
-    expect(skillEvents(loadNativeSessionLogSync(stateDir, id)!.events)).toHaveLength(3)
+    expect(skillEvents(legacyEventsOf(loadNativeSessionLogSync(stateDir, id)))).toHaveLength(3)
     seen.unsubscribe()
   })
 
@@ -531,7 +543,7 @@ describe('native skill invocation recovery end to end', () => {
       userMessage('/other still works'),
       { role: 'user', content: [{ type: 'text', text: canonicalBody(cwd, 'other', 'OTHER\n') }] },
     ])
-    expect(skillEvents(loadNativeSessionLogSync(stateDir, id)!.events).map((event) => event.name)).toEqual(['other'])
+    expect(skillEvents(legacyEventsOf(loadNativeSessionLogSync(stateDir, id))).map((event) => event.name)).toEqual(['other'])
     sub.unsubscribe()
     seen.unsubscribe()
   })
@@ -560,7 +572,7 @@ describe('native skill invocation recovery end to end', () => {
       { role: 'user', content: [{ type: 'text', text: body }] },
       userMessage('next live'),
     ])
-    const events = loadNativeSessionLogSync(stateDir, id)!.events
+    const events = legacyEventsOf(loadNativeSessionLogSync(stateDir, id))
     expect(events.filter((event) => event.type === 'user' && JSON.stringify(event).includes('/demo survives failure')))
       .toHaveLength(1)
     expect(skillEvents(events).filter((event) => event.body === body)).toHaveLength(1)
@@ -618,9 +630,9 @@ describe('native skill invocation recovery end to end', () => {
       { role: 'user', content: [{ type: 'text', text: '/demo crashed before injection' }] },
       userMessage('after crash'),
     ])
-    expect(skillEvents(loadNativeSessionLogSync(stateDir, crashedId)!.events)).toEqual([])
+    expect(skillEvents(legacyEventsOf(loadNativeSessionLogSync(stateDir, crashedId)))).toEqual([])
 
-    const legacyBefore = loadNativeSessionLogSync(stateDir, legacyId)!.events
+    const legacyBefore = legacyEventsOf(loadNativeSessionLogSync(stateDir, legacyId))
     await second.sm.resume(legacyId)
     remember(second.sm, legacyId)
     expect(framesText(liveHandle(second.sm, legacyId).history)).toContain(legacyDocument)
@@ -630,7 +642,7 @@ describe('native skill invocation recovery end to end', () => {
     expect(framesText(legacyPage.messages)).not.toContain('CURRENT BODY')
     expect(await second.sm.searchMessages('/demo original', { sessionId: legacyId })).toHaveLength(0)
     expect(await second.sm.searchMessages('OLD EXPANDED BODY', { sessionId: legacyId })).not.toHaveLength(0)
-    expect(loadNativeSessionLogSync(stateDir, legacyId)!.events).toEqual(legacyBefore)
+    expect(legacyEventsOf(loadNativeSessionLogSync(stateDir, legacyId))).toEqual(legacyBefore)
     expect(skillEvents(legacyBefore)).toEqual([])
     seen.unsubscribe()
   })
@@ -684,7 +696,7 @@ describe('native skill invocation recovery end to end', () => {
     expect(framesText(fx.sm.getHistory(autoId))).not.toContain(body)
     expect(framesText((await fx.provider.readHistoryPage(autoId, { limit: 50 })).messages)).not.toContain(body)
     expect(await fx.sm.searchMessages(body, { sessionId: autoId })).toHaveLength(0)
-    expect(skillEvents(loadNativeSessionLogSync(stateDir, autoId)!.events)).toHaveLength(1)
+    expect(skillEvents(legacyEventsOf(loadNativeSessionLogSync(stateDir, autoId)))).toHaveLength(1)
     autoSeen.unsubscribe()
   })
 }, { timeout: 20000 })

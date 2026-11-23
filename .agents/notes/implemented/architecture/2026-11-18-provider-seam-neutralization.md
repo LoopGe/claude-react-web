@@ -73,9 +73,13 @@ the full model and the R1–R7 resolutions; the shipped structure is:
 - **The core** (`loop.ts`, `native-session.ts`, `subagent.ts`, `task-manager.ts`,
   `tools/`, `session-log/`, replay) speaks only the vocabulary: the neutral turn
   engine, neutral v3 log append/flush/migrate, neutral model-history replay, and
-  neutral emission. The core WRITE path appends neutral v3 events directly; the
-  writer's legacy-input migration serves reading/migrating legacy logs and the
-  writer's own v1/v2 compat contract, never core writes.
+  neutral emission. The core WRITE path appends neutral v3 events directly, and
+  the core READ path reads the canonical neutral events (`neutralEventsOf` /
+  `neutralFileOccurrences` in `session-log/neutral-read.ts`) — agent-profile /
+  usage / skill reads, the attachment index, PDF budgets, occurrence/catalog
+  scans and fork seeds all draw from the neutral baseline. The writer's
+  legacy-input migration serves reading/migrating legacy logs and the writer's
+  own v1/v2 compat contract, never core writes or core reads.
 - **Host adapter** (SDK allowed) — `server/providers/native-host-frame-adapter.ts`
   (`wrapNativeCore` implements the SDK-shaped `ProviderSessionHandle`; neutral
   frames/events ↔ `AgentMessage`; host-input identity, lease callbacks,
@@ -92,9 +96,12 @@ the full model and the R1–R7 resolutions; the shipped structure is:
   migrate losslessly eager-at-open (uuid / seq / thinking-signature /
   attachment-blockPath preserving; temp+fsync+rename). The host history read path
   projects neutral events → SDK `RawLine`s through the adapter seam
-  (`projectNativeEventToSdkLine`) before the renderable filter; `log.events`
-  remains the legacy read view for read-side consumers (attachment index, PDF
-  budgets, usage restore).
+  (`projectNativeEventToSdkLine`) before the renderable filter. Read-side
+  neutrality is complete: a v3 log maintains NO live legacy read view —
+  `log.events` is the v1/v2 canonical list only (empty for v3), `append` returns
+  the canonical neutral event, and `projectNeutralEventToLegacy` survives solely
+  for the writer's v1/v2 write-compat, the host history seam and the migration
+  round-trip pin.
 
 The SDK package stays a dependency of the host / claude / adapter, never of
 native core.
@@ -140,7 +147,11 @@ What pins the behavior:
   AND type-only), the vocabulary imports only neutral `shared/*` + Node builtins +
   siblings, the adapters are the sole boundary importers, and every core
   `log.append` / `appendDurable` object literal carries the neutral `data:`
-  envelope.
+  envelope. The read-side shrink is pinned too: outside a session-log allowlist
+  (`format` / `log` / `migration` / `fork` / `neutral-read`) core production files
+  import no legacy read-view vocabulary (`NativeLogEvent` / `NativeEventInput` /
+  `projectNeutralEventToLegacy`) and read no log `.events` view (the neutral
+  fork-seed reads are the sole allowlisted exception).
 - `native/host-free.test.ts` — the host-domain service ban (the six-port
   discipline; see the [host-service ports](2026-11-19-native-host-service-ports.md)
   note).
@@ -149,6 +160,9 @@ What pins the behavior:
   losslessness; the full `npm run verify` gate guards behavior preservation.
 
 Known trade-offs kept: large image-heavy v1/v2 logs pay migration latency at open
-(correctness-first, R7); the legacy read view (`log.events`) remains for read-side
-consumers; and the writer still accepts legacy inputs for its v1/v2 compat contract
-even though the core write path is neutral-only.
+(correctness-first, R7); the writer still accepts legacy inputs for its v1/v2
+compat contract even though the core write path is neutral-only; and the legacy
+projection is still computed for a v1/v2 writer with an in-flight v3 migration
+gate (the pre-rename failure release needs the legacy bytes). The live legacy
+read view is gone for v3 — read-side consumers that want legacy shapes reconstruct
+them from the neutral baseline via the pinned compat projection (as the tests do).

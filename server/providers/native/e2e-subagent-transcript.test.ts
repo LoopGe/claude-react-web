@@ -24,8 +24,20 @@ import type { CanonicalEvent } from './canonical.js'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
 import { nativeHistoryCache } from './session-log/cache.js'
-import type { NativeEventInput } from './session-log/format.js'
+import type { NativeEventInput, NativeLogEvent } from './session-log/format.js'
+import { projectNeutralEventToLegacy } from './session-log/format.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
 import { loadNativeSessionLogSync, NativeSessionLog } from './session-log/log.js'
+
+// T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
+// the legacy shape from the canonical neutral baseline via the pinned compat
+// projection (a v1/v2 log keeps its canonical list); a null snapshot → [].
+function legacyEventsOf(snapshot: { header: { id: string }; events: NativeLogEvent[]; neutralEvents?: NativeSessionEvent[] } | null | undefined): NativeLogEvent[] {
+  if (!snapshot) return []
+  return snapshot.neutralEvents
+    ? snapshot.neutralEvents.map((event) => projectNeutralEventToLegacy(event, snapshot.header.id))
+    : snapshot.events
+}
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import { NativeSubagentTranscriptSource } from '../native-subagent-transcript-source.js'
 
@@ -215,7 +227,7 @@ function toolNames(req: StreamRequest): string[] {
 
 async function waitForTurnEnds(stateDir: string, id: string, count: number): Promise<void> {
   await vi.waitFor(() => {
-    const events = loadNativeSessionLogSync(stateDir, id)?.events ?? []
+    const events = legacyEventsOf(loadNativeSessionLogSync(stateDir, id)) ?? []
     expect(events.filter((event) => event.type === 'turn/end')).toHaveLength(count)
   }, { timeout: 5000 })
 }
@@ -360,7 +372,7 @@ describe('native subagent transcripts end to end', () => {
       expect(toolNames(nested)).not.toContain('Agent')
       expect(toolNames(nested)).not.toContain('Task')
     }
-    const descriptor = loadNativeSessionLogSync(stateDir, id)?.events
+    const descriptor = legacyEventsOf(loadNativeSessionLogSync(stateDir, id))
       .find((event) => event.type === 'subagent/descriptor')
     expect(descriptor).toMatchObject({
       toolUseId: 'agent-stable', parentToolUseId: null, toolName: 'Agent', depth: 1,
@@ -420,7 +432,7 @@ describe('native subagent transcripts end to end', () => {
       .toEqual(transcriptShape(originalMessages))
     expect(transcriptShape(await second.sm.readSubagentTranscript(fork.id, 'legacy-agent')))
       .toEqual(transcriptShape(legacyMessages))
-    const forkDescriptor = loadNativeSessionLogSync(stateDir, fork.id)?.events
+    const forkDescriptor = legacyEventsOf(loadNativeSessionLogSync(stateDir, fork.id))
       .find((event) => event.type === 'subagent/descriptor')
     expect(forkDescriptor).toEqual(descriptor)
   }, 30_000)
@@ -458,7 +470,7 @@ describe('native subagent transcripts end to end', () => {
     )
     await fx.sm.send(id, 'start the overlapping watch')
     await vi.waitFor(() => {
-      expect(JSON.stringify(loadNativeSessionLogSync(stateDir, id)?.events)).toContain('RACE-REPORT')
+      expect(JSON.stringify(legacyEventsOf(loadNativeSessionLogSync(stateDir, id)))).toContain('RACE-REPORT')
     })
     releaseSnapshot()
     await vi.waitFor(() => expect(seen.frames.some((frame) => frame.type === 'result')).toBe(true))
@@ -506,7 +518,7 @@ describe('native subagent transcripts end to end', () => {
       type: 'user', uuid: 'native-subagent-prompt:agent-outer-error', parent_tool_use_id: null,
     })
     expect(JSON.stringify(messages)).toContain('prompt without sidechain output')
-    const events = loadNativeSessionLogSync(stateDir, id)!.events
+    const events = legacyEventsOf(loadNativeSessionLogSync(stateDir, id))
     expect(events.some((event) => event.type === 'subagent/descriptor'
       && event.toolUseId === 'agent-outer-error')).toBe(true)
     expect(events.some((event) => event.type === 'assistant'
@@ -633,7 +645,7 @@ describe('native subagent transcripts end to end', () => {
       expect(transcript.map((frame) => frame.type)).toEqual(['user', 'assistant'])
       expect(JSON.stringify(transcript)).toContain('continue after detach')
       expect(JSON.stringify(transcript)).toContain('DETACHED-TASK-REPORT')
-      expect(loadNativeSessionLogSync(stateDir, id)?.events.find(
+      expect(legacyEventsOf(loadNativeSessionLogSync(stateDir, id)).find(
         (event) => event.type === 'subagent/descriptor',
       )).toMatchObject({ toolUseId: 'task-detach', toolName: 'Task', depth: 1 })
       expect(seen.frames.filter((frame) => frame.type === 'result')).toHaveLength(1)
@@ -686,7 +698,7 @@ describe('native subagent transcripts end to end', () => {
       expect(names).toContain(readTool)
     }
     expect(nested.system).toContain('Explore the codebase read-only.')
-    expect(loadNativeSessionLogSync(stateDir, id)?.events.find(
+    expect(legacyEventsOf(loadNativeSessionLogSync(stateDir, id)).find(
       (event) => event.type === 'subagent/descriptor',
     )).toMatchObject({
       toolUseId: 'explore-read-only', toolName: 'Agent',
@@ -736,7 +748,7 @@ describe('native subagent transcripts end to end', () => {
         && frame.parent_tool_use_id == null
         && frame.message?.content?.[0]?.tool_use_id === agentId)
       expect(outerResult?.message.content[0].is_error).toBe(true)
-      expect(loadNativeSessionLogSync(stateDir, id)?.events.some(
+      expect(legacyEventsOf(loadNativeSessionLogSync(stateDir, id)).some(
         (event) => event.type === 'subagent/descriptor' && event.toolUseId === agentId,
       )).toBe(false)
       expect(await fx.sm.listSubagents(id)).toEqual([])

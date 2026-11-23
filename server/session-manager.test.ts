@@ -396,7 +396,20 @@ import { ResetJournal } from './reset-journal.js'
 import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
 import { NativeProvider } from './providers/native/native-provider.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './providers/native/session-log/log.js'
+import { projectNeutralEventToLegacy } from './providers/native/session-log/format.js'
+import type { NativeSessionEvent } from './providers/native/vocabulary/session-event.js'
 import { nativeCoreOf } from './providers/native-host-frame-adapter.js'
+
+// T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
+// the legacy shape from the canonical neutral baseline via the pinned compat
+// projection (a v1/v2 log keeps its canonical list). Preserves the input's
+// events element type so legacy-shape assertions keep their narrowing.
+function legacyViewOf<L extends { header: { id: string }; events: readonly unknown[]; neutralEvents?: readonly NativeSessionEvent[] | null }>(log: L): L['events'] {
+  if (log.neutralEvents) {
+    return log.neutralEvents.map((event) => projectNeutralEventToLegacy(event, log.header.id)) as unknown as L['events']
+  }
+  return log.events as unknown as L['events']
+}
 import type { CanonicalEvent } from './providers/native/canonical.js'
 import { AttachmentObjectStore } from './attachment-object-store.js'
 import { attachmentRoot, imageObjectPathOf } from './attachment-paths.js'
@@ -7832,7 +7845,7 @@ describe('SessionManager', () => {
 
     expect(requests[0].model).toBe('legacy-persona-model')
     expect(requests[0].system).toContain('LEGACY-PERSONA-MUST-NOT-APPLY')
-    const selections = loadNativeSessionLogSync(dir, id)!.events
+    const selections = legacyViewOf(loadNativeSessionLogSync(dir, id)!)
       .filter((event) => event.type === 'session/agent')
     expect(selections).toHaveLength(1)
     expect(selections[0]).toMatchObject({
@@ -7869,7 +7882,7 @@ describe('SessionManager', () => {
 
     expect(requests[0].model).toBe('legacy-persona-model')
     expect(requests[0].system).toContain('LEGACY-PERSONA-MUST-NOT-APPLY')
-    const selections = loadNativeSessionLogSync(dir, info.id)!.events
+    const selections = legacyViewOf(loadNativeSessionLogSync(dir, info.id)!)
       .filter((event) => event.type === 'session/agent')
     expect(selections).toHaveLength(1)
     expect(selections[0]).toMatchObject({
@@ -8099,7 +8112,7 @@ describe('SessionManager', () => {
     try {
       const updated = await sm.setPermissionMode(info.id, target)
       expect(updated.permissionMode).toBe(target)
-      expect(log.events.filter((event) => event.type === 'session/agent')).toHaveLength(1)
+      expect(legacyViewOf(log).filter((event) => event.type === 'session/agent')).toHaveLength(1)
 
       const canUseTool = live.canUseTool as (
         tool: string,
@@ -8147,7 +8160,7 @@ describe('SessionManager', () => {
       expect(updated.permissionMode).toBe('bypassPermissions')
       expect(sm.get(info.id).permissionMode).toBe('bypassPermissions')
       expect(store.get(info.id)?.permissionMode).toBe('bypassPermissions')
-      expect(log.events.filter((event) => event.type === 'session/agent')).toHaveLength(1)
+      expect(legacyViewOf(log).filter((event) => event.type === 'session/agent')).toHaveLength(1)
 
       const canUseTool = live.canUseTool as (
         tool: string,

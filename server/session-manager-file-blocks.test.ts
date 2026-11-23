@@ -24,7 +24,20 @@ import { __setConfigForTest } from './config.js'
 import { rmRf } from './__test-utils__/index.js'
 import { buildUploadRouter } from './routes/uploads.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './providers/native/session-log/log.js'
+import { projectNeutralEventToLegacy } from './providers/native/session-log/format.js'
+import type { NativeSessionEvent } from './providers/native/vocabulary/session-event.js'
 import { TranscriptSidecar } from './transcript-sidecar.js'
+
+// T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
+// the legacy shape from the canonical neutral baseline via the pinned compat
+// projection (a v1/v2 log keeps its canonical list). Preserves the input's
+// events element type so legacy-shape assertions keep their narrowing.
+function legacyViewOf<L extends { header: { id: string }; events: readonly unknown[]; neutralEvents?: readonly NativeSessionEvent[] | null }>(log: L): L['events'] {
+  if (log.neutralEvents) {
+    return log.neutralEvents.map((event) => projectNeutralEventToLegacy(event, log.header.id)) as unknown as L['events']
+  }
+  return log.events as unknown as L['events']
+}
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
@@ -461,7 +474,7 @@ describe('SessionManager attachment dispatch serialization', () => {
 
       const sent = await sm.sendContent(info.id, [fileBlock(fx.entry), fileBlock(pdfEntry)])
       await vi.waitFor(() => {
-        expect(nativeSession.log.events.filter((event) => event.type === 'turn/end')).toHaveLength(1)
+        expect(legacyViewOf(nativeSession.log).filter((event) => event.type === 'turn/end')).toHaveLength(1)
         expect(nativeSession.pumping).toBe(false)
       })
       const blockedDeletes = await Promise.all([fx.entry.id, pdfEntry.id].map(async (uploadId) =>
@@ -471,7 +484,7 @@ describe('SessionManager attachment dispatch serialization', () => {
 
       await sm.send(info.id, 'explicit retry')
       await vi.waitFor(() => expect(requests).toHaveLength(2))
-      const persisted = nativeSession.log.events.find((event) => event.type === 'user' && event.uuid === sent.uuid)
+      const persisted = legacyViewOf(nativeSession.log).find((event) => event.type === 'user' && event.uuid === sent.uuid)
       expect(persisted).toMatchObject({
         message: {
           content: [
@@ -695,7 +708,7 @@ describe('SessionManager attachment dispatch serialization', () => {
       await internals.log.flush()
       releaseTeardown()
       const snapshot = loadNativeSessionLogSync(fx.stateDir, info.id)
-      expect(JSON.stringify(snapshot?.events)).not.toContain(`"id":"${fx.entry.id}"`)
+      expect(JSON.stringify(snapshot ? legacyViewOf(snapshot) : [])).not.toContain(`"id":"${fx.entry.id}"`)
     } finally {
       releaseMigration()
       releaseTeardown()
@@ -778,7 +791,7 @@ describe('SessionManager attachment dispatch serialization', () => {
       // FIFO end-to-end: the attachment turn ran first and the queued plain
       // send materialized and ran second — the native log records them in order.
       expect(
-        internals.log.events
+        legacyViewOf(internals.log)
           .filter((event) => event.type === 'user')
           .map((event) => event.uuid),
       ).toEqual([first.uuid, second.uuid])
@@ -897,7 +910,8 @@ describe('SessionManager attachment dispatch serialization', () => {
         releaseMigration()
         await finished
         await new Promise((resolve) => setImmediate(resolve))
-        expect(JSON.stringify(loadNativeSessionLogSync(fx.stateDir, info.id)?.events))
+        const ghostSnapshot = loadNativeSessionLogSync(fx.stateDir, info.id)
+        expect(JSON.stringify(ghostSnapshot ? legacyViewOf(ghostSnapshot) : []))
           .not.toContain(`"id":"${fx.entry.id}"`)
       } finally {
         releaseMigration()

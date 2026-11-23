@@ -8,7 +8,7 @@ import { nativeHistoryCache } from './cache.js'
 import { readNativeHistoryEntries, readNativeHistoryPage } from './reader.js'
 import { historyFromEvents } from './replay.js'
 import { migrateEventToV3 } from './migration.js'
-import { isSidechainEvent } from './format.js'
+import { isSidechainEvent, projectNeutralEventToLegacy } from './format.js'
 import { makeNativePorts } from '../../native-host-adapters.js'
 import { isRenderableSdkMessage, type HistoryPage, type RawLine } from '../../../../shared/transcript-format.js'
 import type { NativeSessionEvent } from '../vocabulary/session-event.js'
@@ -314,9 +314,12 @@ describe('native history read seam — UI history identity (T13)', () => {
     const snapshot = loadNativeSessionLogSync(dir, 's1')!
     expect(snapshot.header.v).toBe(3)
     const loaded = await nativeHistoryCache.load(dir, 's1')
-    // The seam's SDK lines equal the legacy read view's renderable subset
+    // The seam's SDK lines equal the compat projection's renderable subset
     // verbatim — so normalize/paginateRenderable see byte-identical input.
-    const legacyRenderable = snapshot.events.filter((e) => isRenderableSdkMessage(e) || isSidechainEvent(e))
+    // T6: no live legacy read view; project the neutral baseline to legacy.
+    const legacyRenderable = snapshot.neutralEvents!
+      .map((e) => projectNeutralEventToLegacy(e, 's1'))
+      .filter((e) => isRenderableSdkMessage(e) || isSidechainEvent(e))
     expect(loaded!.lines).toEqual(legacyRenderable)
 
     // And the normalized entries equal the legacy normalize of those lines.
