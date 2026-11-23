@@ -863,6 +863,11 @@ export interface SessionSnapshot {
   draftKey: string | null
   frozenDrafts: readonly DraftState[]
   draftRowKeys: Readonly<Record<string, string>>
+  /** In-place streaming thinking row (parallel to draft/draftKey). The row
+   *  layer subscribes to the STABLE thinkingDraftKey projection; the body
+   *  leaf owns the thinkingDraft object's flush-rate churn. */
+  thinkingDraft: ThinkingDraftState | null
+  thinkingDraftKey: string | null
   activePhase: ActivePhase
   tokenRate: number | null
   contextUsage: ContextUsage | null

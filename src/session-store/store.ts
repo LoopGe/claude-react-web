@@ -132,6 +132,8 @@ export class SessionStore {
       draftKey: mirror.draft?.key ?? null,
       frozenDrafts: mirror.frozenDrafts,
       draftRowKeys: mirror.draftRowKeys,
+      thinkingDraft: mirror.thinkingDraft,
+      thinkingDraftKey: mirror.thinkingDraft?.key ?? null,
       activePhase: mirror.liveTurn?.phase ?? null,
       tokenRate: mirror.liveTurn?.tokenRate ?? null,
       contextUsage: mirror.contextUsage,
