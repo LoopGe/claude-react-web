@@ -95,6 +95,7 @@
     "motion": "^12.42.2",
     "open": "^10.1.0",
     "patch-package": "^8.0.1",
+    "pdfjs-dist": "6.3.289",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

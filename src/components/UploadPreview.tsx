@@ -1,9 +1,10 @@
 // Preview panel for one recorded upload, opened from the Uploads
 // Manager's per-row view button. Images render inline (<img>); text
 // files stream in capped to TEXT_PREVIEW_LIMIT bytes (uploads are
-// capped at 500 MB server-side, so a full text() is not safe); other
-// kinds show an unsupported notice. Every kind carries a Download
-// button (GET /uploads/:id/content?download=1).
+// capped at 500 MB server-side, so a full text() is not safe); PDFs
+// render through the shared ref-keyed viewer (raw bytes by upload id,
+// UploadPdfViewer); other kinds show an unsupported notice. Every kind
+// carries a Download button (GET /uploads/:id/content?download=1).
 //
 // The panel reuses the Overlay 'perm' shell and nests inside the
 // manager dialog the same way ConfirmDialog does.
@@ -11,6 +12,7 @@
 import { useEffect, useState } from 'react'
 import { Overlay } from './Overlay'
 import { CodeBlock } from './Markdown'
+import { UploadPdfViewer } from './UploadPdfModal'
 import { formatBytes } from '../utils/format'
 import { uploadPreviewKind, type UploadListItem } from '../../shared/uploads'
 import { IconDownload, IconEye, IconLoader, IconX } from './icons/ToolIcons'
@@ -106,7 +108,9 @@ export function UploadPreview({ target, onClose }: Props) {
         </button>
       </div>
 
-      <div className="uploads-preview-body">
+      <div className={`uploads-preview-body${kind === 'pdf' ? ' uploads-preview-body-pdf' : ''}`}>
+        {kind === 'pdf' && <UploadPdfViewer id={target.id} name={target.name} size={target.size} />}
+
         {kind === 'image' && !imgError && (
           <img
             className="uploads-preview-image"

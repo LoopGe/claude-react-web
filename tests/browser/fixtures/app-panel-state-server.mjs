@@ -14,6 +14,12 @@ import { ProviderRegistry } from '../../../server/providers/registry.ts'
 import { createPushable } from '../../../server/pushable.ts'
 import { attachWebSocket } from '../../../server/ws.ts'
 import { createLogger } from '../../../server/log.ts'
+import {
+  pdfFixture,
+  cjkPdfFixture,
+  scannedPdfFixture,
+  oversizePdfFixture,
+} from '../../pdf-fixture.ts'
 
 const log = createLogger('app-fixture')
 
@@ -125,6 +131,18 @@ await writeTree(repoCwd, {
     '',
   ].join('\n'),
 })
+// ---- PDF preview fixtures (pdf-preview.spec.ts) ----
+// Hand-built PDFs (tests/pdf-fixture.ts), written as binary into the same
+// controlled repo: a two-page Latin doc, a non-embedded GBK CID Chinese doc,
+// an image-only "scanned" page, and a >20MiB doc for the cap refusal.
+for (const [name, bytes] of [
+  ['report.pdf', pdfFixture()],
+  ['chinese.pdf', cjkPdfFixture()],
+  ['scanned.pdf', scannedPdfFixture()],
+  ['huge.pdf', oversizePdfFixture()],
+]) {
+  await writeFile(join(repoCwd, name), bytes)
+}
 // A real repo so `git ls-files --cached --others --exclude-standard` is the
 // search path (unborn HEAD is fine: --others lists the untracked files).
 await execFileAsync('git', ['init', '--quiet', repoCwd])
@@ -147,6 +165,19 @@ for (const [sessionIndex, id] of refIds.entries()) {
     lastActivityAt: now - (refIds.length - sessionIndex) * 500,
   })
 }
+// A DEDICATED session for pdf-preview.spec.ts, sharing the repo cwd but NOT
+// the reference spec's session: the fixture handle never emits result frames,
+// so any session the reference spec sends from stays mid-turn with a growing
+// input queue, which changes the send path. The PDF spec needs a fresh,
+// idle session so its own send renders the file chip deterministically.
+sessions.upsert({
+  id: '99999999-9999-4999-8999-999999999999',
+  provider: 'claude',
+  title: 'PDF preview',
+  cwd: repoCwd,
+  createdAt: now - 250,
+  lastActivityAt: now - 250,
+})
 await sessions.flush()
 
 class FixtureHandle {

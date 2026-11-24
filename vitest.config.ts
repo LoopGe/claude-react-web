@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitest/config'
 import { availableParallelism } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { pdfjsAssetsPlugin } from './build/pdfjs-assets-plugin'
 // Type-only: erased at runtime, so it pulls nothing from the `vitest` entry.
 import type { Reporter } from 'vitest'
 
@@ -93,6 +94,9 @@ function groupKey(filepath: string, root: string): string {
 }
 
 export default defineConfig({
+  // Resolves `virtual:pdfjs-assets` for src/utils/pdf-assets.ts (same plugin
+  // the client build uses, so tests exercise the real inlined asset map).
+  plugins: [pdfjsAssetsPlugin()],
   test: {
     reporters: ['default', durationReporter()],
     // Client tests need explicit RTL cleanup: `globals: false` below means RTL's
@@ -108,7 +112,7 @@ export default defineConfig({
     // (happy-dom — see environmentMatchGlobs below for the measurements).
     // Use workspace-style overrides so both share one `vitest run`.
     environment: 'node',
-    include: ['server/**/*.test.ts', 'src/**/*.test.{ts,tsx}', 'shared/**/*.test.ts', 'plugins/**/*.test.ts', 'packages/**/*.test.ts', 'desktop/**/*.test.ts', 'scripts/**/*.test.ts'],
+    include: ['server/**/*.test.ts', 'src/**/*.test.{ts,tsx}', 'shared/**/*.test.ts', 'plugins/**/*.test.ts', 'packages/**/*.test.ts', 'desktop/**/*.test.ts', 'scripts/**/*.test.ts', 'build/**/*.test.ts', 'tests/**/*.test.ts'],
     // Process-per-file isolation. `threads` was measured as the alternative and
     // is clearly worse here: the full suite went 133s → 178s, with environment
     // 260s → 494s and prepare 49s → 105s of worker time, plus one file failing.

@@ -3,6 +3,18 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 import { UploadPreview, TEXT_PREVIEW_LIMIT } from './UploadPreview'
 import { uploadPreviewKind, uploadMimeType } from '../../shared/uploads'
+import { PDF_PREVIEW_MAX_BYTES } from '../../shared/read-file'
+
+// The PDF viewer internals are owned by PdfBody.test.tsx and the byte-source
+// host by UploadPdfModal.test.tsx; stub the lazy boundary so the PDF-branch
+// tests pin that the manager preview feeds bytes-by-id to the viewer.
+const pdfBody = vi.hoisted(() => ({ render: vi.fn() }))
+vi.mock('./file-preview/LazyPdfBody', () => ({
+  default: (props: unknown) => {
+    pdfBody.render(props)
+    return <div data-testid="pdf-body" />
+  },
+}))
 
 const TARGET = {
   id: 'x1',
@@ -93,6 +105,53 @@ describe('UploadPreview', () => {
     expect(screen.getByText(/no preview available/i)).toBeTruthy()
   })
 
+  it('PDF kind fetches bytes by id and renders the viewer, not the unsupported notice', async () => {
+    const bytes = new TextEncoder().encode('%PDF-1.4\n%%EOF')
+    const fetch = vi.fn().mockResolvedValue({ ok: true, arrayBuffer: async () => bytes.buffer })
+    vi.stubGlobal('fetch', fetch)
+    render(<UploadPreview target={{ ...TARGET, name: 'doc.pdf' }} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('pdf-body')).toBeTruthy())
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/uploads/x1/content',
+      expect.objectContaining({ signal: expect.anything() }),
+    )
+    const props = pdfBody.render.mock.calls.at(-1)?.[0] as { bytes: Uint8Array; title: string }
+    expect(Array.from(props.bytes)).toEqual(Array.from(bytes))
+    expect(props.title).toBe('doc.pdf')
+    expect(screen.queryByText(/no preview available/i)).toBeNull()
+  })
+
+  it('PDF kind surfaces a fetch failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404 }))
+    render(<UploadPreview target={{ ...TARGET, name: 'gone.pdf' }} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeTruthy())
+    expect(screen.queryByTestId('pdf-body')).toBeNull()
+  })
+
+  it('PDF kind keeps the download button', () => {
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})))
+    render(<UploadPreview target={{ ...TARGET, name: 'doc.pdf' }} onClose={() => {}} />)
+    const download = screen.getByRole('link', { name: /download file/i })
+    expect(download.getAttribute('href')).toBe('/api/uploads/x1/content?download=1')
+  })
+
+  it('PDF kind refuses an over-cap size before fetching, keeping the download button', () => {
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    render(
+      <UploadPreview
+        target={{ ...TARGET, name: 'big.pdf', size: PDF_PREVIEW_MAX_BYTES + 1 }}
+        onClose={() => {}}
+      />,
+    )
+    expect(screen.getByText(/too large to preview/i).textContent).toMatch(/20/)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('pdf-body')).toBeNull()
+    expect(screen.getByRole('link', { name: /download file/i }).getAttribute('href')).toBe(
+      '/api/uploads/x1/content?download=1',
+    )
+  })
+
   it('Close button invokes onClose', () => {
     const onClose = vi.fn()
     render(<UploadPreview target={TARGET} onClose={onClose} />)
@@ -117,5 +176,19 @@ describe('uploadPreviewKind / uploadMimeType', () => {
     expect(uploadMimeType('b.jpeg')).toBe('image/jpeg')
     expect(uploadMimeType('c.json')).toBe('text/plain; charset=utf-8')
     expect(uploadMimeType('d.zzz')).toBe('application/octet-stream')
+  })
+
+  it('classifies pdf as its own client preview kind — never image', () => {
+    expect(uploadPreviewKind('doc.pdf')).toBe('pdf')
+    expect(uploadPreviewKind('DOC.PDF')).toBe('pdf')
+    expect(uploadPreviewKind('dir\\report.pdf')).toBe('pdf')
+    // The image table is untouched: pdf is not an IMAGE_MIMES entry.
+    expect(uploadPreviewKind('a.png')).toBe('image')
+    expect(uploadPreviewKind('e.svg')).toBe('other')
+  })
+
+  it('pdf keeps the octet-stream served type (nosniff posture unchanged)', () => {
+    expect(uploadMimeType('doc.pdf')).toBe('application/octet-stream')
+    expect(uploadMimeType('DOC.PDF')).toBe('application/octet-stream')
   })
 })

@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import {
   RESOURCE_PANE_KEY_PREFIX,
   ResourcePaneStore,
+  type ResourceTab,
   type StorageLike,
 } from './tab-store'
 import { fileResource } from '../../shared/resource-address'
@@ -123,6 +124,32 @@ describe('ResourcePaneStore', () => {
     expect(state.tabs).toEqual([])
     expect(state.activeTabId).toBeNull()
     expect(state.expanded).toBe(false)
+  })
+
+  it('reports a closed tab to the lifecycle observer once', () => {
+    const closed: ResourceTab[] = []
+    const store = new ResourcePaneStore({
+      storage: memoryStorage().storage,
+      onTabClosed: (tab) => closed.push(tab),
+    })
+    const a = (store.open('s1', A) as { tabId: string }).tabId
+    store.open('s1', B)
+    store.close('s1', a)
+    store.close('s1', a)
+    expect(closed.map((tab) => tab.address)).toEqual([A])
+  })
+
+  it('reports every tab when a session is removed', () => {
+    const closed: ResourceTab[] = []
+    const store = new ResourcePaneStore({
+      storage: memoryStorage().storage,
+      onTabClosed: (tab) => closed.push(tab),
+    })
+    store.open('s1', A)
+    store.open('s1', B)
+    store.open('s2', fileResource('s2', '/repo/a.ts'))
+    store.removeSession('s1')
+    expect(closed.map((tab) => tab.address)).toEqual([A, B])
   })
 
   it('rejects an address that does not parse without throwing', () => {

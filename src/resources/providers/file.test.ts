@@ -49,6 +49,18 @@ describe('file resource provider', () => {
     )
   })
 
+  it('asks for base64 with the larger PDF cap for .pdf paths', async () => {
+    const reads: string[] = []
+    const provider = createFileProvider(async (path) => {
+      reads.push(path)
+      return { available: true, contents: 'b64', encoding: 'base64' }
+    })
+    await collect(provider.open(fileResource('s1', '/repo/doc.pdf'), ctx()))
+    expect(reads[0]).toBe(
+      '/sessions/s1/read-file?path=%2Frepo%2Fdoc.pdf&encoding=base64&maxBytes=20971520',
+    )
+  })
+
   it('passes a denied/missing read through as a value for the body’s neutral hint', async () => {
     const provider = createFileProvider(async () => ({ available: false }))
     const frames = await collect(provider.open(TS, ctx()))

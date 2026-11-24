@@ -11,11 +11,28 @@ import { FilePreviewBody, type FilePreviewBodyProps } from './FilePreviewBody'
 import { ImageViewerProvider } from '../../hooks/useImageViewer'
 import type { FileReadResult } from '../../../shared/read-file'
 
+// The PDF viewer internals (pdf.js, worker, zoom) are owned by PdfBody.test.tsx.
+// Here we isolate the DECISION TREE: stub the lazy boundary so a PDF branch
+// renders a marker and records the props it would hand the real viewer.
+const pdfBody = vi.hoisted(() => ({ render: vi.fn() }))
+vi.mock('./LazyPdfBody', () => ({
+  default: (props: unknown) => {
+    pdfBody.render(props)
+    return <div data-testid="pdf-body" />
+  },
+}))
+
+const PDF_TEXT = '%PDF-1.4\n%%EOF'
+const PDF_B64 = btoa(PDF_TEXT)
+const PDF_BYTES = new TextEncoder().encode(PDF_TEXT)
+const PDF_ADDRESS = 'crw-resource://file/s1/repo/doc.pdf'
+
 // 1×1 PNG — happy-dom decodes data-URL PNGs, so the Lightbox loads cleanly.
 const PNG_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
 beforeEach(() => {
+  pdfBody.render.mockClear()
   vi.stubGlobal('matchMedia', () => ({
     matches: false,
     addEventListener() {},
@@ -250,5 +267,77 @@ describe('FilePreviewBody states', () => {
     })
     expect(screen.getByText('refetch failed')).toBeTruthy()
     expect(screen.getByText(/hello world/)).toBeTruthy()
+  })
+})
+
+describe('FilePreviewBody PDFs', () => {
+  const pdfData: FileReadResult = { available: true, contents: PDF_B64, encoding: 'base64' }
+
+  it('renders the lazy PDF viewer with the decoded bytes for a base64 PDF', () => {
+    renderBody('/repo/doc.pdf', 'doc.pdf', pdfData, { address: PDF_ADDRESS })
+    expect(document.body.querySelector('[data-testid="pdf-body"]')).not.toBeNull()
+    expect(document.body.querySelector('.file-viewer-code')).toBeNull()
+    const props = pdfBody.render.mock.calls.at(-1)?.[0] as {
+      bytes: Uint8Array
+      title: string
+      viewStateKey?: string
+    }
+    expect(props.bytes).toEqual(PDF_BYTES)
+    expect(props.title).toBe('doc.pdf')
+  })
+
+  it('keys view-state retention on the resource address', () => {
+    renderBody('/repo/doc.pdf', 'doc.pdf', pdfData, { address: PDF_ADDRESS })
+    const props = pdfBody.render.mock.calls.at(-1)?.[0] as { viewStateKey?: string }
+    expect(props.viewStateKey).toBe(PDF_ADDRESS)
+  })
+
+  it('keeps a stable byte identity across re-renders (the viewer load keys on it)', () => {
+    const view = renderBody('/repo/doc.pdf', 'doc.pdf', pdfData, { address: PDF_ADDRESS })
+    const first = (pdfBody.render.mock.calls.at(-1)?.[0] as { bytes: Uint8Array }).bytes
+    view.rerender(
+      <ImageViewerProvider>
+        <FilePreviewBody
+          path="/repo/doc.pdf"
+          title="doc.pdf"
+          data={{ ...pdfData }}
+          error={null}
+          loading={false}
+          address={PDF_ADDRESS}
+        />
+      </ImageViewerProvider>,
+    )
+    const second = (pdfBody.render.mock.calls.at(-1)?.[0] as { bytes: Uint8Array }).bytes
+    expect(second).toBe(first)
+  })
+
+  it('refuses an over-cap (truncated) PDF and never feeds its bytes to the viewer', () => {
+    renderBody('/repo/big.pdf', 'big.pdf', { ...pdfData, truncated: true }, { address: PDF_ADDRESS })
+    expect(document.body.querySelector('[data-testid="pdf-body"]')).toBeNull()
+    expect(pdfBody.render).not.toHaveBeenCalled()
+    const hint = document.body.querySelector('.file-viewer-truncated')
+    expect(hint).not.toBeNull()
+    // The cap label uses &nbsp; (U+00A0) before "MB", matching the image hint.
+    expect(hint?.textContent).toContain('PDF is too large to preview (over 20 MB)')
+  })
+
+  it('decides PDF from the read path, not the display title', () => {
+    renderBody('/repo/doc.pdf', 'Quarterly Report', pdfData, { address: PDF_ADDRESS })
+    expect(document.body.querySelector('[data-testid="pdf-body"]')).not.toBeNull()
+  })
+
+  it('does not turn a text file into a PDF viewer because of its title', () => {
+    renderBody('/repo/notes.ts', 'notes.pdf', { available: true, contents: 'export const x = 1' })
+    expect(document.body.querySelector('[data-testid="pdf-body"]')).toBeNull()
+    expect(pdfBody.render).not.toHaveBeenCalled()
+    expect(document.body.querySelector('.file-viewer-code')).not.toBeNull()
+  })
+
+  it('falls back to the code view when the read did not return base64', () => {
+    // SDK contract: `encoding` is absent when an older CLI ignored the request.
+    renderBody('/repo/doc.pdf', 'doc.pdf', { available: true, contents: 'not-a-pdf' })
+    expect(document.body.querySelector('[data-testid="pdf-body"]')).toBeNull()
+    expect(pdfBody.render).not.toHaveBeenCalled()
+    expect(document.body.querySelector('.file-viewer-code')).not.toBeNull()
   })
 })

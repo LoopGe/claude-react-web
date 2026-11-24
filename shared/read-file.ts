@@ -10,6 +10,12 @@
 // so it lives beside the result type both sides share.
 export const IMAGE_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
 
+// PDFs warrant more headroom than images (matching the native PDF document cap).
+// A truncated PDF is undecodable, so the preview refuses an over-cap read rather
+// than feeding partial bytes to pdf.js — the same contract as the image cap, and
+// the request builder and the "too large" hint must agree on this value.
+export const PDF_PREVIEW_MAX_BYTES = 20 * 1024 * 1024
+
 export interface FileReadResult {
   /** false = read permission denied or file missing (SDK returned null). */
   available: boolean

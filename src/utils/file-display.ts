@@ -199,3 +199,11 @@ export function imageMediaTypeOf(path: string): string | null {
   const ext = extOf(base)
   return ext === null ? null : (EXT_TO_MEDIA_TYPE[ext] ?? null)
 }
+
+/** Whether a file path names a PDF (`.pdf` extension). Detection follows the
+ *  read `path`, never a display title. Same case/extension handling as
+ *  imageMediaTypeOf — both route through extOf. */
+export function isPdfPath(path: string): boolean {
+  const { base } = splitFilePath(path)
+  return extOf(base) === 'pdf'
+}

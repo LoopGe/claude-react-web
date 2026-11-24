@@ -227,6 +227,245 @@
   margin-bottom: var(--space-1-5);
 }
 
+/* ── PDF viewer (PdfBody, lazy chunk) ─────────────────────────────────────
+   Continuous page sequence: theme document background, 12px gaps + inset,
+   page shadows, 3:4 skeletons for unrendered pages. The text-layer rules below
+   are a hand-copied subset of pdfjs-dist 6.3.289 web/pdf_viewer.css (.textLayer)
+   — we do NOT import pdf_viewer.css; the subset must track the pinned
+   pdfjs-dist version (guarded by pdf-viewer.test.ts). Theme tokens come in pairs
+   (repo rule); shadows follow tokens.css's rgba-black shadow convention. */
+:root {
+  --pdf-document-bg: var(--bg);
+  --pdf-skeleton-bg: var(--bg-elev-2);
+  --pdf-page-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 6px 18px rgba(0, 0, 0, 0.3);
+  --pdf-selection-bg: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+[data-theme='light'] {
+  --pdf-document-bg: var(--bg-elev-2);
+  --pdf-skeleton-bg: var(--bg-elev-3);
+  --pdf-page-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 6px 18px rgba(0, 0, 0, 0.12);
+  --pdf-selection-bg: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* The frame owns the floating controls' positioning context; the body inside
+   it is the scroll container (an overflow:auto scroller cannot host absolutely
+   positioned chrome — it would scroll away with the pages). */
+.pdf-frame {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pdf-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px;
+  overflow: auto;
+  background: var(--pdf-document-bg);
+}
+
+.pdf-page {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
+/* An unrendered page holds its place as a quiet block; the block itself is the
+   loading feedback, so no spinner competes with the centred document wait. */
+.pdf-page-placeholder {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background: var(--pdf-skeleton-bg);
+}
+
+.pdf-page-surface {
+  position: relative;
+  max-width: none;
+  margin-inline: auto;
+  box-shadow: var(--pdf-page-shadow);
+}
+.pdf-page-surface[hidden] {
+  display: none;
+}
+
+/* Zoom layout is variable-driven so a gesture resizes the pages synchronously
+   (PdfBody writes --pdf-zoom + data-pdf-zoom-mode before compensating scroll)
+   while the bitmap redraws asynchronously at the settled zoom. --pdf-page-width
+   is the intrinsic 96-DPI width each page sets on its first render; the 100%
+   fallbacks only ever apply to a surface that is still hidden. Fit-width is
+   shrink-only by construction: min(intrinsic, container). */
+.pdf-body[data-pdf-zoom-mode='fit-width'] .pdf-page-surface {
+  width: min(var(--pdf-page-width, 100%), 100%);
+}
+.pdf-body[data-pdf-zoom-mode='fixed'] .pdf-page-surface {
+  width: calc(var(--pdf-page-width, 100%) * var(--pdf-zoom, 1));
+}
+
+.pdf-page-canvas {
+  display: block;
+  width: 100%;
+  max-width: none;
+  height: auto;
+}
+
+.pdf-page-text {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+}
+
+/* TextLayerBuilder selection styles follow pdfjs-dist 6.3.289 web/pdf_viewer.css.
+   --total-scale-factor / --scale-round-x/y are set by pdf-text.ts; --min-font-size
+   is set inline by the TextLayer itself. */
+.pdf-page-text .textLayer {
+  position: absolute;
+  inset: 0;
+  text-align: initial;
+  overflow: clip;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 0;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.pdf-page-text .textLayer[data-main-rotation='90'] {
+  transform: rotate(90deg) translateY(-100%);
+}
+.pdf-page-text .textLayer[data-main-rotation='180'] {
+  transform: rotate(180deg) translate(-100%, -100%);
+}
+.pdf-page-text .textLayer[data-main-rotation='270'] {
+  transform: rotate(270deg) translateX(-100%);
+}
+.pdf-page-text :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+  user-select: text;
+}
+.pdf-page-text .textLayer > :not(.markedContent),
+.pdf-page-text .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.pdf-page-text .markedContent {
+  display: contents;
+}
+.pdf-page-text ::selection {
+  background: var(--pdf-selection-bg);
+  color: transparent;
+}
+.pdf-page-text br::selection {
+  background: transparent;
+}
+.pdf-page-text .textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+.pdf-page-text .selecting .endOfContent {
+  top: 0;
+}
+
+/* Document/page load + failure messages. */
+.pdf-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.pdf-status-center {
+  flex: 1 1 auto;
+  justify-content: center;
+}
+
+/* Floating zoom controls (PdfZoomControls). Auto-hide is owned by PdfBody
+   (reveal near the bottom edge, hide after a quiet delay); the CSS only
+   translates the data-visible flag into the fade/slide. Non-hover devices
+   keep the panel permanently visible — there is no pointer to reveal it. */
+.pdf-zoom-controls {
+  position: absolute;
+  z-index: 2;
+  bottom: 14px;
+  inset-inline-start: 50%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev-2);
+  box-shadow: var(--overlay-shadow);
+  color: var(--fg);
+  font-size: var(--fs-xs);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 16px) scale(0.98);
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.pdf-zoom-controls[data-visible='true'] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0) scale(1);
+}
+.pdf-zoom-controls .pdf-zoom-step {
+  width: 28px;
+  padding: 0;
+  flex: none;
+  justify-content: center;
+}
+.pdf-zoom-controls .pdf-zoom-percent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 58px;
+  padding-inline: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .pdf-zoom-controls {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pdf-zoom-controls {
+    transition-duration: 0.01ms;
+  }
+}
+
 /* YAML frontmatter field list (FrontmatterFields), rendered above the
    markdown body inside .file-viewer-md. Existing theme vars only. */
 .frontmatter-fields {

@@ -398,6 +398,7 @@ function FileResourceBody({
     <ResourceLinkProvider sessionId={parsed?.sessionId} baseDir={dir} baseFile={parsed?.path}>
       <FilePreviewBody
       key={address}
+      address={address}
       path={parsed?.path ?? null}
       title={resourceTitle(address)}
       data={snapshot.value ?? null}
