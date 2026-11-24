@@ -1,7 +1,8 @@
 # PDF Preview — Design
 
 Date: 2026-11-24
-Status: proposed (awaiting approval)
+Status: implemented
+Agent Note: [.agents/notes/implemented/feature/2026-11-24-pdf-preview.md](../../../.agents/notes/implemented/feature/2026-11-24-pdf-preview.md)
 Research: `.scratch/pdf-research-dsh.md`, `.scratch/pdf-research-ours.md` (git-ignored scratch)
 
 ## Intent

@@ -4,9 +4,15 @@ export default defineConfig({
   testDir: './tests/browser',
   // These specs drive the real App against the same fixture server (real Hono
   // REST/WS + SessionManager; only the provider process boundary is faked).
-  // The terminal spec's PTY and the file-reference spec's search/preview are
-  // provider-independent, so they share the harness.
-  testMatch: ['app-panel-reshow.spec.ts', 'terminal.spec.ts', 'file-reference.spec.ts'],
+  // The terminal spec's PTY, the file-reference spec's search/preview and the
+  // pdf-preview spec's viewer are provider-independent, so they share the
+  // harness.
+  testMatch: [
+    'app-panel-reshow.spec.ts',
+    'terminal.spec.ts',
+    'file-reference.spec.ts',
+    'pdf-preview.spec.ts',
+  ],
   timeout: 90_000,
   workers: 1,
   use: {
