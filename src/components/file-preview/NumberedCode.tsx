@@ -65,7 +65,10 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
   )
   // Memoized so a refetch with unchanged contents does not re-create thousands
   // of keyed elements on every render. The cap is checked BEFORE the map so a
-  // huge file never pays the per-line element cost.
+  // huge file never pays the per-line element cost. `revision` is a dep so a
+  // navigation re-open re-keys the animated spans; `wrap` is deliberately NOT a
+  // dep, so toggling wrap never remounts the target (the scroll effect re-centers
+  // the SAME node, and the band does not replay on a wrap toggle).
   const renderedLines = useMemo(
     () =>
       highlighted == null
@@ -74,9 +77,14 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
             const number = index + 1
             const isTarget = line != null && number === line
             const inRange = rangeEnd != null && number > line! && number <= rangeEnd
+            // Only the animated (target/range) spans are keyed on revision, so a
+            // re-open remounts just those few and replays the fading band — not
+            // all 5000 lines. A same-content refetch (revision unchanged) keeps
+            // the keys, so the band does not flash again.
+            const animated = isTarget || inRange
             return (
               <span
-                key={number}
+                key={animated ? `${number}-r${revision}` : number}
                 className={`code-line${isTarget ? ' code-line-target' : ''}${
                   inRange ? ' code-line-in-range' : ''
                 }`}
@@ -89,7 +97,7 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
               </span>
             )
           }),
-    [lines, line, rangeEnd, highlighted],
+    [lines, line, rangeEnd, highlighted, revision],
   )
   // Track the last revision we scrolled for so a re-render cannot re-scroll;
   // the effect below only runs when the navigation inputs change.

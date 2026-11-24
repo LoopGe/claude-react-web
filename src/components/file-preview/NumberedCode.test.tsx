@@ -252,3 +252,72 @@ describe('NumberedCode wrap toggle', () => {
     expect(scroll).toBe(440)
   })
 })
+
+// The fading navigation band rides the .code-line-target / .code-line-in-range
+// classes (the keyframe itself is pinned CSS-side in code-nav-band.test.ts).
+// A CSS animation only replays when its element remounts, so the re-trigger
+// contract is observable as DOM-node identity: a revision bump must remount the
+// animated spans (new key) while a same-content refetch must keep them.
+describe('NumberedCode navigation band re-trigger', () => {
+  const contents = 'one\ntwo\nthree\nfour\nfive'
+
+  it('remounts the target and range spans on a revision bump (replays the band)', () => {
+    const { rerender } = render(
+      <NumberedCode contents={contents} line={2} endLine={3} revision={1} />,
+    )
+    const targetBefore = document.querySelector('[data-line="2"]')!
+    const rangeBefore = document.querySelector('[data-line="3"]')!
+    const plainBefore = document.querySelector('[data-line="1"]')!
+    expect(targetBefore.className).toContain('code-line-target')
+    expect(rangeBefore.className).toContain('code-line-in-range')
+
+    rerender(<NumberedCode contents={contents} line={2} endLine={3} revision={2} />)
+    const targetAfter = document.querySelector('[data-line="2"]')!
+    const rangeAfter = document.querySelector('[data-line="3"]')!
+    const plainAfter = document.querySelector('[data-line="1"]')!
+    // Animated spans remount (fresh node) so the keyframe animation restarts.
+    expect(targetAfter).not.toBe(targetBefore)
+    expect(rangeAfter).not.toBe(rangeBefore)
+    expect(targetAfter.className).toContain('code-line-target')
+    expect(rangeAfter.className).toContain('code-line-in-range')
+    // Non-animated spans keep their node (stable key) — no whole-file remount.
+    expect(plainAfter).toBe(plainBefore)
+  })
+
+  it('does NOT replay on a same-content refetch (revision unchanged)', () => {
+    const { rerender } = render(
+      <NumberedCode contents={contents} line={2} endLine={3} revision={1} />,
+    )
+    const targetBefore = document.querySelector('[data-line="2"]')!
+    const rangeBefore = document.querySelector('[data-line="3"]')!
+    // A refetch returns identical contents and the same revision: the animated
+    // spans must keep their DOM nodes so the band does not flash again.
+    rerender(
+      <NumberedCode contents={'one\ntwo\nthree\nfour\nfive'} line={2} endLine={3} revision={1} />,
+    )
+    expect(document.querySelector('[data-line="2"]')).toBe(targetBefore)
+    expect(document.querySelector('[data-line="3"]')).toBe(rangeBefore)
+  })
+
+  it('animates every line of a multi-line range, not just the first', () => {
+    render(<NumberedCode contents={contents} line={2} endLine={4} revision={1} />)
+    expect(document.querySelector('[data-line="2"]')!.className).toContain('code-line-target')
+    for (const n of [3, 4]) {
+      expect(document.querySelector(`[data-line="${n}"]`)!.className).toContain('code-line-in-range')
+    }
+    expect(document.querySelector('[data-line="5"]')!.className).not.toContain('code-line-in-range')
+  })
+
+  it('keeps the target node stable across a wrap toggle (no band replay on wrap)', () => {
+    const { rerender } = render(
+      <NumberedCode contents={contents} line={2} endLine={3} revision={1} />,
+    )
+    const targetBefore = document.querySelector('[data-line="2"]')!
+    // Wrap is local state; toggling it must not remount the target (the scroll
+    // re-centering effect reuses the same node). Revision is unchanged here.
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle word wrap' }))
+    expect(document.querySelector('[data-line="2"]')).toBe(targetBefore)
+    rerender(<NumberedCode contents={contents} line={2} endLine={3} revision={1} />)
+    expect(document.querySelector('[data-line="2"]')).toBe(targetBefore)
+  })
+})
