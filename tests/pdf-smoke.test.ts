@@ -179,6 +179,10 @@ describe('PDF.js real-library smoke', () => {
         for (let i = 0; i < pixels.length; i += 4) {
           if (pixels[i]! < 128 && pixels[i + 3] === 255) dark++
         }
+        // TEMP DIAGNOSTIC (diag/pdf-smoke-fonts): ground-truth the CI font env.
+        const { GlobalFonts } = await import('@napi-rs/canvas')
+        console.error('[pdf-smoke-diag] families:', JSON.stringify(GlobalFonts.families.map((f) => f.family)))
+        console.error('[pdf-smoke-diag] dark:', dark, 'canvas:', target.canvas.width, 'x', target.canvas.height)
         expect(dark).toBeGreaterThan(0)
       } finally {
         factory.destroy(target)
