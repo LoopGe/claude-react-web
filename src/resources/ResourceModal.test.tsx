@@ -2,7 +2,7 @@
 // body states, restore (never auto-opens), and close-collapses
 // (docs/resource-tabs-research.md §12).
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ResourcePaneProvider } from './ResourcePaneProvider'
 import { ResourceModal } from './ResourceModal'
@@ -10,11 +10,13 @@ import { ResourcePreviewButton } from './ResourcePreviewButton'
 import { useOpenResource } from './context'
 import type { ResourceProvider } from './registry'
 import { fileResource, diffResource, snapshotDiffResource, taskResource } from '../../shared/resource-address'
+import { clearResizeObserverStub, stubResizeObserver } from '../test/resize-observer-stub'
 
-const { apiPostMock, capabilityMock, toastErrorMock } = vi.hoisted(() => ({
+const { apiPostMock, capabilityMock, toastErrorMock, measureMock } = vi.hoisted(() => ({
   apiPostMock: vi.fn(),
   capabilityMock: vi.fn(),
   toastErrorMock: vi.fn(),
+  measureMock: vi.fn(),
 }))
 
 vi.mock('../hooks/useApi', () => ({ api: { post: apiPostMock } }))
@@ -23,6 +25,7 @@ vi.mock('../hooks/useToast', () => ({
   useToast: () => ({ error: toastErrorMock }),
   apiErrorToastOpts: () => undefined,
 }))
+vi.mock('./resource-modal-measure', () => ({ measureResourceModalBodyHeight: measureMock }))
 
 const HTML = fileResource('s1', '/repo/page.html')
 
@@ -548,5 +551,104 @@ describe('ResourceModal', () => {
       expect(toastErrorMock).toHaveBeenCalledWith("Couldn't open in system browser: file is missing", undefined)
     })
     expect((button as HTMLButtonElement).disabled).toBe(false)
+  })
+})
+
+// The modal body's height changes (tab switch, load landing, source toggle)
+// tween via useAutoHeightTransition instead of jumping. The measure math is
+// unit-tested in resource-modal-measure.test.ts; here the measure is mocked to
+// controlled heights so the WIRING (capture + key-driven tween on the body) is
+// what's under test. rAF is stubbed inert so the tween holds its start pin and
+// the assertion does not race the frame that retargets it.
+describe('ResourceModal height animation', () => {
+  beforeEach(() => {
+    stubResizeObserver()
+    measureMock.mockReset()
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(0)
+  })
+
+  afterEach(() => {
+    clearResizeObserverStub()
+    vi.restoreAllMocks()
+  })
+
+  function bodyEl() {
+    return document.querySelector<HTMLElement>('.resource-modal-body')!
+  }
+
+  it('tweens the body height when the active tab changes', async () => {
+    let target = 300
+    measureMock.mockImplementation(() => target)
+    render(
+      <ResourcePaneProvider providers={[fileProvider()]}>
+        <MultiHarness addresses={[A, B]} />
+      </ResourcePaneProvider>,
+    )
+    fireEvent.click(screen.getByText('open-0'))
+    await screen.findByRole('tab', { name: 'a.ts' })
+    // First measurement only establishes the baseline — no tween on open.
+    expect(bodyEl().classList.contains('auto-height-animating')).toBe(false)
+
+    target = 600
+    fireEvent.click(screen.getByText('open-1'))
+    // Key-driven tween from the 300 baseline toward 600: pins the start height.
+    expect(bodyEl().style.height).toBe('300px')
+    expect(bodyEl().classList.contains('auto-height-animating')).toBe(true)
+  })
+
+  it('captures the used height before a chip-click switch', async () => {
+    let target = 300
+    measureMock.mockImplementation(() => target)
+    render(
+      <ResourcePaneProvider providers={[fileProvider()]}>
+        <MultiHarness addresses={[A, B]} />
+      </ResourcePaneProvider>,
+    )
+    fireEvent.click(screen.getByText('open-0'))
+    await screen.findByRole('tab', { name: 'a.ts' })
+    target = 600
+    fireEvent.click(screen.getByText('open-1'))
+    await screen.findByRole('tab', { name: 'b.ts' })
+
+    // The used height mid-tween differs from the tracked target (600): capture
+    // must pin what the box actually shows (550), not the stale target.
+    vi.spyOn(bodyEl(), 'offsetHeight', 'get').mockReturnValue(550)
+    target = 300
+    fireEvent.click(screen.getByRole('tab', { name: 'a.ts' }))
+    expect(bodyEl().style.height).toBe('550px')
+    expect(bodyEl().classList.contains('auto-height-animating')).toBe(true)
+  })
+
+  it('does not pin the body when focusing the already-active tab', async () => {
+    measureMock.mockImplementation(() => 300)
+    render(
+      <ResourcePaneProvider providers={[fileProvider()]}>
+        <MultiHarness addresses={[A, B]} />
+      </ResourcePaneProvider>,
+    )
+    fireEvent.click(screen.getByText('open-0'))
+    await screen.findByRole('tab', { name: 'a.ts' })
+    // A no-op focus must not capture: store.focus early-returns and no key
+    // change would ever release the pin.
+    fireEvent.click(screen.getByRole('tab', { name: 'a.ts' }))
+    expect(bodyEl().style.height).toBe('')
+    expect(bodyEl().classList.contains('auto-height-animating')).toBe(false)
+  })
+
+  it('does not pin the body when closing a background tab', async () => {
+    measureMock.mockImplementation(() => 300)
+    render(
+      <ResourcePaneProvider providers={[fileProvider()]}>
+        <MultiHarness addresses={[A, B]} />
+      </ResourcePaneProvider>,
+    )
+    fireEvent.click(screen.getByText('open-0'))
+    await screen.findByRole('tab', { name: 'a.ts' })
+    fireEvent.click(screen.getByText('open-1'))
+    await screen.findByRole('tab', { name: 'b.ts' })
+    // Closing the background chip leaves the active body (B) untouched.
+    fireEvent.click(screen.getByRole('button', { name: 'Close a.ts' }))
+    expect(bodyEl().style.height).toBe('')
+    expect(bodyEl().classList.contains('auto-height-animating')).toBe(false)
   })
 })

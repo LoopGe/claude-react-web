@@ -39,14 +39,17 @@ import { api } from '../hooks/useApi'
 import { useOpenPathCapability } from '../hooks/useOpenPathCapability'
 import { apiErrorToastOpts, useToast } from '../hooks/useToast'
 import { formatError } from '../utils/format-error'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useResourcePaneStore } from './context'
-import { type ResourceParams, type ResourceTab } from './tab-store'
+import { type ResourceParams, type ResourceTab, type ResourcePaneState } from './tab-store'
 import { useResource } from './useResource'
 import { ResourceDiffBody } from './ResourceDiffBody'
 import { ResourceSnapshotDiffBody } from './ResourceSnapshotDiffBody'
 import { ResourceTaskBody } from './ResourceTaskBody'
 import { ResourceSubagentBody } from './ResourceSubagentBody'
 import { ResourceLinkProvider } from './ResourceLinkContext'
+import { measureResourceModalBodyHeight } from './resource-modal-measure'
+import type { ResourcePaneStore } from './tab-store'
 
 export function ResourceModal({
   sessionId,
@@ -66,10 +69,6 @@ export function ResourceModal({
   const getSnapshot = useCallback(() => store.getState(sessionId), [store, sessionId])
   const state = useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot)
 
-  const tablistRef = useRef<HTMLDivElement>(null)
-  const baseId = useId()
-  const panelId = `${baseId}-panel`
-  const tabIdOf = (id: string) => `${baseId}-tab-${id}`
   const open = visible && state.expanded
 
   // Hiding the panel must un-latch `expanded`, or returning to it would pop the
@@ -123,7 +122,109 @@ export function ResourceModal({
     return own.join('/') || label
   })
 
+  return (
+    <Overlay
+        open={open}
+        onClose={close}
+        variant="modal"
+        ariaLabel="Resource preview"
+        cardClassName="resource-modal"
+        cardStyle={{ width: 760, maxWidth: '92vw' }}
+        // Portal to <body>: the entry point is a per-panel overlay whose
+        // backdrop-filter would otherwise become the containing block.
+        portal
+      >
+        <ResourceModalSurface
+          store={store}
+          sessionId={sessionId}
+          state={state}
+          active={active}
+          params={navigation?.params}
+          revision={navigation?.revision ?? 0}
+          labelOf={labelOf}
+          cwd={cwd}
+          browserPath={browserPath}
+          browserPending={browserPath != null && browserPendingPaths.includes(browserPath)}
+          onOpenInBrowser={openInBrowser}
+          onClose={close}
+        />
+      </Overlay>
+  )
+}
+
+/** The modal's chrome + body, rendered as Overlay's child so it MOUNTS AND
+ *  UNMOUNTS with the open surface. The height-animation hook lives here, not in
+ *  the always-mounted ResourceModal host: a hook in the host would never
+ *  re-install its ResizeObserver on reopen (the host's refs go null while the
+ *  Overlay is closed, but its effects do not re-run), and would carry a stale
+ *  height baseline across open/close. Mounting with the surface gives a fresh
+ *  baseline on every open (no tween on the open beat itself) and a live
+ *  observer for async content growth. */
+function ResourceModalSurface({
+  store,
+  sessionId,
+  state,
+  active,
+  params,
+  revision,
+  labelOf,
+  cwd,
+  browserPath,
+  browserPending,
+  onOpenInBrowser,
+  onClose,
+}: {
+  store: ResourcePaneStore
+  sessionId: string
+  state: ResourcePaneState
+  active: ResourceTab
+  params?: ResourceParams
+  revision: number
+  labelOf: string[]
+  cwd?: string
+  browserPath: string | null
+  browserPending: boolean
+  onOpenInBrowser: (path: string) => void
+  onClose: () => void
+}) {
+  const tablistRef = useRef<HTMLDivElement>(null)
+  const baseId = useId()
+  const panelId = `${baseId}-panel`
+  const tabIdOf = (id: string) => `${baseId}-tab-${id}`
+
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const headerRef = useRef<HTMLDivElement>(null)
+  const measureBodyHeight = useCallback(() => {
+    const body = bodyRef.current
+    const content = contentRef.current
+    const header = headerRef.current
+    if (!body || !content || !header) return null
+    return measureResourceModalBodyHeight(body, content, header)
+  }, [])
+  // The body's height tweens between content changes (tab switch, load landing,
+  // source/preview toggle, image decode) instead of jumping. Keyed on the active
+  // tab so a switch captures the start and animates; the observer on the content
+  // wrapper covers async growth within a tab.
+  const { captureHeight } = useAutoHeightTransition(bodyRef, active.id, {
+    measureTargetHeight: measureBodyHeight,
+    observe: contentRef,
+  })
+
+  const focusTab = useCallback((tabId: string) => {
+    // A no-op focus (the already-active chip, or arrow wrap on a lone tab) must
+    // not capture: store.focus early-returns, the hook key never changes, and a
+    // pin nothing releases would strand the body at a fixed height.
+    if (tabId === active.id) return
+    captureHeight()
+    store.focus(sessionId, tabId)
+  }, [captureHeight, store, sessionId, active.id])
+
   const closeTab = (tabId: string) => {
+    // Only closing the ACTIVE tab changes the body (and so the height); closing
+    // a background chip leaves the active body untouched — capturing there would
+    // strand a pin with no key change to release it.
+    if (tabId === active.id) captureHeight()
     store.close(sessionId, tabId)
     // The clicked close button is about to unmount; move focus into the strip
     // so arrow navigation keeps working (WAI-ARIA tabs pattern).
@@ -147,7 +248,7 @@ export function ResourceModal({
         ? (index + 1) % state.tabs.length
         : (index - 1 + state.tabs.length) % state.tabs.length
     const next = state.tabs[nextIndex]
-    store.focus(sessionId, next.id)
+    focusTab(next.id)
     requestAnimationFrame(() => {
       tablistRef.current
         ?.querySelector<HTMLElement>(`[data-resource-tab="${CSS.escape(next.id)}"]`)
@@ -156,85 +257,73 @@ export function ResourceModal({
   }
 
   return (
-    <Overlay
-        open={open}
-        onClose={close}
-        variant="modal"
-        ariaLabel="Resource preview"
-        cardClassName="resource-modal"
-        cardStyle={{ width: 760, maxWidth: '92vw' }}
-        // Portal to <body>: the entry point is a per-panel overlay whose
-        // backdrop-filter would otherwise become the containing block.
-        portal
-      >
-        <div className="modal-header resource-modal-header">
-          <div
-            className="resource-tabs"
-            role="tablist"
-            aria-label="Open resources"
-            ref={tablistRef}
-            onKeyDown={handleTablistKeyDown}
-          >
-            {state.tabs.map((tab, index) => {
-              const title = labelOf[index]
-              const selected = tab.id === active.id
-              return (
-                <div
-                  key={tab.id}
-                  role="presentation"
-                  className={`resource-tab${selected ? ' resource-tab-active' : ''}`}
-                >
-                  <button
-                    type="button"
-                    role="tab"
-                    id={tabIdOf(tab.id)}
-                    aria-controls={panelId}
-                    aria-selected={selected}
-                    tabIndex={selected ? 0 : -1}
-                    data-resource-tab={tab.id}
-                    className="resource-tab-label"
-                    title={resourceDescription(tab.address)}
-                    onClick={() => store.focus(sessionId, tab.id)}
-                  >
-                    {title}
-                  </button>
-                  <button
-                    type="button"
-                    className="resource-tab-close"
-                    aria-label={`Close ${title}`}
-                    onClick={() => closeTab(tab.id)}
-                  >
-                    <IconX size={11} />
-                  </button>
-                </div>
-              )
-            })}
-          </div>
-          {browserPath && (
-            <OpenInSystemBrowserButton
-              path={browserPath}
-              pending={browserPendingPaths.includes(browserPath)}
-              onOpen={openInBrowser}
-            />
-          )}
-          <button type="button" className="btn btn-icon-sm" aria-label="Close" onClick={close}>
-            <IconX />
-          </button>
-        </div>
+    <>
+      <div className="modal-header resource-modal-header" ref={headerRef}>
         <div
-          id={panelId}
-          role="tabpanel"
-          aria-labelledby={tabIdOf(active.id)}
-          className="modal-section file-viewer-body resource-modal-body"
+          className="resource-tabs"
+          role="tablist"
+          aria-label="Open resources"
+          ref={tablistRef}
+          onKeyDown={handleTablistKeyDown}
         >
-          <ResourceBody
-            tab={active}
-            params={navigation?.params}
-            revision={navigation?.revision ?? 0}
-            cwd={cwd}
-          />
+          {state.tabs.map((tab, index) => {
+            const title = labelOf[index]
+            const selected = tab.id === active.id
+            return (
+              <div
+                key={tab.id}
+                role="presentation"
+                className={`resource-tab${selected ? ' resource-tab-active' : ''}`}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  id={tabIdOf(tab.id)}
+                  aria-controls={panelId}
+                  aria-selected={selected}
+                  tabIndex={selected ? 0 : -1}
+                  data-resource-tab={tab.id}
+                  className="resource-tab-label"
+                  title={resourceDescription(tab.address)}
+                  onClick={() => focusTab(tab.id)}
+                >
+                  {title}
+                </button>
+                <button
+                  type="button"
+                  className="resource-tab-close"
+                  aria-label={`Close ${title}`}
+                  onClick={() => closeTab(tab.id)}
+                >
+                  <IconX size={11} />
+                </button>
+              </div>
+            )
+          })}
         </div>
-      </Overlay>
+        {browserPath && (
+          <OpenInSystemBrowserButton
+            path={browserPath}
+            pending={browserPending}
+            onOpen={onOpenInBrowser}
+          />
+        )}
+        <button type="button" className="btn btn-icon-sm" aria-label="Close" onClick={onClose}>
+          <IconX />
+        </button>
+      </div>
+      <div
+        id={panelId}
+        role="tabpanel"
+        aria-labelledby={tabIdOf(active.id)}
+        className="modal-section file-viewer-body resource-modal-body"
+        ref={bodyRef}
+      >
+        <div className="resource-modal-content" ref={contentRef}>
+          <ResourceBody tab={active} params={params} revision={revision} cwd={cwd} />
+        </div>
+      </div>
+    </>
   )
 }
 

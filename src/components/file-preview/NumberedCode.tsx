@@ -13,6 +13,24 @@ import { useMergedRef } from '../../utils/mergedRef'
 
 export const MAX_NUMBERED_LINES = 5000
 
+/** How long after a navigation jump the target keeps re-centering on container
+ *  resize. Covers the resource modal's 240ms height tween plus the hook's
+ *  +120ms safety timer and slack — the window in which the viewport is moving
+ *  because of the animation. Past it, resizes (a later window resize) leave the
+ *  target where it is. */
+const RE_CENTER_WINDOW_MS = 400
+
+/** Scroll the target line to the middle of the container's viewport. Shared by
+ *  the navigation jump and the resize re-center below. */
+function centerTarget(container: HTMLElement, target: HTMLElement): void {
+  const containerRect = container.getBoundingClientRect()
+  const targetRect = target.getBoundingClientRect()
+  const next =
+    container.scrollTop + (targetRect.top - containerRect.top) - container.clientHeight / 2
+  const max = Math.max(0, container.scrollHeight - container.clientHeight)
+  container.scrollTop = Math.max(0, Math.min(next, max))
+}
+
 interface Props {
   contents: string
   lang?: string
@@ -64,6 +82,16 @@ export function NumberedCode({ contents, lang, line, endLine, revision = 0 }: Pr
   // Track the last revision we scrolled for so a re-render cannot re-scroll;
   // the effect below only runs when the navigation inputs change.
   const lastJumpRef = useRef<string | null>(null)
+  // When the last jump landed, and whether the user has scrolled since. The
+  // resource modal animates its body height, so the viewport resizes during the
+  // tween AFTER the jump centered against the start height — the re-center
+  // observer below keeps the target centered through that resize. It stands
+  // down on explicit user input (wheel/touch/pointer) and once the animation
+  // window elapses; it does NOT infer "user scrolled" from a scrollTop change,
+  // because the browser clamps scrollTop when the viewport grows, which would
+  // falsely latch and disable re-centering for the rest of the jump's life.
+  const jumpAtRef = useRef(0)
+  const userScrolledRef = useRef(false)
 
   useEffect(() => {
     if (line == null) return
@@ -73,12 +101,45 @@ export function NumberedCode({ contents, lang, line, endLine, revision = 0 }: Pr
     const target = container?.querySelector<HTMLElement>(`[data-line="${line}"]`)
     if (!container || !target) return
     lastJumpRef.current = key
-    const containerRect = container.getBoundingClientRect()
-    const targetRect = target.getBoundingClientRect()
-    const next =
-      container.scrollTop + (targetRect.top - containerRect.top) - container.clientHeight / 2
-    const max = Math.max(0, container.scrollHeight - container.clientHeight)
-    container.scrollTop = Math.max(0, Math.min(next, max))
+    userScrolledRef.current = false
+    jumpAtRef.current = performance.now()
+    centerTarget(container, target)
+  }, [line, endLine, revision, contents])
+
+  // Re-center on container resize within the animation window, until the user
+  // scrolls away. User intent is detected from input events, not from scrollTop
+  // deltas (a browser clamp is not a user move). The overlay scrollbar's thumb
+  // is a SIBLING of the pre (appended to its parent by useOverlayScrollbar) and
+  // dragging it sets scrollTop without any wheel/touch/pointer event on the pre,
+  // so a pointerdown on the parent whose target falls OUTSIDE the pre marks a
+  // scrollbar drag — at drag start, before it can be yanked back. A pointerdown
+  // INSIDE the pre (text selection) is not a scroll and does not stand down.
+  useEffect(() => {
+    if (line == null) return
+    const container = preRef.current
+    const parent = container?.parentElement
+    if (!container || !parent || !('ResizeObserver' in window)) return
+    const markUserScroll = () => { userScrolledRef.current = true }
+    const markScrollbarDrag = (e: PointerEvent) => {
+      if (!container.contains(e.target as Node)) userScrolledRef.current = true
+    }
+    container.addEventListener('wheel', markUserScroll, { passive: true })
+    container.addEventListener('touchstart', markUserScroll, { passive: true })
+    parent.addEventListener('pointerdown', markScrollbarDrag)
+    const observer = new ResizeObserver(() => {
+      if (userScrolledRef.current) return
+      if (performance.now() - jumpAtRef.current > RE_CENTER_WINDOW_MS) return
+      const target = container.querySelector<HTMLElement>(`[data-line="${line}"]`)
+      if (!target) return
+      centerTarget(container, target)
+    })
+    observer.observe(container)
+    return () => {
+      observer.disconnect()
+      container.removeEventListener('wheel', markUserScroll)
+      container.removeEventListener('touchstart', markUserScroll)
+      parent.removeEventListener('pointerdown', markScrollbarDrag)
+    }
   }, [line, endLine, revision, contents])
 
   const handleCopy = () => void copy(() => contents)
