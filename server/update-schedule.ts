@@ -11,6 +11,9 @@
 // without sharing a result vocabulary.
 
 import { createLogger } from './log.js'
+import { config } from './config.js'
+import { checkForUpdates, getCachedUpdateInfo } from './update-checker.js'
+import type { UpdateInfo } from '../shared/update-info.js'
 
 const log = createLogger('update-schedule')
 
@@ -121,4 +124,25 @@ export class UpdateSchedule<R> {
       })
     }, delay)
   }
+}
+
+/** Web-host npm-probe schedule. null when periodic checking is disabled
+ *  (interval 0). Scheduled ticks force the probe — the scheduler is the
+ *  freshness authority, bypassing the checker's TTL; the checker's in-flight
+ *  dedup still coalesces concurrent callers. Ticks read live config through
+ *  checkForUpdates, so an unconfigured registry takes the no-network disabled
+ *  path and probing resumes without a restart once it is set. The desktop
+ *  host never runs cli.ts (it composes createServerContext directly), so this
+ *  factory is web-only by construction. */
+export function startUpdateSchedule(): UpdateSchedule<UpdateInfo> | null {
+  const scheduleConfig = resolveUpdateScheduleConfig(config.updateCheckIntervalMs)
+  if (!scheduleConfig) return null
+  return new UpdateSchedule<UpdateInfo>(
+    {
+      check: () => checkForUpdates(true),
+      failed: (r) => !!r.error && !r.disabled,
+      current: () => getCachedUpdateInfo(),
+    },
+    scheduleConfig,
+  )
 }

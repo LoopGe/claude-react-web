@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { UpdateSchedule, resolveUpdateScheduleConfig, type UpdateScheduleConfig } from './update-schedule.js'
+import { UpdateSchedule, resolveUpdateScheduleConfig, startUpdateSchedule, type UpdateScheduleConfig } from './update-schedule.js'
+import { __setConfigForTest } from './config.js'
+import { __resetUpdateCheckerForTests } from './update-checker.js'
 
 // Semantics reference: DSH apps/desktop/src/update-schedule.ts — completion-based
 // deadline, ×2 failure backoff capped at maxBackoffMs, ±jitter uniform, coalescing.
@@ -181,5 +183,55 @@ describe('UpdateSchedule', () => {
     await advance(20_000)
     expect(check).not.toHaveBeenCalled()
     await expect(s.check()).rejects.toThrow('disposed')
+  })
+})
+
+describe('startUpdateSchedule (web-host factory)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    __resetUpdateCheckerForTests()
+    __setConfigForTest({ updateCheckRegistry: '', updateCheckIntervalMs: 43_200_000 })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    __setConfigForTest({ updateCheckRegistry: '', updateCheckIntervalMs: 43_200_000 })
+  })
+
+  it('returns null when periodic checking is disabled (interval 0)', () => {
+    __setConfigForTest({ updateCheckIntervalMs: 0 })
+    expect(startUpdateSchedule()).toBeNull()
+  })
+
+  it('returns a live schedule for a nonzero interval', () => {
+    const s = startUpdateSchedule()
+    expect(s).not.toBeNull()
+    s!.dispose()
+  })
+
+  it('first-run: ticks harmlessly while unconfigured, probes once the registry is set', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ version: '99.99.99' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    // 60_000 is the clamp floor — a smaller configured interval would be
+    // raised to it, so use the floor itself to keep the math honest.
+    __setConfigForTest({ updateCheckIntervalMs: 60_000, updateCheckRegistry: '' })
+
+    const s = startUpdateSchedule()!
+    s.arm()
+    // The factory uses real Math.random: with ±20% jitter a 60_000 interval
+    // fires anywhere in [48_000, 72_000]. Advance the upper bound per tick;
+    // two consecutive ticks can't both land inside one 72_000 window
+    // (earliest second tick = 48_000 + 48_000 = 96_000), so the no-fetch
+    // assertion after tick 1 stays deterministic.
+    await vi.advanceTimersByTimeAsync(72_000) // tick 1: disabled path, no network
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    __setConfigForTest({ updateCheckRegistry: 'https://registry.example.com' })
+    await vi.advanceTimersByTimeAsync(72_000) // tick 2: live config → probe
+    expect(fetchMock).toHaveBeenCalled()
+    s.dispose()
   })
 })
