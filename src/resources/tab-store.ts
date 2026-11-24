@@ -60,6 +60,10 @@ interface Options {
   /** Whether a registered viewer exists for a kind. The provider supplies this
    *  from the registry so an address nothing can open never creates a tab. */
   canOpen?: (kind: string) => boolean
+  /** Tab lifecycle observer: fires once per tab that leaves the store (close
+   *  or session removal), so per-address view state can be forgotten with the
+   *  tab. The store itself stays kind-agnostic. */
+  onTabClosed?: (tab: ResourceTab) => void
 }
 
 let tabCounter = 0
@@ -102,6 +106,7 @@ function coerceState(value: unknown): ResourcePaneState | null {
 export class ResourcePaneStore {
   private readonly storage: StorageLike | null
   private readonly canOpen: (kind: string) => boolean
+  private readonly onTabClosed: ((tab: ResourceTab) => void) | undefined
   private readonly states = new Map<string, ResourcePaneState>()
   private readonly navigation = new Map<string, ResourceNavigation>()
   private readonly listeners = new Set<() => void>()
@@ -109,6 +114,7 @@ export class ResourcePaneStore {
   constructor(options: Options = {}) {
     this.storage = options.storage === undefined ? defaultStorage() : options.storage
     this.canOpen = options.canOpen ?? (() => true)
+    this.onTabClosed = options.onTabClosed
     // The app supports multiple tabs; adopt their writes so two tabs don't
     // silently overwrite each other's layout (the writing tab gets no event).
     if (this.storage && typeof window !== 'undefined') {
@@ -193,6 +199,7 @@ export class ResourcePaneStore {
     const state = this.getState(sessionId)
     const index = state.tabs.findIndex((tab) => tab.id === tabId)
     if (index === -1) return
+    this.onTabClosed?.(state.tabs[index])
     const tabs = state.tabs.filter((tab) => tab.id !== tabId)
     this.navigation.delete(tabId)
     const activeTabId =
@@ -225,7 +232,10 @@ export class ResourcePaneStore {
   removeSession(sessionId: string): void {
     const state = this.states.get(sessionId)
     if (state) {
-      for (const tab of state.tabs) this.navigation.delete(tab.id)
+      for (const tab of state.tabs) {
+        this.navigation.delete(tab.id)
+        this.onTabClosed?.(tab)
+      }
       this.states.delete(sessionId)
     }
     try {

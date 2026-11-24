@@ -21,6 +21,7 @@ vi.mock('../../utils/pdf-text', () => ({
   },
 }))
 import { PdfBody } from './PdfBody'
+import { forgetPdfViewState, recallPdfViewState, rememberPdfPage, rememberPdfZoom } from './pdf-view-state'
 
 function deferred<T>(): {
   promise: Promise<T>
@@ -91,7 +92,10 @@ class IntersectionObserverStub {
   readonly observed = new Set<Element>()
   disconnected = false
 
-  constructor(private readonly callback: IntersectionObserverCallback) {
+  constructor(
+    private readonly callback: IntersectionObserverCallback,
+    readonly options?: IntersectionObserverInit,
+  ) {
     IntersectionObserverStub.instances.push(this)
   }
 
@@ -271,7 +275,8 @@ describe('PdfBody', () => {
       latest.resolve(undefined)
     })
     expect(canvas.width).toBe(300)
-    expect(canvas.style.width).toBe('300px')
+    const body = view.container.querySelector('.pdf-body') as HTMLElement
+    expect(body.style.getPropertyValue('--pdf-zoom')).toBe('3')
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
@@ -398,21 +403,317 @@ describe('PdfBody', () => {
         disconnect = vi.fn()
       },
     )
-    render(<PdfBody bytes={BYTES} title="report.pdf" />)
+    const view = render(<PdfBody bytes={BYTES} title="report.pdf" />)
     await act(async () => {
       loads[0]!.deferred.resolve(documentOf(1))
     })
     await act(async () => {})
-    const canvas = screen.getByRole('img') as HTMLCanvasElement
-    // (60 - 24 gutter) / 100 intrinsic = 0.36 fit-width zoom.
-    expect(canvas.style.width).toBe('36px')
+    const body = view.container.querySelector('.pdf-body') as HTMLElement
+    const surface = view.container.querySelector('.pdf-page-surface') as HTMLElement
+    // The surface carries the intrinsic 96-DPI width; the fit zoom (60 - 24
+    // gutter) / 100 = 0.36 rides the body variable the CSS width rule reads.
+    expect(surface.style.getPropertyValue('--pdf-page-width')).toBe('100px')
+    expect(body.getAttribute('data-pdf-zoom-mode')).toBe('fit-width')
+    expect(body.style.getPropertyValue('--pdf-zoom')).toBe('0.36')
     expect(engine.render.mock.calls.at(-1)![2]).toBeCloseTo(0.36)
     layout.clientWidth = 500
     await act(async () => {
       resize!([], {} as ResizeObserver)
     })
     // Fit only shrinks: a 500px container keeps the 100px page at actual size.
-    expect(canvas.style.width).toBe('100px')
+    expect(body.style.getPropertyValue('--pdf-zoom')).toBe('1')
     expect(engine.render.mock.calls.at(-1)![2]).toBe(1)
+  })
+})
+
+describe('PdfBody zoom UX', () => {
+  const KEY = 'crw-resource://file/s1/repo/report.pdf'
+
+  beforeEach(() => {
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(null)
+  })
+
+  afterEach(() => {
+    forgetPdfViewState(KEY)
+  })
+
+  async function loadedBody(props: Partial<Parameters<typeof PdfBody>[0]> = {}) {
+    const view = render(<PdfBody bytes={BYTES} title="report.pdf" {...props} />)
+    await act(async () => {
+      loads.at(-1)!.deferred.resolve(documentOf(3))
+    })
+    await act(async () => {})
+    const body = view.container.querySelector('.pdf-body') as HTMLElement
+    const frame = view.container.querySelector('.pdf-frame') as HTMLElement
+    return { view, body, frame }
+  }
+
+  function stubFrameRect(frame: HTMLElement, bottom: number) {
+    vi.spyOn(frame, 'getBoundingClientRect').mockReturnValue({ bottom } as DOMRect)
+  }
+
+  /** happy-dom's WheelEvent extends UIEvent — it carries no modifier keys or
+   *  pointer coordinates (real browsers derive it from MouseEvent). A MouseEvent
+   *  typed 'wheel' with the delta fields defined carries the full shape the
+   *  gesture handler reads. Returns false when the handler prevented default. */
+  function wheel(
+    node: Element,
+    init: { ctrlKey?: boolean; deltaY: number; clientX?: number; clientY?: number },
+  ): boolean {
+    const event = new MouseEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: init.ctrlKey ?? false,
+      clientX: init.clientX ?? 0,
+      clientY: init.clientY ?? 0,
+    })
+    Object.defineProperty(event, 'deltaY', { value: init.deltaY })
+    Object.defineProperty(event, 'deltaMode', { value: 0 })
+    return node.dispatchEvent(event)
+  }
+
+  /** The live observer for a page: once ready, the page observes its canvas. */
+  function intersectPage(pageEl: HTMLElement, isIntersecting: boolean) {
+    const observer = [...IntersectionObserverStub.instances]
+      .reverse()
+      .find((instance) => !instance.disconnected && [...instance.observed].some((el) => pageEl.contains(el)))!
+    const target = [...observer.observed].find((el) => pageEl.contains(el))!
+    act(() => {
+      observer.intersect(target, isIntersecting)
+    })
+  }
+
+  it('observes pages against the scroll container so the lookahead pre-renders ahead of its fold', async () => {
+    IntersectionObserverStub.instances = []
+    vi.stubGlobal('IntersectionObserver', IntersectionObserverStub)
+    const { body } = await loadedBody()
+    const observers = IntersectionObserverStub.instances.filter((instance) => instance.observed.size > 0)
+    expect(observers.length).toBeGreaterThan(0)
+    for (const observer of observers) {
+      expect(observer.options?.root).toBe(body)
+      expect(observer.options?.rootMargin).toBe('100% 0px')
+    }
+  })
+
+  it('ctrl+wheel zooms anchored at the pointer and compensates scroll; plain wheel scrolls', async () => {
+    const { body } = await loadedBody()
+    vi.spyOn(body, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0 } as DOMRect)
+    Object.defineProperty(body, 'clientHeight', { value: 100, configurable: true })
+    body.scrollTop = 10
+    const rendersBefore = engine.render.mock.calls.length
+    // Plain wheel: no zoom, default not prevented.
+    expect(wheel(body, { deltaY: -100 })).toBe(true)
+    expect(body.style.getPropertyValue('--pdf-zoom')).toBe('1')
+    expect(wheel(body, { ctrlKey: true, deltaY: -40, clientX: 100, clientY: 50 })).toBe(false)
+    const factor = Math.exp(0.4)
+    expect(body.getAttribute('data-pdf-zoom-mode')).toBe('fixed')
+    expect(Number(body.style.getPropertyValue('--pdf-zoom'))).toBeCloseTo(factor)
+    // Pointer offset y = 50 stays fixed: (10 + 50) * factor - 50.
+    expect(body.scrollTop).toBeCloseTo((10 + 50) * factor - 50)
+    // The gesture has not settled: no page redraw yet.
+    expect(engine.render.mock.calls.length).toBe(rendersBefore)
+  })
+
+  it('redraws nearby pages only after the gesture settles, and persists the settled zoom', async () => {
+    vi.useFakeTimers()
+    try {
+      const { body } = await loadedBody({ viewStateKey: KEY })
+      vi.spyOn(body, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0 } as DOMRect)
+      wheel(body, { ctrlKey: true, deltaY: -40 })
+      const factor = Math.exp(0.4)
+      expect(engine.render).toHaveBeenCalledTimes(1)
+      // A second gesture tick restarts the settle window.
+      act(() => {
+        vi.advanceTimersByTime(60)
+      })
+      wheel(body, { ctrlKey: true, deltaY: 0 })
+      act(() => {
+        vi.advanceTimersByTime(60)
+      })
+      expect(engine.render).toHaveBeenCalledTimes(1)
+      expect(recallPdfViewState(KEY)).toBeUndefined()
+      await act(async () => {
+        vi.advanceTimersByTime(60)
+      })
+      expect(engine.render).toHaveBeenCalledTimes(2)
+      expect(engine.render.mock.calls.at(-1)![2]).toBeCloseTo(factor)
+      expect(recallPdfViewState(KEY)?.zoom).toBeCloseTo(factor)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('zooms to a preset from the floating controls and redraws only nearby pages', async () => {
+    IntersectionObserverStub.instances = []
+    vi.stubGlobal('IntersectionObserver', IntersectionObserverStub)
+    const { view } = await loadedBody()
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom presets' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('menuitem', { name: '200%' }))
+    })
+    // Only the rendered page 1 redraws; the skeletons stay untouched.
+    expect(renderedPages()).toEqual([1, 1])
+    expect(engine.render.mock.calls.at(-1)![2]).toBe(2)
+    const second = view.container.querySelector('[data-pdf-page="2"]') as HTMLElement
+    await act(async () => {
+      intersectPage(second, true)
+    })
+    // The approaching page renders at the settled zoom, not the old one.
+    expect(renderedPages()).toEqual([1, 1, 2])
+    expect(engine.render.mock.calls.at(-1)![2]).toBe(2)
+  })
+
+  it('does not redraw an offscreen rendered page until it approaches again', async () => {
+    IntersectionObserverStub.instances = []
+    vi.stubGlobal('IntersectionObserver', IntersectionObserverStub)
+    const { view } = await loadedBody()
+    const second = view.container.querySelector('[data-pdf-page="2"]') as HTMLElement
+    await act(async () => {
+      intersectPage(second, true)
+    })
+    expect(renderedPages()).toEqual([1, 2])
+    intersectPage(second, false)
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom presets' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('menuitem', { name: '200%' }))
+    })
+    expect(renderedPages()).toEqual([1, 2, 1])
+    await act(async () => {
+      intersectPage(second, true)
+    })
+    expect(renderedPages()).toEqual([1, 2, 1, 2])
+    expect(engine.render.mock.calls.at(-1)![2]).toBe(2)
+  })
+
+  it('returns to fit-width from the menu and keeps tracking resizes', async () => {
+    const { body } = await loadedBody({ viewStateKey: KEY })
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom presets' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('menuitem', { name: '200%' }))
+    })
+    expect(body.getAttribute('data-pdf-zoom-mode')).toBe('fixed')
+    expect(recallPdfViewState(KEY)?.zoom).toBe(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom presets' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Fit width' }))
+    })
+    expect(body.getAttribute('data-pdf-zoom-mode')).toBe('fit-width')
+    expect(engine.render.mock.calls.at(-1)![2]).toBe(1)
+    expect(recallPdfViewState(KEY)).toEqual({ page: 1 })
+  })
+
+  it('reveals the controls near the bottom edge and hides them after the delay', async () => {
+    vi.useFakeTimers()
+    try {
+      const { frame } = await loadedBody()
+      stubFrameRect(frame, 500)
+      const toolbar = screen.getByRole('toolbar')
+      expect(toolbar.getAttribute('data-visible')).toBeNull()
+      fireEvent.pointerMove(frame, { pointerType: 'mouse', clientY: 480 })
+      expect(toolbar.getAttribute('data-visible')).toBe('true')
+      fireEvent.pointerMove(frame, { pointerType: 'mouse', clientY: 100 })
+      act(() => {
+        vi.advanceTimersByTime(419)
+      })
+      expect(toolbar.getAttribute('data-visible')).toBe('true')
+      act(() => {
+        vi.advanceTimersByTime(1)
+      })
+      expect(toolbar.getAttribute('data-visible')).toBeNull()
+      // Leaving the frame hides too.
+      fireEvent.pointerMove(frame, { pointerType: 'mouse', clientY: 490 })
+      expect(toolbar.getAttribute('data-visible')).toBe('true')
+      fireEvent.pointerLeave(frame)
+      act(() => {
+        vi.advanceTimersByTime(420)
+      })
+      expect(toolbar.getAttribute('data-visible')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the controls visible while hovered or mid-gesture', async () => {
+    vi.useFakeTimers()
+    try {
+      const { body, frame } = await loadedBody()
+      stubFrameRect(frame, 500)
+      vi.spyOn(body, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0 } as DOMRect)
+      const toolbar = screen.getByRole('toolbar')
+      fireEvent.pointerMove(frame, { pointerType: 'mouse', clientY: 480 })
+      fireEvent.pointerEnter(toolbar, { pointerType: 'mouse' })
+      fireEvent.pointerMove(frame, { pointerType: 'mouse', clientY: 100 })
+      act(() => {
+        vi.advanceTimersByTime(420)
+      })
+      expect(toolbar.getAttribute('data-visible')).toBe('true')
+      fireEvent.pointerLeave(toolbar)
+      act(() => {
+        vi.advanceTimersByTime(420)
+      })
+      expect(toolbar.getAttribute('data-visible')).toBeNull()
+      // A gesture reveals the controls and holds them until it settles.
+      act(() => {
+        wheel(body, { ctrlKey: true, deltaY: -10 })
+      })
+      expect(toolbar.getAttribute('data-visible')).toBe('true')
+      fireEvent.pointerLeave(frame)
+      act(() => {
+        vi.advanceTimersByTime(120 + 420)
+      })
+      expect(toolbar.getAttribute('data-visible')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('retains page and zoom across unmount/remount and forgets them on close', async () => {
+    IntersectionObserverStub.instances = []
+    vi.stubGlobal('IntersectionObserver', IntersectionObserverStub)
+    const first = await loadedBody({ viewStateKey: KEY })
+    // Mount-time intersections must not clobber the remembered page: only a
+    // user scroll arms page retention.
+    const second = first.view.container.querySelector('[data-pdf-page="2"]') as HTMLElement
+    await act(async () => {
+      intersectPage(second, true)
+    })
+    expect(recallPdfViewState(KEY)).toBeUndefined()
+    fireEvent.scroll(first.body)
+    intersectPage(second, false)
+    await act(async () => {
+      intersectPage(second, true)
+    })
+    expect(recallPdfViewState(KEY)?.page).toBe(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom presets' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('menuitem', { name: '150%' }))
+    })
+    expect(recallPdfViewState(KEY)).toEqual({ page: 2, zoom: 1.5 })
+    first.view.unmount()
+
+    // Remount (panel switch back): the remembered page pre-renders beside the
+    // first and the settled zoom drives the raster.
+    engine.render.mockClear()
+    const again = await loadedBody({ viewStateKey: KEY })
+    expect(renderedPages()).toEqual([1, 2])
+    expect(engine.render.mock.calls.at(-1)![2]).toBe(1.5)
+    expect(again.body.getAttribute('data-pdf-zoom-mode')).toBe('fixed')
+    again.view.unmount()
+
+    // Closing the tab forgets the view state: a fresh open starts at fit-width.
+    forgetPdfViewState(KEY)
+    engine.render.mockClear()
+    const fresh = await loadedBody({ viewStateKey: KEY })
+    expect(renderedPages()).toEqual([1])
+    expect(fresh.body.getAttribute('data-pdf-zoom-mode')).toBe('fit-width')
+  })
+
+  it('seeds the remembered page and zoom from the store on mount', async () => {
+    rememberPdfPage(KEY, 3)
+    rememberPdfZoom(KEY, 0.5)
+    const { body } = await loadedBody({ viewStateKey: KEY })
+    expect(renderedPages()).toEqual([1, 3])
+    expect(engine.render.mock.calls.at(-1)![2]).toBe(0.5)
+    expect(body.getAttribute('data-pdf-zoom-mode')).toBe('fixed')
   })
 })

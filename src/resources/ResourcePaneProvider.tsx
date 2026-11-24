@@ -10,6 +10,7 @@ import { ResourcePaneContext, type ResourcePaneContextValue } from './context'
 import { createFileProvider } from './providers/file'
 import { createDiffProvider } from './providers/diff'
 import { createSnapshotDiffProvider } from './providers/snapshot-diff'
+import { forgetPdfViewState } from '../components/file-preview/pdf-view-state'
 
 /** Kinds whose body reads the client session mirror directly — they have no
  *  provider stream, but must still be accepted by the store's `canOpen` gate. */
@@ -44,6 +45,9 @@ export function ResourcePaneProvider({ children, providers, invalidate }: Props)
     () =>
       new ResourcePaneStore({
         canOpen: (kind) => registry.hasProvider(kind) || LOCAL_RESOURCE_KINDS.has(kind),
+        // Per-address view state leaves with the tab. Non-file addresses have
+        // no PDF view state, so the forget is a no-op for them.
+        onTabClosed: (tab) => forgetPdfViewState(tab.address),
       }),
   )
 

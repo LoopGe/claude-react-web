@@ -158,6 +158,18 @@
   --pdf-selection-bg: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
+/* The frame owns the floating controls' positioning context; the body inside
+   it is the scroll container (an overflow:auto scroller cannot host absolutely
+   positioned chrome — it would scroll away with the pages). */
+.pdf-frame {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .pdf-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -187,7 +199,6 @@
 
 .pdf-page-surface {
   position: relative;
-  width: max-content;
   max-width: none;
   margin-inline: auto;
   box-shadow: var(--pdf-page-shadow);
@@ -196,8 +207,24 @@
   display: none;
 }
 
+/* Zoom layout is variable-driven so a gesture resizes the pages synchronously
+   (PdfBody writes --pdf-zoom + data-pdf-zoom-mode before compensating scroll)
+   while the bitmap redraws asynchronously at the settled zoom. --pdf-page-width
+   is the intrinsic 96-DPI width each page sets on its first render; the 100%
+   fallbacks only ever apply to a surface that is still hidden. Fit-width is
+   shrink-only by construction: min(intrinsic, container). */
+.pdf-body[data-pdf-zoom-mode='fit-width'] .pdf-page-surface {
+  width: min(var(--pdf-page-width, 100%), 100%);
+}
+.pdf-body[data-pdf-zoom-mode='fixed'] .pdf-page-surface {
+  width: calc(var(--pdf-page-width, 100%) * var(--pdf-zoom, 1));
+}
+
 .pdf-page-canvas {
   display: block;
+  width: 100%;
+  max-width: none;
+  height: auto;
 }
 
 .pdf-page-text {
@@ -286,4 +313,66 @@
 .pdf-status-center {
   flex: 1 1 auto;
   justify-content: center;
+}
+
+/* Floating zoom controls (PdfZoomControls). Auto-hide is owned by PdfBody
+   (reveal near the bottom edge, hide after a quiet delay); the CSS only
+   translates the data-visible flag into the fade/slide. Non-hover devices
+   keep the panel permanently visible — there is no pointer to reveal it. */
+.pdf-zoom-controls {
+  position: absolute;
+  z-index: 2;
+  bottom: 14px;
+  inset-inline-start: 50%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev-2);
+  box-shadow: var(--overlay-shadow);
+  color: var(--fg);
+  font-size: var(--fs-xs);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 16px) scale(0.98);
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.pdf-zoom-controls[data-visible='true'] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0) scale(1);
+}
+.pdf-zoom-controls .pdf-zoom-step {
+  width: 28px;
+  padding: 0;
+  flex: none;
+  justify-content: center;
+}
+.pdf-zoom-controls .pdf-zoom-percent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 58px;
+  padding-inline: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .pdf-zoom-controls {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pdf-zoom-controls {
+    transition-duration: 0.01ms;
+  }
 }

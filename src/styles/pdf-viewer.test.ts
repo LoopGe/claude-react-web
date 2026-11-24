@@ -55,4 +55,23 @@ describe('PDF viewer styles', () => {
     expect(css).toContain('pdf_viewer.css')
     expect(css).toContain('6.3.289')
   })
+
+  it('sizes page surfaces from the live zoom variable in both modes', () => {
+    // Gesture zoom resizes the layout synchronously through --pdf-zoom while
+    // the bitmap redraws asynchronously — the width rules are the mechanism.
+    expect(css).toContain(".pdf-body[data-pdf-zoom-mode='fit-width'] .pdf-page-surface")
+    expect(css).toContain(".pdf-body[data-pdf-zoom-mode='fixed'] .pdf-page-surface")
+    expect(css).toContain('width: min(var(--pdf-page-width, 100%), 100%)')
+    expect(css).toContain('width: calc(var(--pdf-page-width, 100%) * var(--pdf-zoom, 1))')
+    expect(css).toContain('height: auto')
+  })
+
+  it('keeps the floating zoom controls auto-hide contract', () => {
+    expect(css).toContain('.pdf-frame')
+    expect(css).toContain('.pdf-zoom-controls')
+    expect(css).toContain("[data-visible='true']")
+    // Non-hover devices keep the controls permanently visible.
+    expect(css).toContain('(hover: none)')
+    expect(css).toContain('(pointer: coarse)')
+  })
 })
