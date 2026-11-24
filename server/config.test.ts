@@ -739,6 +739,14 @@ describe('config', () => {
     await loadConfig(dir)
     expect(config.updateCheckIntervalMs).toBe(60_001)
   })
+
+  it('updateCheckIntervalMs rejects non-finite numbers (1e999 parses to Infinity)', async () => {
+    // Infinity would flow through the scheduler's jitter math as NaN and
+    // setTimeout(NaN) fires immediately — a probe storm from one config typo.
+    writeFileSync(join(dir, 'config.json'), '{"updateCheckIntervalMs": 1e999}')
+    await loadConfig(dir)
+    expect(config.updateCheckIntervalMs).toBe(43_200_000)
+  })
 })
 
 describe('provider-profile migration + derived fields', () => {

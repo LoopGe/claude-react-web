@@ -106,4 +106,22 @@ describe('useUpdateInfo — live update-info frames', () => {
     await waitFor(() => expect(result.current.info?.latest).toBe('1.1.0'))
     cleanup()
   })
+
+  it('does not subscribe while disabled — the first-run wizard sees no frames', async () => {
+    mocks.get.mockResolvedValue(info({ latest: '1.1.0', checkedAt: 100 }))
+    const { result, rerender } = renderHook(({ enabled }) => useUpdateInfo(enabled), {
+      initialProps: { enabled: false },
+    })
+    // No listener while disabled: the always-on seed frame must not set info
+    // (and arm the nag) over the setup wizard.
+    expect(listener).toBeNull()
+    expect(result.current.info).toBeNull()
+    expect(mocks.get).not.toHaveBeenCalled()
+
+    rerender({ enabled: true })
+    await waitFor(() => expect(listener).not.toBeNull())
+    emitFrame(info({ latest: '1.2.0', checkedAt: 200 }))
+    expect(result.current.info?.latest).toBe('1.2.0')
+    cleanup()
+  })
 })

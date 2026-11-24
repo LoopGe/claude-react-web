@@ -95,6 +95,11 @@ export function useUpdateNag(
     onOpenRef.current = onOpenDialog
   }, [onOpenDialog])
   const toastedRef = useRef<string | null>(null)
+  // The live toast's id, so an offer that becomes invalid (registry disabled,
+  // update applied to disk) is WITHDRAWN, and a newer version REPLACES it —
+  // sticky toasts are exempt from capacity eviction, so without this a
+  // long-running tab would accumulate one stale nag per release.
+  const toastIdRef = useRef<string | null>(null)
 
   // The three explicit choices. No onDismiss and no ✕ (hideDismiss): a bare
   // close must not silently mean "skip forever" — that was the misleading
@@ -106,6 +111,16 @@ export function useUpdateNag(
   ]
 
   useEffect(() => {
+    const withdraw = () => {
+      if (toastIdRef.current !== null) {
+        toast.dismiss(toastIdRef.current)
+        toastIdRef.current = null
+      }
+      // Clear the per-mount dedup too: a withdrawal (e.g. registry disabled)
+      // must not silence the same version when the offer becomes valid again.
+      toastedRef.current = null
+    }
+
     if (!info || info.checking) return
 
     // Update branch wins over deprecation: upgrading escapes a deprecation,
@@ -114,8 +129,9 @@ export function useUpdateNag(
       const value = nagValueForUpdate(info.latest)
       if (toastedRef.current === value) return
       if (readNagDismiss() === value) return
+      withdraw() // replace any older offer instead of stacking
       toastedRef.current = value
-      toast.show('info', `${info.current} → ${info.latest} — see what changed`, {
+      toastIdRef.current = toast.show('info', `${info.current} → ${info.latest} — see what changed`, {
         title: 'New version available',
         durationMs: 0, // sticky — the only proactive surface now that the banner is gone
         hideDismiss: true,
@@ -128,17 +144,23 @@ export function useUpdateNag(
       const value = nagValueForDeprecated(info.current)
       if (toastedRef.current === value) return
       if (readNagDismiss() === value) return
+      withdraw()
       toastedRef.current = value
       const message =
         typeof info.deprecated === 'string'
           ? info.deprecated
           : 'This version has been deprecated by the maintainer.'
-      toast.show('info', message, {
+      toastIdRef.current = toast.show('info', message, {
         title: `Version ${info.current} is deprecated`,
         durationMs: 0,
         hideDismiss: true,
         actions: nagActions('deprecation', value),
       })
+      return
     }
+
+    // No branch applies (disabled, update on disk, nothing offered): a live
+    // offer from an earlier snapshot is now stale — withdraw it.
+    withdraw()
   }, [info, toast])
 }

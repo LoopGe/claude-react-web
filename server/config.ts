@@ -681,7 +681,10 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     }
   }
 
-  if (typeof file_.updateCheckIntervalMs === 'number' && file_.updateCheckIntervalMs >= 0) {
+  // Number.isFinite matters here (unlike workingStuckMs): an Infinity interval
+  // turns the scheduler's jitter math into NaN, and setTimeout(NaN) fires
+  // immediately — a probe storm from one config typo (JSON `1e999`).
+  if (typeof file_.updateCheckIntervalMs === 'number' && Number.isFinite(file_.updateCheckIntervalMs) && file_.updateCheckIntervalMs >= 0) {
     ;(merged as { updateCheckIntervalMs: number }).updateCheckIntervalMs = Math.round(file_.updateCheckIntervalMs)
     log.info(`updateCheckIntervalMs: ${merged.updateCheckIntervalMs}`)
   }

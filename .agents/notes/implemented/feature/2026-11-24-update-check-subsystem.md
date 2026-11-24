@@ -20,8 +20,10 @@ undo from the UI.
 ## Decision
 
 One config field, `updateCheckIntervalMs` (default 12 h, `0` disables periodic
-checking; startup and manual checks unaffected), drives two scheduler instances
-that share semantics but not result vocabulary:
+checking; startup and manual checks unaffected; non-finite values rejected at
+coercion — an Infinity interval would turn the jitter math into NaN and
+`setTimeout(NaN)` fires immediately), drives two scheduler instances that share
+semantics but not result vocabulary:
 
 - `server/update-schedule.ts` exports a generic `UpdateSchedule<R>` ported from
   DSH's `DesktopUpdateSchedule`: completion-based deadline (armed when the
@@ -49,7 +51,9 @@ immediately — no mutation path can be missed.
 The wire is one always-on global frame, `update-info` (canonical in
 `shared/ws-protocol.ts`), seeded on every new connection from the hub's latest
 snapshot (checker-cache fallback when cold). The client (`useUpdateInfo`)
-**merges, never replaces**: a `checkedAt` staleness fence keeps a late GET
+subscribes only while `enabled` (setup complete) — a seed frame must not arm the
+nag over the first-run wizard or clobber SetupPage's override-probe results —
+and **merges, never replaces**: a `checkedAt` staleness fence keeps a late GET
 response (the route awaits CLI/SDK overlays) from regressing core fields a
 fresher frame already delivered, while the GET-only overlays (`repoUrl`,
 `claudeCli`, `agentSdk`) survive frames and refresh on GETs
@@ -68,6 +72,13 @@ toast** (`Toast`/`PushOptions` gained `actions` + `hideDismiss` for this):
   (cross-tab), a capped JSON list under `userData` on desktop
   (`desktop/update-skip-store.ts`, cross-restart). The dialog's close paths are
   stateless too; its explicit Skip button writes the key.
+
+A live nag whose offer becomes invalid (registry disabled, update applied to
+disk) is **withdrawn**, and a newer version **replaces** the previous toast
+rather than stacking — sticky toasts are exempt from capacity eviction, so
+without withdrawal a long-running tab would accumulate one stale offer per
+release. Withdrawal also clears the per-mount dedup, so a re-enabled registry
+re-nags the same version.
 
 The desktop offer (`desktop/update-offer.ts`) adds one rule beyond the web: a
 **failed download is not a dismissal** — the user explicitly chose Download, so

@@ -181,15 +181,19 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
   // completion). Merge — never replace — so the GET-only About overlays
   // survive, and the checkedAt fence keeps a late GET from regressing core
   // fields. Null hub (component tests / no provider) → REST-only, as before.
+  // Gated on `enabled` like the mount fetch: before setup completes, a seed
+  // frame must not set info (and arm the nag) over the first-run wizard, and
+  // SetupPage's override-probe results must not be clobbered by saved-config
+  // publishes.
   const hub = useOptionalWsHub()
   useEffect(() => {
-    if (!hub) return
+    if (!hub || !enabled) return
     return hub.addListener((frame) => {
       if (frame.kind !== 'update-info') return
       if (!mountedRef.current) return
       setInfo((prev) => mergeUpdateInfoSnapshot(prev, frame.info))
     })
-  }, [hub])
+  }, [hub, enabled])
 
   const refresh = useCallback(
     (registryOverride?: string) => {

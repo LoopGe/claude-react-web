@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { ToastProvider } from '../components/ToastProvider'
 import { useToastList } from './useToast'
@@ -178,6 +178,38 @@ describe('useUpdateNag', () => {
     )
     expect(result.current).toHaveLength(1)
     expect(result.current[0].title).toBe('New version available')
+  })
+
+  it('withdraws the live nag when the registry is disabled mid-run', async () => {
+    const { result, rerender } = useHarness(baseInfo())
+    expect(result.current).toHaveLength(1)
+    rerender({ info: baseInfo({ disabled: true, latest: undefined, hasUpdate: false }), onOpenDialog: vi.fn() })
+    await waitFor(() => expect(result.current).toHaveLength(0))
+  })
+
+  it('withdraws the live nag once the update is applied to disk', async () => {
+    const { result, rerender } = useHarness(baseInfo())
+    expect(result.current).toHaveLength(1)
+    rerender({ info: baseInfo({ updateAppliedToDisk: true }), onOpenDialog: vi.fn() })
+    await waitFor(() => expect(result.current).toHaveLength(0))
+  })
+
+  it('replaces the nag on a newer latest instead of stacking sticky toasts', async () => {
+    const { result, rerender } = useHarness(baseInfo())
+    expect(result.current).toHaveLength(1)
+    rerender({ info: baseInfo({ latest: '0.9.0' }), onOpenDialog: vi.fn() })
+    await waitFor(() => {
+      expect(result.current).toHaveLength(1)
+      expect(result.current[0].message).toContain('0.9.0')
+    })
+  })
+
+  it('a re-enabled registry re-nags after a disabled withdrawal', async () => {
+    const { result, rerender } = useHarness(baseInfo())
+    rerender({ info: baseInfo({ disabled: true, latest: undefined, hasUpdate: false }), onOpenDialog: vi.fn() })
+    await waitFor(() => expect(result.current).toHaveLength(0))
+    rerender({ info: baseInfo(), onOpenDialog: vi.fn() })
+    await waitFor(() => expect(result.current).toHaveLength(1))
   })
 })
 
