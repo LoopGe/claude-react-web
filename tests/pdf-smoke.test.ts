@@ -183,6 +183,19 @@ describe('PDF.js real-library smoke', () => {
         const { GlobalFonts } = await import('@napi-rs/canvas')
         console.error('[pdf-smoke-diag] families:', JSON.stringify(GlobalFonts.families.map((f) => f.family)))
         console.error('[pdf-smoke-diag] dark:', dark, 'canvas:', target.canvas.width, 'x', target.canvas.height)
+        const styles = (await page.getTextContent()).styles as Record<string, { fontFamily?: string }>
+        console.error('[pdf-smoke-diag] textContent styles:', JSON.stringify(styles))
+        // Control: raw fillText on the SAME canvas with an installed family.
+        const ctx = target.context
+        ctx.fillStyle = '#000'
+        ctx.font = '24px DejaVu Sans'
+        ctx.fillText('中国你好', 5, 100)
+        const after = ctx.getImageData(0, 0, target.canvas.width, target.canvas.height).data
+        let control = 0
+        for (let i = 0; i < after.length; i += 4) {
+          if (after[i]! < 128 && after[i + 3] === 255) control++
+        }
+        console.error('[pdf-smoke-diag] control dark after raw DejaVu fillText:', control)
         expect(dark).toBeGreaterThan(0)
       } finally {
         factory.destroy(target)
