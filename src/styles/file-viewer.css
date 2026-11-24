@@ -87,6 +87,46 @@
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
+/* Word wrap for the numbered view (toggle in the bar). The gutter is the
+   absolutely-positioned .code-line::before counter above, so a wrapped line's
+   number stays on its first visual row and the count is untouched.
+   overflow-wrap:anywhere breaks unbreakable tokens (minified code) instead of
+   overflowing horizontally. */
+.numbered-code-wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Bar actions group: wrap toggle + Copy sit together on the right (the bar is
+   space-between — label left, actions right). */
+.code-block-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+
+/* Wrap toggle icon button. Always visible (it reports the reading state);
+   pressed = wrap ON. Reuses theme vars — no new palette. */
+.code-block-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--code-block-border);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.code-block-wrap:hover {
+  background: var(--bg-elev);
+  color: var(--fg);
+}
+.code-block-wrap[aria-pressed='true'] {
+  color: var(--accent-text);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--code-block-border));
+}
+
 .file-viewer-truncated {
   flex: 0 0 auto;
   margin-top: var(--space-1-5);

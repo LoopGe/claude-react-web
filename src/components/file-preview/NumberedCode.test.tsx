@@ -172,3 +172,83 @@ describe('NumberedCode', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(contents))
   })
 })
+
+describe('NumberedCode wrap toggle', () => {
+  it('defaults to wrap ON: pre carries numbered-code-wrap and the toggle is pressed', () => {
+    render(<NumberedCode contents={'one\ntwo'} />)
+    const pre = document.querySelector('pre.numbered-code')!
+    expect(pre.classList.contains('numbered-code-wrap')).toBe(true)
+    const toggle = screen.getByRole('button', { name: 'Toggle word wrap' })
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(toggle.getAttribute('title')).toBe('Toggle word wrap')
+  })
+
+  it('clicking the toggle flips the pre class and aria-pressed', () => {
+    render(<NumberedCode contents={'one\ntwo'} />)
+    const pre = document.querySelector('pre.numbered-code')!
+    const toggle = screen.getByRole('button', { name: 'Toggle word wrap' })
+    fireEvent.click(toggle)
+    expect(pre.classList.contains('numbered-code-wrap')).toBe(false)
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(toggle)
+    expect(pre.classList.contains('numbered-code-wrap')).toBe(true)
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('keeps the gutter counter scope and clean line text under wrap (numbers stay CSS-only)', () => {
+    const contents = 'const a = 1\nconst b = 2'
+    render(<NumberedCode contents={contents} lang="javascript" />)
+    const pre = document.querySelector('pre.numbered-code')!
+    const toggle = screen.getByRole('button', { name: 'Toggle word wrap' })
+    const textOf = () => [...document.querySelectorAll('[data-line]')].map((l) => l.textContent)
+    const before = textOf()
+    expect(before).toEqual(['const a = 1', 'const b = 2'])
+    // The counter-reset scope (.numbered-code) must survive the wrap class, and
+    // toggling wrap must never inject gutter digits into the line text.
+    expect(pre.classList.contains('numbered-code')).toBe(true)
+    fireEvent.click(toggle) // OFF
+    expect(pre.classList.contains('numbered-code')).toBe(true)
+    expect(pre.classList.contains('numbered-code-wrap')).toBe(false)
+    expect(textOf()).toEqual(before)
+    fireEvent.click(toggle) // ON
+    expect(pre.classList.contains('numbered-code')).toBe(true)
+    expect(pre.classList.contains('numbered-code-wrap')).toBe(true)
+    expect(textOf()).toEqual(before)
+  })
+
+  it('re-centers the scroll target when wrap toggles (taller wrapped lines)', () => {
+    const contents = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n')
+    render(<NumberedCode contents={contents} line={10} revision={1} />)
+    const pre = document.querySelector<HTMLElement>('pre.numbered-code')!
+    const target = pre.querySelector<HTMLElement>('[data-line="10"]')!
+    // Model the scroll container: a 200px viewport over 2000px of content. The
+    // nine lines above the target are taller when wrapped (60px) than nowrap
+    // (20px), so the target's offset — and the centered scrollTop — tracks the
+    // wrap class. getBoundingClientRect is viewport-relative, hence `- scroll`.
+    let scroll = 0
+    Object.defineProperties(pre, {
+      scrollTop: { configurable: true, get: () => scroll, set: (v: number) => { scroll = v } },
+      clientHeight: { configurable: true, get: () => 200 },
+      scrollHeight: { configurable: true, get: () => 2000 },
+      getBoundingClientRect: {
+        configurable: true,
+        value: () => ({ top: 0, bottom: 200, left: 0, right: 800, height: 200, width: 800 }),
+      },
+    })
+    Object.defineProperty(target, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => {
+        const lineHeight = pre.classList.contains('numbered-code-wrap') ? 60 : 20
+        const top = 9 * lineHeight - scroll
+        return { top, bottom: top + lineHeight, left: 0, right: 800, height: lineHeight, width: 800 }
+      },
+    })
+    const toggle = screen.getByRole('button', { name: 'Toggle word wrap' })
+    // ON → OFF: lines shrink, the target re-centers to 9*20 - 200/2 = 80.
+    fireEvent.click(toggle)
+    expect(scroll).toBe(80)
+    // OFF → ON: wrapped lines are taller, re-centers to 9*60 - 200/2 = 440.
+    fireEvent.click(toggle)
+    expect(scroll).toBe(440)
+  })
+})

@@ -5,7 +5,7 @@
 // middle of the scroll container. Bodies over MAX_NUMBERED_LINES fall back to
 // the plain CodeBlock (per-row rendering would be too costly).
 
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CodeBlock } from '../Markdown'
 import { useCopy } from '../../hooks/useCopy'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
@@ -30,6 +30,10 @@ interface Props {
 
 export function NumberedCode({ contents, lang, label, line, endLine, revision = 0 }: Props) {
   const { copied, copy } = useCopy()
+  // Word wrap is local to this mount (default ON, reading-friendly) — no
+  // persistence. Toggling it changes line heights, so the scroll-to-line effect
+  // below re-centers an active target on every wrap change.
+  const [wrap, setWrap] = useState(true)
   const preRef = useRef<HTMLPreElement>(null)
   const setCodeOs = useOverlayScrollbar({ autoHide: 'leave' })
   const mergedRef = useMergedRef(preRef, setCodeOs)
@@ -92,7 +96,9 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
 
   useEffect(() => {
     if (line == null) return
-    const key = `${line}:${endLine ?? ''}:${revision}`
+    // `wrap` is part of the key AND the deps: toggling wrap changes line heights,
+    // so an active target must re-center even when line/endLine/revision are unchanged.
+    const key = `${line}:${endLine ?? ''}:${revision}:${wrap}`
     if (lastJumpRef.current === key) return
     const container = preRef.current
     const target = container?.querySelector<HTMLElement>(`[data-line="${line}"]`)
@@ -104,7 +110,7 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
       container.scrollTop + (targetRect.top - containerRect.top) - container.clientHeight / 2
     const max = Math.max(0, container.scrollHeight - container.clientHeight)
     container.scrollTop = Math.max(0, Math.min(next, max))
-  }, [line, endLine, revision, contents])
+  }, [line, endLine, revision, contents, wrap])
 
   const handleCopy = () => void copy(() => contents)
 
@@ -127,11 +133,43 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
     <div className="code-block">
       <div className="code-block-bar">
         <span className="code-block-lang">{label ?? lang ?? 'code'}</span>
-        <button type="button" className="code-block-copy" onClick={handleCopy}>
-          {copied ? 'Copied!' : 'Copy'}
-        </button>
+        <div className="code-block-actions">
+          <button
+            type="button"
+            className="code-block-wrap"
+            aria-pressed={wrap}
+            aria-label="Toggle word wrap"
+            title="Toggle word wrap"
+            onClick={() => setWrap((w) => !w)}
+          >
+            {/* Self-contained wrap glyph (lucide WrapText path) — inline so no new
+                icon import lands in the startup bundle. */}
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <path d="M3 12h15a3 3 0 1 1 0 6h-4" />
+              <polyline points="16 16 14 18 16 20" />
+              <line x1="3" y1="18" x2="10" y2="18" />
+            </svg>
+          </button>
+          <button type="button" className="code-block-copy" onClick={handleCopy}>
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
       </div>
-      <pre className="file-viewer-code numbered-code" ref={mergedRef}>
+      <pre
+        className={`file-viewer-code numbered-code${wrap ? ' numbered-code-wrap' : ''}`}
+        ref={mergedRef}
+      >
         {renderedLines}
       </pre>
     </div>
