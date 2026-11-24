@@ -1,11 +1,19 @@
 // @vitest-environment jsdom
 // NOTE: no per-file afterEach(cleanup) — src/test-setup.ts already registers
 // the global one (see CLAUDE.md); re-adding it here is redundant.
-import { describe, it, expect, vi } from 'vitest'
-import { render, fireEvent, screen } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, fireEvent, screen, act } from '@testing-library/react'
+import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../test/resize-observer-stub'
 import { ProfileCreateDialog } from './ProfileCreateDialog'
 import { expectPortaledToBody } from './portal-test-utils'
 import type { ProviderProfile } from '../types/config'
+
+// The height measure is mocked file-wide. With no implementation it returns
+// undefined, which useAutoHeightTransition treats as "no measurement" — so the
+// behavioural tests below never tween and need no DOM-metric stubs. The height
+// describe gives it controlled heights.
+const { measureMock } = vi.hoisted(() => ({ measureMock: vi.fn() }))
+vi.mock('../utils/capped-height-measure', () => ({ measureCappedContentHeight: measureMock }))
 
 function profile(id: string, overrides: Partial<ProviderProfile> = {}): ProviderProfile {
   return {
@@ -186,5 +194,74 @@ describe('ProfileCreateDialog', () => {
   it('is reachable through screen queries', () => {
     render(<ProfileCreateDialog {...baseProps()} />)
     expect(screen.getByRole('dialog', { name: 'Add profile' })).toBeTruthy()
+  })
+})
+
+// The body's height tweens when the profiles list lands after open or the error
+// row mounts via useAutoHeightTransition. The measure math is unit-tested in
+// capped-height-measure.test.ts; here it is mocked to controlled heights so the
+// WIRING (observer + key paths, pin release) is what's under test. rAF is stubbed
+// inert so the tween holds its start pin and the assertion does not race the frame.
+describe('ProfileCreateDialog height animation', () => {
+  beforeEach(() => {
+    measureMock.mockReset()
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
+    stubResizeObserver()
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(0)
+  })
+
+  afterEach(() => {
+    clearResizeObserverStub()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  function bodyAndContent() {
+    const body = document.querySelector<HTMLElement>('.modal-section')!
+    const content = document.querySelector<HTMLElement>('.modal-section-content')!
+    return { body, content }
+  }
+
+  it('tweens the body height on a content-driven resize', () => {
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    render(<ProfileCreateDialog {...baseProps()} />)
+    const { body, content } = bodyAndContent()
+    height = 300
+    fireResize(content)
+    expect(body.classList.contains('auto-height-animating')).toBe(true)
+    expect(body.style.height).toBe('100px')
+  })
+
+  it('releases the pin when the tween finishes', () => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    render(<ProfileCreateDialog {...baseProps()} />)
+    const { body, content } = bodyAndContent()
+    height = 300
+    fireResize(content)
+    expect(body.style.height).toBe('300px')
+    act(() => {
+      const evt = new Event('transitionend', { bubbles: true })
+      Object.defineProperty(evt, 'propertyName', { value: 'height' })
+      body.dispatchEvent(evt)
+    })
+    expect(body.classList.contains('auto-height-animating')).toBe(false)
+    expect(body.style.height).toBe('')
+  })
+
+  it('tweens the body height when the profiles list lands after open (key path)', () => {
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    const props = baseProps({ profiles: [] })
+    const { rerender } = render(<ProfileCreateDialog {...props} />)
+    const { body } = bodyAndContent()
+    // The first measurement only establishes the baseline — no tween yet.
+    expect(body.classList.contains('auto-height-animating')).toBe(false)
+    height = 300
+    rerender(<ProfileCreateDialog {...props} profiles={twoProfiles} />)
+    expect(body.classList.contains('auto-height-animating')).toBe(true)
+    expect(body.style.height).toBe('100px')
   })
 })

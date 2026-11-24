@@ -1906,6 +1906,15 @@
   flex: 0 0 auto;
   will-change: height;
 }
+/* Content-sized wrapper inside an animated .modal-section body (ShortcutHelp,
+   ProfileCreateDialog, RunAsAgentControl). Mirrors the section's own column gap
+   so wrapping the rows does not collapse their spacing — same shape as
+   .new-session-content. Plain content height, never flex-fill. */
+.modal-section-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2-5);
+}
 .perm-headline {
   font-size: calc(15px * var(--fs-scale));
   font-weight: 600;
@@ -3381,6 +3390,15 @@ details.decision-card > summary > .decision-card-header {
   overflow-wrap: anywhere;
 }
 .question-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3-5);
+}
+/* Content-sized wrapper inside the animated question/elicitation body
+   (.modal-section.question-body). Carries the body's wider column gap so the
+   question blocks / form fields keep their spacing; never flex-fill, so the
+   height hook reads its scrollHeight as the natural content height. */
+.question-body-content {
   display: flex;
   flex-direction: column;
   gap: var(--space-3-5);

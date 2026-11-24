@@ -10,9 +10,11 @@
 // <body> portal is load-bearing for the same containment reasons — see the
 // comment atop ProfileActivateDialog.
 
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
 import { StatusBadge } from './StatusBadge'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import type { ProviderProfile } from '../types/config'
 import { isReservedProfileTemplateId } from '../../shared/profile-templates'
 import { cx } from '../utils/cx'
@@ -49,6 +51,24 @@ export function ProfileCreateDialog({ profiles, busy = false, error, onConfirm, 
     ? picked
     : activeTemplate ?? 'blank'
 
+  // The body grows when the profiles list lands after open or the error row
+  // mounts; tween its height instead of jumping. The measure caps at the card
+  // ceiling (pin-independent). The observer watches the content-sized wrapper;
+  // the key also drives the tween.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyContentRef = useRef<HTMLDivElement>(null)
+  const measureBodyHeight = useCallback(() => {
+    const body = bodyRef.current
+    const content = bodyContentRef.current
+    const card = body?.closest('.profile-create-card') as HTMLElement | null
+    if (!body || !content || !card) return null
+    return measureCappedContentHeight(body, content, card)
+  }, [])
+  useAutoHeightTransition(bodyRef, `${profiles.length}|${error ?? ''}`, {
+    measureTargetHeight: measureBodyHeight,
+    observe: bodyContentRef,
+  })
+
   return (
     <Overlay
       variant="modal"
@@ -61,7 +81,8 @@ export function ProfileCreateDialog({ profiles, busy = false, error, onConfirm, 
       <div className="modal-header">
         <h3>Add profile</h3>
       </div>
-      <div className="modal-section">
+      <div className="modal-section" ref={bodyRef}>
+        <div className="modal-section-content" ref={bodyContentRef}>
         <p className="confirm-dialog-message">
           Choose what the new profile starts from. The auth token is never copied — enter it after creating.
         </p>
@@ -117,6 +138,7 @@ export function ProfileCreateDialog({ profiles, busy = false, error, onConfirm, 
             )
           })}
         </ul>
+        </div>
       </div>
       <div className="modal-footer">
         <button type="button" className="btn" onClick={onCancel} disabled={busy}>

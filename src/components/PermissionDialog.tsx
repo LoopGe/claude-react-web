@@ -9,11 +9,14 @@
 // persistForSession=true and let the server promote every suggestion's
 // destination to 'session'. No suggestions? We hide the always button.
 
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { PermissionRequest, PermissionMode } from '../types'
 import type { PlanTargetMode } from '../hooks/usePermissionChannel'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { useMergedRef } from '../utils/mergedRef'
 import { Overlay } from './Overlay'
 import { ContextMenu } from './ContextMenu'
 import type { FloatingDismissReason } from '../hooks/floating-surface-registry'
@@ -82,6 +85,12 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
   // every other dialog/panel uses — without it a long plan shows the native
   // 10px scrollbar instead of the project's 6px floating thumb.
   const setModalSectionOs = useOverlayScrollbar({ autoHide: 'leave' })
+  // Height-animation box: the section (.modal-section) is the flex-fill, capped
+  // scroll body; a content-sized wrapper inside it is the observer target. The
+  // footer stays static (see the section hook comment).
+  const sectionRef = useRef<HTMLDivElement>(null)
+  const sectionContentRef = useRef<HTMLDivElement>(null)
+  const sectionRefMerged = useMergedRef(sectionRef, setModalSectionOs)
 
   // `suppressAlwaysAllowRule` means the SDK's suggested rule would grant more
   // than this ask's own action — never offer the persistent session-wide allow.
@@ -190,6 +199,27 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
       : `Claude wants to use ${request.toolName}`
   )
 
+  // The section grows/shrinks as the raw input toggles, the plan body arrives,
+  // or the request swaps; tween its height instead of jumping. The measure caps
+  // at the .perm-card ceiling (pin-independent); the observer watches the
+  // content-sized wrapper (markdown settles async). planView rides the key too:
+  // a footer mode swap flexes this box at the card cap, so re-reading keeps its
+  // baseline fresh. The footer itself is left static (flex-shrink:0): animating
+  // it as a second box would make this section's ceiling pin-dependent, since the
+  // chrome walk reads the footer sibling's transient pinned height mid-tween.
+  const measureSectionHeight = useCallback(() => {
+    const section = sectionRef.current
+    const content = sectionContentRef.current
+    const card = section?.closest('.perm-card') as HTMLElement | null
+    if (!section || !content || !card) return null
+    return measureCappedContentHeight(section, content, card)
+  }, [])
+  useAutoHeightTransition(
+    sectionRef,
+    `${request.id}|${isPlanRequest}|${showRaw}|${planText != null}|${planAllowedPrompts.length}|${planView}`,
+    { measureTargetHeight: measureSectionHeight, observe: sectionContentRef },
+  )
+
   // Embedded in the chat panel rather than a full-screen modal: the grid
   // shows up to three sessions at once, so blocking the entire viewport
   // to ask about session A's Bash command would freeze the user's work
@@ -230,7 +260,8 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
         )}
       </div>
 
-      <div className="modal-section" ref={setModalSectionOs}>
+      <div className="modal-section" ref={sectionRefMerged}>
+        <div className="modal-section-content" ref={sectionContentRef} role="presentation">
         {!isPlanRequest && <div className="perm-headline">{headline}</div>}
         {request.description && <div className="perm-sub">{request.description}</div>}
 
@@ -293,6 +324,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
         {showRaw && (
           <pre className="perm-raw">{JSON.stringify(request.input, null, 2)}</pre>
         )}
+        </div>
       </div>
 
       <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>

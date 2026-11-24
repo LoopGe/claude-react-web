@@ -109,25 +109,28 @@ surface extraction needed, and a fresh baseline on every open.
 
 ## Generic measure and broader rollout
 
-The same treatment extends to twelve more surfaces: CommandPalette,
+The same treatment extends across the app's panels and dialogs: CommandPalette,
 InputHistoryPanel, FullDiffViewer, UpdateDialog, StructuredPanel, McpInstaller,
 McpImportDialog, NewSessionDialog, SnippetsManagerDialog, UploadsManagerDialog,
-TasksPanel, SessionSearchPanel, WorktreeChanges. Rather than a bespoke measure
-per surface, these share `measureCappedContentHeight(box, content, card)`
+TasksPanel, SessionSearchPanel, WorktreeChanges, GitPanel's discrete route swaps,
+and the smaller dialogs (ShortcutHelp, McpExportDialog, ProfileCreateDialog,
+RunAsAgentControl, PermissionDialog, QuestionDialog, ElicitationDialog,
+ModelPicker, CommandPicker). Rather than a bespoke measure per surface, these
+share `measureCappedContentHeight(box, content, card)`
 (`src/utils/capped-height-measure.ts`): the resume ceiling idea generalized to
 any nesting by walking from the box up to the card and summing each level's
-padding, flex gaps, and in-flow sibling outer heights. The card cap is read
-EMPIRICALLY — force the box tall (lift its height/flex/max-height), read the
-card's clamped used height, restore — because computed style leaves percentage
-and `min()` caps unresolved. Each surface adds a content-sized wrapper (the
-observer target), a measure callback finding its card via `closest`, and a
-state key; `TasksPanel`/`WorktreeChanges` row folds use `AnimatedCollapse`
-(`animateResize`) and the card hook stands down for them via
-`claimCollapseMotionInside`. Fixed-height views (the SessionSearchPanel preview,
-terminal, drawers) are intentionally not animated.
+padding, flex gaps, and in-flow sibling outer heights. The card cap is resolved
+NON-INVASIVELY from the card's computed `max-height` — a px length reads straight
+(vh and `min(vh,px)` already resolve), and percentage / `min()` / `max()` terms
+are resolved against the card parent's fixed content height. Each surface adds a
+content-sized wrapper (the observer target), a measure callback finding its card
+via `closest`, and a state key; `TasksPanel`/`WorktreeChanges`/`GitPanel` row
+folds use `AnimatedCollapse`/`AnimatedDetails` and the card hook stands down for
+them via `claimCollapseMotionInside`. Fixed-height views (the SessionSearchPanel
+preview, terminal, drawers) are intentionally not animated.
 
-Two robustness rules the generic measure must honor (both found in review and
-verified live):
+Three robustness rules the generic measure must honor (all found in review or
+live debugging, and verified live):
 
 - **Skip out-of-flow children in the chrome sum.** The overlay scrollbar appends
   an absolute track to the card whose height equals the scroller's; counting it
@@ -137,6 +140,13 @@ verified live):
 - **Floor the target at the box's `min-height`.** A snippets list's 120px floor
   means a short list renders taller than its natural content; a target below the
   floor diverges from the used height and gives a growth tween a dead zone.
+- **Resolve the cap without mutating the box.** An earlier empirical lift forced
+  the box tall, read the card's clamped height, and restored the box. Restoring an
+  auto box let it reflow to full natural height BEFORE the hook pinned the tween
+  start (the resume loading→results transition jumped instead of animating), and
+  mid-tween the lift animated against the hook's height transition, collapsing the
+  ceiling into a one-shot oscillation. The non-invasive resolver touches nothing,
+  so the measure cannot disturb the pin or reflow the box.
 
 ## Alternatives considered
 

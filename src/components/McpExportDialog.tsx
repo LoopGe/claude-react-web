@@ -2,9 +2,11 @@
 // Lets the user pick which servers to export and whether to include secret
 // env/header values.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { downloadJson } from '../utils/downloadJson'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import type { McpServerConfigMeta, McpExportFile } from '../types'
 import { Overlay } from './Overlay'
 import { IconX } from './icons/ToolIcons'
@@ -21,6 +23,25 @@ export function McpExportDialog({ open = true, servers, onClose }: Props) {
   const [includeSecrets, setIncludeSecrets] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // The body grows/shrinks as the secrets note toggles, the error row mounts and
+  // the server list changes; tween its height instead of jumping. The body carries
+  // its own 60vh cap inline and sits in the .modal card (84vh); the measure honors
+  // both (min of content, card ceiling, body sub-cap). The observer watches a
+  // content-sized wrapper; the key also drives the tween.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyContentRef = useRef<HTMLDivElement>(null)
+  const measureBodyHeight = useCallback(() => {
+    const body = bodyRef.current
+    const content = bodyContentRef.current
+    const card = body?.closest('.modal') as HTMLElement | null
+    if (!body || !content || !card) return null
+    return measureCappedContentHeight(body, content, card)
+  }, [])
+  useAutoHeightTransition(bodyRef, `${includeSecrets}|${error ?? ''}|${servers.length}`, {
+    measureTargetHeight: measureBodyHeight,
+    observe: bodyContentRef,
+  })
 
   // Reset to all-checked whenever the server list or open state changes.
   /* eslint-disable react-hooks/set-state-in-effect -- intentional UI reset on open / server-list change */
@@ -65,7 +86,8 @@ export function McpExportDialog({ open = true, servers, onClose }: Props) {
         <h3>Export MCP Servers</h3>
         <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close"><IconX size={14} /></button>
       </div>
-      <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10, maxHeight: '60vh', overflowY: 'auto' }}>
+      <div ref={bodyRef} style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10, maxHeight: '60vh', overflowY: 'auto' }}>
+        <div className="mcp-export-content" ref={bodyContentRef} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div className="settings-section-head" style={{ alignItems: 'center' }}>
           <span className="settings-note">{servers.length} server{servers.length !== 1 ? 's' : ''}</span>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -93,6 +115,7 @@ export function McpExportDialog({ open = true, servers, onClose }: Props) {
           <span className="settings-note">Secrets will be blanked — re-enter them on the target machine.</span>
         )}
         {error && <div style={{ color: 'var(--danger-text)', fontSize: 'var(--fs-base)' }}>{error}</div>}
+        </div>
       </div>
       <div className="modal-footer">
         <span className="hint">Press Esc to cancel.</span>

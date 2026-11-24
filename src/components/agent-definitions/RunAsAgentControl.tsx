@@ -9,10 +9,12 @@
 // that *asks* it to. The picker therefore only ever needs to satisfy the
 // crafted-text contract; correctness of the tool call itself is the model's.
 
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { Overlay } from '../Overlay'
 import { api } from '../../hooks/useApi'
 import { useAgentDefinitions } from '../../hooks/useAgentDefinitions'
+import { useAutoHeightTransition } from '../../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../../utils/capped-height-measure'
 import { formatError } from '../../utils/format-error'
 
 interface Props {
@@ -36,6 +38,24 @@ export function RunAsAgentControl({ sessionId, onClose }: Props) {
   const selectedResolvable = enabled.some((a) => a.name === selected)
 
   const canRun = !busy && task.trim().length > 0 && selectedResolvable
+
+  // The body grows when the stale/error row mounts or the enabled-agent list
+  // changes; tween its height instead of jumping. The measure caps at the card
+  // ceiling (pin-independent). The observer watches the content-sized wrapper;
+  // the key also drives the tween.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyContentRef = useRef<HTMLDivElement>(null)
+  const measureBodyHeight = useCallback(() => {
+    const body = bodyRef.current
+    const content = bodyContentRef.current
+    const card = body?.closest('.modal') as HTMLElement | null
+    if (!body || !content || !card) return null
+    return measureCappedContentHeight(body, content, card)
+  }, [])
+  useAutoHeightTransition(bodyRef, `${staleError ?? ''}|${enabled.length}`, {
+    measureTargetHeight: measureBodyHeight,
+    observe: bodyContentRef,
+  })
 
   const close = () => {
     if (busy) return
@@ -72,7 +92,8 @@ export function RunAsAgentControl({ sessionId, onClose }: Props) {
       <div className="modal-header">
         <h3>Run as agent</h3>
       </div>
-      <div className="modal-section">
+      <div className="modal-section" ref={bodyRef}>
+        <div className="modal-section-content" ref={bodyContentRef}>
         <div className="runasagent-field">
           <label className="runasagent-label" htmlFor="runasagent-agent">Agent</label>
           <select
@@ -115,6 +136,7 @@ export function RunAsAgentControl({ sessionId, onClose }: Props) {
           Delegation is model-guided: the model decides whether and how it
           invokes the selected agent.
         </p>
+        </div>
       </div>
       <div className="modal-footer">
         <button type="button" className="btn" onClick={close} disabled={busy}>

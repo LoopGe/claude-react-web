@@ -4,14 +4,16 @@
 // Rendered through a portal on <body> — see the `createPortal` call below for
 // why that is load-bearing, not cosmetic.
 
-import { useLayoutEffect, useMemo, useRef } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { SlashCommand } from '../types'
 import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { PANEL_SELECTOR, markPortaledSurface } from '../theme'
 import { pluginTagOf } from '../utils/text'
 import { clamp } from '../utils/clamp'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 
 interface Props {
   commands: SlashCommand[]
@@ -78,6 +80,8 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   const filtered = commands.filter((c) => matches(c, query))
   const groups = useMemo(() => groupCommands(filtered), [filtered])
   const rootRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const listContentRef = useRef<HTMLDivElement>(null)
 
   // --- Positioning: fixed, above the textarea, clamped to viewport ---
   useLayoutEffect(() => {
@@ -115,6 +119,30 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
     el.style.top = `${top}px`
   }, [anchorRef, filtered.length])
 
+  // The list grows/shrinks as the query filters; tween its height instead of
+  // jumping. The measure caps at the card ceiling (pin-independent) so a short
+  // list does not overshoot and snap. The observer watches the content-sized
+  // wrapper; the key also drives the tween without ResizeObserver. The picker
+  // mounts/unmounts with the open cycle, so each open starts from a fresh
+  // baseline. The positioning effect above reads the card's current height once
+  // per count change, so it does not track the animated height: a keystroke
+  // landing mid-tween positions for the transient pinned size, and the bottom
+  // edge drifts during a tween. Keeping the bottom anchor glued would need
+  // bottom-edge positioning or a transition-safe settled-height read — machinery
+  // beyond the committed height primitives, so the drift is left as a known
+  // limit of animating this one-shot-positioned popover.
+  const measureListHeight = useCallback(() => {
+    const list = listRef.current
+    const content = listContentRef.current
+    const card = list?.closest('.cmd-picker') as HTMLElement | null
+    if (!list || !content || !card) return null
+    return measureCappedContentHeight(list, content, card)
+  }, [])
+  useAutoHeightTransition(listRef, `${query}|${filtered.length}`, {
+    measureTargetHeight: measureListHeight,
+    observe: listContentRef,
+  })
+
   // --- Outside-click dismissal (Escape is owned by the shared stack below) ---
   // Capture phase, as before: this surface must collapse before any other
   // mousedown handler sees the press.
@@ -150,37 +178,41 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   return (
     <FloatingSurfaceProvider surfaceId={surfaceId}>
       {createPortal(
-    <div className="cmd-picker os-hidden" ref={rootRef} role="listbox">
-      {filtered.length === 0 ? (
-        <div className="cmd-picker-empty">No matching commands</div>
-      ) : (
-        groups.map((group) => (
-          <div key={group.plugin ?? '__builtin__'}>
-            {group.plugin && <div className="cmd-picker-group-header">{group.plugin}</div>}
-            {group.commands.map((cmd) => {
-              const i = flatIdx++
-              const isActive = i === idx
-              return (
-                <button
-                  key={cmd.name}
-                  ref={isActive ? activeRef : undefined}
-                  className={`cmd-picker-item${isActive ? ' active' : ''}`}
-                  role="option"
-                  aria-selected={isActive}
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    onSelect(cmd)
-                  }}
-                >
-                  <span className="cmd-picker-name">/{cmd.name}</span>
-                  {cmd.argumentHint && <span className="cmd-picker-args">{cmd.argumentHint}</span>}
-                  {cmd.description && <span className="cmd-picker-desc">{cmd.description}</span>}
-                </button>
-              )
-            })}
-          </div>
-        ))
-      )}
+    <div className="cmd-picker" ref={rootRef}>
+      <div className="cmd-picker-list os-hidden" ref={listRef} role="listbox">
+        <div className="cmd-picker-list-content" ref={listContentRef} role="presentation">
+          {filtered.length === 0 ? (
+            <div className="cmd-picker-empty">No matching commands</div>
+          ) : (
+            groups.map((group) => (
+              <div key={group.plugin ?? '__builtin__'}>
+                {group.plugin && <div className="cmd-picker-group-header">{group.plugin}</div>}
+                {group.commands.map((cmd) => {
+                  const i = flatIdx++
+                  const isActive = i === idx
+                  return (
+                    <button
+                      key={cmd.name}
+                      ref={isActive ? activeRef : undefined}
+                      className={`cmd-picker-item${isActive ? ' active' : ''}`}
+                      role="option"
+                      aria-selected={isActive}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        onSelect(cmd)
+                      }}
+                    >
+                      <span className="cmd-picker-name">/{cmd.name}</span>
+                      {cmd.argumentHint && <span className="cmd-picker-args">{cmd.argumentHint}</span>}
+                      {cmd.description && <span className="cmd-picker-desc">{cmd.description}</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
     </div>,
     document.body,
       )}

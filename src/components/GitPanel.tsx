@@ -36,6 +36,9 @@ import { IconX, IconSparkles, IconChevronRight, IconCheck, IconAlertTriangle, Ic
 import { Skeleton } from './Skeleton'
 import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { useMergedRef } from '../utils/mergedRef'
 import { AnimatePresence } from 'motion/react'
 import type {
   GitCommitResponse,
@@ -116,6 +119,36 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   const [expandedCommit, setExpandedCommit] = useState<string | null>(null)
   const [commitFileCache] = useState(() => new Map<string, GitCommitResponse>())
   const panelRef = useRef<HTMLElement | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const scrollContentRef = useRef<HTMLDivElement | null>(null)
+  const scrollRefMerged = useMergedRef(scrollRef, setPanelOs)
+
+  // Which body route renders. The keyed `.git-panel-scroll` box below is
+  // rendered by EVERY route (loading / error / not-repo / repo) so its DOM node
+  // — and the height hook's ResizeObserver target — survives a route swap; the
+  // hook then tweens the box between routes instead of the body snapping.
+  const route = error ? 'error' : status && status.isRepo === false ? 'not-repo' : !status ? 'loading' : 'repo'
+  const repoStatus = status && status.isRepo !== false ? status : null
+  const totalFiles = repoStatus ? repoStatus.staged.length + repoStatus.unstaged.length + repoStatus.untracked.length : 0
+  const inProgress = repoStatus ? repoStatus.state !== 'clean' && repoStatus.state !== 'dirty' : false
+
+  // The scroller grows/shrinks as routes swap, the filter bar / in-progress
+  // banner mount, and file lists load; tween its height instead of jumping. The
+  // measure caps at the card ceiling (pin-independent). The observer watches the
+  // content-sized wrapper; the key also drives the tween without a resize.
+  // Section folds (AnimatedDetails) and row diffs (AnimatedCollapse in
+  // GitFileRow) own their own height motion — the hook stands down for them.
+  const measureScrollHeight = useCallback(() => {
+    const box = scrollRef.current
+    const content = scrollContentRef.current
+    const card = box?.closest('.git-panel') as HTMLElement | null
+    if (!box || !content || !card) return null
+    return measureCappedContentHeight(box, content, card)
+  }, [])
+  useAutoHeightTransition(scrollRef, `${route}|${loading}|${error ?? ''}|${totalFiles > 0}|${inProgress}`, {
+    measureTargetHeight: measureScrollHeight,
+    observe: scrollContentRef,
+  })
 
   // Focus the panel on open so ↑↓/s/u/x/Enter keyboard selection works
   // immediately. The Overlay focus trap leaves focus on the backdrop div (the
@@ -210,7 +243,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   if (error) {
     return (
       <aside className="git-panel" role="region" aria-label="Git">
-        <header className="git-panel-header">
+        <header className="git-panel-header" key="header">
           <span className="git-panel-branch"><IconGitBranch size={13} /> git</span>
           <span className="git-panel-spacer" />
           <HoverHint label="Refresh" side="bottom">
@@ -220,9 +253,13 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
             <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
           </HoverHint>
         </header>
-        <div className="git-panel-empty">
-          <p className="git-panel-error">{error}</p>
-          <button className="git-panel-action" onClick={onRefresh}>Try again</button>
+        <div className="git-panel-scroll" key="scroll" ref={scrollRefMerged}>
+          <div className="git-panel-scroll-content" ref={scrollContentRef}>
+            <div className="git-panel-empty">
+              <p className="git-panel-error">{error}</p>
+              <button className="git-panel-action" onClick={onRefresh}>Try again</button>
+            </div>
+          </div>
         </div>
       </aside>
     )
@@ -231,15 +268,19 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   if (status && status.isRepo === false) {
     return (
       <aside className="git-panel" role="region" aria-label="Git">
-        <header className="git-panel-header">
+        <header className="git-panel-header" key="header">
           <span className="git-panel-branch"><IconGitBranch size={13} /> git</span>
           <span className="git-panel-spacer" />
           <HoverHint label="Close" side="bottom">
             <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
           </HoverHint>
         </header>
-        <div className="git-panel-empty">
-          <p>Not a git repository.</p>
+        <div className="git-panel-scroll" key="scroll" ref={scrollRefMerged}>
+          <div className="git-panel-scroll-content" ref={scrollContentRef}>
+            <div className="git-panel-empty">
+              <p>Not a git repository.</p>
+            </div>
+          </div>
         </div>
       </aside>
     )
@@ -248,23 +289,25 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   if (!status) {
     return (
       <aside className="git-panel" role="region" aria-label="Git">
-        <header className="git-panel-header">
+        <header className="git-panel-header" key="header">
           <span className="git-panel-branch"><IconGitBranch size={13} /> …</span>
           <span className="git-panel-spacer" />
           <HoverHint label="Close" side="bottom">
             <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
           </HoverHint>
         </header>
-        <div className="git-panel-empty">
-          <p>Loading git status…</p>
+        <div className="git-panel-scroll" key="scroll" ref={scrollRefMerged}>
+          <div className="git-panel-scroll-content" ref={scrollContentRef}>
+            <div className="git-panel-empty">
+              <p>Loading git status…</p>
+            </div>
+          </div>
         </div>
       </aside>
     )
   }
 
   // ── Repo state ──────────────────────────────────────────────────
-  const inProgress = status.state !== 'clean' && status.state !== 'dirty'
-
   // Aggregate line-change totals across every changed file. Staged and
   // unstaged are separate diffs, so a file that's both staged AND further
   // modified contributes from both buckets — that matches what the user
@@ -272,7 +315,6 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   const totals = sumChanges([...status.staged, ...status.unstaged])
 
   // ── Filter + keyboard selection ───────────────────────────────────
-  const totalFiles = status.staged.length + status.unstaged.length + status.untracked.length
   const filterQ = filter.trim().toLowerCase()
   const matchesFilter = (path: string) => !filterQ || path.toLowerCase().includes(filterQ)
 
@@ -389,7 +431,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
 
   return (
     <aside className="git-panel" role="region" aria-label="Git" ref={panelRef} tabIndex={-1} onKeyDown={handleKeyDown}>
-      <header className="git-panel-header">
+      <header className="git-panel-header" key="header">
         <HoverHint label={status.upstream ? `tracking ${status.upstream}` : 'no upstream'} side="bottom">
           <span className="git-panel-branch">
             <IconGitBranch size={13} /> {status.detached ? 'detached' : (status.branch ?? 'unknown')}
@@ -472,7 +514,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       </header>
 
       {totalFiles > 0 && (
-        <div className="git-panel-filter-bar">
+        <div className="git-panel-filter-bar" key="filter">
           <IconSearch size={13} />
           <input
             type="text"
@@ -489,7 +531,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       )}
 
       {inProgress && (
-        <div className="git-panel-banner" role="alert">
+        <div className="git-panel-banner" key="banner" role="alert">
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconAlertTriangle size={12} /> {status.state} in progress</span>
           <span className="git-panel-spacer" />
           {status.state === 'merging' && (
@@ -529,7 +571,8 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         </div>
       )}
 
-      <div className="git-panel-scroll" ref={setPanelOs}>
+      <div className="git-panel-scroll" key="scroll" ref={scrollRefMerged}>
+      <div className="git-panel-scroll-content" ref={scrollContentRef}>
       {/* Section order: Changes (unstaged) is what the user is iterating
           on, so it sits at the top. Staged sits next — the holding pen
           on the way to commit. Untracked is collapsed by default;
@@ -680,8 +723,10 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         />
       </Section>
       </div>
+      </div>
 
       <CommitBar
+        key="commit"
         canAmend={true}
         hasStaged={status.staged.length > 0}
         commit={writeOps.commit}
@@ -695,7 +740,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         askConfirm={askThenRun}
       />
 
-      <AnimatePresence>
+      <AnimatePresence key="confirm-presence">
         {confirm && (
           <ConfirmDialog
             key="confirm"
