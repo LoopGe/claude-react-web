@@ -95,28 +95,37 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
     if (!anchor) return
 
     const rect = anchor.getBoundingClientRect()
+    // Reset any prior viewport cap so the height read is the natural CSS-capped
+    // size (the cap is re-applied below only for the flip-below case).
+    el.style.maxHeight = ''
     const pickerH = el.offsetHeight
     const pickerW = el.offsetWidth
     const vw = window.innerWidth
     const vh = window.innerHeight
     const gap = 4
 
-    // Prefer above the textarea; flip below if not enough room.
-    let top = rect.top - gap - pickerH
-    if (top < 8) top = rect.bottom + gap
-
     // Left-align with the textarea, clamped to viewport.
     let left = rect.left
     if (left + pickerW > vw - 8) left = vw - pickerW - 8
     if (left < 8) left = 8
-
-    // If overflows bottom, cap height via max-height.
-    if (top + pickerH > vh - 8) {
-      el.style.maxHeight = `${vh - top - 8}px`
-    }
-
     el.style.left = `${left}px`
-    el.style.top = `${top}px`
+
+    // Glue the edge NEAREST the anchor, not a computed top: the height hook
+    // tweens the list after this effect runs, so a top computed for the settled
+    // height would teleport the bottom edge when the hook pins the list back to
+    // its start height. Anchoring the bottom edge (above case) keeps it glued to
+    // the anchor top while the height animates upward; the flip-below case glues
+    // the top edge and grows downward.
+    const roomAbove = rect.top - gap - 8
+    if (pickerH <= roomAbove) {
+      el.style.top = 'auto'
+      el.style.bottom = `${vh - rect.top + gap}px`
+    } else {
+      const top = rect.bottom + gap
+      el.style.bottom = 'auto'
+      el.style.top = `${top}px`
+      el.style.maxHeight = `${Math.max(0, vh - top - 8)}px`
+    }
   }, [anchorRef, filtered.length])
 
   // The list grows/shrinks as the query filters; tween its height instead of
@@ -124,13 +133,9 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   // list does not overshoot and snap. The observer watches the content-sized
   // wrapper; the key also drives the tween without ResizeObserver. The picker
   // mounts/unmounts with the open cycle, so each open starts from a fresh
-  // baseline. The positioning effect above reads the card's current height once
-  // per count change, so it does not track the animated height: a keystroke
-  // landing mid-tween positions for the transient pinned size, and the bottom
-  // edge drifts during a tween. Keeping the bottom anchor glued would need
-  // bottom-edge positioning or a transition-safe settled-height read — machinery
-  // beyond the committed height primitives, so the drift is left as a known
-  // limit of animating this one-shot-positioned popover.
+  // baseline. The positioning effect above glues the bottom edge to the anchor,
+  // so this height tween grows the picker upward from a fixed bottom — no
+  // teleport (top-edge positioning jumped when the hook pinned the start height).
   const measureListHeight = useCallback(() => {
     const list = listRef.current
     const content = listContentRef.current

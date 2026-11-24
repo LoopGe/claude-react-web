@@ -52,4 +52,20 @@ describe('CommandPicker', () => {
     // keep the tag-derived grouping.
     expect(pickerFlatCommands(mixed).map((c) => c.name)).toEqual(['a', 'c', 'b'])
   })
+
+  it('glues the bottom edge above the anchor so height growth does not teleport', () => {
+    // Regression: top-edge positioning computed top for the settled height, then
+    // the height hook pinned the list back to its start height — moving the bottom
+    // edge (a teleport) before the tween grew it back. Anchoring the BOTTOM edge
+    // to the anchor top keeps it glued while the height animates upward.
+    const anchor = document.createElement('div')
+    anchor.getBoundingClientRect = () =>
+      ({ top: 600, bottom: 640, left: 100, right: 400, width: 300, height: 40 }) as DOMRect
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
+    renderPicker({ anchorRef: { current: anchor } })
+    const el = document.querySelector('.cmd-picker') as HTMLElement
+    // bottom = viewportHeight - anchor.top + gap = 800 - 600 + 4.
+    expect(el.style.bottom).toBe('204px')
+    expect(el.style.top).toBe('auto')
+  })
 })
