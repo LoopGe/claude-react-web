@@ -92,10 +92,14 @@ surface extraction needed, and a fresh baseline on every open.
   stable during the tween, firing once per content change rather than per frame.
   The hook key is `loading|error|filtered.length`, which also drives the tween
   where ResizeObserver is unavailable.
-- The measure (`resume-list-measure.ts`) caps at `min(content, flex ceiling,
-  50vh)`. The list is flex:1 in `.modal-section` in a card capped at 84vh (modal)
-  or max-height:100% (panel), plus its own inline 50vh — in a short panel the flex
-  ceiling binds below 50vh, so capping only at 50vh would overshoot and snap.
+- The measure is the shared `measureCappedContentHeight` (the original bespoke
+  `resume-list-measure.ts` was deleted once the generic measure existed). The
+  list follows the panel-overlay convention (GitPanel/TasksPanel): a flex:1
+  scroller with NO own vh cap, filling a card capped at max-height:100% of the
+  panel (panel variant) or 84vh (modal variant). The target is `min(content,
+  card ceiling)`. An earlier inline `max-height:50vh` on the list was an
+  undocumented outlier inconsistent with the panel overlays; it was removed so
+  the picker fills its host like the rest.
 - **The ceiling is pin-independent**, computed from the card CAP minus fixed
   chrome (borders/padding + header + footer + section padding + sibling rows +
   gaps + list margins), NOT from the section's current height. The card is

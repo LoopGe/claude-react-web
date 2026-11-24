@@ -79,14 +79,15 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   }, [sessions, query])
 
   // The list's height changes — "Loading…" placeholder → N rows, query
-  // filtering, scope-toggle refetch — tween instead of jumping. The measure
-  // caps at the flex ceiling AND the list's own 50vh (a short panel squeezes
-  // the list below 50vh; capping only at 50vh would overshoot and snap on
-  // release). The observer watches the content-sized inner wrapper, stable
-  // during the tween, so it fires once per content change rather than per
-  // frame. The key drives the same tween where ResizeObserver is unavailable.
-  // The dialog mounts/unmounts with the open cycle (presence-gated callers), so
-  // the hook gets a fresh baseline on every open.
+  // filtering, scope-toggle refetch — tween instead of jumping. Like the other
+  // panel overlays (GitPanel/TasksPanel), the list is a flex:1 scroller with no
+  // own vh cap: it fills the card, whose max-height (100% of the panel for the
+  // panel variant, 84vh for the modal variant) is the ceiling the measure reads.
+  // The observer watches the content-sized inner wrapper, stable during the
+  // tween, so it fires once per content change rather than per frame. The key
+  // drives the same tween where ResizeObserver is unavailable. The dialog
+  // mounts/unmounts with the open cycle (presence-gated callers), so the hook
+  // gets a fresh baseline on every open.
   const measureListHeight = useCallback(() => {
     const list = listRef.current
     const content = listContentRef.current
@@ -211,7 +212,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
           ref={listRefMerged}
           role="listbox"
           aria-label="Resumable sessions"
-          style={{ marginTop: 10, maxHeight: '50vh', overflowY: 'auto' }}
+          style={{ marginTop: 10, overflowY: 'auto' }}
         >
           <div className="resume-list-content" ref={listContentRef} role="presentation">
           {loading && <div className="palette-empty">Loading...</div>}
