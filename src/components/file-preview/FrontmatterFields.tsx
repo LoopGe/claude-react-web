@@ -2,6 +2,7 @@
 // is a lazy chunk (nothing at startup); until it lands — and whenever the
 // document is not a YAML mapping (parse failure, scalar, list) — the source
 // renders verbatim, so the preview never blanks or crashes on bad metadata.
+// An empty / whitespace-only block carries no metadata and renders nothing.
 
 import { useEffect, useState } from 'react'
 
@@ -45,6 +46,11 @@ export function FrontmatterFields({ source }: { source: string }) {
       active = false
     }
   }, [source])
+
+  // Empty / whitespace-only source has no metadata to show — render nothing
+  // rather than an empty bordered verbatim box. Placed after the hooks so the
+  // hook order stays stable when a refetch empties (or fills) the block.
+  if (source.trim() === '') return null
 
   const fields = parsed !== null && parsed.source === source ? parsed.fields : null
   if (fields === null) {

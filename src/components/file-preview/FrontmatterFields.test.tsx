@@ -59,4 +59,42 @@ describe('FrontmatterFields', () => {
     expect(document.body.querySelector('pre.frontmatter-verbatim')?.textContent).toBe(source)
     expect(document.body.querySelector('.frontmatter-fields')).toBeNull()
   })
+
+  it('renders nothing for an empty or whitespace-only source', async () => {
+    const { rerender } = render(<FrontmatterFields source="" />)
+    await flush()
+    expect(document.body.querySelector('pre.frontmatter-verbatim')).toBeNull()
+    expect(document.body.querySelector('.frontmatter-fields')).toBeNull()
+    rerender(<FrontmatterFields source={'  \n\t '} />)
+    await flush()
+    expect(document.body.querySelector('pre.frontmatter-verbatim')).toBeNull()
+    expect(document.body.querySelector('.frontmatter-fields')).toBeNull()
+  })
+
+  it('re-shows verbatim on a new source and never the stale field list', async () => {
+    const { rerender } = render(<FrontmatterFields source={'title: old'} />)
+    await screen.findByText('old')
+    // New contents arrive: the source-keyed result must drop the previous
+    // document's field list back to verbatim synchronously (the old parse
+    // result is still in state, but its source no longer matches).
+    rerender(<FrontmatterFields source={'title: new'} />)
+    expect(document.body.querySelector('pre.frontmatter-verbatim')?.textContent).toBe('title: new')
+    expect(document.body.querySelector('.frontmatter-fields')).toBeNull()
+    // The new parse lands; the old fields never reappear.
+    await screen.findByText('new')
+    expect(document.body.querySelector('pre.frontmatter-verbatim')).toBeNull()
+    expect(document.body.textContent).not.toContain('old')
+  })
+
+  it('ignores a parse still in flight when the source changes (active flag)', async () => {
+    const { rerender } = render(<FrontmatterFields source={'title: old'} />)
+    // Change the source before the first import('yaml') microtask resolves:
+    // the old effect's cleanup flips active=false, so its parse is discarded.
+    rerender(<FrontmatterFields source={'title: new'} />)
+    await flush()
+    // Only the new source's fields ever surface — the stale parse cannot win.
+    expect(screen.getByText('new').tagName).toBe('DD')
+    expect(document.body.textContent).not.toContain('old')
+    expect(document.body.querySelector('pre.frontmatter-verbatim')).toBeNull()
+  })
 })

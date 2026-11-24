@@ -143,17 +143,19 @@ export const MD_COMPONENTS: Components = {
   h6: ({ children }) => <h6>{children}</h6>,
 }
 
-/** Fenced code block with language label and copy button. Memoized so a
- *  parent MarkdownInner re-render (e.g. search-query change that doesn't
- *  touch this block's props) doesn't re-render every code block in the
- *  message. */
+/** Fenced code block with language label and copy button. The optional
+ *  `label` overrides the bar text (the file preview passes the filename);
+ *  the fallback chain is label → lang → 'code'. Memoized so a parent
+ *  MarkdownInner re-render (e.g. search-query change that doesn't touch
+ *  this block's props) doesn't re-render every code block in the message. */
 export const CodeBlock = memo(function CodeBlock({
   lang,
+  label,
   children,
   showCopy = true,
   preRef,
   ...props
-}: { lang?: string; showCopy?: boolean; preRef?: Ref<HTMLPreElement> } & ComponentPropsWithoutRef<'pre'>) {
+}: { lang?: string; label?: string; showCopy?: boolean; preRef?: Ref<HTMLPreElement> } & ComponentPropsWithoutRef<'pre'>) {
   const { copied, copy } = useCopy()
   const innerRef = useRef<HTMLPreElement>(null)
   // External consumers (e.g. FilePreviewBody's useOverlayScrollbar) need the
@@ -170,7 +172,7 @@ export const CodeBlock = memo(function CodeBlock({
   return (
     <div className="code-block">
       <div className="code-block-bar">
-        <span className="code-block-lang">{lang ?? 'code'}</span>
+        <span className="code-block-lang">{label ?? lang ?? 'code'}</span>
         {showCopy && (
           <button type="button" className="code-block-copy" onClick={handleCopy}>
             {copied ? 'Copied!' : 'Copy'}

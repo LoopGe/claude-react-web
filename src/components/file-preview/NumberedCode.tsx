@@ -3,7 +3,8 @@
 // `.code-line::before`, so they never enter `textContent` (copy stays clean).
 // A `line`/`endLine` navigation target is highlighted and scrolled into the
 // middle of the scroll container. Bodies over MAX_NUMBERED_LINES fall back to
-// the plain CodeBlock (per-row rendering would be too costly).
+// a CodeBlock highlighted as one whole-text block via highlightBlock (per-row
+// rendering would be too costly).
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CodeBlock } from '../Markdown'
@@ -131,7 +132,7 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
             Line navigation is unavailable for files over {MAX_NUMBERED_LINES} lines.
           </div>
         )}
-        <CodeBlock lang={lang} className="file-viewer-code" showCopy>
+        <CodeBlock lang={lang} label={label} className="file-viewer-code" showCopy>
           {highlightedBlock}
         </CodeBlock>
       </>

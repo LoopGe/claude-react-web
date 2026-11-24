@@ -88,9 +88,10 @@ async function readClipboard(page: Page): Promise<string> {
   return text.replace(/\r\n/g, '\n')
 }
 
-/** Poll until the matched line's animated background is non-transparent —
- *  the band is actually on screen during its rise/hold window (the keyframe
- *  ends transparent, so a static class would never satisfy this). */
+/** Poll until the matched line's background is non-transparent — this rules
+ *  out a band that never becomes visible. (A static tint would also pass this
+ *  poll; the animationName/animationDuration assertions below are what rule
+ *  out a non-animated static highlight.) */
 async function expectBandVisible(page: Page, selector: string) {
   await page.waitForFunction(
     (sel) => {
@@ -276,6 +277,7 @@ test('preview: markdown frontmatter — field list, CJK values, source mode full
   await expect(rows.nth(2).locator('dt')).toHaveText('count')
   await expect(rows.nth(2).locator('dd')).toHaveText('3')
   // The body markdown renders; the split frontmatter is NOT a horizontal rule.
+  // h3 (not h1): the markdown preview demotes headings to protect the page outline.
   await expect(modal.locator('.file-viewer-md h3')).toHaveText('Notes body')
   await expect(modal.locator('.file-viewer-md hr')).toHaveCount(0)
 

@@ -139,6 +139,14 @@ describe('NumberedCode', () => {
     expect(document.querySelector('.code-block-lang')?.textContent).toBe('javascript')
   })
 
+  it('shows the filename label in the over-cap fallback bar, like the numbered bar', () => {
+    const contents = Array.from({ length: MAX_NUMBERED_LINES + 1 }, (_, i) => `line ${i}`).join('\n')
+    render(<NumberedCode contents={contents} lang="javascript" label="Foo.js" />)
+    expect(document.querySelectorAll('[data-line]')).toHaveLength(0)
+    // The label wins over the detected language in the fallback bar too.
+    expect(document.querySelector('.code-block-lang')?.textContent).toBe('Foo.js')
+  })
+
   it('highlights the over-cap fallback for a known language', () => {
     const contents = ['const x = 1', ...Array.from({ length: MAX_NUMBERED_LINES }, (_, i) => `line ${i}`)].join('\n')
     render(<NumberedCode contents={contents} lang="javascript" />)

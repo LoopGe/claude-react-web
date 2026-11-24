@@ -106,6 +106,19 @@
   100% { background-color: transparent; }
 }
 
+/* Reduced motion: the band's feedback IS the animation (the keyframe ends
+   transparent), so a blanket animation:none would leave the target line with
+   NO highlight at all. Keep a STATIC tint at the same --nav-band-peak token
+   instead — target full strength, range the weaker mix, exactly as the peak
+   frames — so reduced-motion users still see which line they jumped to. */
+@media (prefers-reduced-motion: reduce) {
+  .code-line-target,
+  .code-line-in-range {
+    animation: none;
+    background-color: var(--nav-band-peak);
+  }
+}
+
 /* Word wrap for the numbered view (toggle in the bar). The gutter is the
    absolutely-positioned .code-line::before counter above, so a wrapped line's
    number stays on its first visual row and the count is untouched.
@@ -243,7 +256,7 @@
   border: 1px solid var(--code-block-border);
   border-radius: var(--radius-sm);
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

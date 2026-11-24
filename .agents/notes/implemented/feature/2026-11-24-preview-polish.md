@@ -67,6 +67,12 @@ span）；大文件高亮成本由 5000 行上限 + memoize 有界，超上限�
 `highlightBlock` fallback；wrap 改变行高故 scroll-to-line 须重算；frontmatter 正则
 要求闭合 delimiter 以免吞水平线。wrap 状态不持久化（每 mount 默认开）是有意取舍。
 
+已知局限（双水平线）：`---\n\nintro\n\n---\nbody` 因存在闭合 delimiter 会被整体当作
+frontmatter——intro 经 FrontmatterFields verbatim 渲染、两条水平线都消失。这是「要求闭合
+delimiter」设计的固有行为（gray-matter 同样如此），verbatim 兜底保证 intro 内容不丢；单独
+开头水平线（无闭合）仍不被吞。后续加固（暂缓）：给 `highlightBlock` 加字节上限，防病态
+minified 单行文件整体高亮卡死主线程——与 markdown fence 路径共享同一暴露面，宜后续统一处理。
+
 ## Testing
 
 - 单元：`highlight-lines.test.tsx`（多行 token 按行渲染、未知语言落纯、textContent

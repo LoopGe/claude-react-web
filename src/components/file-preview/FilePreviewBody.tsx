@@ -6,7 +6,7 @@
 // Image/markdown detection follows `path` (the bytes actually read), never the
 // display `title` — callers may pass a bare label there.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Markdown } from '../Markdown'
 import { MsgImage } from '../MsgImage'
 import { NumberedCode } from './NumberedCode'
@@ -75,9 +75,12 @@ export function FilePreviewBody({
   const truncated = data?.truncated
   // Preview-mode metadata split: a leading frontmatter block renders as a
   // field list above the markdown body. Source mode is untouched — it always
-  // shows the FULL original contents, delimiters included.
-  const markdownSplit =
-    isMarkdown && contents !== undefined ? splitFrontmatter(contents) : null
+  // shows the FULL original contents, delimiters included — so the split is
+  // only computed in preview mode, memoized on its inputs.
+  const markdownSplit = useMemo(
+    () => (!showSource && isMarkdown && contents !== undefined ? splitFrontmatter(contents) : null),
+    [showSource, isMarkdown, contents],
+  )
 
   return (
     <>
