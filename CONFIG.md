@@ -428,6 +428,23 @@ npm registry URL the update checker probes for new releases. Set to an empty str
 
 ---
 
+### `updateCheckIntervalMs`
+
+|         |                    |
+| ------- | ------------------ |
+| Type    | `number`           |
+| Default | `43200000` (12 h)  |
+
+Milliseconds between periodic update probes. One value drives both channels: the web host's npm-registry scheduler and the desktop app's release-feed check. Set to `0` to disable periodic checking — the startup probe and manual "Check now" still work. Nonzero values below 60000 are clamped to 60000 by the scheduler. Failed probes back off exponentially (×2, capped at 4× the interval) with ±20% jitter; the next deadline is armed when the previous probe settles.
+
+```json
+{
+  "updateCheckIntervalMs": 43200000
+}
+```
+
+---
+
 ### `allowSensitivePathEdits`
 
 |         |           |

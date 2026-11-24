@@ -706,6 +706,39 @@ describe('config', () => {
       expect('modelGroups' in config).toBe(true)
     })
   })
+
+  it('updateCheckIntervalMs defaults to 12h when absent', async () => {
+    writeFileSync(join(dir, 'config.json'), '{}')
+    await loadConfig(dir)
+    expect(config.updateCheckIntervalMs).toBe(43_200_000)
+  })
+
+  it('updateCheckIntervalMs loads an explicit value verbatim', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ updateCheckIntervalMs: 7_200_000 }))
+    await loadConfig(dir)
+    expect(config.updateCheckIntervalMs).toBe(7_200_000)
+  })
+
+  it('updateCheckIntervalMs accepts 0 (periodic checking disabled)', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ updateCheckIntervalMs: 0 }))
+    await loadConfig(dir)
+    expect(config.updateCheckIntervalMs).toBe(0)
+  })
+
+  it('updateCheckIntervalMs keeps the default for negative or non-number values', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ updateCheckIntervalMs: -5 }))
+    await loadConfig(dir)
+    expect(config.updateCheckIntervalMs).toBe(43_200_000)
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ updateCheckIntervalMs: 'fast' }))
+    await loadConfig(dir)
+    expect(config.updateCheckIntervalMs).toBe(43_200_000)
+  })
+
+  it('updateCheckIntervalMs rounds fractional values', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ updateCheckIntervalMs: 60_000.7 }))
+    await loadConfig(dir)
+    expect(config.updateCheckIntervalMs).toBe(60_001)
+  })
 })
 
 describe('provider-profile migration + derived fields', () => {
