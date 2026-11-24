@@ -19,13 +19,16 @@
  * the box's own margins. Every term is a used value of a fixed element, immune to
  * the enter-animation transform and to the box's pin.
  *
- * `card` is supplied by the caller (its class varies per surface). The cap is read
- * EMPIRICALLY: computed style leaves percentage and min()/max() caps unresolved
- * (e.g. `min(480px, 100%)`), so instead the box is momentarily forced tall (its
- * height/flex/max-height lifted) so the card clamps at its true max-height, the
- * card's used height is read, and the box is restored — synchronous, no paint, and
- * independent of whatever cap expression the card uses. The observer watches the
- * content wrapper (not the box), so this lift fires no resize observation.
+ * `card` is supplied by the caller (its class varies per surface). The cap is
+ * resolved NON-INVASIVELY from the card's computed `max-height`: a px length (vh
+ * and min(vh,px) already resolve to px) reads straight; a percentage or a
+ * min()/max() containing one is resolved against the card parent's fixed content
+ * height. Nothing about the box is mutated, so the measure cannot disturb the
+ * hook's pin or let the box reflow to its natural height mid-tween (an earlier
+ * empirical "force the box tall, read the card, restore" lift did exactly that —
+ * restoring an auto box let it jump to full height before the tween pinned its
+ * start, killing the loading→content animation, and mid-tween the lift animated
+ * against the hook's height transition, collapsing the ceiling into an oscillation).
  *
  * `content` is a content-sized wrapper inside the box (its children are the rows /
  * form fields, not flex-fill children that shrink), so `content.scrollHeight` reads
@@ -33,30 +36,59 @@
  * `max-height` (e.g. a palette list's 50vh) is an additional sub-cap; `none` means
  * no sub-cap.
  */
+
+/** Evaluate a CSS length expression whose percentages have already been
+ *  substituted with px: a plain length, or min()/max()/clamp() of lengths. */
+function evalLength(expr: string): number {
+  const trimmed = expr.trim()
+  const fn = trimmed.match(/^(min|max|clamp)\((.*)\)$/s)
+  if (!fn) return parseFloat(trimmed)
+  // Split top-level commas (depth-aware so nested functions survive).
+  const args: string[] = []
+  let depth = 0
+  let current = ''
+  for (const ch of fn[2]) {
+    if (ch === '(') depth += 1
+    if (ch === ')') depth -= 1
+    if (ch === ',' && depth === 0) {
+      args.push(current)
+      current = ''
+    } else {
+      current += ch
+    }
+  }
+  args.push(current)
+  const values = args.map(evalLength)
+  if (fn[1] === 'min') return Math.min(...values)
+  if (fn[1] === 'max') return Math.max(...values)
+  // clamp(min, val, max)
+  return Math.min(Math.max(values[1], values[0]), values[2])
+}
+
+/** The card's max-height cap in px, resolved against the parent's content height
+ *  for percentage terms. `none` → no cap. Pin-independent: the parent (backdrop /
+ *  panel overlay) has a fixed height, unlike the content-sized card itself. */
+function resolveCardCap(card: HTMLElement): number {
+  const raw = window.getComputedStyle(card).maxHeight
+  if (raw === 'none') return Number.POSITIVE_INFINITY
+  if (!raw.includes('%')) return parseFloat(raw)
+  const parent = card.parentElement
+  if (!parent) return parseFloat(raw)
+  const parentStyle = window.getComputedStyle(parent)
+  const parentContentHeight =
+    parent.clientHeight - parseFloat(parentStyle.paddingTop) - parseFloat(parentStyle.paddingBottom)
+  const substituted = raw.replace(/(-?[\d.]+)%/g, (_match, n: string) => {
+    return `${(parentContentHeight * parseFloat(n)) / 100}px`
+  })
+  return evalLength(substituted)
+}
+
 export function measureCappedContentHeight(
   box: HTMLElement,
   content: HTMLElement,
   card: HTMLElement,
 ): number {
-  const prevHeight = box.style.height
-  const prevFlex = box.style.flex
-  const prevMaxHeight = box.style.maxHeight
-  const prevTransition = box.style.transition
-  // Disable the box's height transition for the lift: mid-tween the hook has set
-  // `transition: height …`, so a forced height would ANIMATE toward 100000px and
-  // the card-height read below would catch the stale (pre-lift) height, collapsing
-  // the ceiling — a one-shot oscillation on open. Snap the lift instead.
-  box.style.transition = 'none'
-  box.style.flex = '0 0 auto'
-  box.style.maxHeight = 'none'
-  box.style.height = '100000px'
-  void card.offsetHeight
-  const cap = card.offsetHeight
-  box.style.height = prevHeight
-  box.style.flex = prevFlex
-  box.style.maxHeight = prevMaxHeight
-  box.style.transition = prevTransition
-  void card.offsetHeight
+  const cap = resolveCardCap(card)
 
   const cardStyle = window.getComputedStyle(card)
   const outerHeight = (el: HTMLElement) => {

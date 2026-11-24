@@ -7,13 +7,21 @@ afterEach(() => {
 })
 
 /**
- * Flat palette card: card > input + list. The empirical cap is mocked via
- * card.offsetHeight (jsdom does no layout). Chrome = card borders 2 + input 40
- * = 42; with cap 468 the ceiling is 426. The list has no own max-height.
+ * Flat palette card: parent > card > input + list. The cap is resolved from the
+ * card's computed max-height (a px length reads straight). Chrome = card borders
+ * 2 + input 40 = 42; with cap 468 the ceiling is 426. The list has no own
+ * max-height. Percentage/min() caps resolve against the parent's content height.
  */
-function flatFixture(contentScrollHeight: number, cap = 468) {
+function flatFixture(
+  contentScrollHeight: number,
+  opts: { cap?: number; maxHeight?: string; parentClientHeight?: number; parentPadding?: string } = {},
+) {
+  const { cap = 468, maxHeight, parentClientHeight, parentPadding = '0px' } = opts
+  const parent = document.createElement('div')
+  parent.style.padding = parentPadding
   const card = document.createElement('div')
   card.className = 'panel-overlay-card input-history-card'
+  card.style.maxHeight = maxHeight ?? `${cap}px`
   card.style.border = '1px solid transparent'
   card.style.padding = '0px'
   const input = document.createElement('input')
@@ -24,11 +32,14 @@ function flatFixture(contentScrollHeight: number, cap = 468) {
   list.appendChild(content)
   card.appendChild(input)
   card.appendChild(list)
-  document.body.appendChild(card)
-  vi.spyOn(card, 'offsetHeight', 'get').mockReturnValue(cap)
+  parent.appendChild(card)
+  document.body.appendChild(parent)
+  if (parentClientHeight != null) {
+    vi.spyOn(parent, 'clientHeight', 'get').mockReturnValue(parentClientHeight)
+  }
   vi.spyOn(input, 'offsetHeight', 'get').mockReturnValue(40)
   vi.spyOn(content, 'scrollHeight', 'get').mockReturnValue(contentScrollHeight)
-  return { card, input, list, content }
+  return { parent, card, input, list, content }
 }
 
 /**
@@ -39,6 +50,7 @@ function flatFixture(contentScrollHeight: number, cap = 468) {
 function nestedFixture(contentScrollHeight: number, cap = 760) {
   const card = document.createElement('div')
   card.className = 'modal'
+  card.style.maxHeight = `${cap}px`
   card.style.border = '1px solid transparent'
   card.style.padding = '0px'
   const header = document.createElement('div')
@@ -63,7 +75,6 @@ function nestedFixture(contentScrollHeight: number, cap = 760) {
   card.appendChild(section)
   card.appendChild(footer)
   document.body.appendChild(card)
-  vi.spyOn(card, 'offsetHeight', 'get').mockReturnValue(cap)
   vi.spyOn(header, 'offsetHeight', 'get').mockReturnValue(50)
   vi.spyOn(footer, 'offsetHeight', 'get').mockReturnValue(40)
   vi.spyOn(input, 'offsetHeight', 'get').mockReturnValue(40)
@@ -94,38 +105,45 @@ it('nested card: caps at the flex ceiling when a short card squeezes below the s
   expect(measureCappedContentHeight(list, content, card)).toBe(132)
 })
 
-it('restores the box height/flex/max-height after the empirical cap read', () => {
+it('resolves a percentage card cap against the parent content height', () => {
+  // max-height:100% of a 500px parent with 16px padding → cap 468 → ceiling 426.
+  const { list, content, card } = flatFixture(900, {
+    maxHeight: '100%',
+    parentClientHeight: 500,
+    parentPadding: '16px',
+  })
+  expect(measureCappedContentHeight(list, content, card)).toBe(426)
+})
+
+it('resolves a min() card cap (px and percentage terms)', () => {
+  // min(480px, 100%) with parent content 468 → min(480, 468) = 468 → ceiling 426.
+  const { list, content, card } = flatFixture(900, {
+    maxHeight: 'min(480px, 100%)',
+    parentClientHeight: 500,
+    parentPadding: '16px',
+  })
+  expect(measureCappedContentHeight(list, content, card)).toBe(426)
+})
+
+it('does not mutate the box (non-invasive measure)', () => {
+  // Regression: an earlier empirical lift forced the box tall and restored it,
+  // which let an auto box reflow to full height before the tween pinned its start
+  // (killing the loading→content animation) and animated against the hook's
+  // height transition mid-tween (oscillation). The measure must touch nothing.
   const { list, content, card } = flatFixture(900)
   list.style.height = '123px'
   list.style.flex = '1 1 auto'
   list.style.maxHeight = '50vh'
+  list.style.transition = 'height 240ms ease'
   measureCappedContentHeight(list, content, card)
   expect(list.style.height).toBe('123px')
   expect(list.style.flex).toBe('1 1 auto')
   expect(list.style.maxHeight).toBe('50vh')
-})
-
-it('disables the box transition during the cap read, then restores it', () => {
-  // Regression: mid-tween the hook sets `transition: height …` on the box. The
-  // empirical lift forces a tall height to read the card cap; with the transition
-  // still active that height ANIMATES and the cap read catches the stale height,
-  // collapsing the ceiling (a one-shot oscillation). The lift must snap.
-  const { list, content, card } = flatFixture(900)
-  list.style.transition = 'height 240ms ease'
-  const transitionsAtRead: string[] = []
-  vi.spyOn(card, 'offsetHeight', 'get').mockImplementation(() => {
-    transitionsAtRead.push(list.style.transition)
-    return 468
-  })
-  measureCappedContentHeight(list, content, card)
-  // The cap-read lift snaps (transition none); the post-restore read sees the
-  // restored transition again.
-  expect(transitionsAtRead[0]).toBe('none')
   expect(list.style.transition).toBe('height 240ms ease')
 })
 
 it('targets zero when the chrome consumes the whole cap', () => {
-  const { list, content, card } = flatFixture(900, 10)
+  const { list, content, card } = flatFixture(900, { cap: 10 })
   expect(measureCappedContentHeight(list, content, card)).toBe(0)
 })
 
