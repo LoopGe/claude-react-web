@@ -10,6 +10,7 @@
  */
 
 import { MENTION_PATTERN_G, parseFileMention } from '../../shared/file-mention'
+import { messageQuoteRanges } from './quote-text'
 
 /** The grammar's quoted alternative (`@"[^"\n]+"`): a COMPLETE quoted mention.
  *  Used to tell a settled `@"…"` span from an open-quote opener fragment that the
@@ -110,30 +111,40 @@ export function parseReferences(input: string): PastedRef[] {
 }
 
 /**
- * One piece of composer content: literal text, a collapsed-paste reference, or
- * an `@file`/`@folder` mention — both chip kinds the rich editor draws as one
- * atomic element.
+ * One piece of composer content: literal text, a collapsed-paste reference, an
+ * `@file`/`@folder` mention, or a line-leading blockquote run — the chip kinds
+ * the rich editor draws as one atomic element.
  *
  * A mention's `text` is the exact matched substring (its serialized form), so
  * `joinTokens` stays lossless even for a hand-typed backslash path; `path`/`dir`
  * are the normalized facts parsed from it (canonicalization of the TEXT happens
  * at pick time via `formatFileMention`, never here).
+ *
+ * A quote's `text` is likewise the EXACT matched run (`text.slice(start, end)`
+ * from `messageQuoteRanges`, trailing line break excluded) — never decoded or
+ * re-formatted — so the round-trip invariant holds for nested `>>`, a missing
+ * space after `>`, trailing whitespace and CRLF alike. Decoding for display is
+ * the render layer's job (`quoteTextOf`), not the token model's.
  */
 export type PastedTextToken =
   | { kind: 'text'; text: string }
   | { kind: 'ref'; id: number; label: string }
   | { kind: 'mention'; text: string; path: string; dir: boolean }
+  | { kind: 'quote'; text: string }
 
 /**
- * Split composer text into literal runs, paste-ref tokens and mention tokens.
+ * Split composer text into literal runs, paste-ref, mention and quote tokens.
  *
  * `joinTokens` is its exact inverse, which is what lets a DOM editor round-trip
  * through markup without the canonical string ever losing information: the
  * string stays the single source of truth, and the editor is only a view.
  *
- * Both matchers scan the whole string; their hits are merged in document order
+ * All matchers scan the whole string; their hits are merged in document order
  * and a hit that starts inside an earlier token is dropped (first start wins),
- * so the two kinds never overlap or double-count.
+ * so the kinds never overlap or double-count. A quote run is line-leading and
+ * spans whole lines, so it swallows any mention/ref hit that falls inside it
+ * (the run is atomic); a mention/ref can never start inside a quote run's line
+ * boundary and win, because those tokens carry no line break of their own.
  */
 export function tokenize(text: string): PastedTextToken[] {
   const hits: Array<{ index: number; length: number; token: PastedTextToken }> = []
@@ -142,6 +153,16 @@ export function tokenize(text: string): PastedTextToken[] {
       index: ref.index,
       length: ref.match.length,
       token: { kind: 'ref', id: ref.id, label: ref.match },
+    })
+  }
+  // Line-leading blockquote runs (messageQuoteRanges excludes inline `>` and
+  // blank decoded runs). The token carries the exact UTF-16 span — CRLF pairs
+  // keep both code units — so joinTokens reproduces the source verbatim.
+  for (const range of messageQuoteRanges(text)) {
+    hits.push({
+      index: range.start,
+      length: range.end - range.start,
+      token: { kind: 'quote', text: text.slice(range.start, range.end) },
     })
   }
   // matchAll, not .exec/.test on the shared global regex (it carries lastIndex).
@@ -177,11 +198,59 @@ export function tokenize(text: string): PastedTextToken[] {
   return tokens
 }
 
-/** Inverse of `tokenize`: `joinTokens(tokenize(s)) === s` for any `s`. */
+/** Whether `ch` is a JS line terminator — the set a multiline `^` treats as a
+ *  line boundary (LF, CR, U+2028, U+2029). The quote guards key on exactly this
+ *  set, so a boundary `tokenize` recognized (a lone CR or a unicode separator
+ *  included) is never "fixed" a second time. Char codes rather than a regex
+ *  literal keep the U+2028/U+2029 members readable instead of invisible. */
+function isLineTerminator(ch: string): boolean {
+  const c = ch.charCodeAt(0)
+  return c === 0x0a || c === 0x0d || c === 0x2028 || c === 0x2029
+}
+
+/**
+ * Inverse of `tokenize`: `joinTokens(tokenize(s)) === s` for any `s`.
+ *
+ * ref → its label; text/mention/quote → their `text` (each IS its serialized
+ * form). A quote run additionally carries two composition guarantees — it must
+ * start on its own line, and a blank line separates it from following prose.
+ * Those guards fire ONLY when composing new tokens whose neighbours lack the
+ * break: on `tokenize` output they are structurally inert, which is what keeps
+ * the round-trip exact:
+ *
+ * - A quote token is either first (output empty) or preceded by a text token
+ *   ending in the line break that made the run line-leading — so the leading
+ *   `\n` guard never fires.
+ * - A run spans to end-of-line, so the next token is text starting with the
+ *   run's trailing `\r`/`\n` (or nothing) — so the blank-line guard never fires.
+ *
+ * A hand-composed list (a quote spliced beside prose with no break of its own)
+ * is where the guards earn their keep: `prose` + `> q` + `more` joins as
+ * `prose\n> q\n\nmore`.
+ */
 export function joinTokens(tokens: PastedTextToken[]): string {
-  // ref → its label; text and mention → their `text` (a mention's text IS its
-  // serialized `@path` form).
-  return tokens.map((t) => (t.kind === 'ref' ? t.label : t.text)).join('')
+  let out = ''
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!
+    if (t.kind === 'quote') {
+      // Guarantee line-leading: a run spliced after mid-line prose gets a break.
+      if (out.length > 0 && !isLineTerminator(out[out.length - 1]!)) out += '\n'
+      out += t.text
+      // Guarantee a blank line before following prose that carries no break.
+      const next = tokens[i + 1]
+      if (
+        next !== undefined &&
+        next.kind === 'text' &&
+        next.text.length > 0 &&
+        !isLineTerminator(next.text[0]!)
+      ) {
+        out += '\n\n'
+      }
+      continue
+    }
+    out += t.kind === 'ref' ? t.label : t.text
+  }
+  return out
 }
 
 /**

@@ -283,6 +283,14 @@ export function renderTokens(
       fragment.appendChild(doc.createTextNode(token.text))
       continue
     }
+    // Interim until the quote chip lands (Task 3): a quote run renders as its
+    // exact text, so a typed blockquote keeps today's plain-text behavior and
+    // the value round-trips losslessly. The data-quote-text chip bridge replaces
+    // this branch; until then the run is editable text, not an atomic chip.
+    if (token.kind === 'quote') {
+      fragment.appendChild(doc.createTextNode(token.text))
+      continue
+    }
     const chip = doc.createElement('span')
     // Not editable: the chip must behave as one unit for the caret and for
     // Backspace, which is precisely what an offset-based textarea could not do.
@@ -339,6 +347,8 @@ function tokensEqual(a: PastedTextToken, b: PastedTextToken): boolean {
   if (a.kind !== b.kind) return false
   switch (a.kind) {
     case 'text':
+      return a.text === (b as { text: string }).text
+    case 'quote':
       return a.text === (b as { text: string }).text
     case 'ref':
       return a.id === (b as { id: number }).id

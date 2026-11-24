@@ -313,6 +313,156 @@ describe('joinTokens mentions', () => {
   })
 })
 
+describe('tokenize quotes', () => {
+  it('recognizes a line-leading blockquote run as ONE quote token', () => {
+    expect(tokenize('> hello')).toEqual([{ kind: 'quote', text: '> hello' }])
+  })
+
+  it('keeps a multi-line run as one token carrying the exact span', () => {
+    expect(tokenize('> a\n> b\n> c')).toEqual([{ kind: 'quote', text: '> a\n> b\n> c' }])
+  })
+
+  it('keeps nested >> markers verbatim (no normalization)', () => {
+    expect(tokenize('> outer\n>> inner')).toEqual([
+      { kind: 'quote', text: '> outer\n>> inner' },
+    ])
+  })
+
+  it('keeps a run with no space after > verbatim', () => {
+    expect(tokenize('>hello')).toEqual([{ kind: 'quote', text: '>hello' }])
+  })
+
+  it('keeps trailing whitespace verbatim (no trim)', () => {
+    expect(tokenize('> hello   ')).toEqual([{ kind: 'quote', text: '> hello   ' }])
+  })
+
+  it('splits a run that follows prose, leaving the break in the text token', () => {
+    expect(tokenize('prose\n> quote')).toEqual([
+      { kind: 'text', text: 'prose\n' },
+      { kind: 'quote', text: '> quote' },
+    ])
+  })
+
+  it('splits a run that precedes prose, leaving the break in the text token', () => {
+    expect(tokenize('> quote\nprose')).toEqual([
+      { kind: 'quote', text: '> quote' },
+      { kind: 'text', text: '\nprose' },
+    ])
+  })
+
+  it('recognizes two runs separated by a blank line as two tokens', () => {
+    expect(tokenize('> a\n\n> b')).toEqual([
+      { kind: 'quote', text: '> a' },
+      { kind: 'text', text: '\n\n' },
+      { kind: 'quote', text: '> b' },
+    ])
+  })
+
+  it('does NOT chipify an inline > mid-line', () => {
+    expect(tokenize('prose > inline')).toEqual([{ kind: 'text', text: 'prose > inline' }])
+  })
+
+  it('recognizes an indented run (up to three leading spaces)', () => {
+    expect(tokenize('  > hi')).toEqual([{ kind: 'quote', text: '  > hi' }])
+  })
+
+  it('swallows a mention inside the run (the quote is atomic)', () => {
+    expect(tokenize('> see @src/a.ts')).toEqual([
+      { kind: 'quote', text: '> see @src/a.ts' },
+    ])
+  })
+
+  it('leaves a blank decoded run as ordinary text', () => {
+    expect(tokenize('> ')).toEqual([{ kind: 'text', text: '> ' }])
+  })
+
+  it('keeps CRLF inside a run verbatim (UTF-16 span, not normalized)', () => {
+    expect(tokenize('> a\r\n> b')).toEqual([{ kind: 'quote', text: '> a\r\n> b' }])
+  })
+})
+
+describe('joinTokens quotes', () => {
+  // The load-bearing invariant: the exact-run token + faithful join reproduce
+  // the source for every shape, so the DOM editor never corrupts the composer.
+  it('round-trips every pinned quote shape exactly', () => {
+    const samples = [
+      '> hello', // simple run
+      '> a\n> b\n> c', // multi-line run
+      '> outer\n>> inner', // nested >>
+      '>hello', // missing space after >
+      '> hello   ', // trailing whitespace
+      'prose\n> quote', // run after prose
+      '> quote\nprose', // run before prose
+      '> a\n\n> b', // two adjacent runs
+      'prose > inline', // inline > (not a token)
+      '  > hi', // indented run
+      '> a\r\n> b', // CRLF run
+      'prose\r> q', // lone-CR line boundary
+      'prose' + String.fromCharCode(0x2028) + '> q', // unicode line boundary
+      '> see @src/a.ts', // mention swallowed by the run
+      '> [Pasted text #1]', // ref-shaped text stays literal inside the run
+      '@bob\n> q\n\ntail', // mention + quote + prose interleave
+    ]
+    for (const text of samples) {
+      expect(joinTokens(tokenize(text))).toBe(text)
+    }
+  })
+
+  // The line-leading / blank-line guarantees apply when COMPOSING new tokens
+  // (a quote spliced next to prose that carries no break of its own). On
+  // tokenize output the surrounding text already carries the breaks, so the
+  // guards never fire and the round-trip above stays exact.
+  it('inserts a leading newline when a composed quote would start mid-line', () => {
+    expect(
+      joinTokens([
+        { kind: 'text', text: 'prose' },
+        { kind: 'quote', text: '> q' },
+      ]),
+    ).toBe('prose\n> q')
+  })
+
+  it('inserts a blank line between a composed quote and following prose', () => {
+    expect(
+      joinTokens([
+        { kind: 'quote', text: '> q' },
+        { kind: 'text', text: 'prose' },
+      ]),
+    ).toBe('> q\n\nprose')
+  })
+
+  it('applies both guarantees around a mid-line composed quote', () => {
+    expect(
+      joinTokens([
+        { kind: 'text', text: 'prose' },
+        { kind: 'quote', text: '> q' },
+        { kind: 'text', text: 'more' },
+      ]),
+    ).toBe('prose\n> q\n\nmore')
+  })
+
+  it('adds no leading newline when the preceding text already ends in a break', () => {
+    expect(
+      joinTokens([
+        { kind: 'text', text: 'prose\n' },
+        { kind: 'quote', text: '> q' },
+      ]),
+    ).toBe('prose\n> q')
+  })
+
+  it('adds no separator when the following prose already starts with a break', () => {
+    expect(
+      joinTokens([
+        { kind: 'quote', text: '> q' },
+        { kind: 'text', text: '\nprose' },
+      ]),
+    ).toBe('> q\nprose')
+  })
+
+  it('adds no leading newline for a quote at the very start', () => {
+    expect(joinTokens([{ kind: 'quote', text: '> q' }])).toBe('> q')
+  })
+})
+
 describe('shouldCollapsePaste', () => {
   it('collapses a paste that reaches the line threshold', () => {
     // The threshold is expressed in newlines — the same number the
