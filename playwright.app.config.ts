@@ -5,14 +5,16 @@ export default defineConfig({
   // These specs drive the real App against the same fixture server (real Hono
   // REST/WS + SessionManager; only the provider process boundary is faked).
   // The terminal spec's PTY, the file-reference spec's search/preview, the
-  // preview-polish spec's file-viewer rendering, and the pdf-preview spec's
-  // viewer are provider-independent, so they share the harness.
+  // preview-polish spec's file-viewer rendering, the pdf-preview spec's
+  // viewer, and the select-to-quote spec's selection/composer are
+  // provider-independent, so they share the harness.
   testMatch: [
     'app-panel-reshow.spec.ts',
     'terminal.spec.ts',
     'file-reference.spec.ts',
     'preview-polish.spec.ts',
     'pdf-preview.spec.ts',
+    'select-to-quote.spec.ts',
   ],
   timeout: 90_000,
   workers: 1,

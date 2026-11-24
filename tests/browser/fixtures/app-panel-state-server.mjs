@@ -114,6 +114,15 @@ await writeTree(repoCwd, {
     'export const answer = 42',
     '',
   ].join('\n'),
+  // ---- select-to-quote fixture (select-to-quote.spec.ts) ----
+  // The Read tool card's file_path target; the rendered result body is the
+  // sidecar tool_result content below, independent of these bytes.
+  'quote-sample.ts': [
+    "export function greet(name: string): string {",
+    "  return '你好, ' + name",
+    '}',
+    '',
+  ].join('\n'),
   'notes.md': [
     '---',
     'title: 预览打磨笔记',
@@ -178,12 +187,105 @@ sessions.upsert({
   createdAt: now - 250,
   lastActivityAt: now - 250,
 })
+
+// ---- select-to-quote fixture (select-to-quote.spec.ts) ----
+// A DEDICATED idle session (same rationale as the PDF session: the fixture
+// handle never emits result frames, so a session any spec sends from stays
+// mid-turn; this spec needs a fresh transcript whose quotable surfaces are
+// stable). The sidecar seeds the quotable surfaces the spec selects from:
+//   - user prose (quoting own earlier message),
+//   - assistant markdown: two prose paragraphs (multi-line + CJK projection)
+//     and a fenced ts code block (code-block projection),
+//   - a Read tool_use + tool_result (tool-output code — the primary surface),
+//   - a Bash tool_use + tool_result whose body is a LITERAL upload file-handle
+//     string (parser-opacity: quoting it must not resurrect an attachment).
+const QUOTE_SESSION_ID = '77777777-7777-4777-8777-777777777777'
+sessions.upsert({
+  id: QUOTE_SESSION_ID,
+  provider: 'claude',
+  title: 'Select to quote',
+  cwd: repoCwd,
+  createdAt: now - 125,
+  lastActivityAt: now - 125,
+})
+{
+  const sidecar = new TranscriptSidecar(stateDir, QUOTE_SESSION_ID)
+  const row = (seq, type, content, extra = {}) => {
+    const uuid = `${QUOTE_SESSION_ID}-message-${seq}`
+    return sidecar.appendRow({
+      seq,
+      uuid,
+      type,
+      msg: {
+        type,
+        uuid,
+        receivedAt: now - 60_000 + seq,
+        parent_tool_use_id: null,
+        message: { role: type === 'assistant' ? 'assistant' : 'user', content },
+        ...extra,
+      },
+    })
+  }
+  const text = (t) => [{ type: 'text', text: t }]
+  // A parseable upload handle (shared/upload-handle.ts fileHandleText shape).
+  const handle =
+    '[File "quote-sample.ts" (96 bytes, upload:up-quote-fixture): verbatim read-only copy saved at ' +
+    '"/tmp/quote-sample.ts". Read that path with your file tools when its contents are needed; ' +
+    'copy it to a writable location before modifying it. When delegating file work, include this ' +
+    'saved path in the delegation prompt; only subagents sharing this execution environment can read it.]'
+  await row(0, 'user', text('How does the tokenizer treat CJK input?'))
+  await row(1, 'assistant', text([
+    'First paragraph about the tokenizer.',
+    '',
+    'Second paragraph with 中文内容 preserved.',
+    '',
+    '```ts',
+    'export function add(a: number, b: number): number {',
+    '  return a + b',
+    '}',
+    '```',
+    '',
+    'Closing paragraph after the code.',
+  ].join('\n')))
+  await row(2, 'assistant', [{
+    type: 'tool_use',
+    id: 'tu-quote-read',
+    name: 'Read',
+    input: { file_path: join(repoCwd, 'quote-sample.ts') },
+  }])
+  await row(3, 'user', [{
+    type: 'tool_result',
+    tool_use_id: 'tu-quote-read',
+    content: "export function greet(name: string): string {\n  return '你好, ' + name\n}\n",
+  }])
+  await row(4, 'assistant', [{
+    type: 'tool_use',
+    id: 'tu-quote-bash',
+    name: 'Bash',
+    input: { command: 'cat handle.txt', description: 'Print the stored upload handle' },
+  }])
+  await row(5, 'user', [{
+    type: 'tool_result',
+    tool_use_id: 'tu-quote-bash',
+    content: handle,
+  }])
+  await sidecar.close({ strict: true })
+}
 await sessions.flush()
 
+// The select-to-quote spec reads the sent text back from the server's seq store
+// (`GET /sessions/:id/messages`). A mid-turn send is queued-not-published (no seq
+// until the prior turn terminates), and a handle that never emits a terminal
+// frame would strand every send after the first. The quote session's handle
+// therefore settles each turn with a success result, so every send is an idle
+// direct hand-off that records synchronously. Scoped to this session only — the
+// other specs rely on the default never-settling (permanently mid-turn) handle.
 class FixtureHandle {
   constructor(opts) {
     this.provider = 'claude'
     this.cwd = opts.cwd ?? process.cwd()
+    this.sessionId = opts.id
+    this.autoSettle = opts.id === QUOTE_SESSION_ID
     this.input = createPushable('fixture-input')
     this.output = createPushable('fixture-output')
     this.abortController = new AbortController()
@@ -197,7 +299,29 @@ class FixtureHandle {
       model: 'fixture-model',
     })
   }
-  enqueueUserMessage(message) { this.input.push(message) }
+  enqueueUserMessage(message) {
+    this.input.push(message)
+    if (this.autoSettle) {
+      // Nothing iterates this input queue (no real SDK loop), so drain it to
+      // simulate the prompt being read — otherwise queueDepth stays > 0 and the
+      // pump's `moreQueued` keeps the session permanently working, stranding
+      // every later send as queued-not-published (no seq for the oracle).
+      this.input.clearQueue()
+      // A non-empty success result (num_turns != 0) settles the turn; the pump
+      // processes it on its next iteration, after the synchronous dispatch has
+      // recorded the prompt's seq + broadcast.
+      this.output.push({
+        type: 'result',
+        subtype: 'success',
+        session_id: this.sessionId,
+        uuid: `result-${this.sessionId}-${this.output.queueDepth}-${Date.now()}`,
+        num_turns: 1,
+        is_error: false,
+        result: 'ok',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+    }
+  }
   sendControlMessage(message) { this.input.push(message) }
   clearQueuedInput() { return this.input.clearQueue() }
   get queueDepth() { return this.input.queueDepth }

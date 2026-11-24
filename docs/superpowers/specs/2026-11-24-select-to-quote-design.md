@@ -1,7 +1,8 @@
 # Select-to-Quote — Design
 
 Date: 2026-11-24
-Status: proposed (awaiting approval)
+Status: implemented
+Decision record: [.agents/notes/implemented/feature/2026-11-24-select-to-quote.md](../../../.agents/notes/implemented/feature/2026-11-24-select-to-quote.md)
 Research: DSH `packages/client/ui-chat/src/client/chat/{text-selection,text-interaction}.ts`,
 `packages/session/message-quotes/src/client/{quote-text,quote-rule}.ts`,
 `packages/client/ui-primitives/src/{QuotePreview.tsx,markdown/quote-text.ts}`,
