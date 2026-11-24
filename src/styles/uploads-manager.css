@@ -255,3 +255,44 @@
   border-bottom: 1px solid var(--border);
   margin-bottom: var(--space-2);
 }
+
+/* PDF branch: the viewer's own .pdf-body is the scroll container, so the
+   panel body drops its padding and outer overflow and lets the frame fill. */
+.uploads-preview-body-pdf {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* ── Chip-opened PDF modal (UploadPdfModal) ────────────────────────
+   Same card dimensions as the manager preview panel; the body hosts the
+   shared ref-keyed viewer (UploadPdfViewer). */
+.upload-pdf-modal {
+  width: min(860px, 92vw);
+  /* The base .modal caps at 84vh; stay inside it so the cap never bites. */
+  height: min(640px, 84vh);
+  display: flex;
+  flex-direction: column;
+}
+
+.upload-pdf-modal .modal-header h3 {
+  min-width: 0;
+  margin: 0;
+  margin-right: auto;
+}
+
+.upload-pdf-modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The ref-keyed byte-source host fills its chrome so .pdf-frame (flex:1)
+   and the centered fetch states get a bounded height. */
+.upload-pdf-viewer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}

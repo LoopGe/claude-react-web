@@ -1,9 +1,15 @@
+import { useState } from 'react'
 import type { DraftFile } from '../hooks/useFileDrafts'
+import type { FileAttachmentRef } from '../../shared/attachments'
+import { uploadPreviewKind } from '../../shared/uploads'
 import { formatBytes } from '../utils/format'
 import { IconFileText, IconX } from './icons/ToolIcons'
+import { UploadPdfModal } from './UploadPdfModal'
 
 /** Draft file chips: upload progress, failure/retry, removal, and a
- *  ready-state link to the stored copy. Mirrors ComposerImagePreviews. */
+ *  ready-state link to the stored copy. A ready PDF chip opens the in-app
+ *  preview (bytes fetched by upload id) instead of the download link.
+ *  Mirrors ComposerImagePreviews. */
 export function ComposerFilePreviews({
   files,
   onRemove,
@@ -13,6 +19,7 @@ export function ComposerFilePreviews({
   onRemove: (key: string) => void
   onRetry: (key: string) => void
 }) {
+  const [pdfPreview, setPdfPreview] = useState<FileAttachmentRef | null>(null)
   return (
     <div className="file-previews">
       {files.map((file) => {
@@ -22,6 +29,10 @@ export function ComposerFilePreviews({
         const contentUrl = file.upload === undefined
           ? undefined
           : `/api/uploads/${encodeURIComponent(file.upload.id)}/content`
+        const pdfRef =
+          file.upload !== undefined && uploadPreviewKind(file.upload.name) === 'pdf'
+            ? file.upload
+            : null
         const body = (
           <>
             <IconFileText size={16} className="file-preview-icon" />
@@ -40,19 +51,28 @@ export function ComposerFilePreviews({
             key={file.key}
             className={`file-preview-card${file.status === 'error' ? ' file-preview-failed' : ''}`}
           >
-            {contentUrl === undefined
-              ? <span className="file-preview-body" title={name}>{body}</span>
-              : (
-                <a
-                  className="file-preview-body"
-                  href={contentUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={name}
-                >
-                  {body}
-                </a>
-              )}
+            {pdfRef !== null ? (
+              <button
+                type="button"
+                className="file-preview-body"
+                title={name}
+                onClick={() => setPdfPreview(pdfRef)}
+              >
+                {body}
+              </button>
+            ) : contentUrl === undefined ? (
+              <span className="file-preview-body" title={name}>{body}</span>
+            ) : (
+              <a
+                className="file-preview-body"
+                href={contentUrl}
+                target="_blank"
+                rel="noreferrer"
+                title={name}
+              >
+                {body}
+              </a>
+            )}
             {file.status === 'error' && file.file !== undefined && (
               <button type="button" className="file-preview-retry" onClick={() => onRetry(file.key)}>
                 Retry
@@ -77,6 +97,9 @@ export function ComposerFilePreviews({
           </div>
         )
       })}
+      {pdfPreview !== null && (
+        <UploadPdfModal file={pdfPreview} onClose={() => setPdfPreview(null)} />
+      )}
     </div>
   )
 }

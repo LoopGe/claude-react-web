@@ -2449,6 +2449,17 @@ button.chat-empty-env-chip:hover {
   font-size: var(--fs-sm);
 }
 
+/* The ready PDF chip is a button (opens the in-app preview); reset the UA
+   button face so it reads identically to the anchor chip. */
+button.file-preview-body {
+  cursor: pointer;
+  font-family: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+}
+
 .file-preview-icon {
   flex: none;
   color: var(--fg-muted);
@@ -2601,7 +2612,8 @@ button.chat-empty-env-chip:hover {
 }
 
 /* File chips for one user message: live FileBlocks and handles recovered from
-   disk replay both render here. The anchor opens the stored copy. */
+   disk replay both render here. The anchor opens the stored copy; a PDF ref
+   renders as a button that opens the in-app preview instead. */
 .msg-file-row {
   display: flex;
   flex-wrap: wrap;
@@ -2625,6 +2637,15 @@ button.chat-empty-env-chip:hover {
 
 .msg-file-chip:hover {
   background: var(--btn-hover-bg);
+}
+
+/* The PDF chip variant is a button (opens the in-app preview); the chip rule
+   above already overrides the UA border/background/padding — reset the rest
+   so it reads identically to the anchor chip. */
+button.msg-file-chip {
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
 }
 
 .msg-file-icon {
