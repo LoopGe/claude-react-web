@@ -96,7 +96,7 @@ export const ThinkingBody = memo(function ThinkingBody(props: ThinkingBodyProps)
       open={open}
       onOpenChange={setUserOpened}
     >
-      <div className="thinking-body" ref={scrollRef}>
+      <div className="thinking-body" ref={scrollRef} data-text-interaction-source="">
         {showBody && <DraftBlocks text={text} animate={streaming} cursor={false} />}
       </div>
     </AnimatedDetails>

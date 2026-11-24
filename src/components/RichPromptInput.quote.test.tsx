@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
+import { createRef } from 'react'
 import { render, fireEvent } from '@testing-library/react'
-import { RichPromptInput } from './RichPromptInput'
+import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
 import { QUOTE_CHIP_ATTR, QUOTE_CHIP_CLASS, QUOTE_REMOVE_ATTR, MENTION_CHIP_CLASS } from '../utils/richPromptDom'
 import { placeCaretAtOffset, offsetOf } from './richPromptCaret'
 import { quoteTextOf } from '../utils/quote-text'
@@ -183,5 +184,56 @@ describe('RichPromptInput quote chip — caret space after typing adjacent to a 
     expect(onChange).toHaveBeenLastCalledWith('a\n\n> q\n\nxy')
     rerender(<RichPromptInput value={'a\n\n> q\n\nxy'} onChange={onChange} ariaLabel="Q" />)
     expect(caretValueOffset(el)).toBe('a\n\n> q\n\nxy'.length)
+  })
+})
+
+describe('RichPromptInput insertQuoteAtCaret (select-to-quote insert)', () => {
+  function mount(value: string, onChange = vi.fn()) {
+    const ref = createRef<HTMLDivElement & RichPromptHandle>()
+    const { container } = render(
+      <RichPromptInput value={value} onChange={onChange} editorRef={ref} ariaLabel="Q" />,
+    )
+    return { el: editor(container), handle: ref.current!, onChange }
+  }
+
+  it('inserts a settled quote chip into an empty draft', () => {
+    const { el, handle, onChange } = mount('')
+    handle.insertQuoteAtCaret('hello')
+    expect(onChange).toHaveBeenLastCalledWith('> hello\n')
+    const chip = el.querySelector(`.${QUOTE_CHIP_CLASS}`)!
+    expect(chip).not.toBeNull()
+    expect(chip.getAttribute(QUOTE_CHIP_ATTR)).toBe('> hello')
+  })
+
+  it('makes the run line-leading with a blank-line separator after mid-line prose', () => {
+    const { el, handle, onChange } = mount('hello world')
+    placeCaretAtOffset(el, 'hello world'.length)
+    handle.insertQuoteAtCaret('q')
+    expect(onChange).toHaveBeenLastCalledWith('hello world\n> q\n')
+    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> q')
+  })
+
+  it('inserts before existing prose with a blank-line separator', () => {
+    const { el, handle, onChange } = mount('prose')
+    placeCaretAtOffset(el, 0)
+    handle.insertQuoteAtCaret('q')
+    expect(onChange).toHaveBeenLastCalledWith('> q\n\nprose')
+    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)).not.toBeNull()
+  })
+
+  it('appends at the draft end when the editor has no live caret (blurred)', () => {
+    const { el, handle, onChange } = mount('draft')
+    // No selection inside the editor → insert at the end.
+    el.ownerDocument.getSelection()!.removeAllRanges()
+    handle.insertQuoteAtCaret('q')
+    expect(onChange).toHaveBeenLastCalledWith('draft\n> q\n')
+    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)).not.toBeNull()
+  })
+
+  it('formats a multi-line selection as one multi-line quote run', () => {
+    const { el, handle, onChange } = mount('')
+    handle.insertQuoteAtCaret('line one\nline two')
+    expect(onChange).toHaveBeenLastCalledWith('> line one\n> line two\n')
+    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> line one\n> line two')
   })
 })

@@ -487,7 +487,7 @@ export const MessageView = memo(function MessageView({
     return (
       <HoverHint label={formatFullTimestamp(msg.receivedAt)} side="top" disabled={msg.receivedAt == null}>
         <div className={`msg user${sending ? ' msg-sending' : ''}${showQueued ? ' msg-queued' : ''}`}>
-          <div className="msg-body">
+          <div className="msg-body" data-text-interaction-source="">
             {/* Search-hit override: foldSearchHit is computed from the same
                 independent segments as the server indexes, so both Markdown
                 matches and attachment-name hits pin the body open. */}
@@ -614,7 +614,7 @@ export const MessageView = memo(function MessageView({
           {splitParts.map(({ block, index }, i) => (
             <HoverHint key={index} label={formatFullTimestamp(msg.receivedAt)} side="top" disabled={msg.receivedAt == null}>
               <div className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}>
-                <div className="msg-body">
+                <div className="msg-body" data-text-interaction-source="">
                   <BlockView
                     block={block}
                     searchQuery={searchQuery}
@@ -659,6 +659,7 @@ export const MessageView = memo(function MessageView({
         <div className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}>
         <div
           className={msg.isDraft ? 'msg-body assistant-body draft-body' : 'msg-body'}
+          data-text-interaction-source=""
           aria-live={msg.isDraft ? 'polite' : undefined}
           aria-atomic={msg.isDraft ? false : undefined}
         >

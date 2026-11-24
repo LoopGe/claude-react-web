@@ -38,6 +38,12 @@ const ResumeSessionDialog = lazy(() =>
 const InputHistoryPanel = lazy(() =>
   import('./InputHistoryPanel').then((m) => ({ default: m.InputHistoryPanel })),
 )
+// The select-to-quote toolbar is lazy so the selection-projection code stays
+// out of the startup bundle. It mounts with the transcript and listens for
+// selections once its chunk lands (a local chunk, so effectively immediate).
+const QuoteSelectionToolbar = lazy(() =>
+  import('./QuoteSelectionToolbar').then((m) => ({ default: m.QuoteSelectionToolbar })),
+)
 import { RecapWindow } from './RecapWindow'
 import { ResourceModal } from '../resources/ResourceModal'
 import { useOptionalOpenResource } from '../resources/context'
@@ -1890,6 +1896,19 @@ export const Chat = memo(function Chat({
   }, [session.id, onRegisterScrollNav])
   useEffect(() => () => { scrollNavDisposeRef.current?.() }, [])
 
+  // Select-to-quote: the floating toolbar (mounted over the transcript area)
+  // hands a projected passage to the composer's insert capability, which the
+  // Composer registers here. Both callbacks are stable so the memoized Composer
+  // and the lazy toolbar never re-render on streaming deltas.
+  const transcriptAreaRef = useRef<HTMLDivElement>(null)
+  const quoteInsertRef = useRef<((text: string) => void) | null>(null)
+  const registerQuoteInsert = useCallback((insert: ((text: string) => void) | null) => {
+    quoteInsertRef.current = insert
+  }, [])
+  const handleQuoteSelection = useCallback((text: string) => {
+    quoteInsertRef.current?.(text)
+  }, [])
+
   // Stable wrapper so MessageList's `itemContent` useCallback (whose dep
   // array includes onSwitchModel) keeps a stable identity across streaming
   // token deltas. An inline arrow here would recreate itemContent on every
@@ -2264,6 +2283,7 @@ export const Chat = memo(function Chat({
         <SkillProvider value={skillCtxValue}>
         <ReopenQuestionProvider value={reopenCtxValue}>
         <div
+          ref={transcriptAreaRef}
           className={`chat-messages-area${recapSettle ? ' chat-messages-area-settle' : ''}`}
           onAnimationEnd={(e) => handleRecapSettleEnd(e.animationName)}
           onContextMenu={(e) => {
@@ -2308,6 +2328,9 @@ export const Chat = memo(function Chat({
           emptyStateExtra={emptyStateExtra}
         />
         </TurnChangesProvider>
+        <Suspense fallback={null}>
+          <QuoteSelectionToolbar rootRef={transcriptAreaRef} onQuote={handleQuoteSelection} />
+        </Suspense>
         {/* Reset wait pill — centered over the blurred transcript while any
             reset POST is in flight (/clear, /clear-permanent, /discard, /handoff).
             Gated on `effectiveClearing || handoffing`: App's `clearingIds` is
@@ -2512,6 +2535,7 @@ export const Chat = memo(function Chat({
               commands={mergedCommands}
               sessionId={session.id}
               onMentionClick={handleMentionClick}
+              registerQuoteInsert={registerQuoteInsert}
               pastedImages={pastedImages.images}
               imagesPending={pastedImages.pending}
               files={fileDrafts.files}

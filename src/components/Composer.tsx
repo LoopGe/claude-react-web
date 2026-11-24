@@ -124,6 +124,11 @@ interface Props {
    *  resolves the path against the session cwd and opens the resource
    *  preview; unwired hosts keep chips inert. */
   onMentionClick?: (mention: { path: string; dir: boolean }) => void
+  /** Registers the select-to-quote insert capability with the host (Chat).
+   *  Called with a function that inserts a quoted passage as a composer chip
+   *  at the caret, and with null on unmount. The host's floating Quote toolbar
+   *  invokes it; unwired hosts simply never register. */
+  registerQuoteInsert?: (insert: ((text: string) => void) | null) => void
   /** Pending pasted images to send inline. */
   pastedImages: PastedImage[]
   /** True while at least one image is still being decoded. Sending and
@@ -248,6 +253,7 @@ export const Composer = memo(function Composer({
   commands,
   sessionId,
   onMentionClick,
+  registerQuoteInsert,
   pastedImages,
   imagesPending,
   files,
@@ -518,6 +524,17 @@ export const Composer = memo(function Composer({
     if (focusSignal == null) return
     editorRef.current?.focus()
   }, [focusSignal])
+
+  // Expose the select-to-quote insert to the host's floating Quote toolbar.
+  // The closure reads editorRef live, so it always targets the current editor
+  // (the handle methods are attached by RichPromptInput's layout effect).
+  useEffect(() => {
+    if (!registerQuoteInsert) return
+    registerQuoteInsert((text) => {
+      editorRef.current?.insertQuoteAtCaret(text)
+    })
+    return () => registerQuoteInsert(null)
+  }, [registerQuoteInsert])
 
   // ── Mouse-wheel history navigation ─────────────────────────────
   //

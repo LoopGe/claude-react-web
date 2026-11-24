@@ -208,7 +208,7 @@ export function tokenize(text: string): PastedTextToken[] {
  *  set, so a boundary `tokenize` recognized (a lone CR or a unicode separator
  *  included) is never "fixed" a second time. Char codes rather than a regex
  *  literal keep the U+2028/U+2029 members readable instead of invisible. */
-function isLineTerminator(ch: string): boolean {
+export function isLineTerminator(ch: string): boolean {
   const c = ch.charCodeAt(0)
   return c === 0x0a || c === 0x0d || c === 0x2028 || c === 0x2029
 }

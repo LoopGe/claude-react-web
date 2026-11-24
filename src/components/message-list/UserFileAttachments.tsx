@@ -51,6 +51,7 @@ export function UserFileAttachments({
           type="button"
           className="msg-file-chip"
           data-file-occurrence={occurrenceKey}
+          data-text-interaction-exclude=""
           title={file.name}
           onClick={() => setPreviewOpen(true)}
         >
@@ -65,6 +66,7 @@ export function UserFileAttachments({
     <a
       className="msg-file-chip"
       data-file-occurrence={occurrenceKey}
+      data-text-interaction-exclude=""
       href={`/api/uploads/${encodeURIComponent(file.id)}/content`}
       target="_blank"
       rel="noreferrer"

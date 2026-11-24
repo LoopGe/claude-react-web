@@ -261,7 +261,7 @@ export const ToolResultDetails = memo(function ToolResultDetails({
       summary={preview}
       open={hasSearch ? true : undefined}
     >
-      <div className="tool-input" ref={bodyRef}>
+      <div className="tool-input" ref={bodyRef} data-text-interaction-source="">
         {parts.map((part, i) => {
           if (part.kind === 'text') {
             return (
@@ -393,7 +393,7 @@ export const ToolCard = memo(function ToolCard({
   const isPermMinimized = !!toolUseId && minimizedPermissionToolUseIds.has(toolUseId)
   return (
     <div className={`tool-card ${className}`.trim()}>
-      <div className="tool-card-header">
+      <div className="tool-card-header" data-text-interaction-exclude="">
         <span className="tool-card-icon" aria-hidden>
           {icon}
         </span>

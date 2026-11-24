@@ -4385,6 +4385,41 @@ button.msg-mention-chip:hover {
   overflow-wrap: anywhere;
 }
 
+/* Floating select-to-quote button (QuoteSelectionToolbar). Portalled to body
+   with position:fixed; left/top/visibility are written by the placement logic.
+   Colours reuse the shared floating-surface tokens (defined in every theme). */
+.quote-selection-toolbar {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: var(--z-overlay);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  box-shadow: var(--card-shadow);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
+}
+
+.quote-selection-toolbar:hover {
+  background: var(--btn-hover-bg);
+}
+
+.quote-selection-mark {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
 /* ── Lightbox (full-screen image viewer) ────────────────────────────────
    Mounted once by ImageViewerProvider via <Overlay variant="lightbox">
    (card: null — the .lightbox-stage child IS the interactive card, so there

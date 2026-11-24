@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
-import { joinTokens, tokenize } from '../utils/pastedText'
+import { isLineTerminator, joinTokens, tokenize } from '../utils/pastedText'
+import { formatQuoteText } from '../utils/quote-text'
 import { renderTokens, serializeTokens, domRepresentsValue, mentionChipFacts, MENTION_CHIP_ATTR, QUOTE_CHIP_ATTR, QUOTE_REMOVE_ATTR } from '../utils/richPromptDom'
 import { syncEditorHeight } from '../utils/editor-height'
 import { offsetOf, valueOffsetOf, slashWordBefore, atWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
@@ -31,6 +32,11 @@ export interface RichPromptHandle {
   /** Splice the forming `@word` before the caret with `text` (a picked mention
    *  or an open-quote drill string), leaving the caret at the replacement's end. */
   replaceAtWord(text: string): void
+  /** Insert a select-to-quote passage as a line-leading blockquote run at the
+   *  caret (or the draft end when the editor has no live caret), settling it as
+   *  an atomic quote chip with the caret left PAST the run's end. `text` is the
+   *  selected VISIBLE text; it is formatted with `formatQuoteText` here. */
+  insertQuoteAtCaret(text: string): void
   /** Offset pair for the current selection, or null when nothing is selected. */
   selectionOffsets(): { start: number; end: number } | null
   /** Focus the element and place a collapsed caret at the given character offset. */
@@ -200,6 +206,42 @@ export function RichPromptInput({
     const doc = el.ownerDocument
     el.replaceChildren(renderTokens(doc, tokenize(next), target))
     placeCaretAtOffset(el, target)
+    onChange(next)
+  }
+
+  /** Insert a quoted passage as a settled atomic chip at the caret.
+   *
+   *  Like {@link replaceAtWord}, this rebuilds the DOM and places the caret
+   *  BEFORE reporting the new value, so the value-driven reconcile measures the
+   *  RESTORED caret (past the run's end) and keeps the chip settled rather than
+   *  demoting it back to editable text.
+   *
+   *  The splice carries the SAME two composition guarantees `joinTokens` gives
+   *  a hand-composed quote token: a leading `\n` when the run would otherwise
+   *  start mid-line, and a blank line before following prose that has no break
+   *  of its own. The caret lands AFTER the trailing separator, so it is past the
+   *  run's end (the caret gate is end-inclusive) and the chip settles. When the
+   *  editor has no live caret — the select-to-quote toolbar click blurs it — the
+   *  run appends at the draft end. */
+  const insertQuoteAtCaret = (text: string) => {
+    const el = ref.current
+    if (!el) return
+    const doc = el.ownerDocument
+    const selection = doc.getSelection()
+    const off =
+      selection !== null && selection.rangeCount > 0 && el.contains(selection.anchorNode)
+        ? valueOffsetOf(el, selection.anchorNode!, selection.anchorOffset)
+        : value.length
+    const run = formatQuoteText(text)
+    const before = value.slice(0, off)
+    const after = value.slice(off)
+    const lead = before.length > 0 && !isLineTerminator(before[before.length - 1]!) ? '\n' : ''
+    const trail = after.length > 0 && !isLineTerminator(after[0]!) ? '\n\n' : '\n'
+    const next = before + lead + run + trail + after
+    const caret = (before + lead + run + trail).length
+    el.focus()
+    el.replaceChildren(renderTokens(doc, tokenize(next), caret))
+    placeCaretAtOffset(el, caret)
     onChange(next)
   }
 
@@ -441,6 +483,7 @@ export function RichPromptInput({
     handle.caretOnFirstLine = isCaretOnFirstLine
     handle.replaceSlashWord = replaceSlashWord
     handle.replaceAtWord = replaceAtWord
+    handle.insertQuoteAtCaret = insertQuoteAtCaret
     handle.selectionOffsets = () => selectionOffsets(el)
     handle.placeCaretIn = (offset: number) => placeCaretIn(el, offset)
     handle.selectAll = () => selectAll(el)
