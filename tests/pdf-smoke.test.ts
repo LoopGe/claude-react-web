@@ -173,7 +173,24 @@ describe('PDF.js real-library smoke', () => {
       const factory = nodeCanvasFactory(pdf)
       const target = factory.create(1, 1)
       try {
+        // TEMP DIAGNOSTIC: trace what pdf.js actually draws.
+        const ctx0 = target.context as CanvasRenderingContext2D & { fillText: (...a: unknown[]) => void; strokeText: (...a: unknown[]) => void }
+        const origFill = ctx0.fillText.bind(ctx0)
+        const origStroke = ctx0.strokeText.bind(ctx0)
+        let fills = 0
+        let strokes = 0
+        ctx0.fillText = (...args: unknown[]) => {
+          fills++
+          if (fills <= 3) console.error('[pdf-smoke-diag] fillText', JSON.stringify(args[0]), 'font=', ctx0.font)
+          return origFill(...args)
+        }
+        ctx0.strokeText = (...args: unknown[]) => {
+          strokes++
+          if (strokes <= 3) console.error('[pdf-smoke-diag] strokeText', JSON.stringify(args[0]), 'font=', ctx0.font)
+          return origStroke(...args)
+        }
         await renderPdfPage(page, target.canvas, 1, new AbortController().signal)
+        console.error('[pdf-smoke-diag] fillText calls:', fills, 'strokeText calls:', strokes, 'final font:', ctx0.font)
         const pixels = target.context.getImageData(0, 0, target.canvas.width, target.canvas.height).data
         let dark = 0
         for (let i = 0; i < pixels.length; i += 4) {
