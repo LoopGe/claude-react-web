@@ -8,14 +8,31 @@
  */
 import { Worker as Thread, type Transferable } from 'node:worker_threads'
 import { createRequire } from 'node:module'
-import { pathToFileURL } from 'node:url'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { GlobalFonts } from '@napi-rs/canvas'
 import { getDocument, PDFWorker } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { createPdfBinaryDataFactory, type PdfBinaryDataFactory } from '../src/utils/pdf-assets'
 import { renderPdfPage } from '../src/utils/pdf-document'
 import { deferred } from '../src/test-utils/deferred'
 import { CJK_FIXTURE_TEXT, cjkPdfFixture, pdfFixture } from './pdf-fixture'
+
+// The CJK case draws through pdf.js's system-font substitution for the
+// non-embedded STSong-Light CID font. Whether the host's generic fallback
+// font draws a visible .notdef for unsupported codepoints is environment-
+// dependent (CI's fallback drew nothing; Windows/WSL drew tofu), so the
+// drawing assertion must not ride on host fonts. Register a 4-glyph OFL
+// Noto Sans SC subset under the substitution's first family name — the
+// fixture stands in for the system CJK font a real user's machine has, and
+// the test proves the cMap decode + substitution + draw path deterministically
+// on every platform. (tests/fixtures/pdf-cjk-fixture-OFL.txt carries the license.)
+const fixtureFontKey = GlobalFonts.register(
+  readFileSync(fileURLToPath(new URL('./fixtures/pdf-cjk-fixture.ttf', import.meta.url))),
+  'STSong',
+)
+if (!fixtureFontKey) throw new Error('pdf-smoke: CJK fixture font registration failed')
 
 const require = createRequire(import.meta.url)
 const workerUrl = pathToFileURL(require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs')).href
@@ -173,46 +190,14 @@ describe('PDF.js real-library smoke', () => {
       const factory = nodeCanvasFactory(pdf)
       const target = factory.create(1, 1)
       try {
-        // TEMP DIAGNOSTIC: trace what pdf.js actually draws.
-        const ctx0 = target.context as CanvasRenderingContext2D & { fillText: (...a: unknown[]) => void; strokeText: (...a: unknown[]) => void }
-        const origFill = ctx0.fillText.bind(ctx0)
-        const origStroke = ctx0.strokeText.bind(ctx0)
-        let fills = 0
-        let strokes = 0
-        ctx0.fillText = (...args: unknown[]) => {
-          fills++
-          if (fills <= 3) console.error('[pdf-smoke-diag] fillText', JSON.stringify(args[0]), 'font=', ctx0.font)
-          return origFill(...args)
-        }
-        ctx0.strokeText = (...args: unknown[]) => {
-          strokes++
-          if (strokes <= 3) console.error('[pdf-smoke-diag] strokeText', JSON.stringify(args[0]), 'font=', ctx0.font)
-          return origStroke(...args)
-        }
         await renderPdfPage(page, target.canvas, 1, new AbortController().signal)
-        console.error('[pdf-smoke-diag] fillText calls:', fills, 'strokeText calls:', strokes, 'final font:', ctx0.font)
+        // Non-blank glyph pixels prove the substitution path drew real glyphs
+        // (the registered STSong fixture), not a host-font accident.
         const pixels = target.context.getImageData(0, 0, target.canvas.width, target.canvas.height).data
         let dark = 0
         for (let i = 0; i < pixels.length; i += 4) {
           if (pixels[i]! < 128 && pixels[i + 3] === 255) dark++
         }
-        // TEMP DIAGNOSTIC (diag/pdf-smoke-fonts): ground-truth the CI font env.
-        const { GlobalFonts } = await import('@napi-rs/canvas')
-        console.error('[pdf-smoke-diag] families:', JSON.stringify(GlobalFonts.families.map((f) => f.family)))
-        console.error('[pdf-smoke-diag] dark:', dark, 'canvas:', target.canvas.width, 'x', target.canvas.height)
-        const styles = (await page.getTextContent()).styles as Record<string, { fontFamily?: string }>
-        console.error('[pdf-smoke-diag] textContent styles:', JSON.stringify(styles))
-        // Control: raw fillText on the SAME canvas with an installed family.
-        const ctx = target.context
-        ctx.fillStyle = '#000'
-        ctx.font = '24px DejaVu Sans'
-        ctx.fillText('中国你好', 5, 100)
-        const after = ctx.getImageData(0, 0, target.canvas.width, target.canvas.height).data
-        let control = 0
-        for (let i = 0; i < after.length; i += 4) {
-          if (after[i]! < 128 && after[i + 3] === 255) control++
-        }
-        console.error('[pdf-smoke-diag] control dark after raw DejaVu fillText:', control)
         expect(dark).toBeGreaterThan(0)
       } finally {
         factory.destroy(target)
