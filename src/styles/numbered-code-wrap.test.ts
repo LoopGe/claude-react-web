@@ -18,6 +18,14 @@ describe('numbered-code wrap (CSS side)', () => {
     expect(block!.decls['overflow-wrap']).toBe('anywhere')
   })
 
+  it('keeps the base .file-viewer-code nowrap so wrap OFF is a real toggle', () => {
+    // OFF-half: with .numbered-code-wrap absent the pre falls back to this base
+    // rule. If it ever became pre-wrap, toggling wrap OFF would be a no-op.
+    const base = parseBlocks(readCss('file-viewer.css')).find((b) => b.sel === '.file-viewer-code')
+    expect(base, '.file-viewer-code missing from file-viewer.css').toBeTruthy()
+    expect(base!.decls['white-space']).toBe('pre')
+  })
+
   it('keeps the gutter counter intact under wrap (numbers stay CSS-only)', () => {
     const blocks = parseBlocks(readCss('file-viewer.css'))
     // The counter-reset scope rides .numbered-code, which the pre keeps even

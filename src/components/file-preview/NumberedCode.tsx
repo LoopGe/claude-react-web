@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CodeBlock } from '../Markdown'
+import { IconWrapText } from '../icons/ToolIcons'
 import { useCopy } from '../../hooks/useCopy'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
@@ -142,24 +143,7 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
             title="Toggle word wrap"
             onClick={() => setWrap((w) => !w)}
           >
-            {/* Self-contained wrap glyph (lucide WrapText path) — inline so no new
-                icon import lands in the startup bundle. */}
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <line x1="3" y1="6" x2="21" y2="6" />
-              <path d="M3 12h15a3 3 0 1 1 0 6h-4" />
-              <polyline points="16 16 14 18 16 20" />
-              <line x1="3" y1="18" x2="10" y2="18" />
-            </svg>
+            <IconWrapText />
           </button>
           <button type="button" className="code-block-copy" onClick={handleCopy}>
             {copied ? 'Copied!' : 'Copy'}

@@ -110,6 +110,7 @@ import {
   Volume2,
   VolumeX,
   Workflow,
+  WrapText,
   X,
   Zap,
 } from 'lucide-react'
@@ -193,6 +194,7 @@ export const IconPencil = L(Pencil)
 export const IconBot = L(Bot)
 export const IconClipboard = L(Clipboard)
 export const IconWorkflow = L(Workflow)
+export const IconWrapText = L(WrapText)
 export const IconBell = L(Bell)
 export const IconBellOff = L(BellOff)
 export const IconVolume2 = L(Volume2)
