@@ -9,26 +9,38 @@
 // (tool-output code — the primary code-quoting surface) and a Bash tool result
 // whose body is a LITERAL upload file-handle string (parser opacity).
 //
-// The first test proves the pointer gesture with a REAL mouse drag over the
-// rendered transcript (drag → floating Quote button → Escape dismiss). The
-// remaining selections use a real browser Range over the exact character span
-// (rangeSelect): the transcript's frosted header overlays the top of the scroll
-// area and Virtuoso's scroll anchoring fights programmatic repositioning, so a
-// mouse drag parked under the header builds no selection — a Range selects the
-// span regardless of scroll state and feeds the SAME readTextSelection /
-// selectedText projection. The floating Quote button, the visible-text
-// projection, the composer's atomic chip (DOM→text bridge), the outgoing
-// blockquote composition and the sent inert chip all run as shipped. The
-// sent-text oracle is the server's own seq-store read
+// The first test proves the pointer gesture end to end with a REAL mouse drag
+// over the rendered transcript AND a physical Playwright click on the floating
+// Quote button (hit target, z-index, pointer-events, placement). The remaining
+// selections use a real browser Range over the exact character span (rangeSelect)
+// and dispatch the toolbar click: a mouse drag needs the target scrolled into the
+// viewport, and dragSelect's pixel coords come from getBoundingClientRect — for a
+// row resting outside the scroll viewport those coords land on the panel header
+// (the opaque normal-flow panel-swap drag handle, cursor:grab), so mousedown grabs
+// the header and builds no text selection. A Range selects the span regardless of
+// scroll position and feeds the SAME readTextSelection / selectedText projection.
+// The floating Quote button, the visible-text projection, the composer's atomic
+// chip (DOM→text bridge), the outgoing blockquote composition and the sent inert
+// chip all run as shipped. The sent-text oracle is the server's own seq-store read
 // (`GET /sessions/:id/messages`) — independent of the rendered DOM, so it pins
 // what the MODEL receives, not just what the chip shows.
 //
-// Carried review items proved here on a real engine: the composer chip's
-// ×-button whole-run removal (Q3), arrow-key atomic crossing (Q3), typed order
-// immediately after a settled chip (Q3 caret fix), the remembered mid-draft
-// caret insert (Q4), and quoted file-handle / paste-ref opacity (Q5).
+// Also proved on a real engine: the composer chip's ×-button whole-run removal,
+// arrow-key atomic crossing, typed order immediately after a settled chip, the
+// remembered mid-draft caret insert, and quoted file-handle / paste-ref opacity.
 
-import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
+import { expect, test as base, type APIRequestContext, type Locator, type Page } from '@playwright/test'
+
+// Collect uncaught page errors from BEFORE the beforeEach navigation/openSession,
+// so initial-load and subscribe errors are covered by the zero-pageerror claim.
+// Fixture setup runs before beforeEach hooks, so the listener is attached first.
+const test = base.extend<{ pageErrors: string[] }>({
+  pageErrors: async ({ page }, use) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(String(err)))
+    await use(errors)
+  },
+})
 
 const Q = '77777777-7777-4777-8777-777777777777'
 const DRAFT_KEY = `claude-react-web:draft:${Q}`
@@ -81,10 +93,10 @@ async function lastSentText(request: APIRequestContext): Promise<string> {
   return last!
 }
 
-/** Read the persisted composer draft (the canonical raw string), waiting out
- *  the 400 ms persist debounce. */
+/** Read the persisted composer draft (the canonical raw string). The persist is
+ *  debounced (400 ms), so callers assert with `expect.poll(() => draftValue(page))`
+ *  rather than a fixed sleep — load-tolerant. */
 async function draftValue(page: Page): Promise<string> {
-  await page.waitForTimeout(500)
   return page.evaluate((key) => window.sessionStorage.getItem(key) ?? '', DRAFT_KEY)
 }
 
@@ -137,14 +149,15 @@ async function dragSelect(page: Page, from: Locator, to: Locator, fromOffset = 0
 }
 
 /** Select the same character span as {@link dragSelect}, but with a real browser
- *  Range instead of a mouse drag. The transcript's frosted panel header overlays
- *  the top of the scroll area and Virtuoso's scroll anchoring fights programmatic
- *  repositioning, so a mouse drag parked under the header builds no selection;
- *  a Range selects the exact span regardless of scroll/occlusion. The toolbar
- *  reads this selection on `selectionchange` through the SAME readTextSelection /
- *  selectedText projection a mouse selection uses — the feature under test runs
- *  unchanged. (The pointer gesture itself is proved by the mouse drag in the
- *  first test.) */
+ *  Range instead of a mouse drag. dragSelect's pixel coords come from
+ *  getBoundingClientRect and it does not scroll the target into view: for a row
+ *  resting outside the scroll viewport those coords land on the panel header (the
+ *  opaque normal-flow panel-swap drag handle), so mousedown grabs the header and
+ *  builds no text selection. A Range selects the exact span regardless of scroll
+ *  position. The toolbar reads this selection on `selectionchange` through the
+ *  SAME readTextSelection / selectedText projection a mouse selection uses — the
+ *  feature under test runs unchanged. (The physical pointer gesture — drag AND
+ *  click hit target — is proved by the first test.) */
 async function rangeSelect(page: Page, from: Locator, to: Locator, fromOffset = 0, toOffset = -1) {
   const fromEl = await from.elementHandle()
   const toEl = await to.elementHandle()
@@ -170,11 +183,11 @@ async function rangeSelect(page: Page, from: Locator, to: Locator, fromOffset = 
   }, [fromEl, toEl, fromOffset, toOffset] as const)
 }
 
-/** Select a transcript surface, click the floating Quote button, and return the
- *  composer chip locator. Asserts the toolbar attaches for the valid selection
- *  and dismisses on click. The click is dispatched directly: the toolbar's
- *  handler reads the captured target, independent of the placement visibility
- *  the header clip can suppress for a near-top selection. */
+/** Select a transcript surface (Range), invoke the floating Quote button, and
+ *  return the composer chip locator. Asserts the toolbar attaches for the valid
+ *  selection and dismisses on click. The click is dispatched (the handler reads
+ *  the captured target) so these tests need not scroll the target into a physical
+ *  hit position; the first test proves the physical click hit target separately. */
 async function quoteSelection(page: Page, from: Locator, to: Locator = from, fromOffset = 0, toOffset = -1) {
   await rangeSelect(page, from, to, fromOffset, toOffset)
   const toolbar = quoteToolbar(page)
@@ -219,29 +232,26 @@ async function sendAndRead(page: Page, request: APIRequestContext, sentHasText: 
   return lastSentText(request)
 }
 
-test.beforeEach(async ({ page }) => {
-  await page.goto('/', { waitUntil: 'domcontentloaded' })
+test.beforeEach(async ({ page }) => {  await page.goto('/', { waitUntil: 'domcontentloaded' })
   const showSidebar = page.getByRole('button', { name: 'Show sidebar' })
   if (await showSidebar.isVisible()) await showSidebar.click()
   await openSession(page, Q)
 })
 
-test('quote: a real mouse drag surfaces the floating Quote button (pointer gesture)', async ({ page }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
-  // The pointer gesture, end to end: a native mouse drag over rendered prose
-  // builds a selection the toolbar reads on pointerup, and clicking the button
-  // inserts the composer chip. Center-scroll keeps the drag clear of the header
-  // overlay. Runs first on a fresh transcript. (The remaining tests select via a
-  // real Range — rangeSelect — which is robust to the scroll states they inherit.)
+test('quote: a real mouse drag and physical click on the Quote button (pointer gesture)', async ({ page, pageErrors }) => {  // The pointer gesture, end to end: a native mouse drag over rendered prose
+  // builds a selection the toolbar reads on pointerup, and a PHYSICAL Playwright
+  // click on the button (hit target, z-index, pointer-events, placement) inserts
+  // the composer chip. Center-scroll brings the prose into the scroll viewport so
+  // the drag coords land on text, not the panel-header drag handle. Runs first on
+  // a fresh transcript. (The remaining tests select via a real Range — rangeSelect
+  // — which is robust to the scroll states they inherit.)
   const para = panel(page).locator('.msg.assistant .md p', { hasText: 'Second paragraph with 中文内容 preserved.' }).first()
   await para.evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }))
   await page.waitForTimeout(150)
   await dragSelect(page, para, para)
   const toolbar = quoteToolbar(page)
-  await expect(toolbar).toHaveCount(1, { timeout: 5_000 })
-  await toolbar.dispatchEvent('click')
+  await expect(toolbar).toBeVisible({ timeout: 5_000 })
+  await toolbar.click()
   await expect(toolbar).toHaveCount(0)
   const chip = editor(page).locator('.quote-chip')
   await expect(chip).toHaveCount(1)
@@ -250,10 +260,7 @@ test('quote: a real mouse drag surfaces the floating Quote button (pointer gestu
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: assistant prose — Quote button → composer chip → send ships line-leading blockquote → inert sent chip', async ({ page, request }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: assistant prose — Quote button → composer chip → send ships line-leading blockquote → inert sent chip', async ({ page, request, pageErrors }) => {
   const para = panel(page).locator('.msg.assistant .md p', { hasText: 'First paragraph about the tokenizer.' }).first()
   const chip = await quoteSelection(page, para)
   // The chip's value is the EXACT blockquote run; its visible text is decoded.
@@ -275,10 +282,7 @@ test('quote: assistant prose — Quote button → composer chip → send ships l
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: multi-line + CJK selection preserves block structure', async ({ page, request }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: multi-line + CJK selection preserves block structure', async ({ page, request, pageErrors }) => {
   const first = panel(page).locator('.msg.assistant .md p', { hasText: 'First paragraph about the tokenizer.' }).first()
   const second = panel(page).locator('.msg.assistant .md p', { hasText: 'Second paragraph with 中文内容 preserved.' }).first()
   const chip = await quoteSelection(page, first, second)
@@ -294,10 +298,7 @@ test('quote: multi-line + CJK selection preserves block structure', async ({ pag
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: fenced code-block selection preserves every line', async ({ page, request }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: fenced code-block selection preserves every line', async ({ page, request, pageErrors }) => {
   const code = panel(page).locator('.msg.assistant .code-block pre code').first()
   const chip = await quoteSelection(page, code)
   const run = '> export function add(a: number, b: number): number {\n>   return a + b\n> }'
@@ -309,10 +310,7 @@ test('quote: fenced code-block selection preserves every line', async ({ page, r
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: tool-output code (Read result) — the primary code-quoting surface', async ({ page, request }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: tool-output code (Read result) — the primary code-quoting surface', async ({ page, request, pageErrors }) => {
   const body = await openToolResult(page, 'tool-card-read')
   const chip = await quoteSelection(page, body)
   const run = "> export function greet(name: string): string {\n>   return '你好, ' + name\n> }"
@@ -324,10 +322,7 @@ test('quote: tool-output code (Read result) — the primary code-quoting surface
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: tool-output file handle stays literal — no attachment resurrection (opacity)', async ({ page, request }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: tool-output file handle stays literal — no attachment resurrection (opacity)', async ({ page, request, pageErrors }) => {
   const body = await openToolResult(page, 'tool-card-bash')
   const chip = await quoteSelection(page, body)
   await expect(chip).toHaveAttribute('data-quote-text', `> ${HANDLE}`)
@@ -345,10 +340,7 @@ test('quote: tool-output file handle stays literal — no attachment resurrectio
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: own earlier user message', async ({ page, request }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: own earlier user message', async ({ page, request, pageErrors }) => {
   const mine = panel(page).locator('.msg.user', { hasText: 'How does the tokenizer treat CJK input?' }).first()
   const body = mine.locator('.msg-body p', { hasText: 'How does the tokenizer' }).first()
   const chip = await quoteSelection(page, body)
@@ -360,14 +352,11 @@ test('quote: own earlier user message', async ({ page, request }) => {
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: draft reload restores the chip via tokenize', async ({ page }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: draft reload restores the chip via tokenize', async ({ page, pageErrors }) => {
   const para = panel(page).locator('.msg.assistant .md p', { hasText: 'First paragraph about the tokenizer.' }).first()
   await quoteSelection(page, para)
-  // Let the 400 ms draft debounce persist the raw blockquote string.
-  expect(await draftValue(page)).toBe('> First paragraph about the tokenizer.\n')
+  // The persist is debounced; poll until the raw blockquote string lands.
+  await expect.poll(() => draftValue(page)).toBe('> First paragraph about the tokenizer.\n')
 
   await page.reload({ waitUntil: 'domcontentloaded' })
   const showSidebar = page.getByRole('button', { name: 'Show sidebar' })
@@ -383,10 +372,7 @@ test('quote: draft reload restores the chip via tokenize', async ({ page }) => {
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: composer chip ×-button removes the whole run on a real engine (Q3)', async ({ page }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: composer chip ×-button removes the whole run on a real engine', async ({ page, pageErrors }) => {
   const para = panel(page).locator('.msg.assistant .md p', { hasText: 'First paragraph about the tokenizer.' }).first()
   const chip = await quoteSelection(page, para)
   await expect(chip).toHaveAttribute('data-quote-text', '> First paragraph about the tokenizer.')
@@ -396,15 +382,12 @@ test('quote: composer chip ×-button removes the whole run on a real engine (Q3)
   await chip.locator('.quote-chip-remove').click()
   await expect(editor(page).locator('.quote-chip')).toHaveCount(0)
   // No blockquote marker survives in the draft (only separator whitespace may).
-  expect((await draftValue(page)).includes('>')).toBe(false)
+  await expect.poll(() => draftValue(page)).not.toContain('>')
 
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: arrow key crosses a settled chip as one atomic unit (Q3)', async ({ page }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: arrow key crosses a settled chip as one atomic unit', async ({ page, pageErrors }) => {
   // Leading prose + quote + trailing prose: the caret can sit OUTSIDE the run
   // on both sides, so the chip is settled and the crossing is observable.
   await seedDraft(page, 'before\n\n> q\n\nafter')
@@ -429,10 +412,7 @@ test('quote: arrow key crosses a settled chip as one atomic unit (Q3)', async ({
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: typing immediately after a settled chip keeps typed order (Q3 caret fix)', async ({ page }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: typing immediately after a settled chip keeps typed order', async ({ page, pageErrors }) => {
   // A settled chip with a trailing separator: caret at the draft end is PAST
   // the run end, so the chip stays settled while typing adjacent prose.
   await seedDraft(page, '> q\n')
@@ -442,20 +422,17 @@ test('quote: typing immediately after a settled chip keeps typed order (Q3 caret
   // (3) so the chip is settled while typing adjacent prose.
   await editor(page).evaluate((el) => (el as unknown as { placeCaretIn(n: number): void }).placeCaretIn(4))
   await page.keyboard.type('xy')
-  // The two chars land in typed order after the run — the pre-fix bug inverted
-  // them onto separate lines ('y\\nx'). The chip stays settled throughout.
-  const draft = await draftValue(page)
-  expect(draft.startsWith('> q')).toBe(true)
-  expect(draft.indexOf('xy')).toBeGreaterThan(0)
+  // Exact draft: the two chars append in typed order after the run, separated by
+  // the ONE blank line joinTokens guarantees between a quote run and following
+  // prose (pins the order and that the separator is not duplicated). The chip
+  // stays settled throughout.
+  await expect.poll(() => draftValue(page)).toBe('> q\n\nxy')
   await expect(chip).toHaveCount(1)
 
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: a non-empty draft inserts at the remembered mid-text caret (Q4)', async ({ page, request }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: a non-empty draft inserts at the remembered mid-text caret', async ({ page, request, pageErrors }) => {
   await editor(page).click()
   await page.keyboard.type('hello world')
   // Caret to offset 5 (between 'hello' and ' world') via real keyboard nav.
@@ -474,10 +451,7 @@ test('quote: a non-empty draft inserts at the remembered mid-text caret (Q4)', a
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
-test('quote: a quoted paste-ref is not expanded while a live ref expands (opacity)', async ({ page, request }) => {
-  const pageErrors: string[] = []
-  page.on('pageerror', (err) => pageErrors.push(String(err)))
-
+test('quote: a quoted paste-ref is not expanded while a live ref expands (opacity)', async ({ page, request, pageErrors }) => {
   // A live collapsed paste (#1, with a body) AND the same ref string quoted.
   // The quote run is opaque: the live ref expands, the quoted one stays literal.
   const body = 'line one\nline two\nline three'

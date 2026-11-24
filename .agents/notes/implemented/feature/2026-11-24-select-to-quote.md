@@ -74,8 +74,8 @@ DSH 式原子 chip（解码 excerpt 显示）；选区源 = prose + 工具输出
 - 单元（node）：quote-text util、tokenize/joinTokens round-trip、解析器不透明。
 - 客户端（happy-dom）：投影、工具栏 show/dismiss/placement、桥（data-quote-text/value 空间 caret）、
   原子整删/方向键跨/多行 gate、草稿恢复、已发送 inert chip + 手写 parity。
-- 浏览器 E2E（`tests/browser/select-to-quote.spec.ts`，app-config fixture harness）：鼠标拖拽手势、
-  prose/多行+CJK/代码块/工具输出代码引用→chip→发送→seq-store oracle 断言 line-leading blockquote→
-  inert chip；file-handle/paste-ref 不透明；草稿 reload 恢复；× 整删/方向键原子跨/击键顺序（Q3）、
-  mid-draft caret 记忆（Q4）。quote session 的 fixture handle 每轮 settle（发 success result + drain
-  input queue），使 send 落 seq store 供 oracle 读。
+- 浏览器 E2E（`tests/browser/select-to-quote.spec.ts`，app-config fixture harness）：鼠标拖拽 +
+  物理点击 Quote 按钮（hit target）、prose/多行+CJK/代码块/工具输出代码引用→chip→发送→seq-store oracle
+  断言 line-leading blockquote→inert chip；file-handle/paste-ref 不透明；草稿 reload 恢复；× 整删、
+  方向键原子跨、击键顺序、mid-draft caret 记忆。quote session 的 fixture handle 每轮 settle
+  （发 success result + drain input queue），使 send 落 seq store 供 oracle 读。
