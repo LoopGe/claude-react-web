@@ -61,10 +61,19 @@ export function measureCappedContentHeight(
     const padding = parseFloat(s.paddingTop) + parseFloat(s.paddingBottom)
     const gap = parseFloat(s.rowGap) || 0
     let siblings = 0
+    let inFlow = 0
     for (const child of Array.from(level.children) as HTMLElement[]) {
+      // Out-of-flow children (the overlay-scrollbar track appended to the card,
+      // a nested absolute overlay) consume NO flex space, so they are not chrome
+      // and do not participate in the flex gap. Counting them collapsed the
+      // ceiling to ~0 whenever the scroller overflowed (the track's height equals
+      // the box's). Skip them.
+      const position = window.getComputedStyle(child).position
+      if (position === 'absolute' || position === 'fixed') continue
+      inFlow += 1
       if (child !== exclude) siblings += outerHeight(child)
     }
-    return padding + gap * (level.children.length - 1) + siblings
+    return padding + gap * Math.max(0, inFlow - 1) + siblings
   }
 
   let chrome = parseFloat(cardStyle.borderTopWidth) + parseFloat(cardStyle.borderBottomWidth)
@@ -85,5 +94,10 @@ export function measureCappedContentHeight(
   const subCap = boxMaxHeight === 'none' ? Number.POSITIVE_INFINITY : parseFloat(boxMaxHeight)
   const verticalPadding = parseFloat(boxStyle.paddingTop) + parseFloat(boxStyle.paddingBottom)
   const contentHeight = content.scrollHeight + verticalPadding
-  return Math.min(contentHeight, ceiling, subCap)
+  // The box's own min-height floors the used height (e.g. a snippets list's
+  // 120px): a target below it would diverge from the rendered box and give a
+  // growth tween a dead zone. `auto`/keyword min-heights parse to NaN → no floor.
+  const minHeight = parseFloat(boxStyle.minHeight)
+  const floor = Number.isFinite(minHeight) ? minHeight : 0
+  return Math.max(floor, Math.min(contentHeight, ceiling, subCap))
 }

@@ -109,3 +109,22 @@ it('targets zero when the chrome consumes the whole cap', () => {
   const { list, content, card } = flatFixture(900, 10)
   expect(measureCappedContentHeight(list, content, card)).toBe(0)
 })
+
+it('ignores out-of-flow children (overlay-scrollbar track) in the chrome sum', () => {
+  // The overlay scrollbar appends an absolute track to the card whose height
+  // equals the scroller's; counting it as chrome collapsed the ceiling to ~0.
+  const { list, content, card } = flatFixture(900)
+  const track = document.createElement('div')
+  track.style.position = 'absolute'
+  card.appendChild(track)
+  vi.spyOn(track, 'offsetHeight', 'get').mockReturnValue(426)
+  // Still 426 — the absolute track is not flex chrome.
+  expect(measureCappedContentHeight(list, content, card)).toBe(426)
+})
+
+it('floors the target at the box min-height', () => {
+  const { list, content, card } = flatFixture(40)
+  list.style.minHeight = '120px'
+  // natural 40 + padding 12 = 52, but the box renders at its 120px floor.
+  expect(measureCappedContentHeight(list, content, card)).toBe(120)
+})
