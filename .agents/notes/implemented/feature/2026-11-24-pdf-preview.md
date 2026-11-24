@@ -42,6 +42,13 @@ code 分支——claude provider 下乱码，native provider 下致命 `NativeFi
   fit-width 默认（只缩）、25–400% / 25% 步进 / 25/50/100/150/200% 预设、Ctrl+滚轮/
   捏合锚定指针 + 滚动补偿（120ms settle）、自动隐藏控件（底部 reveal 带）。布局经
   `--pdf-zoom` + `data-pdf-zoom-mode` CSS 变量**同步**缩放，位图异步重绘。
+- **菜单 z 层**（tokens.css `--z-menu`: 3000）：预设菜单复用共享 `ContextMenu`，
+  portal 到 body，可从模态内打开（ResourceModal / UploadPdfModal）——菜单是最高
+  交互面派生的瞬态面，必须盖过 `--z-modal`(2000)，故设 modal 之上、toast 之下
+  （通知仍赢）的专用层，与 `--z-tooltip` 同一 portaled-surface rationale；
+  `.ctx-menu` 指该层。blast radius 近零：floating-surface registry 在 dialog 打开
+  时 dismiss 无关 open menu，模态 backdrop 挡住 panel 交互，抬层只画在「实际派生
+  它的模态」之上。`context-menu-z-tier.test.ts` 钉层次序 + `.ctx-menu` 用层。
 - **视图状态保留**（`pdf-view-state.ts`）：**内存模块 store**（非 localStorage、非
   session-store mirror），按 (session,file) 资源地址保留页码+缩放，跨 body 卸载/重挂
   存活，tab 关闭即 `forgetPdfViewState`。页码保留仅用户滚动后 arm（挂载即记录会冲掉
@@ -79,19 +86,18 @@ code 分支——claude provider 下乱码，native provider 下致命 `NativeFi
 
 - cwd PDF 在 ResourceModal 渲染页；上传 PDF 在 Manager + 会话 chip + 草稿 chip 应用内预览。中文非嵌入 CID 正确解码 + 系统字体字形（不出方框）。
 - 启动 bundle 零 PDF 开销（构建门禁钉死）；资产/worker 同版本；无 CDN/网络回落。
-- 超限 PDF 拒绝提示（不截断）；worker 失败可重试、dispose 不挂死；文本可选；缩放 fit-width/预设/手势；按文件保留页码+缩放。
+- 超限 PDF 拒绝提示（不截断）；worker 失败可重试、password 失败无 Retry（重试同字节必败）、dispose 不挂死；文本可选；缩放 fit-width/预设/手势；按文件保留页码+缩放。
 - 20MiB PDF base64 ~27MB read-file 响应（32MB 限内但重）；上传走裸字节无膨胀。
 - `useSystemFonts` 非嵌入字形度量可能与原字体略异（预览可接受，替代是方框）。
 - chunk 加载失败需刷新（React 缓存 rejected lazy import，DSH parity）。
 - **已知缺口（E2E 如实记录）**：
   - 非嵌入 CJK 的**字形像素**依赖系统 CJK 字体（中文 Windows 自带；Linux CI 需 fonts-noto-cjk 一类）；text-layer/cMap 断言与字体无关，像素断言有关。
   - 手势 E2E 用 ctrl+wheel 合成，覆盖 Chrome/Firefox 捏合；**Safari  trackpad pinch 发 gesturestart/change，未覆盖**。
-  - **缩放预设菜单鼠标点击 stacking 缺陷**：`ContextMenu` portal 到 body 用 `--z-overlay`(1000)，低于 PDF 模态的 `--z-modal`(2000) scrim，模态打开时预设/fit-width 行**鼠标点不到**（autoFocus + 方向键/Enter 仍可用，E2E 走键盘路径）。属共享 floating-surface z-index 设计问题，留待后续修复。
   - 嵌入字体 CJK 走 pdf.js 原生路径，未单独 fixture 测试（无二进制字体资产）；E2E/smoke 覆盖非嵌入 CID（更难的离线路径）。
 
 ## Testing
 
 - **单元**：BinaryDataFactory 精确名/新缓冲/未打包响亮抛错；isPdfPath；超限拒绝；决策树分支；PdfBody 加载/错误/重试/懒页/缩放/保留位图/视图状态；UploadPreview/UploadPdfModal PDF 分支；pdf-zoom 数学；pdf-view-state。
 - **真实库 smoke**（`tests/pdf-smoke.test.ts`）：安装的 pdf.js **legacy build**（pdfjs engines node>=22.13，repo 支持 Node 20）在 Node worker thread 跑真 worker，手绘 fixture（`tests/pdf-fixture.ts`，无二进制资产）断言像素颜色 + 非嵌入 GBK 中文文本/cMap 请求 + 零 fetch。
-- **浏览器 E2E**（`tests/browser/pdf-preview.spec.ts`，app-config fixture harness，专用 idle session）：真 `openPdf` 端到端跑真 pdf.js（生产懒 chunk + Blob worker + 内联资产 + TextLayerBuilder）——cwd 双页像素/可选文本/缩放/保留；CJK 中文解码 + 字形；扫描页像素 + 空文本层；上传 Manager/草稿/会话 chip 应用内预览；cwd + 上传超限拒绝（上传拒绝先于 fetch）。每测试钉零未捕获页错 + 零资产网络请求。
+- **浏览器 E2E**（`tests/browser/pdf-preview.spec.ts`，app-config fixture harness，专用 idle session）：真 `openPdf` 端到端跑真 pdf.js（生产懒 chunk + Blob worker + 内联资产 + TextLayerBuilder）——cwd 双页像素/可选文本/缩放/保留（预设/fit-width 走**鼠标点击** + elementFromPoint 命中证明，ResourceModal 与 UploadPdfModal 两个模态面都覆盖）；CJK 中文解码 + 字形；扫描页像素 + 空文本层；上传 Manager/草稿/会话 chip 应用内预览；cwd + 上传超限拒绝（上传拒绝先于 fetch）。每测试钉零未捕获页错 + 零资产网络请求。
 - **手动验收**：多页 PDF、中文 PDF（非嵌入 CID）、扫描 PDF、大 PDF（超限拒绝）、上传 PDF——由上述 E2E 覆盖（嵌入字体 CJK 为已记录缺口）。

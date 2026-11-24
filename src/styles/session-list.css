@@ -478,7 +478,9 @@
 }
 /* Custom right-click menu. `position: fixed` at the cursor, portalled to
    <body> by ContextMenu.tsx (viewport coordinates + containing-block hazard —
-   see the note in layout.css). */
+   see the note in layout.css). Rides --z-menu (above --z-modal): a menu can
+   be spawned from inside a modal (PDF zoom presets) and must paint above it
+   — see the tier note in tokens.css. */
 .ctx-menu {
   position: fixed;
   max-height: calc(100vh - var(--space-2));
@@ -489,7 +491,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--card-shadow);
-  z-index: var(--z-overlay);
+  z-index: var(--z-menu);
   font-size: var(--fs-base);
   user-select: none;
   /* (#2) Pop in from the anchor — scale + fade, top-origin so it reads as

@@ -3,20 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PDFPageProxy } from 'pdfjs-dist'
 import { renderPdfPage } from './pdf-document'
-
-function deferred<T>(): {
-  promise: Promise<T>
-  resolve: (value: T) => void
-  reject: (reason: unknown) => void
-} {
-  let resolve!: (value: T) => void
-  let reject!: (reason: unknown) => void
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-  return { promise, resolve, reject }
-}
+import { deferred } from '../test-utils/deferred'
 
 afterEach(() => {
   vi.unstubAllGlobals()

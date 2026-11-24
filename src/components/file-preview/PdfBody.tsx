@@ -326,9 +326,13 @@ export function PdfBody({ bytes, title, page, zoom, viewStateKey, onViewState }:
     return (
       <div className="pdf-status pdf-status-center" role="alert">
         <span>{failureText(load.failure)}</span>
-        <button type="button" className="btn btn-sm" onClick={() => setAttempt((value) => value + 1)}>
-          Retry
-        </button>
+        {/* A password failure is terminal: retry re-opens the same bytes and
+            can never succeed, so the unsupported notice carries no Retry. */}
+        {load.failure.kind !== 'password' && (
+          <button type="button" className="btn btn-sm" onClick={() => setAttempt((value) => value + 1)}>
+            Retry
+          </button>
+        )}
       </div>
     )
   }

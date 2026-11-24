@@ -167,7 +167,7 @@ describe('PdfBody', () => {
     ])
   })
 
-  it('reports password protection as unsupported', async () => {
+  it('reports password protection as unsupported, with no Retry', async () => {
     render(<PdfBody bytes={BYTES} title="report.pdf" />)
     const password = new Error('encrypted')
     password.name = 'PasswordException'
@@ -177,6 +177,8 @@ describe('PdfBody', () => {
     expect(screen.getByRole('alert').textContent).toContain(
       'This PDF requires a password; password-protected previews are not supported.',
     )
+    // Retry would re-open the same bytes and can never succeed.
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
   })
 
   it('reports a post-load worker failure and retries', async () => {

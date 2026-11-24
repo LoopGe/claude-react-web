@@ -14,6 +14,7 @@ import { getDocument, PDFWorker } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { createPdfBinaryDataFactory, type PdfBinaryDataFactory } from '../src/utils/pdf-assets'
 import { renderPdfPage } from '../src/utils/pdf-document'
+import { deferred } from '../src/test-utils/deferred'
 import { CJK_FIXTURE_TEXT, cjkPdfFixture, pdfFixture } from './pdf-fixture'
 
 const require = createRequire(import.meta.url)
@@ -40,20 +41,6 @@ import(workerData.workerUrl).then(({ WorkerMessageHandler }) => {
   WorkerMessageHandler.initializeFromPort(port)
 })
 `
-
-function deferred<T>(): {
-  promise: Promise<T>
-  resolve: (value: T) => void
-  reject: (reason: unknown) => void
-} {
-  let resolve!: (value: T) => void
-  let reject!: (reason: unknown) => void
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-  return { promise, resolve, reject }
-}
 
 /** Node has no devicePixelRatio; the smoke renders at CSS scale. */
 beforeEach(() => {

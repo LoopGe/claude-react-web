@@ -166,18 +166,25 @@ async function revealControls(page: Page, modal: Locator) {
   return controls
 }
 
-/** Open the zoom preset menu and wait until it holds focus. The menu is
- *  navigated by KEYBOARD here: the ContextMenu portals to <body> at
- *  --z-overlay (1000), BELOW the resource modal's --z-modal (2000) scrim, so
- *  its rows cannot be mouse-clicked while a PDF modal is open (a shipped
- *  stacking defect, reported with this batch). autoFocus + arrow/Enter still
- *  work, so the preset/fit-width logic is exercised through that path. */
+/** Open the zoom preset menu with a MOUSE click and prove it is not occluded:
+ *  the ContextMenu portals to <body> at --z-menu, ABOVE the modal's --z-modal
+ *  card, so the topmost element at a row's center must be the menu itself —
+ *  not the modal's PDF text layer. The row clicks that follow additionally
+ *  enforce the hit target at click time (Playwright refuses an occluded row). */
 async function openZoomMenu(page: Page, percent: Locator) {
   await percent.click()
   const menu = page.locator('[role="menu"]')
   await expect(menu).toBeVisible()
+  const row = menu.getByRole('menuitem').first()
   await expect
-    .poll(() => page.evaluate(() => !!document.activeElement?.closest('[role="menu"]')))
+    .poll(async () => {
+      const box = await row.boundingBox()
+      if (box === null) return false
+      return page.evaluate(
+        ([x, y]) => !!document.elementFromPoint(x, y)?.closest('[role="menu"]'),
+        [box.x + box.width / 2, box.y + box.height / 2],
+      )
+    })
     .toBe(true)
   return menu
 }
@@ -241,12 +248,10 @@ test('pdf: cwd preview — real pdf.js pages, selectable text, zoom, retention',
   const surface = modal.locator('[data-pdf-page="1"] .pdf-page-surface')
   expect(await surface.evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(200, 0)
 
-  // Preset menu: 200% → 320px bitmap. Navigated by keyboard (see openZoomMenu
-  // for the mouse-stacking defect): autoFocus lands on "Fit width", five
-  // ArrowDowns reach 200%, Enter commits it.
-  await openZoomMenu(page, percent)
-  for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowDown')
-  await page.keyboard.press('Enter')
+  // Preset menu: 200% → 320px bitmap, selected by MOUSE — the menu portals
+  // above the modal (--z-menu), so the row is visible and the click lands.
+  const presetMenu = await openZoomMenu(page, percent)
+  await presetMenu.getByRole('menuitem', { name: '200%', exact: true }).click()
   await expect(percent).toContainText('200%')
   await expect.poll(() => canvas1.evaluate((c: HTMLCanvasElement) => c.width)).toBe(320)
 
@@ -262,11 +267,11 @@ test('pdf: cwd preview — real pdf.js pages, selectable text, zoom, retention',
   await expect(percent).toContainText('298%', { timeout: 5_000 })
   await expect(body).toHaveAttribute('data-pdf-zoom-mode', 'fixed')
 
-  // Fit width returns to the shrink-only default. Keyboard path again:
-  // autoFocus lands on "Fit width", Enter selects it directly.
+  // Fit width returns to the shrink-only default — a menu-only action, so
+  // this mouse click is the sole path back to fit-width.
   await revealControls(page, modal)
-  await openZoomMenu(page, percent)
-  await page.keyboard.press('Enter')
+  const fitMenu = await openZoomMenu(page, percent)
+  await fitMenu.getByRole('menuitem', { name: 'Fit width' }).click()
   await expect(body).toHaveAttribute('data-pdf-zoom-mode', 'fit-width')
   await expect(percent).toContainText('100%')
 
@@ -316,6 +321,7 @@ test('pdf: CJK — non-embedded GBK Chinese decodes offline and draws glyphs', a
 test('pdf: scanned — image-only page renders pixels with an empty text layer', async ({ page }) => {
   const pageErrors: string[] = []
   page.on('pageerror', (err) => pageErrors.push(String(err)))
+  const assetRequests = trackAssetRequests(page)
 
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   const showSidebar = page.getByRole('button', { name: 'Show sidebar' })
@@ -335,12 +341,14 @@ test('pdf: scanned — image-only page renders pixels with an empty text layer',
   // A scanned page has no text to select — the layer stays empty.
   await expect(modal.locator('[data-pdf-page="1"] [data-pdf-text]')).toHaveText('')
 
+  expect(assetRequests, 'PDF assets are build-inlined — no network fetches').toEqual([])
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
 test('pdf: uploaded — manager eye, composer chip and sent chip preview in-app', async ({ page }) => {
   const pageErrors: string[] = []
   page.on('pageerror', (err) => pageErrors.push(String(err)))
+  const assetRequests = trackAssetRequests(page)
 
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   const showSidebar = page.getByRole('button', { name: 'Show sidebar' })
@@ -389,6 +397,13 @@ test('pdf: uploaded — manager eye, composer chip and sent chip preview in-app'
   await expect(chipModal.locator('[data-pdf-page="1"] [data-pdf-text]')).toContainText(
     CJK_FIXTURE_TEXT,
   )
+  // The zoom preset menu is mouse-clickable inside THIS modal surface too
+  // (UploadPdfModal shares the --z-menu tier with the resource modal).
+  const chipControls = await revealControls(page, chipModal)
+  const chipPercent = chipControls.locator('.pdf-zoom-percent')
+  const chipMenu = await openZoomMenu(page, chipPercent)
+  await chipMenu.getByRole('menuitem', { name: '150%', exact: true }).click()
+  await expect(chipPercent).toContainText('150%')
   await chipModal.getByRole('button', { name: 'Close preview' }).click()
   await expect(chipModal).toHaveCount(0)
 
@@ -409,6 +424,7 @@ test('pdf: uploaded — manager eye, composer chip and sent chip preview in-app'
   await chipModal.getByRole('button', { name: 'Close preview' }).click()
   await expect(chipModal).toHaveCount(0)
 
+  expect(assetRequests, 'PDF assets are build-inlined — no network fetches').toEqual([])
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })
 
@@ -418,6 +434,7 @@ test('pdf: over-cap — cwd read and upload both refuse, never a truncated rende
 }) => {
   const pageErrors: string[] = []
   page.on('pageerror', (err) => pageErrors.push(String(err)))
+  const assetRequests = trackAssetRequests(page)
   const contentFetches: string[] = []
   page.on('request', (req) => {
     if (/\/api\/uploads\/[^/]+\/content/.test(req.url())) contentFetches.push(req.url())
@@ -469,5 +486,6 @@ test('pdf: over-cap — cwd read and upload both refuse, never a truncated rende
     'the over-cap refusal happens before any content fetch',
   ).toEqual([])
 
+  expect(assetRequests, 'no PDF is rendered — no asset fetches either').toEqual([])
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })

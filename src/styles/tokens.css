@@ -325,7 +325,7 @@
      the --msg-user-* family — no per-theme copy needed). */
   --accent-glow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
   /* Stacking scale (low → high): in-panel overlays < drawer < popover <
-     overlay < modal < toast < top.
+     overlay < modal < menu < toast < top.
        --z-panel-overlay (6): in-panel overlays — Settings/Subagent/Workflow
          + the PanelOverlay primitive (ResumeSessionDialog panel variant,
          InputHistoryPanel). .git-overlay stays a raw z-index 5, deliberately
@@ -338,6 +338,8 @@
          settings/git/tasks panels, header pickers, session popovers.
        --z-modal (2000): centered modal dialogs (directory picker,
          marketplace, plugin dialog).
+       --z-menu (3000): portalled context menus (.ctx-menu) — a menu can be
+         spawned from inside a modal (PDF zoom presets), so it clears that tier.
        --z-toast (9000): toast/notification host.
        --z-top (10000): full-screen takeover (setup page) + a11y skip-link.
      In-flow local stacking (0–7, e.g. message blocks, chat internals) stays
@@ -354,6 +356,15 @@
   --z-popover: 100;
   --z-overlay: 1000;
   --z-modal: 2000;
+  /* A context menu is a transient surface spawned by the topmost interactive
+     surface: the shared ContextMenu portals to <body> and can open from
+     INSIDE a modal (the PDF zoom preset menu in the resource / upload PDF
+     viewers), so it must clear the modal tier to stay visible and clickable
+     there — the same portaled-surface rationale as --z-tooltip below. Kept
+     below --z-toast so notifications win. The floating-surface registry
+     dismisses unrelated open menus when a dialog opens, so this tier only
+     paints above a modal the menu was actually spawned from. */
+  --z-menu: 3000;
   --z-toast: 9000;
   --z-top: 10000;
   /* Portalled hover cards outlive the owning surface's stacking context: a
