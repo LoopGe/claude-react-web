@@ -212,7 +212,7 @@ independent and resolves the panel's percentage cap against the parent.
 - `NumberedCode` now installs a ResizeObserver and wheel/touchstart/pointerdown
   listeners whenever a line target is active (none for the common no-target case).
   The upcoming wrap toggle
-  ([preview-polish](../../proposed/feature/2026-11-24-preview-polish.md)) is
+  ([preview-polish](2026-11-24-preview-polish.md)) is
   another height-change source the body observer covers automatically; its
   scroll-to-line recompute is the same concern this note's re-centering addresses.
 - The body carries the primitive's `.auto-height-animating { flex: 0 0 auto;
@@ -236,7 +236,7 @@ independent and resolves the panel's percentage cap against the parent.
 
 ## Related
 
-- [preview-polish](../../proposed/feature/2026-11-24-preview-polish.md) — the
+- [preview-polish](2026-11-24-preview-polish.md) — the
   numbered-view wrap toggle adds a height-change source this animation covers.
 - [animation-speed-off](2026-11-09-animation-speed-off.md) — the motion gate the
   hook respects.
