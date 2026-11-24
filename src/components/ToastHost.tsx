@@ -159,15 +159,31 @@ export function ToastHost() {
                   {t.actionLabel}
                 </button>
               )}
-              <button
-                type="button"
-                className="toast-dismiss"
-                onClick={() => dismiss(t.id)}
-                aria-label={`Dismiss ${KIND_LABEL[t.kind]}`}
-                disabled={t.exiting}
-              >
-                <IconX size={12} />
-              </button>
+              {t.actions?.map((action) => (
+                <button
+                  key={action.label}
+                  type="button"
+                  className="toast-action"
+                  onClick={() => {
+                    action.onClick()
+                    dismiss(t.id)
+                  }}
+                  disabled={t.exiting}
+                >
+                  {action.label}
+                </button>
+              ))}
+              {!t.hideDismiss && (
+                <button
+                  type="button"
+                  className="toast-dismiss"
+                  onClick={() => dismiss(t.id)}
+                  aria-label={`Dismiss ${KIND_LABEL[t.kind]}`}
+                  disabled={t.exiting}
+                >
+                  <IconX size={12} />
+                </button>
+              )}
             </div>
           </div>
         )

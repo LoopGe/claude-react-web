@@ -120,6 +120,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       const durationMs = opts?.durationMs ?? DEFAULT_DURATIONS[kind]
       const onClick = opts?.onClick
       const actionLabel = opts?.actionLabel
+      const actions = opts?.actions
+      const hideDismiss = opts?.hideDismiss
       const onDismiss = opts?.onDismiss
       const active = toastsRef.current.filter((t) => !t.exiting)
       const overflow = Math.max(0, active.length + 1 - MAX_TOASTS)
@@ -144,7 +146,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         }
       }
       commitToasts([
-        { id, kind, message, title, detail, durationMs, onClick, actionLabel, onDismiss },
+        { id, kind, message, title, detail, durationMs, onClick, actionLabel, actions, hideDismiss, onDismiss },
         ...toastsRef.current.map((t) => (evictedIds.has(t.id) ? { ...t, exiting: true } : t)),
       ])
       for (const droppedId of evictedIds) {

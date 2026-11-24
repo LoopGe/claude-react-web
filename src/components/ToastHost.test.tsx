@@ -88,6 +88,59 @@ describe('ToastHost — interactive toasts', () => {
   })
 })
 
+describe('ToastHost — multi-action + hide-dismiss', () => {
+  it('renders one button per action; clicking runs only its onClick then dismisses', async () => {
+    const update = vi.fn()
+    const later = vi.fn()
+    const skip = vi.fn()
+    setup((toast) => {
+      toast.info('New version available', {
+        durationMs: 0,
+        actions: [
+          { label: 'Update', onClick: update },
+          { label: 'Remind me later', onClick: later },
+          { label: 'Skip this version', onClick: skip },
+        ],
+      })
+    })
+    expect(screen.getByRole('button', { name: 'Update' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Remind me later' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Skip this version' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Remind me later' }))
+    expect(later).toHaveBeenCalledOnce()
+    expect(update).not.toHaveBeenCalled()
+    expect(skip).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.queryByText('New version available')).toBeNull())
+  })
+
+  it('hideDismiss removes the ✕ button', () => {
+    setup((toast) => {
+      toast.info('Sticky choice', { durationMs: 0, hideDismiss: true, actions: [{ label: 'OK', onClick: vi.fn() }] })
+    })
+    expect(screen.queryByRole('button', { name: /Dismiss/i })).toBeNull()
+    expect(screen.getByRole('button', { name: 'OK' })).toBeTruthy()
+  })
+
+  it('hideDismiss + sticky leaves the actions as the only exit', async () => {
+    const ok = vi.fn()
+    setup((toast) => {
+      toast.info('Only exit', { durationMs: 0, hideDismiss: true, actions: [{ label: 'Got it', onClick: ok }] })
+    })
+    expect(screen.queryByRole('button', { name: /Dismiss/i })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Got it' }))
+    expect(ok).toHaveBeenCalledOnce()
+    await waitFor(() => expect(screen.queryByText('Only exit')).toBeNull())
+  })
+
+  it('legacy actionLabel still renders exactly one action button plus ✕', () => {
+    setup((toast) => {
+      toast.info('Legacy', { actionLabel: 'Open', onClick: vi.fn() })
+    })
+    expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Dismiss Info/i })).toBeTruthy()
+  })
+})
+
 describe('ToastHost — title/body hierarchy & pile stacking', () => {
   it('renders title above body when title is provided', () => {
     setup((toast) => {
