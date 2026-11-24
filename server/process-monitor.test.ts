@@ -64,6 +64,20 @@ async function expectGone(pid: number, ms = 3000): Promise<void> {
   throw new Error(`pid ${pid} still alive after ${ms}ms`)
 }
 
+/** Poll until the Job's active-process count drains to zero. A PID can be
+ *  gone (`process.kill(pid, 0)` throws) before the kernel releases its Job
+ *  handle, so PID-gone does not synchronously imply Job-empty — wait for the
+ *  actual reap precondition (`reapRetiredJobs` closes a job only at
+ *  `activeCount() === 0`) instead of racing the async handle release. */
+async function expectJobDrained(job: Win32Job, ms = 3000): Promise<void> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (job.activeCount() === 0) return
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  throw new Error(`job still has ${job.activeCount()} active processes after ${ms}ms`)
+}
+
 /** SpawnOptions for a child that spawns its own sleeping grandchild, prints
  *  the grandchild's pid to stdout, then stays alive. With `ignoreSigterm`
  *  both processes trap SIGTERM, so only a group SIGKILL can stop them. The
@@ -778,6 +792,7 @@ describe('ProcessMonitor', () => {
       // backgrounded service finishing its work).
       spawnSync('taskkill', ['/PID', String(grandchildPid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
       await expectGone(grandchildPid)
+      await expectJobDrained(entry.job!)
       reapRetiredJobs()
       expect(mon.retiredCount).toBe(0)
       expect(metrics.snapshot().gauges['retired_jobs']).toBe(0)
