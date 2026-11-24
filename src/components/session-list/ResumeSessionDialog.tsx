@@ -8,12 +8,14 @@
 // Esc-to-close) and the keyboard-navigation pattern of CommandPalette
 // (↑↓ to move, Enter to confirm, Esc to dismiss).
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { IconX } from '../icons/ToolIcons'
 import { api } from '../../hooks/useApi'
 import { useListSelection } from '../../hooks/useListSelection'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
+import { useAutoHeightTransition } from '../../hooks/useAutoHeightTransition'
 import { useMergedRef } from '../../utils/mergedRef'
+import { measureResumeListHeight } from './resume-list-measure'
 import { shortenPath } from '../../utils/paths'
 import type { ResumableSession } from '../../types'
 import { PanelOverlay } from '../PanelOverlay'
@@ -59,6 +61,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const listContentRef = useRef<HTMLDivElement>(null)
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
 
@@ -74,6 +77,27 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
         s.sessionId.toLowerCase().includes(q),
     )
   }, [sessions, query])
+
+  // The list's height changes — "Loading…" placeholder → N rows, query
+  // filtering, scope-toggle refetch — tween instead of jumping. The measure
+  // caps at the flex ceiling AND the list's own 50vh (a short panel squeezes
+  // the list below 50vh; capping only at 50vh would overshoot and snap on
+  // release). The observer watches the content-sized inner wrapper, stable
+  // during the tween, so it fires once per content change rather than per
+  // frame. The key drives the same tween where ResizeObserver is unavailable.
+  // The dialog mounts/unmounts with the open cycle (presence-gated callers), so
+  // the hook gets a fresh baseline on every open.
+  const measureListHeight = useCallback(() => {
+    const list = listRef.current
+    const content = listContentRef.current
+    if (!list || !content) return null
+    return measureResumeListHeight(list, content)
+  }, [])
+  const listAnimationKey = `${loading}|${error ?? ''}|${filtered.length}`
+  useAutoHeightTransition(listRef, listAnimationKey, {
+    measureTargetHeight: measureListHeight,
+    observe: listContentRef,
+  })
 
   const choose = (s: ResumableSession | undefined) => {
     // Hard-terminal sessions can't be resumed; transiently-terminated ones
@@ -188,6 +212,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
           aria-label="Resumable sessions"
           style={{ marginTop: 10, maxHeight: '50vh', overflowY: 'auto' }}
         >
+          <div className="resume-list-content" ref={listContentRef} role="presentation">
           {loading && <div className="palette-empty">Loading...</div>}
           {!loading && error && (
             <div className="palette-empty">Couldn't load sessions: {error}</div>
@@ -283,6 +308,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
                 </button>
               )
             })}
+          </div>
         </div>
       </div>
 

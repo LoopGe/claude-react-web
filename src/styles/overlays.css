@@ -54,6 +54,13 @@
   overflow-y: auto;
   padding: var(--space-1-5);
 }
+/* While the height hook pins the list (ResumeSessionDialog), flex-grow must not
+   fight the inline height. The class only lands when that hook animates, so the
+   shared CommandPalette / InputHistoryPanel lists are unaffected. */
+.palette-list.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
+}
 
 .palette-empty {
   padding: var(--space-6);

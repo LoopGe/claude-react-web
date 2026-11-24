@@ -1,4 +1,4 @@
-# Agent Note: Resource preview modal height animation
+# Agent Note: Resource preview + resume picker height animation
 
 Status: implemented
 
@@ -78,6 +78,35 @@ The motion gate is the shared one: `motionSuppressed()` (OS reduced-motion or th
 in-app Animation speed = Off preset, see
 [animation-speed-off](2026-11-09-animation-speed-off.md)) makes the hook snap.
 
+## Resume session picker
+
+The same primitive animates the resume picker's list (`ResumeSessionDialog`,
+`.palette-list`): the "Loading…" placeholder → N rows growth, query filtering,
+and scope-toggle refetch tween instead of jumping. Both the modal and panel
+variants share the wiring; the dialog mounts/unmounts with the open cycle
+(presence-gated callers in App and Chat), so the hook lives directly in it — no
+surface extraction needed, and a fresh baseline on every open.
+
+- A content-sized `.resume-list-content` wrapper (`role="presentation"`, so the
+  listbox→option ownership survives) holds the rows and is the observer target —
+  stable during the tween, firing once per content change rather than per frame.
+  The hook key is `loading|error|filtered.length`, which also drives the tween
+  where ResizeObserver is unavailable.
+- The measure (`resume-list-measure.ts`) caps at `min(content, flex ceiling,
+  50vh)`. The list is flex:1 in `.modal-section` in a card capped at 84vh (modal)
+  or max-height:100% (panel), plus its own inline 50vh — in a short panel the flex
+  ceiling binds below 50vh, so capping only at 50vh would overshoot and snap.
+- **The ceiling is pin-independent**, computed from the card CAP minus fixed
+  chrome (borders/padding + header + footer + section padding + sibling rows +
+  gaps + list margins), NOT from the section's current height. The card is
+  content-sized below its cap, so a section-derived ceiling collapses to the
+  list's pinned height during an in-flight tween and clamps a mid-tween retarget
+  to where the tween already is (settling short, then snapping on release). A
+  percentage card cap (the panel's 100%) does not resolve to px in computed
+  style, so it is resolved against the parent's content height; vh/px caps read
+  straight. Verified live to equal the list's used height and to be unchanged
+  when the list is pinned mid-tween.
+
 ## Alternatives considered
 
 ### Why not animate the card instead of the body?
@@ -114,6 +143,17 @@ contents refetch clamps the same way. The shipped gate is a time window around
 the jump (covers the tween, expires cleanly) plus explicit input events for user
 intent — neither relies on distinguishing a clamp from a scroll by value.
 
+### Why not derive the resume ceiling from the section's current height?
+
+The first resume measure read `section.clientHeight` minus siblings/gaps. It is
+correct in steady state (verified equal to the list's used height) but pin-
+DEPENDENT: below the card cap the card is content-sized, so the section's height
+tracks the list's pinned height during a tween, and a mid-tween retarget clamps to
+where the tween already is, settling short and snapping on release. An offsetTop
+walk to the card was also tried and rejected — the card is not positioned, so the
+chain overshoots it. The cap-based ceiling (card cap minus fixed chrome) is pin-
+independent and resolves the panel's percentage cap against the parent.
+
 ## Consequences
 
 - Tab switches, load landings, source toggles, image decodes, and kind switches
@@ -128,6 +168,13 @@ intent — neither relies on distinguishing a clamp from a scroll by value.
   scroll-to-line recompute is the same concern this note's re-centering addresses.
 - The body carries the primitive's `.auto-height-animating { flex: 0 0 auto;
   will-change: height }` override so flex cannot fight the pin while animating.
+- The resume picker's list glides on load/filter/scope changes too. Its measure
+  (`resume-list-measure.ts`) and the wiring (observer + key paths, pin release)
+  are unit- and integration-tested; the cap-based ceiling's pin-independence and
+  equality with the used height are verified live. The `.palette-list.auto-height-
+  animating` override is a separate rule like the settings/global/modal-list ones
+  (the class only lands when this hook animates, so the shared CommandPalette and
+  InputHistoryPanel lists are unaffected).
 - Cost: one extracted surface component, a content wrapper div + CSS rule, a
   capped-measure util (with the content-sized flip), the no-op capture guards, and
   the windowed re-centering observer. The measure math and flip-and-restore are
