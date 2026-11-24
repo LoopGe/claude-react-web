@@ -130,6 +130,26 @@ describe('FilePreviewBody markdown and text', () => {
     expect(document.body.textContent).toContain('export const x = 1')
   })
 
+  it('highlights via detectLanguage(path), not the display filename', () => {
+    // A bare display label carries no extension; the language must come from the
+    // read path, and the label must still land in the bar.
+    renderBody('/repo/a.js', 'Screenshot', { available: true, contents: 'const x = 1' })
+    expect(document.body.querySelector('[data-line="1"] .hljs-keyword')?.textContent).toBe('const')
+    expect(document.body.querySelector('.code-block-lang')?.textContent).toBe('Screenshot')
+  })
+
+  it('shows the filename as the bar label while highlighting the detected language', () => {
+    renderBody('/repo/a.ts', 'a.ts', { available: true, contents: 'const x = 1' })
+    expect(document.body.querySelector('.code-block-lang')?.textContent).toBe('a.ts')
+    expect(document.body.querySelector('[data-line="1"] .hljs-keyword')).not.toBeNull()
+  })
+
+  it('renders an unknown-extension file as plain text without throwing', () => {
+    renderBody('/repo/a.xyz', 'a.xyz', { available: true, contents: 'const x = 1' })
+    expect(document.body.querySelector('.hljs-keyword')).toBeNull()
+    expect(document.body.querySelector('[data-line="1"]')?.textContent).toBe('const x = 1')
+  })
+
   it('renders a markdown file as formatted markdown, not code', () => {
     const src = `# Hello
 

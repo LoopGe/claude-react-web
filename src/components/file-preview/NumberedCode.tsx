@@ -10,12 +10,16 @@ import { CodeBlock } from '../Markdown'
 import { useCopy } from '../../hooks/useCopy'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
+import { highlightLines } from '../../utils/highlight-lines'
 
 export const MAX_NUMBERED_LINES = 5000
 
 interface Props {
   contents: string
+  /** Detected language id (from `detectLanguage(path)`), drives highlighting. */
   lang?: string
+  /** Bar label — the display filename, independent of the detected language. */
+  label?: string
   /** 1-based line to scroll to and highlight. */
   line?: number
   /** 1-based inclusive range end (defaults to `line`). */
@@ -24,7 +28,7 @@ interface Props {
   revision?: number
 }
 
-export function NumberedCode({ contents, lang, line, endLine, revision = 0 }: Props) {
+export function NumberedCode({ contents, lang, label, line, endLine, revision = 0 }: Props) {
   const { copied, copy } = useCopy()
   const preRef = useRef<HTMLPreElement>(null)
   const setCodeOs = useOverlayScrollbar({ autoHide: 'leave' })
@@ -36,12 +40,21 @@ export function NumberedCode({ contents, lang, line, endLine, revision = 0 }: Pr
     return raw.length > 1 && raw[raw.length - 1] === '' ? raw.slice(0, -1) : raw
   }, [contents])
   const rangeEnd = line == null ? null : (endLine ?? line)
+  // Whole-text highlight split per line (span state carried across newlines).
+  // Memoized on (lang, contents) so a navigation-target change or a refetch with
+  // unchanged contents never re-highlights. The cap is checked BEFORE calling the
+  // utility so an over-cap file (rendered via the CodeBlock fallback) never pays
+  // the highlight cost. `highlightLines`' line split matches `lines` exactly.
+  const highlighted = useMemo(
+    () => (lines.length > MAX_NUMBERED_LINES ? null : highlightLines(lang, contents)),
+    [lines, lang, contents],
+  )
   // Memoized so a refetch with unchanged contents does not re-create thousands
   // of keyed elements on every render. The cap is checked BEFORE the map so a
   // huge file never pays the per-line element cost.
   const renderedLines = useMemo(
     () =>
-      lines.length > MAX_NUMBERED_LINES
+      highlighted == null
         ? null
         : lines.map((text, index) => {
             const number = index + 1
@@ -55,11 +68,14 @@ export function NumberedCode({ contents, lang, line, endLine, revision = 0 }: Pr
                 }`}
                 data-line={number}
               >
-                {text || ' '}
+                {highlighted[index]}
+                {/* An empty line yields an empty highlight node; a space keeps the
+                    gutter row's height so line numbers stay aligned. */}
+                {text === '' ? ' ' : null}
               </span>
             )
           }),
-    [lines, line, rangeEnd],
+    [lines, line, rangeEnd, highlighted],
   )
   // Track the last revision we scrolled for so a re-render cannot re-scroll;
   // the effect below only runs when the navigation inputs change.
@@ -101,7 +117,7 @@ export function NumberedCode({ contents, lang, line, endLine, revision = 0 }: Pr
   return (
     <div className="code-block">
       <div className="code-block-bar">
-        <span className="code-block-lang">{lang ?? 'code'}</span>
+        <span className="code-block-lang">{label ?? lang ?? 'code'}</span>
         <button type="button" className="code-block-copy" onClick={handleCopy}>
           {copied ? 'Copied!' : 'Copy'}
         </button>

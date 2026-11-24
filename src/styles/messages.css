@@ -407,48 +407,49 @@
   word-break: break-word;
 }
 
-/* Syntax-highlighting token colours, scoped to .md so they only apply
-   inside chat messages. Colours are driven by --hljs-* variables so the
-   light / dark theme palettes are swapped automatically. */
-.md .hljs {
+/* Syntax-highlighting token colours, scoped to .md (chat messages) and
+   .numbered-code (the file-preview numbered view, which renders outside .md).
+   Colours are driven by --hljs-* variables so the light / dark theme palettes
+   are swapped automatically. */
+:is(.md, .numbered-code) .hljs {
   color: var(--hljs-fg);
 }
-.md .hljs-comment,
-.md .hljs-quote { color: var(--hljs-comment); font-style: italic; }
-.md .hljs-doctag,
-.md .hljs-keyword,
-.md .hljs-formula { color: var(--hljs-keyword); }
-.md .hljs-section,
-.md .hljs-name,
-.md .hljs-selector-tag,
-.md .hljs-deletion,
-.md .hljs-subst { color: var(--hljs-red); }
-.md .hljs-literal { color: var(--hljs-cyan); }
-.md .hljs-string,
-.md .hljs-regexp,
-.md .hljs-addition,
-.md .hljs-attribute,
-.md .hljs-meta .hljs-string { color: var(--hljs-green); }
-.md .hljs-attr,
-.md .hljs-variable,
-.md .hljs-template-variable,
-.md .hljs-type,
-.md .hljs-selector-class,
-.md .hljs-selector-attr,
-.md .hljs-selector-pseudo,
-.md .hljs-number { color: var(--hljs-orange); }
-.md .hljs-symbol,
-.md .hljs-bullet,
-.md .hljs-link,
-.md .hljs-meta,
-.md .hljs-selector-id,
-.md .hljs-title { color: var(--hljs-blue); }
-.md .hljs-built_in,
-.md .hljs-title.class_,
-.md .hljs-class .hljs-title { color: var(--hljs-yellow); }
-.md .hljs-emphasis { font-style: italic; }
-.md .hljs-strong { font-weight: bold; }
-.md .hljs-link { text-decoration: underline; }
+:is(.md, .numbered-code) .hljs-comment,
+:is(.md, .numbered-code) .hljs-quote { color: var(--hljs-comment); font-style: italic; }
+:is(.md, .numbered-code) .hljs-doctag,
+:is(.md, .numbered-code) .hljs-keyword,
+:is(.md, .numbered-code) .hljs-formula { color: var(--hljs-keyword); }
+:is(.md, .numbered-code) .hljs-section,
+:is(.md, .numbered-code) .hljs-name,
+:is(.md, .numbered-code) .hljs-selector-tag,
+:is(.md, .numbered-code) .hljs-deletion,
+:is(.md, .numbered-code) .hljs-subst { color: var(--hljs-red); }
+:is(.md, .numbered-code) .hljs-literal { color: var(--hljs-cyan); }
+:is(.md, .numbered-code) .hljs-string,
+:is(.md, .numbered-code) .hljs-regexp,
+:is(.md, .numbered-code) .hljs-addition,
+:is(.md, .numbered-code) .hljs-attribute,
+:is(.md, .numbered-code) .hljs-meta .hljs-string { color: var(--hljs-green); }
+:is(.md, .numbered-code) .hljs-attr,
+:is(.md, .numbered-code) .hljs-variable,
+:is(.md, .numbered-code) .hljs-template-variable,
+:is(.md, .numbered-code) .hljs-type,
+:is(.md, .numbered-code) .hljs-selector-class,
+:is(.md, .numbered-code) .hljs-selector-attr,
+:is(.md, .numbered-code) .hljs-selector-pseudo,
+:is(.md, .numbered-code) .hljs-number { color: var(--hljs-orange); }
+:is(.md, .numbered-code) .hljs-symbol,
+:is(.md, .numbered-code) .hljs-bullet,
+:is(.md, .numbered-code) .hljs-link,
+:is(.md, .numbered-code) .hljs-meta,
+:is(.md, .numbered-code) .hljs-selector-id,
+:is(.md, .numbered-code) .hljs-title { color: var(--hljs-blue); }
+:is(.md, .numbered-code) .hljs-built_in,
+:is(.md, .numbered-code) .hljs-title.class_,
+:is(.md, .numbered-code) .hljs-class .hljs-title { color: var(--hljs-yellow); }
+:is(.md, .numbered-code) .hljs-emphasis { font-style: italic; }
+:is(.md, .numbered-code) .hljs-strong { font-weight: bold; }
+:is(.md, .numbered-code) .hljs-link { text-decoration: underline; }
 
 /* Markdown renderer (react-markdown output) */
 .md > *:first-child { margin-top: 0; }

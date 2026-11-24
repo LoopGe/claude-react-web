@@ -18,7 +18,8 @@ import { IMAGE_PREVIEW_MAX_BYTES, type FileReadResult } from '../../../shared/re
 export interface FilePreviewBodyProps {
   /** Absolute path of the bytes in `data` (drives image/markdown detection). */
   path: string | null
-  /** Display title (the code block's language hint comes from it). */
+  /** Display title — the code block's bar label. The highlight language comes
+   *  from `path` (detectLanguage), never from this label. */
   title: string
   /** null = no response has landed yet (initial paint / in flight). */
   data: FileReadResult | null
@@ -133,7 +134,8 @@ export function FilePreviewBody({
             )}
             <NumberedCode
               contents={contents}
-              lang={splitFilePath(title).base || title}
+              lang={path ? (detectLanguage(path) ?? undefined) : undefined}
+              label={splitFilePath(title).base || title}
               line={line}
               endLine={endLine}
               revision={revision}
