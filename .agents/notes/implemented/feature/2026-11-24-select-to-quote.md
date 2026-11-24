@@ -68,6 +68,12 @@ DSH 式原子 chip（解码 excerpt 显示）；选区源 = prose + 工具输出
 - 启动 bundle 不增长（QuoteSelectionToolbar lazy；QuotePreview 依赖已 eager）；两主题 CSS 变量。
 - 已知接受例外：inert chip 不画 search mark（ordinal 仍前进）；嵌套 `>>` 客户端解码一层 vs 服务端
   markdown index 的计数微差（同 searchable LaTeX 例外类）。
+- 不透明覆盖三条发送路径（主/scheduled/side-chat）+ snippet 保存，统一走 composeOutgoing chokepoint；
+  落进 quote run 的活粘贴在**插入时**按引用行 verbatim 插入（不折叠成 ref），发送时不透明保持 map-blind。
+- 后续 follow-up（极窄 exotic 边缘，非真实手势）：`offsetInQuoteLine` 把 U+2028/U+2029 当行边界，但
+  `messageQuoteRanges` 的 run 正则 `[^\r\n]*` 会消费它们——草稿已含这两个字符时 paste-into-quote 仍可能
+  孤儿化。根因是 messageQuoteRanges 既有不对称（m-flag `^` 认 U+2028/2029 作 run 起点、`[^\r\n]` 忽略
+  它们作扩展）；LF/CR/CRLF 全正确。修复须对齐 helper 与 run 正则有效 span（或归一 composer value 分隔符）。
 
 ## Testing
 
