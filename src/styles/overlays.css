@@ -208,11 +208,17 @@
   box-shadow: var(--modal-shadow);
 }
 
-/* ResumeSessionDialog panel variant: the card carries .resume-overlay-panel
-   for a flex-shrink hook (min-height:0 lets the inner session list scroll
-   within the max-height:100% card). Sizing + glass surface come from
-   .panel-overlay-card above and the broadened glass selectors in glass.css. */
-.resume-overlay-panel { min-height: 0; }
+/* ResumeSessionDialog panel variant: align with the content panel overlays
+   (GitPanel/TasksPanel/SearchPanel) — fill the reading column (width:100%,
+   max-width:--chat-reading-max-width) rather than the compact 560px picker
+   width the shared .panel-overlay-card defaults to. min-height:0 lets the
+   inner session list scroll within the max-height:100% card. Glass surface
+   comes from the broadened glass selectors in glass.css. */
+.panel-overlay > .panel-overlay-card.resume-overlay-panel {
+  width: 100%;
+  max-width: var(--chat-reading-max-width);
+  min-height: 0;
+}
 
 /* ── Inline session recap message ──────────────────────────────────
    Rendered inside the transcript by RecapMessageView, reusing the .msg

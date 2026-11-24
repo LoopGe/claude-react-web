@@ -99,7 +99,11 @@ surface extraction needed, and a fresh baseline on every open.
   panel (panel variant) or 84vh (modal variant). The target is `min(content,
   card ceiling)`. An earlier inline `max-height:50vh` on the list was an
   undocumented outlier inconsistent with the panel overlays; it was removed so
-  the picker fills its host like the rest.
+  the picker fills its host like the rest. The panel variant's WIDTH is likewise
+  aligned: `.panel-overlay-card.resume-overlay-panel` overrides the shared
+  compact 560px picker width with `width:100%; max-width:
+  --chat-reading-max-width` (the 900px reading column GitPanel/TasksPanel/
+  SearchPanel use); InputHistory keeps the 560px picker width.
 - **The ceiling is pin-independent**, computed from the card CAP minus fixed
   chrome (borders/padding + header + footer + section padding + sibling rows +
   gaps + list margins), NOT from the section's current height. The card is
