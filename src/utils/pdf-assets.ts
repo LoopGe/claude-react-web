@@ -1,5 +1,12 @@
-/** Build-owned, same-version PDF.js resources; all binary assets are decoded locally. */
+/**
+ * Build-owned, same-version PDF.js resources; all binary assets are decoded
+ * locally. Single gateway for the build-inlined payloads (asset map + worker
+ * source): everything here is reachable only through the lazy PDF chunk.
+ */
 import pdfAssets from 'virtual:pdfjs-assets'
+
+/** The entire installed pdf.worker.min.mjs as a string; the runtime spawns it from a Blob URL. */
+export { default as workerSource } from 'pdfjs-dist/build/pdf.worker.min.mjs?raw'
 
 /** Resource kinds used by PDF.js 6's BinaryDataFactory requests. */
 export type PdfAssetKind = 'cMapUrl' | 'standardFontDataUrl' | 'wasmUrl'

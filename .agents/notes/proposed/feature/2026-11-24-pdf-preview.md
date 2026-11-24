@@ -32,6 +32,12 @@ code 分支——claude provider 下乱码，native provider 下致命 `NativeFi
 - **CJK（核心）**：嵌入字体原生渲染；非嵌入 CID 经内联 Adobe-GB1/CNS1 cMap 解码 +
   `useSystemFonts` 系统字体字形兜底（用户中文 Windows 自带宋体/雅黑，比 DSH 多覆盖一层）；
   扫描中文经内联 JBIG2/JPX wasm。
+- **实现基线（T2）**：运行时不用 ES2024 API（`Promise.withResolvers`/`AbortSignal.any`，
+  DSH 源码用了）——repo lib ES2022、浏览器基线更低，改本地 deferred + 双 abort 监听。
+  启动零开销是构建硬门禁：插件 generateBundle 对 entry 静态 import 闭包做 pdfjs 标记
+  扫描，违例直接 fail build（懒加载动态边界内放行）。真实库 smoke 用 legacy build
+  （pdfjs engines node>=22.13，repo 支持 Node 20）+ 手写 GBK CID fixture，在 Node
+  worker thread 里跑真 worker、断言像素/文本/cMap 请求。
 
 **反目标**：启动 bundle 不增长；中文不出方框；超限拒绝而非截断喂 pdf.js；worker/资产
 版本不漂移；无 fake-worker 静默降级；字节 buffer 不被转移走；光栅不超 2^24；资产不回落
@@ -67,3 +73,6 @@ code 分支——claude provider 下乱码，native provider 下致命 `NativeFi
 - chunk 加载失败需刷新（React 缓存 rejected lazy import，DSH parity）。
 - Vite worker/资产构建须留在懒加载图、避开 optimizeDeps 预bundle 陷阱；analyze:bundle 验证。
 - 手抄 pdf_viewer.css 子集须随钉定版本；worker teardown 竞态须测试钉死。
+- 非嵌入 CJK 的**字形像素**依赖系统 CJK 字体（中文 Windows 自带；Linux CI 需
+  fonts-noto-cjk 一类）；smoke 的 textContent + cMap 请求断言与字体无关，像素断言有关。
+  smoke 的 Node canvas 来自 pdfjs-dist 的 optionalDependency @napi-rs/canvas（仅测试侧）。

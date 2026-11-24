@@ -93,6 +93,7 @@ export default [
       'playwright.config.ts',
       'build.mjs',
       'tests/browser/**/*.ts',
+      'tests/*.ts',
       'scripts/**/*.mjs',
     ],
     languageOptions: {
