@@ -196,3 +196,55 @@
   align-self: flex-start;
   margin-bottom: var(--space-1-5);
 }
+
+/* YAML frontmatter field list (FrontmatterFields), rendered above the
+   markdown body inside .file-viewer-md. Existing theme vars only. */
+.frontmatter-fields {
+  margin: 0 0 var(--space-2-5);
+  padding: var(--space-2) var(--space-2-5);
+  background: var(--bg-elev);
+  border: 1px solid var(--code-block-border);
+  border-radius: var(--radius-sm);
+}
+
+.frontmatter-field {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.frontmatter-field + .frontmatter-field {
+  margin-top: var(--space-1);
+}
+
+.frontmatter-field-key {
+  flex: 0 0 auto;
+  min-width: 10ch;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.frontmatter-field-value {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Verbatim frontmatter: the lazy-chunk loading view AND the parse-failure /
+   non-object fallback (one proven contract state, one look). */
+.frontmatter-verbatim {
+  margin: 0 0 var(--space-2-5);
+  padding: var(--space-2) var(--space-2-5);
+  background: var(--code-bg);
+  border: 1px solid var(--code-block-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

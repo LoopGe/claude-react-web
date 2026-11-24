@@ -10,6 +10,8 @@ import { useEffect, useState } from 'react'
 import { Markdown } from '../Markdown'
 import { MsgImage } from '../MsgImage'
 import { NumberedCode } from './NumberedCode'
+import { FrontmatterFields } from './FrontmatterFields'
+import { splitFrontmatter } from '../../utils/frontmatter'
 import { detectLanguage, imageMediaTypeOf, splitFilePath } from '../../utils/file-display'
 import { imageDataUrl } from '../../utils/image-block'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
@@ -71,6 +73,11 @@ export function FilePreviewBody({
   const available = data?.available ?? false
   const contents = data?.contents
   const truncated = data?.truncated
+  // Preview-mode metadata split: a leading frontmatter block renders as a
+  // field list above the markdown body. Source mode is untouched — it always
+  // shows the FULL original contents, delimiters included.
+  const markdownSplit =
+    isMarkdown && contents !== undefined ? splitFrontmatter(contents) : null
 
   return (
     <>
@@ -113,7 +120,14 @@ export function FilePreviewBody({
                 CSS-hidden (overlay-scrollbar.css) — only this outer container
                 scrolls natively, so it gets the overlay thumb too. */}
             <div className="file-viewer-md" ref={setCodeOs}>
-              <Markdown text={contents} />
+              {markdownSplit?.frontmatter != null ? (
+                <>
+                  <FrontmatterFields source={markdownSplit.frontmatter} />
+                  <Markdown text={markdownSplit.body} />
+                </>
+              ) : (
+                <Markdown text={contents} />
+              )}
             </div>
             {truncated && (
               <div className="hint file-viewer-truncated">
