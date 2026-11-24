@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest'
 import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { highlightLines } from './highlight-lines'
+import { highlightLines, highlightBlock } from './highlight-lines'
 
 function markup(node: ReactNode): string {
   return renderToStaticMarkup(<>{node}</>)
@@ -95,5 +95,31 @@ describe('highlightLines', () => {
     const nodes = highlightLines('javascript', '')
     expect(nodes).toHaveLength(1)
     expect(joinedText(nodes)).toBe('')
+  })
+})
+
+describe('highlightBlock', () => {
+  it('highlights the whole text as one block, preserving the source text', () => {
+    const contents = 'const x = 1\nreturn x'
+    const node = highlightBlock('javascript', contents)
+    expect(markup(node)).toContain('hljs-keyword')
+    expect(textOf(node)).toBe(contents)
+  })
+
+  it('keeps a multi-line comment span intact (no per-line split)', () => {
+    const contents = '/* a\nb\nc */'
+    const node = highlightBlock('javascript', contents)
+    expect(markup(node)).toContain('hljs-comment')
+    expect(textOf(node)).toBe(contents)
+  })
+
+  it('returns the raw contents string for an unknown language (no throw)', () => {
+    const contents = 'const x = 1'
+    expect(highlightBlock('xyz', contents)).toBe(contents)
+  })
+
+  it('returns the raw contents string when lang is undefined (no throw)', () => {
+    const contents = 'const x = 1'
+    expect(highlightBlock(undefined, contents)).toBe(contents)
   })
 })

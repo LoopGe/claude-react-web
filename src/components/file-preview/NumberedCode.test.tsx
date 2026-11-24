@@ -138,4 +138,37 @@ describe('NumberedCode', () => {
     // The fallback bar labels the detected language.
     expect(document.querySelector('.code-block-lang')?.textContent).toBe('javascript')
   })
+
+  it('highlights the over-cap fallback for a known language', () => {
+    const contents = ['const x = 1', ...Array.from({ length: MAX_NUMBERED_LINES }, (_, i) => `line ${i}`)].join('\n')
+    render(<NumberedCode contents={contents} lang="javascript" />)
+    expect(document.querySelectorAll('[data-line]')).toHaveLength(0)
+    // The fallback body carries highlight spans (whole-text block, not per-line).
+    expect(document.querySelector('.file-viewer-code .hljs-keyword')?.textContent).toBe('const')
+    expect(document.querySelector('.file-viewer-code')?.textContent).toBe(contents)
+  })
+
+  it('renders the over-cap fallback as plain text for an unknown language (no throw)', () => {
+    const contents = Array.from({ length: MAX_NUMBERED_LINES + 1 }, (_, i) => `const ${i}`).join('\n')
+    const { unmount } = render(<NumberedCode contents={contents} lang="xyz" />)
+    expect(document.querySelector('.file-viewer-code .hljs-keyword')).toBeNull()
+    expect(document.querySelector('.file-viewer-code')?.textContent).toBe(contents)
+    unmount()
+    render(<NumberedCode contents={contents} />)
+    expect(document.querySelector('.file-viewer-code .hljs-keyword')).toBeNull()
+    expect(document.querySelector('.file-viewer-code')?.textContent).toBe(contents)
+  })
+
+  it('copies the raw contents from the over-cap fallback', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    })
+    const contents = ['const x = 1', ...Array.from({ length: MAX_NUMBERED_LINES }, (_, i) => `line ${i}`)].join('\n')
+    render(<NumberedCode contents={contents} lang="javascript" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(contents))
+  })
 })

@@ -126,3 +126,18 @@ export function highlightLines(lang: string | undefined, contents: string): Reac
   // trailing line when present).
   return lineRoots.slice(0, lines.length).map(renderLine)
 }
+
+/** Highlight `contents` as ONE block (no per-line split) for the over-cap
+ *  CodeBlock fallback. Same whole-text lowlight + toJsxRuntime render path as
+ *  `highlightLines` (`renderLine` renders any hast root), but the span tree is
+ *  proportional to tokens, not lines — exactly like the markdown path — so it
+ *  avoids the per-line element cost the MAX_NUMBERED_LINES cap exists to
+ *  prevent. Unknown / absent / unregistered `lang` returns the raw `contents`
+ *  string (plain, no throw). The rendered text equals `contents`, so the
+ *  fallback's textContent-based copy stays clean. */
+export function highlightBlock(lang: string | undefined, contents: string): ReactNode {
+  if (lang == null || !isRegisteredLanguage(lang)) {
+    return contents
+  }
+  return renderLine(lowlight.highlight(lang, contents))
+}

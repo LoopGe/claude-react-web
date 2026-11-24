@@ -10,7 +10,7 @@ import { CodeBlock } from '../Markdown'
 import { useCopy } from '../../hooks/useCopy'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
-import { highlightLines } from '../../utils/highlight-lines'
+import { highlightLines, highlightBlock } from '../../utils/highlight-lines'
 
 export const MAX_NUMBERED_LINES = 5000
 
@@ -47,6 +47,15 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
   // the highlight cost. `highlightLines`' line split matches `lines` exactly.
   const highlighted = useMemo(
     () => (lines.length > MAX_NUMBERED_LINES ? null : highlightLines(lang, contents)),
+    [lines, lang, contents],
+  )
+  // Over-cap fallback: highlight the whole text as ONE block (span tree is
+  // token-proportional, not per-line) so the CodeBlock fallback is coloured
+  // without the per-line element cost the cap exists to prevent. Memoized on
+  // (lang, contents) so a refetch with unchanged contents never re-highlights;
+  // null when under the cap (the numbered path above handles that case).
+  const highlightedBlock = useMemo(
+    () => (lines.length > MAX_NUMBERED_LINES ? highlightBlock(lang, contents) : null),
     [lines, lang, contents],
   )
   // Memoized so a refetch with unchanged contents does not re-create thousands
@@ -108,7 +117,7 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
           </div>
         )}
         <CodeBlock lang={lang} className="file-viewer-code" showCopy>
-          {contents}
+          {highlightedBlock}
         </CodeBlock>
       </>
     )
