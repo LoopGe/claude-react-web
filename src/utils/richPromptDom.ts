@@ -1,4 +1,5 @@
 import { type PastedTextToken } from './pastedText'
+import { quoteTextOf } from './quote-text'
 
 /**
  * DOM ⇄ token bridge for the rich composer.
@@ -39,9 +40,34 @@ export const MENTION_CHIP_ATTR = 'data-file-mention'
 export const MENTION_CHIP_CLASS = 'file-mention-chip'
 const MENTION_DIR_ATTR = 'data-dir'
 
-/** Both chip kinds are opaque atomic units to the DOM → text walk. */
+/**
+ * Marks a blockquote quote chip. `QUOTE_CHIP_ATTR` carries the EXACT blockquote
+ * run (the serialization — `> …` markers and line breaks verbatim); the chip's
+ * rendered text is the DECODED excerpt (`quoteTextOf`), which is NOT the value.
+ * This is the one chip kind whose display ≠ serialization: the DOM → text walk
+ * and the caret arithmetic read the attribute, never `textContent`.
+ * `QUOTE_REMOVE_ATTR` marks the composer-only whole-run removal button.
+ */
+export const QUOTE_CHIP_ATTR = 'data-quote-text'
+export const QUOTE_CHIP_CLASS = 'quote-chip'
+export const QUOTE_REMOVE_ATTR = 'data-quote-remove'
+
+/** Shared quote-mark icon geometry (DSH QuotePreview parity). Exported so the
+ *  plain-DOM composer chip and the React `QuotePreview` draw the identical mark. */
+export const QUOTE_MARK_VIEWBOX = '0 0 16 16'
+export const QUOTE_MARK_TRANSFORM = 'translate(6.8 2.4)'
+export const QUOTE_MARK_PATHS = [
+  'M2.8125 0.583008L3.2002 1.16602C2.43912 1.6713 1.88491 2.41238 1.60547 3.25684H2.98926V6.70605H0V4.52148C1.96593e-05 2.70313 0.9109 1.00575 2.42578 0L2.8125 0.583008Z',
+  'M7.50781 0.583008L7.89551 1.16602C7.13443 1.6713 6.58022 2.41238 6.30078 3.25684H7.68457V6.70605H4.69531V4.52148C4.69533 2.70313 5.60621 1.00575 7.12109 0L7.50781 0.583008Z',
+] as const
+
+/** Every chip kind is an opaque atomic unit to the DOM → text walk. */
 function isChipElement(element: Element): boolean {
-  return element.hasAttribute(CHIP_ATTR) || element.hasAttribute(MENTION_CHIP_ATTR)
+  return (
+    element.hasAttribute(CHIP_ATTR) ||
+    element.hasAttribute(MENTION_CHIP_ATTR) ||
+    element.hasAttribute(QUOTE_CHIP_ATTR)
+  )
 }
 
 /** Read the parsed facts back from a mention chip element — the inverse of
@@ -155,6 +181,22 @@ export function collectSegments(root: Node, stop?: StopPoint): DomSegment[] {
     if (node.nodeType !== ELEMENT_NODE) return
     const element = node as Element
     if (isChipElement(element)) {
+      // Quote chip: display ≠ serialization. The value contribution is the exact
+      // blockquote run in the attribute, NOT the decoded excerpt the chip shows.
+      const quoteRun = element.getAttribute(QUOTE_CHIP_ATTR)
+      if (quoteRun !== null) {
+        // Atomic: a quote run has no interior text position (its rendered excerpt
+        // does not map character-for-character onto the serialization). A stop
+        // inside it — a double-click on the excerpt — resolves to the chip's
+        // START, so the whole run stays one unit and the caret gate keeps it
+        // settled (start-exclusive) rather than demoting it.
+        if (stop !== undefined && (stop.container === element || element.contains(stop.container))) {
+          reached = true
+          return
+        }
+        push(quoteRun, null, element)
+        return
+      }
       const label = element.textContent ?? ''
       // Opaque: one token (paste-ref or mention), whatever the chip renders. A
       // stop point inside it still has to be honoured — a real double-click on a
@@ -219,7 +261,8 @@ export function collectSegments(root: Node, stop?: StopPoint): DomSegment[] {
 }
 
 /**
- * Demote any mention whose serialized range spans the caret to editable text.
+ * Demote any mention OR quote run whose serialized range spans the caret to
+ * editable text.
  *
  * An unquoted mention has no closing delimiter — every prefix (`@s`, `@sr`,
  * `@src/`) is grammatically complete — so a context-free chipify would turn the
@@ -230,6 +273,13 @@ export function collectSegments(root: Node, stop?: StopPoint): DomSegment[] {
  * therefore settled by leaving the caret PAST its end (the pick appends a
  * trailing space). With no caret (unfocused editor / draft restore) every
  * mention is settled.
+ *
+ * A quote run uses the SAME gate, and because the whole run is ONE token the
+ * demotion is whole-run: a caret entering a multi-line blockquote de-chipifies
+ * every line at once into editable `> …` text, and leaving re-settles it. The
+ * range length is the SERIALIZATION length (the exact run, line breaks counted),
+ * never the decoded excerpt the chip displays — so the gate's offsets line up
+ * with the value the caret arithmetic indexes into.
  */
 function demoteCaretMentions(
   tokens: PastedTextToken[],
@@ -243,7 +293,7 @@ function demoteCaretMentions(
     const end = start + length
     const spansCaret = start < caretOffset && caretOffset <= end
     start = end
-    if (token.kind === 'mention' && spansCaret) {
+    if ((token.kind === 'mention' || token.kind === 'quote') && spansCaret) {
       demoted = true
       return { kind: 'text', text: token.text } as PastedTextToken
     }
@@ -266,11 +316,68 @@ function mergeAdjacentText(tokens: PastedTextToken[]): PastedTextToken[] {
   return out
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg'
+
+/** Append the shared quote-mark SVG (DSH parity) to `parent`. */
+function appendQuoteMark(doc: Document, parent: Element, className: string): void {
+  const svg = doc.createElementNS(SVG_NS, 'svg')
+  svg.setAttribute('viewBox', QUOTE_MARK_VIEWBOX)
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('aria-hidden', 'true')
+  svg.setAttribute('class', className)
+  const g = doc.createElementNS(SVG_NS, 'g')
+  g.setAttribute('transform', QUOTE_MARK_TRANSFORM)
+  for (const d of QUOTE_MARK_PATHS) {
+    const path = doc.createElementNS(SVG_NS, 'path')
+    path.setAttribute('d', d)
+    path.setAttribute('fill', 'currentColor')
+    g.appendChild(path)
+  }
+  svg.appendChild(g)
+  parent.appendChild(svg)
+}
+
+/**
+ * Build the composer's atomic quote chip: a `contenteditable=false` span whose
+ * `data-quote-text` is the EXACT blockquote run (the serialization) and whose
+ * visible text is the DECODED excerpt. The whole-run removal button swaps the
+ * quote mark for a × on hover (CSS). The full decoded text rides a native `title`
+ * — the overflow-safe hover affordance for a chip inside the editor's clipped
+ * (`overflow: hidden`) box, where a portalled React popover cannot reach. The
+ * sent-message presentation (`QuotePreview`) shares these classes and the mark.
+ */
+function buildQuoteChip(doc: Document, exactText: string): Element {
+  const chip = doc.createElement('span')
+  chip.className = QUOTE_CHIP_CLASS
+  chip.setAttribute('contenteditable', 'false')
+  chip.setAttribute(QUOTE_CHIP_ATTR, exactText)
+  const excerpt = quoteTextOf(exactText)
+  chip.setAttribute('title', excerpt)
+  const remove = doc.createElement('button')
+  remove.type = 'button'
+  remove.className = 'quote-chip-remove'
+  remove.setAttribute(QUOTE_REMOVE_ATTR, '')
+  remove.setAttribute('aria-label', 'Remove quote')
+  appendQuoteMark(doc, remove, 'quote-chip-mark')
+  const close = doc.createElement('span')
+  close.className = 'quote-chip-close'
+  close.setAttribute('aria-hidden', 'true')
+  close.textContent = '×'
+  remove.appendChild(close)
+  chip.appendChild(remove)
+  const text = doc.createElement('span')
+  text.className = 'quote-chip-text'
+  text.textContent = excerpt
+  chip.appendChild(text)
+  return chip
+}
+
 /**
  * Build DOM for `tokens`. The caller owns `doc` (usually `document`).
  *
  * `caretOffset` applies the same caret gate as `domRepresentsValue`: a mention
- * spanning the caret renders as editable text, every other mention as a chip.
+ * or quote run spanning the caret renders as editable text, every other one as
+ * a chip.
  */
 export function renderTokens(
   doc: Document,
@@ -283,12 +390,8 @@ export function renderTokens(
       fragment.appendChild(doc.createTextNode(token.text))
       continue
     }
-    // Interim until the quote chip lands (Task 3): a quote run renders as its
-    // exact text, so a typed blockquote keeps today's plain-text behavior and
-    // the value round-trips losslessly. The data-quote-text chip bridge replaces
-    // this branch; until then the run is editable text, not an atomic chip.
     if (token.kind === 'quote') {
-      fragment.appendChild(doc.createTextNode(token.text))
+      fragment.appendChild(buildQuoteChip(doc, token.text))
       continue
     }
     const chip = doc.createElement('span')
@@ -314,7 +417,11 @@ export function renderTokens(
  * Serialize an editor element's children back to tokens.
  *
  * Adjacent text is merged, so `serializeTokens` is the inverse of
- * `renderTokens` for any token list `tokenize` can produce.
+ * `renderTokens` for any token list `tokenize` can produce. The quote chip keeps
+ * that structural invertibility even though its display ≠ serialization: the
+ * walk reads `data-quote-text` (the exact run `renderTokens` wrote), so a quote
+ * token round-trips through the chip unchanged — the decoded excerpt is never
+ * mistaken for the value.
  */
 export function serializeTokens(root: Node): PastedTextToken[] {
   const tokens: PastedTextToken[] = []
@@ -333,6 +440,11 @@ export function serializeTokens(root: Node): PastedTextToken[] {
         path: decodeURIComponent(encodedPath),
         dir: element!.getAttribute(MENTION_DIR_ATTR) === '1',
       })
+      continue
+    }
+    const quoteRun = element?.getAttribute(QUOTE_CHIP_ATTR)
+    if (quoteRun != null) {
+      tokens.push({ kind: 'quote', text: quoteRun })
       continue
     }
     const last = tokens[tokens.length - 1]

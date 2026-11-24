@@ -4290,6 +4290,101 @@ button.msg-mention-chip:hover {
   background: var(--btn-hover-bg);
 }
 
+/* Blockquote quote chip — same visual family as the paste/mention chips it sits
+   beside, shared by the composer's atomic chip (plain DOM, renderTokens) and the
+   sent-message QuotePreview. The container shows a DECODED excerpt clipped to one
+   line; the exact `> …` run lives in data-quote-text (the serialization), never
+   in the rendered text. Colors ride the msg-user token family, which is defined
+   per theme, so both themes are covered without new hex values. */
+.quote-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--msg-user-border);
+  border-radius: var(--radius-3xs);
+  background: var(--msg-user-bg);
+  color: var(--msg-user-header-fg);
+  font-weight: 600;
+  vertical-align: baseline;
+  user-select: none;
+}
+
+.quote-chip-marker,
+.quote-chip-remove {
+  display: grid;
+  place-items: center;
+  align-self: center;
+  flex: none;
+  width: var(--size-16px);
+  height: var(--size-16px);
+  padding: 0;
+  color: inherit;
+  user-select: none;
+}
+
+.quote-chip-marker {
+  pointer-events: none;
+}
+
+.quote-chip-remove {
+  border: none;
+  border-radius: var(--radius-3xs);
+  background: transparent;
+  cursor: pointer;
+}
+
+.quote-chip-remove:hover {
+  background: var(--btn-hover-bg);
+}
+
+.quote-chip-mark,
+.quote-chip-close {
+  grid-area: 1 / 1;
+  width: 12px;
+  height: 12px;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.quote-chip-close {
+  opacity: 0;
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+
+/* Removable variant swaps the quote mark for a × on hover/focus (DSH parity). */
+.quote-chip-remove:hover .quote-chip-mark,
+.quote-chip-remove:focus-visible .quote-chip-mark {
+  opacity: 0;
+}
+
+.quote-chip-remove:hover .quote-chip-close,
+.quote-chip-remove:focus-visible .quote-chip-close {
+  opacity: 1;
+}
+
+.quote-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Full-text popover content (sent QuotePreview via HoverPopover). */
+.quote-chip-popover {
+  display: block;
+  max-width: min(80vw, 480px);
+  max-height: 40vh;
+  overflow: auto;
+  padding: var(--space-2) var(--space-2-5);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ── Lightbox (full-screen image viewer) ────────────────────────────────
    Mounted once by ImageViewerProvider via <Overlay variant="lightbox">
    (card: null — the .lightbox-stage child IS the interactive card, so there

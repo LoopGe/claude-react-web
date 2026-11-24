@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 import { joinTokens, tokenize } from '../utils/pastedText'
-import { renderTokens, serializeTokens, domRepresentsValue, mentionChipFacts, MENTION_CHIP_ATTR } from '../utils/richPromptDom'
+import { renderTokens, serializeTokens, domRepresentsValue, mentionChipFacts, MENTION_CHIP_ATTR, QUOTE_CHIP_ATTR, QUOTE_REMOVE_ATTR } from '../utils/richPromptDom'
 import { syncEditorHeight } from '../utils/editor-height'
 import { offsetOf, slashWordBefore, atWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
 import { isSupportedImageMediaType } from '../../shared/image-media'
@@ -459,10 +459,58 @@ export function RichPromptInput({
       onPaste={handlePaste}
       onContextMenu={onContextMenu}
       onClick={(e) => {
+        const target = e.target as Element
+        // Whole-run removal: the composer quote chip's × button. The chip is
+        // atomic, so removal splices the EXACT run out of the value (located by
+        // its serialized offset, not by string search — identical runs must not
+        // be confused) and restores the caret where the run began.
+        const removeBtn = target.closest(`[${QUOTE_REMOVE_ATTR}]`)
+        if (removeBtn !== null) {
+          const el = e.currentTarget
+          const chip = removeBtn.closest(`[${QUOTE_CHIP_ATTR}]`)!
+          const run = chip.getAttribute(QUOTE_CHIP_ATTR)!
+          const start = offsetOf(el, chip, 0)
+          const next = value.slice(0, start) + value.slice(start + run.length)
+          const doc = el.ownerDocument
+          el.focus()
+          el.replaceChildren(renderTokens(doc, tokenize(next), start))
+          placeCaretAtOffset(el, start)
+          onChange(next)
+          return
+        }
         if (!onMentionClick) return
-        const chip = (e.target as Element).closest(`[${MENTION_CHIP_ATTR}]`)
+        const chip = target.closest(`[${MENTION_CHIP_ATTR}]`)
         // closest matched the mention attr, so the facts read cannot be null.
         if (chip !== null) onMentionClick(mentionChipFacts(chip)!)
+      }}
+      onCopy={(e) => {
+        // A quote chip's rendered text is the DECODED excerpt, so a native copy
+        // would put the excerpt (no `>` markers) on the clipboard. When the
+        // selection touches a quote chip, write the SERIALIZED slice instead —
+        // the exact Markdown blockquote — expanding to whole runs so a partial
+        // chip selection still copies the complete quote. Non-quote selections
+        // keep the native copy (mentions/refs already serialize as textContent).
+        const el = e.currentTarget
+        const selection = el.ownerDocument.getSelection()
+        if (!selection || selection.rangeCount === 0) return
+        const range = selection.getRangeAt(0)
+        if (!el.contains(range.startContainer)) return
+        const offs = selectionOffsets(el)
+        if (!offs) return
+        let start = offs.start
+        let end = offs.end
+        let touched = false
+        for (const chip of el.querySelectorAll(`[${QUOTE_CHIP_ATTR}]`)) {
+          if (!range.intersectsNode(chip)) continue
+          touched = true
+          const chipStart = offsetOf(el, chip, 0)
+          const chipEnd = chipStart + chip.getAttribute(QUOTE_CHIP_ATTR)!.length
+          start = Math.min(start, chipStart)
+          end = Math.max(end, chipEnd)
+        }
+        if (!touched) return
+        e.clipboardData.setData('text/plain', value.slice(start, end))
+        e.preventDefault()
       }}
       onInput={(e) => {
         const el = e.currentTarget

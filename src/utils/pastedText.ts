@@ -142,9 +142,14 @@ export type PastedTextToken =
  * All matchers scan the whole string; their hits are merged in document order
  * and a hit that starts inside an earlier token is dropped (first start wins),
  * so the kinds never overlap or double-count. A quote run is line-leading and
- * spans whole lines, so it swallows any mention/ref hit that falls inside it
- * (the run is atomic); a mention/ref can never start inside a quote run's line
- * boundary and win, because those tokens carry no line break of their own.
+ * spans whole lines, so it normally swallows any mention/ref hit that falls
+ * inside it (the run is atomic). That ordering is not absolute: the grammar's
+ * quoted alternative (`@"[^"\n]+"`) admits a lone CR or U+2028/U+2029, which the
+ * multiline `^` treats as a line boundary — so a quoted mention can contain a
+ * quote run's start and win the merge instead. Losslessness does not depend on
+ * which kind wins: every token carries its exact UTF-16 span, and `joinTokens`'
+ * composition guards key on the actual line-terminator characters, so the
+ * round-trip holds for either ordering.
  */
 export function tokenize(text: string): PastedTextToken[] {
   const hits: Array<{ index: number; length: number; token: PastedTextToken }> = []

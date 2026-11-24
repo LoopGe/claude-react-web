@@ -5,11 +5,15 @@ import {
   CHIP_CLASS,
   MENTION_CHIP_ATTR,
   MENTION_CHIP_CLASS,
+  QUOTE_CHIP_ATTR,
+  QUOTE_CHIP_CLASS,
+  QUOTE_REMOVE_ATTR,
   domRepresentsValue,
   renderTokens,
   serializeTokens,
 } from './richPromptDom'
 import { joinTokens, tokenize } from './pastedText'
+import { quoteTextOf } from './quote-text'
 
 describe('renderTokens', () => {
   it('renders literal text as text nodes', () => {
@@ -310,5 +314,168 @@ describe('domRepresentsValue caret gate', () => {
       renderTokens(document, [{ kind: 'text', text: '[Pasted text #1] @a' }]),
     )
     expect(domRepresentsValue(host, tokens, 19)).toBe(false)
+  })
+})
+
+describe('quote chips — display ≠ serialization bridge', () => {
+  let host: HTMLDivElement
+  beforeEach(() => {
+    host = document.createElement('div')
+  })
+
+  it('renders a quote as a non-editable chip carrying the EXACT run, displaying the decoded excerpt', () => {
+    const run = '> a\n> b'
+    host.appendChild(renderTokens(document, [{ kind: 'quote', text: run }]))
+    const chip = host.querySelector(`.${QUOTE_CHIP_CLASS}`)!
+    expect(chip).not.toBeNull()
+    expect(chip.getAttribute('contenteditable')).toBe('false')
+    // The serialization is the exact blockquote run…
+    expect(chip.getAttribute(QUOTE_CHIP_ATTR)).toBe(run)
+    // …while the displayed excerpt is decoded (no `>` markers).
+    const excerpt = chip.querySelector('.quote-chip-text')!
+    expect(excerpt.textContent).toBe(quoteTextOf(run))
+    expect(excerpt.textContent).toBe('a\nb')
+    // A quote chip is neither a paste-ref nor a mention chip.
+    expect(chip.hasAttribute(CHIP_ATTR)).toBe(false)
+    expect(chip.hasAttribute(MENTION_CHIP_ATTR)).toBe(false)
+    // The composer chip is removable.
+    expect(chip.querySelector(`[${QUOTE_REMOVE_ATTR}]`)).not.toBeNull()
+  })
+
+  it('serializes a quote chip from data-quote-text, NOT its displayed textContent', () => {
+    // Hand-build a chip whose visible excerpt differs from its serialization to
+    // prove the walk reads the attribute rather than the rendered text.
+    const chip = document.createElement('span')
+    chip.className = QUOTE_CHIP_CLASS
+    chip.setAttribute(QUOTE_CHIP_ATTR, '> a\n> b')
+    const text = document.createElement('span')
+    text.className = 'quote-chip-text'
+    text.textContent = 'a\nb' // decoded excerpt — must NOT become the value
+    chip.appendChild(text)
+    host.appendChild(chip)
+    expect(serializeTokens(host)).toEqual([{ kind: 'quote', text: '> a\n> b' }])
+    expect(joinTokens(serializeTokens(host))).toBe('> a\n> b')
+  })
+
+  it('round-trips quote runs losslessly through the DOM (multi-line, nested, missing space, trailing ws, CRLF)', () => {
+    const samples = [
+      '> hello',
+      '> a\n> b',
+      '> > nested',
+      '>x',
+      '> x  ',
+      '> a\r\n> b',
+      'prose\n\n> q\n\nmore',
+      '> q1\n\n> q2',
+      '@src/a.ts\n\n> q\n\n[Pasted text #1]',
+      'hi > inline', // mid-line `>` is ordinary text, not a quote
+    ]
+    for (const s of samples) {
+      host.replaceChildren(renderTokens(document, tokenize(s)))
+      expect(joinTokens(serializeTokens(host)), s).toBe(s)
+    }
+  })
+
+  it('preserves the exact token structure for a mixed mention + quote + ref list', () => {
+    const s = 'see @src/a.ts\n\n> quoted\n\n[Pasted text #1]'
+    const tokens = tokenize(s)
+    host.replaceChildren(renderTokens(document, tokens))
+    expect(serializeTokens(host)).toEqual(tokens)
+  })
+
+  it('measures a quote chip by its SERIALIZATION length, not its displayed excerpt', async () => {
+    const { offsetOf } = await import('../components/richPromptCaret')
+    host.replaceChildren(
+      renderTokens(document, [
+        { kind: 'text', text: 'hi ' },
+        { kind: 'quote', text: '> a\n> b' },
+        { kind: 'text', text: ' tail' },
+      ]),
+    )
+    const tail = host.lastChild as Text
+    // 'hi ' (3) + the exact run '> a\n> b' (7), NOT the decoded 'a\nb' (3).
+    expect(offsetOf(host, tail, 0)).toBe('hi > a\n> b'.length)
+  })
+
+  it('places the caret past a quote chip using serialization offsets', async () => {
+    const { offsetOf, placeCaretAtOffset } = await import('../components/richPromptCaret')
+    host.replaceChildren(
+      renderTokens(document, [
+        { kind: 'text', text: 'hi ' },
+        { kind: 'quote', text: '> a\n> b' },
+        { kind: 'text', text: ' tail' },
+      ]),
+    )
+    document.body.appendChild(host)
+    const target = 'hi > a\n> b'.length // exactly the chip's end
+    expect(placeCaretAtOffset(host, target)).toBe(true)
+    const sel = document.getSelection()!
+    expect(offsetOf(host, sel.anchorNode!, sel.anchorOffset)).toBe(target)
+    host.remove()
+  })
+
+  it('maps a stop INSIDE a quote chip to the chip start (atomic, no interior position)', async () => {
+    const { offsetOf } = await import('../components/richPromptCaret')
+    host.replaceChildren(
+      renderTokens(document, [
+        { kind: 'text', text: 'hi ' },
+        { kind: 'quote', text: '> a\n> b' },
+        { kind: 'text', text: ' tail' },
+      ]),
+    )
+    const excerptNode = host.querySelector('.quote-chip-text')!.firstChild as Text
+    // A double-click inside the rendered excerpt has no serialized interior;
+    // it resolves to the chip's start so the whole run stays one atomic unit.
+    expect(offsetOf(host, excerptNode, 1)).toBe('hi '.length)
+  })
+})
+
+describe('domRepresentsValue quote caret gate', () => {
+  let host: HTMLDivElement
+  beforeEach(() => {
+    host = document.createElement('div')
+  })
+
+  it('expects a CHIP when the caret is outside the run (start or past end)', () => {
+    const tokens = tokenize('> q')
+    host.replaceChildren(renderTokens(document, tokens))
+    expect(domRepresentsValue(host, tokens, 0)).toBe(true) // caret at run start
+    expect(domRepresentsValue(host, tokens)).toBe(true) // no caret → settled
+    // Plain text never represents a settled run.
+    host.replaceChildren(renderTokens(document, [{ kind: 'text', text: '> q' }]))
+    expect(domRepresentsValue(host, tokens, 0)).toBe(false)
+  })
+
+  it('expects editable TEXT while the caret is at the run end (forming) or inside it', () => {
+    const tokens = tokenize('> q')
+    // caret at end (3) → the whole run demotes to editable text.
+    host.replaceChildren(renderTokens(document, [{ kind: 'text', text: '> q' }]))
+    expect(domRepresentsValue(host, tokens, 3)).toBe(true)
+    expect(domRepresentsValue(host, tokens, 2)).toBe(true) // inside
+    // A chip under a forming caret is NOT in sync.
+    host.replaceChildren(renderTokens(document, tokens))
+    expect(domRepresentsValue(host, tokens, 3)).toBe(false)
+  })
+
+  it('demotes a MULTI-LINE run as one whole token when the caret enters it', () => {
+    const tokens = tokenize('> a\n> b') // length 7
+    // caret at the end of the whole run → entire run is editable text.
+    host.replaceChildren(renderTokens(document, [{ kind: 'text', text: '> a\n> b' }]))
+    expect(domRepresentsValue(host, tokens, 7)).toBe(true)
+    expect(domRepresentsValue(host, tokens, 4)).toBe(true) // inside, second line
+    // caret departed past the run (a trailing newline ends the run; the space
+    // case would be absorbed INTO the last quote line) → settled chip.
+    const settled = tokenize('> a\n> b\n')
+    host.replaceChildren(renderTokens(document, settled))
+    expect(domRepresentsValue(host, settled, 8)).toBe(true)
+    expect(host.querySelector(`.${QUOTE_CHIP_CLASS}`)).not.toBeNull()
+  })
+
+  it('settles a quote chip when the caret rests before it (start-exclusive)', () => {
+    const tokens = tokenize('x\n\n> q')
+    host.replaceChildren(renderTokens(document, tokens))
+    // caret at offset 1 (inside leading prose, before the run) → run stays a chip.
+    expect(domRepresentsValue(host, tokens, 1)).toBe(true)
+    expect(host.querySelector(`.${QUOTE_CHIP_CLASS}`)).not.toBeNull()
   })
 })
