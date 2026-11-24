@@ -109,7 +109,7 @@ export function UploadPreview({ target, onClose }: Props) {
       </div>
 
       <div className={`uploads-preview-body${kind === 'pdf' ? ' uploads-preview-body-pdf' : ''}`}>
-        {kind === 'pdf' && <UploadPdfViewer id={target.id} name={target.name} />}
+        {kind === 'pdf' && <UploadPdfViewer id={target.id} name={target.name} size={target.size} />}
 
         {kind === 'image' && !imgError && (
           <img

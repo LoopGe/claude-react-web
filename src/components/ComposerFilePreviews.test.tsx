@@ -4,10 +4,14 @@ import { ComposerFilePreviews } from './ComposerFilePreviews'
 import type { DraftFile } from '../hooks/useFileDrafts'
 
 // The modal's byte source + viewer are owned by UploadPdfModal.test.tsx;
-// stub it so the chip tests pin the OPEN behavior (button → preview by id).
+// stub it so the chip tests pin the OPEN/CLOSE behavior (button → preview by
+// id → onClose unmounts it). The stub's close button exercises the list's
+// setPdfPreview(null) path.
 vi.mock('./UploadPdfModal', () => ({
-  UploadPdfModal: ({ file }: { file: { id: string } }) => (
-    <div data-testid="upload-pdf-modal" data-upload-id={file.id} />
+  UploadPdfModal: ({ file, onClose }: { file: { id: string }; onClose: () => void }) => (
+    <div data-testid="upload-pdf-modal" data-upload-id={file.id}>
+      <button type="button" onClick={onClose}>Close stub</button>
+    </div>
   ),
 }))
 
@@ -66,6 +70,8 @@ describe('ComposerFilePreviews', () => {
     expect(queryByTestId('upload-pdf-modal')).toBeNull()
     fireEvent.click(pdfChip as HTMLElement)
     expect(getByTestId('upload-pdf-modal').getAttribute('data-upload-id')).toBe('u9')
+    fireEvent.click(getByText('Close stub'))
+    expect(queryByTestId('upload-pdf-modal')).toBeNull()
   })
 
   it('never opens a preview from an uploading or failed chip', () => {

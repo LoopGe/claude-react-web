@@ -3,10 +3,14 @@ import { fireEvent, render } from '@testing-library/react'
 import { UserFileAttachments } from './UserFileAttachments'
 
 // The modal's byte source + viewer are owned by UploadPdfModal.test.tsx;
-// stub it so the chip tests pin the OPEN behavior (button → preview by id).
+// stub it so the chip tests pin the OPEN/CLOSE behavior (button → preview by
+// id → onClose unmounts it). The stub's close button exercises the chip's
+// setPreviewOpen(false) path.
 vi.mock('../UploadPdfModal', () => ({
-  UploadPdfModal: ({ file }: { file: { id: string } }) => (
-    <div data-testid="upload-pdf-modal" data-upload-id={file.id} />
+  UploadPdfModal: ({ file, onClose }: { file: { id: string }; onClose: () => void }) => (
+    <div data-testid="upload-pdf-modal" data-upload-id={file.id}>
+      <button type="button" onClick={onClose}>Close stub</button>
+    </div>
   ),
 }))
 
@@ -38,6 +42,8 @@ describe('UserFileAttachments', () => {
     expect(queryByTestId('upload-pdf-modal')).toBeNull()
     fireEvent.click(chip)
     expect(getByTestId('upload-pdf-modal').getAttribute('data-upload-id')).toBe('u1')
+    fireEvent.click(getByRole('button', { name: 'Close stub' }))
+    expect(queryByTestId('upload-pdf-modal')).toBeNull()
   })
 
   it('highlights only the matched file name and marks the active occurrence', () => {

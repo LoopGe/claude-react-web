@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 import { UploadPreview, TEXT_PREVIEW_LIMIT } from './UploadPreview'
 import { uploadPreviewKind, uploadMimeType } from '../../shared/uploads'
+import { PDF_PREVIEW_MAX_BYTES } from '../../shared/read-file'
 
 // The PDF viewer internals are owned by PdfBody.test.tsx and the byte-source
 // host by UploadPdfModal.test.tsx; stub the lazy boundary so the PDF-branch
@@ -132,6 +133,23 @@ describe('UploadPreview', () => {
     render(<UploadPreview target={{ ...TARGET, name: 'doc.pdf' }} onClose={() => {}} />)
     const download = screen.getByRole('link', { name: /download file/i })
     expect(download.getAttribute('href')).toBe('/api/uploads/x1/content?download=1')
+  })
+
+  it('PDF kind refuses an over-cap size before fetching, keeping the download button', () => {
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    render(
+      <UploadPreview
+        target={{ ...TARGET, name: 'big.pdf', size: PDF_PREVIEW_MAX_BYTES + 1 }}
+        onClose={() => {}}
+      />,
+    )
+    expect(screen.getByText(/too large to preview/i).textContent).toMatch(/20/)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('pdf-body')).toBeNull()
+    expect(screen.getByRole('link', { name: /download file/i }).getAttribute('href')).toBe(
+      '/api/uploads/x1/content?download=1',
+    )
   })
 
   it('Close button invokes onClose', () => {

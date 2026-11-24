@@ -9,13 +9,15 @@
 // FileAttachmentRef, so there is no session identity to open a resource tab
 // with. This host fetches raw bytes by upload id from
 // GET /api/uploads/:id/content (verified server-side, no live session needed)
-// and renders the same LazyPdfBody the cwd preview uses.
+// and renders the same LazyPdfBody the cwd preview uses — refusing over-cap
+// sizes before the fetch, the same posture as the cwd read path.
 
 import { useEffect, useState } from 'react'
 import { Overlay } from './Overlay'
 import LazyPdfBody from './file-preview/LazyPdfBody'
 import { formatBytes } from '../utils/format'
 import type { FileAttachmentRef } from '../../shared/attachments'
+import { PDF_PREVIEW_MAX_BYTES } from '../../shared/read-file'
 import { IconDownload, IconFileText, IconLoader, IconX } from './icons/ToolIcons'
 
 /** View-state retention key for one upload: the upload id is the durable
@@ -29,13 +31,15 @@ function viewStateKeyOf(id: string): string {
 /** Raw bytes of one recorded upload, fetched by id. The content route
  *  verifies the bytes against the registry digest before serving, so a
  *  missing/corrupt file arrives as an HTTP error — surfaced, never guessed
- *  around. Aborts on unmount/id change. */
-function useUploadPdfBytes(id: string): { bytes: Uint8Array | null; error: string | null } {
+ *  around. Aborts on unmount. A null id means there is nothing to fetch
+ *  (the over-cap refusal never reads the bytes). */
+function useUploadPdfBytes(id: string | null): { bytes: Uint8Array | null; error: string | null } {
   const [state, setState] = useState<{ bytes: Uint8Array | null; error: string | null }>({
     bytes: null,
     error: null,
   })
   useEffect(() => {
+    if (id === null) return
     const controller = new AbortController()
     void (async () => {
       try {
@@ -56,12 +60,25 @@ function useUploadPdfBytes(id: string): { bytes: Uint8Array | null; error: strin
 
 /** The ref-keyed byte-source host: bytes-by-id → LazyPdfBody, with the
  *  fetch's loading/error states. Shared by the chip modal below and
- *  UploadPreview's PDF branch so both surfaces fetch identically. */
-export function UploadPdfViewer({ id, name }: { id: string; name: string }) {
-  const { bytes, error } = useUploadPdfBytes(id)
+ *  UploadPreview's PDF branch so both surfaces fetch identically.
+ *
+ *  `size` (the ref's recorded byte count) gates the fetch: uploads are
+ *  capped at 500 MB server-side, and buffering + parsing an oversized PDF
+ *  whole is the same hazard the sibling text branch refuses with its
+ *  512 KB stream cap. Over-cap refuses BEFORE fetching — the cwd path's
+ *  refusal posture (PDF_PREVIEW_MAX_BYTES), with the chrome's Download
+ *  button as the hatch. */
+export function UploadPdfViewer({ id, name, size }: { id: string; name: string; size: number }) {
+  const overCap = size > PDF_PREVIEW_MAX_BYTES
+  const { bytes, error } = useUploadPdfBytes(overCap ? null : id)
   return (
     <div className="upload-pdf-viewer">
-      {bytes === null && error === null && (
+      {overCap && (
+        <div className="pdf-status pdf-status-center">
+          PDF is too large to preview (over {PDF_PREVIEW_MAX_BYTES / (1024 * 1024)}&nbsp;MB).
+        </div>
+      )}
+      {!overCap && bytes === null && error === null && (
         <div className="pdf-status pdf-status-center" role="status">
           <IconLoader size={16} className="glyph-spin" /> Loading document…
         </div>
@@ -119,7 +136,7 @@ export function UploadPdfModal({
         </button>
       </div>
       <div className="upload-pdf-modal-body">
-        <UploadPdfViewer id={file.id} name={file.name} />
+        <UploadPdfViewer id={file.id} name={file.name} size={file.size} />
       </div>
     </Overlay>
   )
