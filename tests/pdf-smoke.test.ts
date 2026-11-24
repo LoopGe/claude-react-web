@@ -8,14 +8,31 @@
  */
 import { Worker as Thread, type Transferable } from 'node:worker_threads'
 import { createRequire } from 'node:module'
-import { pathToFileURL } from 'node:url'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { GlobalFonts } from '@napi-rs/canvas'
 import { getDocument, PDFWorker } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { createPdfBinaryDataFactory, type PdfBinaryDataFactory } from '../src/utils/pdf-assets'
 import { renderPdfPage } from '../src/utils/pdf-document'
 import { deferred } from '../src/test-utils/deferred'
 import { CJK_FIXTURE_TEXT, cjkPdfFixture, pdfFixture } from './pdf-fixture'
+
+// The CJK case draws through pdf.js's system-font substitution for the
+// non-embedded STSong-Light CID font. Whether the host's generic fallback
+// font draws a visible .notdef for unsupported codepoints is environment-
+// dependent (CI's fallback drew nothing; Windows/WSL drew tofu), so the
+// drawing assertion must not ride on host fonts. Register a 4-glyph OFL
+// Noto Sans SC subset under the substitution's first family name — the
+// fixture stands in for the system CJK font a real user's machine has, and
+// the test proves the cMap decode + substitution + draw path deterministically
+// on every platform. (tests/fixtures/pdf-cjk-fixture-OFL.txt carries the license.)
+const fixtureFontKey = GlobalFonts.register(
+  readFileSync(fileURLToPath(new URL('./fixtures/pdf-cjk-fixture.ttf', import.meta.url))),
+  'STSong',
+)
+if (!fixtureFontKey) throw new Error('pdf-smoke: CJK fixture font registration failed')
 
 const require = createRequire(import.meta.url)
 const workerUrl = pathToFileURL(require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs')).href
@@ -174,6 +191,8 @@ describe('PDF.js real-library smoke', () => {
       const target = factory.create(1, 1)
       try {
         await renderPdfPage(page, target.canvas, 1, new AbortController().signal)
+        // Non-blank glyph pixels prove the substitution path drew real glyphs
+        // (the registered STSong fixture), not a host-font accident.
         const pixels = target.context.getImageData(0, 0, target.canvas.width, target.canvas.height).data
         let dark = 0
         for (let i = 0; i < pixels.length; i += 4) {
