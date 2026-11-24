@@ -10051,6 +10051,14 @@ describe('SessionManager', () => {
           ].join('\n'),
         )
 
+        // Simulate the process restart: shutdown drains ALL durable work
+        // (writer.quiesce covers both serial chains; sidecar.close flushes
+        // the fire-and-forget message appends) and releases the fd. The
+        // result row lives only in the sidecar — the provider JSONL has
+        // no result frames to back-fill it — so the restart read must not
+        // race the live manager's queued appends.
+        await sm.shutdown()
+
         // Fork restart: a fresh manager over the same state dir reconciles
         // the fork's seq store from its sidecar + its own JSONL, rewriting
         // the copied `v` rows through the FORK's (bridged) prompt-uuid store.
