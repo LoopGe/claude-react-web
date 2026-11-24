@@ -26,6 +26,8 @@ import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
 import type { SubagentTranscriptSource } from './subagent-transcript-source.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
+import { subscribeUpdateInfo } from './update-info-hub.js'
+import { getCachedUpdateInfo } from './update-checker.js'
 import { imagePayloadOfMessage } from '../shared/user-frames.js'
 import type {
   WsClientFrame,
@@ -242,6 +244,7 @@ export class SessionConnection {
   private globalCleanup: (() => void) | null = null
   private appPluginCleanup: (() => void) | null = null
   private clientDebugCleanup: (() => void) | null = null
+  private updateInfoCleanup: (() => void) | null = null
   private closed = false
 
   constructor(deps: FrameBridgeDeps, sink: FrameSink) {
@@ -258,6 +261,7 @@ export class SessionConnection {
     this.startGlobal()
     this.startAppPlugins()
     this.startClientDebug()
+    this.startUpdateInfo()
   }
 
   // --- global channel: sessions list + global permission mirror ----
@@ -289,6 +293,28 @@ export class SessionConnection {
       } catch (err) {
         if (!this.closed) {
           this.sink.send({ kind: 'error', message: `global channel: ${(err as Error).message}` })
+        }
+      }
+    })()
+  }
+
+  // --- update-info channel (always-on, seeded per connection) ---------
+  // The hub owns change detection; this channel only seeds + forwards. A
+  // reconnecting tab is seeded the latest snapshot, so it heals without a
+  // refetch even if every meaningful change happened while it was away.
+  private startUpdateInfo(): void {
+    const sub = subscribeUpdateInfo()
+    this.updateInfoCleanup = () => sub.unsubscribe()
+    this.sink.send({ kind: 'update-info', info: sub.snapshot ?? getCachedUpdateInfo() })
+    void (async () => {
+      try {
+        for await (const info of sub.iterable) {
+          if (this.closed) return
+          this.sink.send({ kind: 'update-info', info })
+        }
+      } catch (err) {
+        if (!this.closed) {
+          this.sink.send({ kind: 'error', message: `update-info channel: ${(err as Error).message}` })
         }
       }
     })()
@@ -608,6 +634,8 @@ export class SessionConnection {
     this.appPluginCleanup = null
     this.clientDebugCleanup?.()
     this.clientDebugCleanup = null
+    this.updateInfoCleanup?.()
+    this.updateInfoCleanup = null
   }
 
   // --- per-session channel (subscribe/unsubscribe) -----------------

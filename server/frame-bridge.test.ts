@@ -5,9 +5,11 @@
 // fake SessionBroadcaster. That locks the bridge's contract independently of
 // any transport, and gives the desktop (IPC) path a reusable harness.
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { SessionConnection, type FrameSink } from './frame-bridge.js'
+import { publishUpdateInfo, __resetUpdateInfoHubForTests } from './update-info-hub.js'
+import type { UpdateInfo } from '../shared/update-info.js'
 import { createPushable, type Pushable } from './pushable.js'
 import type { SubagentTranscriptFrame } from './subagent-transcript-hub.js'
 import type { SubagentTranscriptSource } from './subagent-transcript-source.js'
@@ -1529,6 +1531,68 @@ describe('attached epoch carriage (spec §8.3, Task 5)', () => {
     expect(sink.kinds('attached')).toEqual([
       { kind: 'attached', sessionId: 's1', generation: 5, headSeq: 10, tombstoneEpoch: 3, rebaseEpoch: 2, clearEpoch: 1, lastFullResetGeneration: 4 },
     ])
+    conn.close()
+  })
+})
+
+describe('update-info always-on channel', () => {
+  const info = (over: Partial<UpdateInfo> = {}): UpdateInfo => ({
+    current: '1.0.0',
+    packageName: 'claude-react-web',
+    installMethod: 'global',
+    hasUpdate: false,
+    source: 'npm',
+    ...over,
+  })
+
+  beforeEach(() => {
+    __resetUpdateInfoHubForTests()
+  })
+  afterEach(() => {
+    __resetUpdateInfoHubForTests()
+  })
+
+  it('seeds the latest published snapshot on start and fans out changes', async () => {
+    publishUpdateInfo(info({ latest: '1.1.0', hasUpdate: true }))
+    const { sink, conn } = setup()
+    conn.start()
+    const seeds = sink.kinds('update-info')
+    expect(seeds).toHaveLength(1)
+    expect(seeds[0]).toMatchObject({ kind: 'update-info', info: expect.objectContaining({ latest: '1.1.0' }) })
+
+    publishUpdateInfo(info({ latest: '1.2.0', hasUpdate: true }))
+    await tick()
+    const frames = sink.kinds('update-info')
+    expect(frames).toHaveLength(2)
+    expect(frames[1]).toMatchObject({ info: expect.objectContaining({ latest: '1.2.0' }) })
+    conn.close()
+  })
+
+  it('a second connection started later is seeded the latest snapshot without a new probe', async () => {
+    publishUpdateInfo(info({ latest: '1.1.0' }))
+    const first = setup()
+    first.conn.start()
+    publishUpdateInfo(info({ latest: '1.2.0' }))
+    await tick()
+
+    const second = setup()
+    second.conn.start()
+    const seeds = second.sink.kinds('update-info')
+    expect(seeds).toHaveLength(1)
+    expect(seeds[0]).toMatchObject({ info: expect.objectContaining({ latest: '1.2.0' }) })
+    first.conn.close()
+    second.conn.close()
+  })
+
+  it('cold hub seeds the checker cache fallback', () => {
+    const { sink, conn } = setup()
+    conn.start()
+    const seeds = sink.kinds('update-info')
+    expect(seeds).toHaveLength(1)
+    expect(seeds[0]).toMatchObject({
+      kind: 'update-info',
+      info: expect.objectContaining({ packageName: 'claude-react-web', source: 'npm' }),
+    })
     conn.close()
   })
 })
