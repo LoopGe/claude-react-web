@@ -137,3 +137,153 @@
   align-self: flex-start;
   margin-bottom: var(--space-1-5);
 }
+
+/* ── PDF viewer (PdfBody, lazy chunk) ─────────────────────────────────────
+   Continuous page sequence: theme document background, 12px gaps + inset,
+   page shadows, 3:4 skeletons for unrendered pages. The text-layer rules below
+   are a hand-copied subset of pdfjs-dist 6.3.289 web/pdf_viewer.css (.textLayer)
+   — we do NOT import pdf_viewer.css; the subset must track the pinned
+   pdfjs-dist version (guarded by pdf-viewer.test.ts). Theme tokens come in pairs
+   (repo rule); shadows follow tokens.css's rgba-black shadow convention. */
+:root {
+  --pdf-document-bg: var(--bg);
+  --pdf-skeleton-bg: var(--bg-elev-2);
+  --pdf-page-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 6px 18px rgba(0, 0, 0, 0.3);
+  --pdf-selection-bg: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+[data-theme='light'] {
+  --pdf-document-bg: var(--bg-elev-2);
+  --pdf-skeleton-bg: var(--bg-elev-3);
+  --pdf-page-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 6px 18px rgba(0, 0, 0, 0.12);
+  --pdf-selection-bg: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.pdf-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px;
+  overflow: auto;
+  background: var(--pdf-document-bg);
+}
+
+.pdf-page {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
+/* An unrendered page holds its place as a quiet block; the block itself is the
+   loading feedback, so no spinner competes with the centred document wait. */
+.pdf-page-placeholder {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background: var(--pdf-skeleton-bg);
+}
+
+.pdf-page-surface {
+  position: relative;
+  width: max-content;
+  max-width: none;
+  margin-inline: auto;
+  box-shadow: var(--pdf-page-shadow);
+}
+.pdf-page-surface[hidden] {
+  display: none;
+}
+
+.pdf-page-canvas {
+  display: block;
+}
+
+.pdf-page-text {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+}
+
+/* TextLayerBuilder selection styles follow pdfjs-dist 6.3.289 web/pdf_viewer.css.
+   --total-scale-factor / --scale-round-x/y are set by pdf-text.ts; --min-font-size
+   is set inline by the TextLayer itself. */
+.pdf-page-text .textLayer {
+  position: absolute;
+  inset: 0;
+  text-align: initial;
+  overflow: clip;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 0;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.pdf-page-text .textLayer[data-main-rotation='90'] {
+  transform: rotate(90deg) translateY(-100%);
+}
+.pdf-page-text .textLayer[data-main-rotation='180'] {
+  transform: rotate(180deg) translate(-100%, -100%);
+}
+.pdf-page-text .textLayer[data-main-rotation='270'] {
+  transform: rotate(270deg) translateX(-100%);
+}
+.pdf-page-text :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+  user-select: text;
+}
+.pdf-page-text .textLayer > :not(.markedContent),
+.pdf-page-text .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.pdf-page-text .markedContent {
+  display: contents;
+}
+.pdf-page-text ::selection {
+  background: var(--pdf-selection-bg);
+  color: transparent;
+}
+.pdf-page-text br::selection {
+  background: transparent;
+}
+.pdf-page-text .textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+.pdf-page-text .selecting .endOfContent {
+  top: 0;
+}
+
+/* Document/page load + failure messages. */
+.pdf-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.pdf-status-center {
+  flex: 1 1 auto;
+  justify-content: center;
+}
