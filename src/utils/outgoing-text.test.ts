@@ -56,3 +56,48 @@ describe('composeOutgoing', () => {
     expect(full).toBe('/summarize')
   })
 })
+
+describe('composeOutgoing quote opacity', () => {
+  const expand = (text: string) => text.replace('[Pasted text #1]', 'THE BODY')
+
+  it('leaves a quoted paste-ref literal (never expanded)', () => {
+    // The anti-goal: a `[Pasted text #N]`-shaped string INSIDE a blockquote run
+    // is quoted prose, not a live reference — splicing paste content into it
+    // would resurrect an attachment the user only quoted.
+    const input = '> [Pasted text #1]\n\nafter'
+    expect(composeOutgoing(input, expand)).toEqual({ text: input, full: input })
+  })
+
+  it('expands a paste-ref outside the quote but not the quoted one', () => {
+    const { text, full } = composeOutgoing('[Pasted text #1]\n\n> [Pasted text #1]', expand)
+    expect(text).toBe('THE BODY\n\n> [Pasted text #1]')
+    expect(full).toBe('THE BODY\n\n> [Pasted text #1]')
+  })
+
+  it('preserves a quote run’s leading indent through trim', () => {
+    // Up to three leading spaces are part of the run (`^ {0,3}>`); a whole-string
+    // trim would strip them and change the run's serialized text.
+    const { text } = composeOutgoing('   > quoted', expand)
+    expect(text).toBe('   > quoted')
+  })
+
+  it('preserves a quote run’s trailing interior whitespace through trim', () => {
+    const { text } = composeOutgoing('> quoted   ', expand)
+    expect(text).toBe('> quoted   ')
+  })
+
+  it('still trims outer whitespace beyond the quote run', () => {
+    const { text } = composeOutgoing('\n\n> quoted\n\n', expand)
+    expect(text).toBe('> quoted')
+  })
+
+  it('preserves interior whitespace of a multi-line quote run', () => {
+    const input = '> a\n>   b\n\nafter'
+    expect(composeOutgoing(input, expand)).toEqual({ text: input, full: input })
+  })
+
+  it('keeps a quoted file-handle string literal (no expansion path touches it)', () => {
+    const input = '> [File "a.pdf" id=x size=3]\n\nafter'
+    expect(composeOutgoing(input, expand)).toEqual({ text: input, full: input })
+  })
+})

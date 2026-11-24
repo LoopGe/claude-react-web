@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { fileHandleText } from '../../shared/upload-handle'
 import { imageHandleText } from '../../shared/image-handle'
+import { formatQuoteText } from './quote-text'
 import { splitUserBlocks, splitUserContentSegments } from './file-blocks'
 import type { Block } from '../types'
 
@@ -88,6 +89,90 @@ describe('splitUserContentSegments mention split', () => {
     expect(splitUserContentSegments([{ type: 'text', text: bash }])).toEqual([
       { type: 'text', text: bash },
     ])
+  })
+})
+
+describe('splitUserContentSegments quote opacity', () => {
+  it('recognizes a mid-text line-leading blockquote run as a quote segment', () => {
+    expect(splitUserContentSegments([{ type: 'text', text: 'before\n\n> quoted line\n\nafter' }])).toEqual([
+      { type: 'text', text: 'before\n\n' },
+      { type: 'quote', text: '> quoted line' },
+      { type: 'text', text: '\n\nafter' },
+    ])
+  })
+
+  it('keeps a quoted file-handle literal — never resurrected into a file segment', () => {
+    // The anti-goal: a file-handle string inside a quote is quoted prose. The
+    // quote run is recognized FIRST and protected from splitFileHandleText.
+    const segments = splitUserContentSegments([{ type: 'text', text: `> ${handle}` }])
+    expect(segments).toEqual([{ type: 'quote', text: `> ${handle}` }])
+    expect(segments.some((s) => s.type === 'file')).toBe(false)
+  })
+
+  it('keeps a quoted file-handle literal amid surrounding prose', () => {
+    expect(splitUserContentSegments([{ type: 'text', text: `before\n\n> ${handle}\n\nafter` }])).toEqual([
+      { type: 'text', text: 'before\n\n' },
+      { type: 'quote', text: `> ${handle}` },
+      { type: 'text', text: '\n\nafter' },
+    ])
+  })
+
+  it('keeps a quoted mention literal — never re-parsed into a mention segment', () => {
+    const segments = splitUserContentSegments([{ type: 'text', text: '> @src/a.ts' }])
+    expect(segments).toEqual([{ type: 'quote', text: '> @src/a.ts' }])
+    expect(segments.some((s) => s.type === 'mention')).toBe(false)
+  })
+
+  it('does not treat an inline > mid-line as a quote', () => {
+    expect(splitUserContentSegments([{ type: 'text', text: 'a > b' }])).toEqual([
+      { type: 'text', text: 'a > b' },
+    ])
+  })
+
+  it('still splits a file handle OUTSIDE a quote (regression)', () => {
+    expect(splitUserContentSegments([{ type: 'text', text: `${handle}\n\n> quoted` }])).toEqual([
+      { type: 'file', file: { id: ref.id, name: ref.name, size: ref.size } },
+      { type: 'text', text: '\n\n' },
+      { type: 'quote', text: '> quoted' },
+    ])
+  })
+
+  it('still splits a mention OUTSIDE a quote (regression)', () => {
+    expect(splitUserContentSegments([{ type: 'text', text: 'see @src/a.ts\n\n> quoted' }])).toEqual([
+      { type: 'text', text: 'see ' },
+      { type: 'mention', text: '@src/a.ts', path: 'src/a.ts', dir: false },
+      { type: 'text', text: '\n\n' },
+      { type: 'quote', text: '> quoted' },
+    ])
+  })
+
+  it('collapses a multi-line quote run into one segment', () => {
+    expect(splitUserContentSegments([{ type: 'text', text: '> a\n> b\n> c' }])).toEqual([
+      { type: 'quote', text: '> a\n> b\n> c' },
+    ])
+  })
+
+  it('recognizes a quote at the very start of the message', () => {
+    expect(splitUserContentSegments([{ type: 'text', text: '> only' }])).toEqual([
+      { type: 'quote', text: '> only' },
+    ])
+  })
+
+  it('keeps bash-mode XML intact even with a line-leading > inside (regression)', () => {
+    // A `> line` inside a command or stdout is shell syntax/output, not a user
+    // quote; fragmenting it would break BashMessage's tag slicing.
+    const bash = '<bash-input>cat\n> out</bash-input>'
+    expect(splitUserContentSegments([{ type: 'text', text: bash }])).toEqual([
+      { type: 'text', text: bash },
+    ])
+  })
+
+  it('renders a hand-typed blockquote identically to a selection-inserted quote', () => {
+    const selection = formatQuoteText('a\nb')
+    expect(splitUserContentSegments([{ type: 'text', text: selection }])).toEqual(
+      splitUserContentSegments([{ type: 'text', text: '> a\n> b' }]),
+    )
+    expect(selection).toBe('> a\n> b')
   })
 })
 

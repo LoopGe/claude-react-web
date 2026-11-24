@@ -23,6 +23,8 @@ import { TurnChangesCard } from './TurnChangesCard'
 import { useResultConsumed } from './result-consumed-context'
 import { blockRendersContent, willRenderEmpty } from './rendering'
 import { splitUserContentSegments } from '../../utils/file-blocks'
+import { quoteTextOf } from '../../utils/quote-text'
+import { QuotePreview } from '../QuotePreview'
 import { UserFileAttachments } from './UserFileAttachments'
 import { UserMentionChip } from './UserMentionChip'
 import { UserProseRun, type ProseRunItem } from './UserProseRun'
@@ -258,12 +260,12 @@ export const MessageView = memo(function MessageView({
 
   if (type === 'user') {
     const userSegments = splitUserContentSegments(blocks)
-    // Mention text stays part of the flat text view: the compact-summary,
+    // Mention and quote text stay part of the flat text view: the compact-summary,
     // bash-detection and synthetic-frame branches below render plain text, and
-    // a mention is plain `@path` text to the model. Only the real-user segment
-    // renderer chipifies it.
+    // a mention is plain `@path` text / a quote plain `> …` markdown to the
+    // model. Only the real-user segment renderer chipifies them.
     const userContent = userSegments
-      .filter((segment) => segment.type === 'text' || segment.type === 'mention')
+      .filter((segment) => segment.type === 'text' || segment.type === 'mention' || segment.type === 'quote')
       .map((segment) => segment.text)
       .join('') || null
     const userTextActive = new Map<number, number>()
@@ -285,7 +287,13 @@ export const MessageView = memo(function MessageView({
             ? countMatches(segment.file.name, userQuery)
             : segment.type === 'mention'
               ? countMatches(segment.text, userQuery)
-              : 0
+              : segment.type === 'quote'
+                // Count the decoded excerpt — the visible chip text, and what
+                // the server's markdown index extracts from a blockquote. The
+                // inert chip draws no search mark (an accepted exception class
+                // like searchable LaTeX); the ordinal still advances past it.
+                ? countMatches(quoteTextOf(segment.text), userQuery)
+                : 0
         if (remaining < count) {
           if (segment.type === 'text') userTextActive.set(i, remaining)
           else if (segment.type === 'file') userFileActive.add(i)
@@ -322,6 +330,9 @@ export const MessageView = memo(function MessageView({
           />
         )
       }
+      if (segment.type === 'quote') {
+        return <QuotePreview key={`quote-${index}`} text={segment.text} />
+      }
       if (bash && segment.text.includes('<bash-input>')) {
         return (
           <BashMessage
@@ -353,17 +364,17 @@ export const MessageView = memo(function MessageView({
         />
       )
     }
-    // Group consecutive text+mention segments into inline prose runs so a
-    // sentence with @mentions reads as one line with clickable chips. A run
-    // with NO mention renders each text segment as its own block (the
-    // mention-free look is unchanged); file/image segments break runs and keep
-    // their block layout. Only the real-user (non-bash) path uses this.
+    // Group consecutive text+mention+quote segments into inline prose runs so a
+    // sentence with @mentions or a quoted passage reads as one line with inline
+    // chips. A run with NO mention/quote renders each text segment as its own
+    // block (the mention-free look is unchanged); file/image segments break runs
+    // and keep their block layout. Only the real-user (non-bash) path uses this.
     const renderUserBody = (segments: readonly (typeof userSegments)[number][]) => {
       const out: React.ReactNode[] = []
       let run: ProseRunItem[] = []
       const flushRun = () => {
         if (run.length === 0) return
-        if (run.some(({ segment }) => segment.type === 'mention')) {
+        if (run.some(({ segment }) => segment.type === 'mention' || segment.type === 'quote')) {
           out.push(
             <UserProseRun
               key={`prose-${run[0]!.index}`}
@@ -379,7 +390,7 @@ export const MessageView = memo(function MessageView({
         run = []
       }
       segments.forEach((segment, index) => {
-        if (segment.type === 'text' || segment.type === 'mention') {
+        if (segment.type === 'text' || segment.type === 'mention' || segment.type === 'quote') {
           run.push({ segment, index })
         } else {
           flushRun()

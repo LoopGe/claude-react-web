@@ -13,6 +13,7 @@
 import type { ReactNode } from 'react'
 import { compileMarkdown } from '../../utils/markdown-cache'
 import type { UserContentSegment } from '../../utils/file-blocks'
+import { QuotePreview } from '../QuotePreview'
 import { UserMentionChip } from './UserMentionChip'
 
 export interface ProseRunItem {
@@ -22,18 +23,30 @@ export interface ProseRunItem {
 }
 
 /** A text fragment: literal boundary whitespace + its trimmed markdown core
- *  rendered inline. A whitespace-only fragment renders as literal text. */
-function ProseText({ text, searchQuery, activeMatchIdx }: {
+ *  rendered inline. A whitespace-only fragment renders as literal text.
+ *
+ *  `collapseStart` / `collapseEnd` mark a fragment whose left / right neighbour
+ *  in the run is a quote chip: the facing paragraph separator (the blank line
+ *  `joinTokens` guarantees around a quote run) renders as a single inline space
+ *  so the quote flows with the surrounding prose (DSH quote-rule parity)
+ *  instead of stacking onto its own line. */
+function ProseText({ text, searchQuery, activeMatchIdx, collapseStart = false, collapseEnd = false }: {
   text: string
   searchQuery?: string
   activeMatchIdx?: number
+  collapseStart?: boolean
+  collapseEnd?: boolean
 }) {
   const core = text.trim()
-  if (core === '') return <>{text}</>
+  if (core === '') {
+    // A whitespace-only fragment beside a quote is just the separator.
+    if ((collapseStart || collapseEnd) && text.length > 0) return <> </>
+    return <>{text}</>
+  }
   const leadingLen = text.length - text.trimStart().length
   const trailingLen = text.length - text.trimEnd().length
-  const leading = text.slice(0, leadingLen)
-  const trailing = text.slice(text.length - trailingLen)
+  const leading = collapseStart && leadingLen > 0 ? ' ' : text.slice(0, leadingLen)
+  const trailing = collapseEnd && trailingLen > 0 ? ' ' : text.slice(text.length - trailingLen)
   return (
     <>
       {leading}
@@ -52,7 +65,8 @@ export function UserProseRun({ items, searchQuery, textActive, mentionActive }: 
   mentionActive: ReadonlySet<number>
 }) {
   const out: ReactNode[] = []
-  for (const { segment, index } of items) {
+  for (let i = 0; i < items.length; i++) {
+    const { segment, index } = items[i]!
     if (segment.type === 'mention') {
       out.push(
         <UserMentionChip
@@ -63,6 +77,9 @@ export function UserProseRun({ items, searchQuery, textActive, mentionActive }: 
           active={mentionActive.has(index)}
         />,
       )
+    } else if (segment.type === 'quote') {
+      // Inert sent quote: the exact run; QuotePreview decodes the excerpt.
+      out.push(<QuotePreview key={`quote-${index}`} text={segment.text} />)
     } else if (segment.type === 'text') {
       out.push(
         <ProseText
@@ -70,6 +87,8 @@ export function UserProseRun({ items, searchQuery, textActive, mentionActive }: 
           text={segment.text}
           searchQuery={searchQuery}
           activeMatchIdx={textActive.get(index)}
+          collapseStart={items[i - 1]?.segment.type === 'quote'}
+          collapseEnd={items[i + 1]?.segment.type === 'quote'}
         />,
       )
     }

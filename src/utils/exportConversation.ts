@@ -32,16 +32,17 @@ export function exportConversation(messages: SdkMessage[], title?: string): void
         ? [{ type: 'text', text: content } as Block]
         : Array.isArray(content) ? content as Block[] : []
       const blockSegments = blocks.map((block) => splitUserContentSegments([block]))
-      if (!blockSegments.some((segments) => segments.some((segment) => segment.type === 'file' || segment.type === 'mention' || (segment.type === 'text' && segment.text !== '')))) continue
+      if (!blockSegments.some((segments) => segments.some((segment) => segment.type === 'file' || segment.type === 'mention' || segment.type === 'quote' || (segment.type === 'text' && segment.text !== '')))) continue
 
       lines.push('## You')
       lines.push('')
-      // Text and mentions are one prose run PER BLOCK: mentions split a
-      // block's text into segments for the UI's chips, but the export keeps
-      // the block's line intact (a mention is plain `@path` text). Distinct
-      // blocks keep their own lines — the block boundary flushes the run, so
-      // an image between two texts separates them without exporting anything
-      // itself. File chips stay their own lines.
+      // Text, mentions and quotes are one prose run PER BLOCK: mentions and
+      // quotes split a block's text into segments for the UI's chips, but the
+      // export keeps the block's line intact (a mention is plain `@path` text,
+      // a quote plain `> …` markdown). Distinct blocks keep their own lines —
+      // the block boundary flushes the run, so an image between two texts
+      // separates them without exporting anything itself. File chips stay their
+      // own lines.
       let prose = ''
       const flushProse = () => {
         if (prose !== '') {
@@ -51,7 +52,7 @@ export function exportConversation(messages: SdkMessage[], title?: string): void
       }
       for (const segments of blockSegments) {
         for (const segment of segments) {
-          if (segment.type === 'text' || segment.type === 'mention') prose += segment.text
+          if (segment.type === 'text' || segment.type === 'mention' || segment.type === 'quote') prose += segment.text
           else if (segment.type === 'file') {
             flushProse()
             lines.push(`- 📎 ${segment.file.name} (${formatBytes(segment.file.size)})`)
