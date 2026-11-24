@@ -32,6 +32,9 @@ const h = vi.hoisted(() => {
 vi.mock('./hooks/useWsHub', () => ({
   useWsHub: () => h.hub,
   useWsHubStatus: () => 'online',
+  // useUpdateInfo reads the optional hub for live update-info frames; these
+  // tests exercise REST-only session creation, so no hub is mounted.
+  useOptionalWsHub: () => null,
 }))
 
 vi.mock('./hooks/useIsMobile', () => ({
