@@ -2,16 +2,21 @@
  * Compact quote-excerpt presentation shared by the composer chip and sent
  * messages (DSH QuotePreview parity).
  *
- * The composer's atomic chip is plain DOM built by `renderTokens` (the DOM→text
- * bridge must stay React-free and the editor's `overflow: hidden` box clips any
- * in-editor popover), so this React component is the SENT-message presentation
- * and the canonical removable/inert variants. Both draw the identical mark and
- * share the `.quote-chip*` classes; the decoded excerpt comes from `quoteTextOf`
- * in both, so a hand-typed blockquote and a selection-inserted quote look alike.
+ * The composer's atomic chip is plain DOM built by `renderTokens` because the
+ * DOM→text bridge must stay React-free: `renderTokens` runs inside a layout effect
+ * and is rebuilt on every reconcile, so mounting React roots there is the wrong
+ * architecture. That — NOT any overflow clipping — is the binding reason; a
+ * `HoverPopover` portals to `document.body`, so an ancestor's `overflow: hidden`
+ * would not clip it. This React component is therefore the SENT-message
+ * presentation and the canonical removable/inert variants. Both draw the identical
+ * mark and share the `.quote-chip*` classes; the decoded excerpt comes from
+ * `quoteTextOf` in both, so a hand-typed blockquote and a selection-inserted quote
+ * look alike.
  *
- * Unlike the composer chip (whose full text rides a native `title`), this variant
- * lives outside the editor's clipped box, so a clipped excerpt opens a portalled
- * `HoverPopover` with the full decoded text.
+ * The composer chip currently exposes its full text through a native `title` (a
+ * UX choice accepted for now, not a technical necessity); a future delegated-hover
+ * popover at the editor level is not foreclosed. This sent variant opens a
+ * portalled `HoverPopover` with the full decoded text when the excerpt is clipped.
  */
 
 import { useLayoutEffect, useRef, useState, type JSX } from 'react'

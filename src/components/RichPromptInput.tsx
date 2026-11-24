@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 
 import { joinTokens, tokenize } from '../utils/pastedText'
 import { renderTokens, serializeTokens, domRepresentsValue, mentionChipFacts, MENTION_CHIP_ATTR, QUOTE_CHIP_ATTR, QUOTE_REMOVE_ATTR } from '../utils/richPromptDom'
 import { syncEditorHeight } from '../utils/editor-height'
-import { offsetOf, slashWordBefore, atWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
+import { offsetOf, valueOffsetOf, slashWordBefore, atWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
 import { isSupportedImageMediaType } from '../../shared/image-media'
 import { selectionOffsets, placeCaretIn, selectAll } from './richPromptApi'
 
@@ -326,12 +326,20 @@ export function RichPromptInput({
     // editable text (the forming `@query`), so both the equality check and the
     // rebuild render with the same caret gate. No caret (unfocused / draft
     // restore) → every mention is settled and chipifies.
+    //
+    // Measure in VALUE space (valueOffsetOf), not the raw DOM serialization: the
+    // rebuilt DOM's serialization equals `value` (joinTokens of its tokens), and
+    // a quote chip abutting separator-less prose makes joinTokens insert
+    // separators the live DOM lacks. A raw-space caret would restore BEFORE those
+    // inserted separators, inverting the order of subsequent keystrokes. For
+    // mention/ref chips and plain text the two spaces coincide, so this is a
+    // no-op there.
     const doc = el.ownerDocument
     const selection = doc.getSelection()
     const hadCaret =
       selection !== null && selection.rangeCount > 0 && el.contains(selection.anchorNode)
     const caret = hadCaret
-      ? offsetOf(el, selection!.anchorNode!, selection!.anchorOffset)
+      ? valueOffsetOf(el, selection!.anchorNode!, selection!.anchorOffset)
       : null
     const tokens = tokenize(value)
     if (domRepresentsValue(el, tokens, caret ?? undefined)) return

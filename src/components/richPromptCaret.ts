@@ -10,7 +10,8 @@
  * learned to ignore).
  */
 
-import { collectSegments } from '../utils/richPromptDom'
+import { collectSegments, serializeSegments } from '../utils/richPromptDom'
+import { joinTokens } from '../utils/pastedText'
 
 // ---------------------------------------------------------------------------
 // DOM-position -> serialized-offset measurement
@@ -34,6 +35,34 @@ export function offsetOf(root: Element, container: Node, offset: number): number
     count += segment.text.length
   }
   return count
+}
+
+/**
+ * Like {@link offsetOf}, but measured in VALUE space — the string `onChange`
+ * reports (`joinTokens(serializeTokens(el))`) — rather than the raw DOM
+ * serialization.
+ *
+ * The two spaces coincide for every chip kind whose textContent IS its
+ * serialization (paste-ref, mention) and for plain text, because `joinTokens`
+ * adds nothing there. A quote chip breaks that equality: when a run abuts
+ * separator-less prose, `joinTokens`' composition guards insert a leading `\n`
+ * and/or a blank-line `\n\n` that the raw DOM does not contain. The reconcile
+ * measures the caret on the live (possibly separator-less) DOM and then restores
+ * it on the rebuilt DOM, whose serialization already equals the value — so it
+ * must measure in value space, or the restored caret lands BEFORE the inserted
+ * separators and the next keystroke splices in reverse order.
+ *
+ * Built on the SAME single walk (`collectSegments` with the stop) plus the shared
+ * serializer and `joinTokens`, so it cannot drift from the value the caret is
+ * about to index into. The guards key on the tokens present in the prefix: a
+ * caret after the typed prose includes that prose token, so the blank-line
+ * separator before it is counted; a caret resting right after the chip (before
+ * any prose) does not include a following token, so no trailing separator is
+ * counted — matching where the value actually places the caret.
+ */
+export function valueOffsetOf(root: Element, container: Node, offset: number): number {
+  const prefix = serializeSegments(collectSegments(root, { container, offset }))
+  return joinTokens(prefix).length
 }
 
 /**

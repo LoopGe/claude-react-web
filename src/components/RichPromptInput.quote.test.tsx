@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, fireEvent } from '@testing-library/react'
 import { RichPromptInput } from './RichPromptInput'
 import { QUOTE_CHIP_ATTR, QUOTE_CHIP_CLASS, QUOTE_REMOVE_ATTR, MENTION_CHIP_CLASS } from '../utils/richPromptDom'
-import { placeCaretAtOffset } from './richPromptCaret'
+import { placeCaretAtOffset, offsetOf } from './richPromptCaret'
 import { quoteTextOf } from '../utils/quote-text'
 
 // RTL cleanup is registered globally in src/test-setup.ts (globals: false means
@@ -18,6 +18,30 @@ function typeText(el: HTMLDivElement, text: string) {
   el.textContent = text
   placeCaretAtOffset(el, text.length)
   fireEvent.input(el)
+}
+
+/** Insert `text` at the LIVE DOM selection (wherever the caret currently sits),
+ *  leave the caret after it, and fire `input` — what a real keystroke does. Used
+ *  to exercise typing immediately after a settled chip, where the browser appends
+ *  separator-less text next to the chip. */
+function typeAtCaret(el: HTMLDivElement, text: string) {
+  const doc = el.ownerDocument
+  const sel = doc.getSelection()!
+  const range = sel.getRangeAt(0)
+  range.deleteContents()
+  const node = doc.createTextNode(text)
+  range.insertNode(node)
+  range.setStartAfter(node)
+  range.collapse(true)
+  sel.removeAllRanges()
+  sel.addRange(range)
+  fireEvent.input(el)
+}
+
+/** Current caret offset in VALUE space (the string `onChange` reports). */
+function caretValueOffset(el: HTMLDivElement): number {
+  const sel = el.ownerDocument.getSelection()!
+  return offsetOf(el, sel.anchorNode!, sel.anchorOffset)
 }
 
 describe('RichPromptInput quote chip', () => {
@@ -114,5 +138,50 @@ describe('RichPromptInput quote chip', () => {
     const el = editor(container)
     expect(el.querySelector(`.${MENTION_CHIP_CLASS}`)).not.toBeNull()
     expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)).not.toBeNull()
+  })
+})
+
+describe('RichPromptInput quote chip — caret space after typing adjacent to a chip', () => {
+  // The value `onChange` reports is `joinTokens(serializeTokens(el))`, whose
+  // blank-line guard inserts `\n\n` between a quote run and separator-less prose.
+  // The caret must be measured in THAT value space, not the raw DOM-serialization
+  // space — otherwise the reconcile restores it before the inserted newlines and
+  // subsequent keystrokes land in reverse order on separate lines.
+  it('keeps the caret after the typed char when typing immediately after a settled quote chip', () => {
+    const onChange = vi.fn()
+    const { container, rerender } = render(
+      <RichPromptInput value="> q" onChange={onChange} ariaLabel="Q" />,
+    )
+    const el = editor(container)
+    placeCaretAtOffset(el, 3) // caret at the settled chip's end
+    typeAtCaret(el, 'x')
+    expect(onChange).toHaveBeenLastCalledWith('> q\n\nx')
+    rerender(<RichPromptInput value={'> q\n\nx'} onChange={onChange} ariaLabel="Q" />)
+    // Caret must sit AFTER the 'x' (value offset 6), not between the inserted newlines.
+    expect(caretValueOffset(el)).toBe('> q\n\nx'.length)
+
+    // The next keystroke must append in typed order, not invert.
+    typeAtCaret(el, 'y')
+    expect(onChange).toHaveBeenLastCalledWith('> q\n\nxy')
+    rerender(<RichPromptInput value={'> q\n\nxy'} onChange={onChange} ariaLabel="Q" />)
+    expect(caretValueOffset(el)).toBe('> q\n\nxy'.length)
+  })
+
+  it('keeps typed order when typing after a quote chip that follows leading prose', () => {
+    const onChange = vi.fn()
+    const { container, rerender } = render(
+      <RichPromptInput value={'a\n\n> q'} onChange={onChange} ariaLabel="Q" />,
+    )
+    const el = editor(container)
+    placeCaretAtOffset(el, 'a\n\n> q'.length) // caret at the chip's end
+    typeAtCaret(el, 'x')
+    expect(onChange).toHaveBeenLastCalledWith('a\n\n> q\n\nx')
+    rerender(<RichPromptInput value={'a\n\n> q\n\nx'} onChange={onChange} ariaLabel="Q" />)
+    expect(caretValueOffset(el)).toBe('a\n\n> q\n\nx'.length)
+
+    typeAtCaret(el, 'y')
+    expect(onChange).toHaveBeenLastCalledWith('a\n\n> q\n\nxy')
+    rerender(<RichPromptInput value={'a\n\n> q\n\nxy'} onChange={onChange} ariaLabel="Q" />)
+    expect(caretValueOffset(el)).toBe('a\n\n> q\n\nxy'.length)
   })
 })

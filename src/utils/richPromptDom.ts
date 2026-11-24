@@ -341,10 +341,11 @@ function appendQuoteMark(doc: Document, parent: Element, className: string): voi
  * Build the composer's atomic quote chip: a `contenteditable=false` span whose
  * `data-quote-text` is the EXACT blockquote run (the serialization) and whose
  * visible text is the DECODED excerpt. The whole-run removal button swaps the
- * quote mark for a × on hover (CSS). The full decoded text rides a native `title`
- * — the overflow-safe hover affordance for a chip inside the editor's clipped
- * (`overflow: hidden`) box, where a portalled React popover cannot reach. The
- * sent-message presentation (`QuotePreview`) shares these classes and the mark.
+ * quote mark for a × on hover (CSS). The full decoded text rides a native `title`:
+ * the bridge is React-free (it runs in a layout effect rebuilt per reconcile), so
+ * the chip cannot host the React `HoverPopover` the sent presentation uses — not
+ * because of overflow clipping (a portalled popover escapes `overflow: hidden`).
+ * The sent-message presentation (`QuotePreview`) shares these classes and the mark.
  */
 function buildQuoteChip(doc: Document, exactText: string): Element {
   const chip = doc.createElement('span')
@@ -424,8 +425,17 @@ export function renderTokens(
  * mistaken for the value.
  */
 export function serializeTokens(root: Node): PastedTextToken[] {
+  return serializeSegments(collectSegments(root))
+}
+
+/**
+ * Tokenize an already-collected segment list (the prefix before a caret stop, or
+ * the whole walk). Shared by `serializeTokens` and the value-space caret
+ * measurement so both read the DOM through ONE serializer.
+ */
+export function serializeSegments(segments: DomSegment[]): PastedTextToken[] {
   const tokens: PastedTextToken[] = []
-  for (const segment of collectSegments(root)) {
+  for (const segment of segments) {
     const element = segment.element
     const rawId = element?.getAttribute(CHIP_ATTR)
     if (rawId != null) {
