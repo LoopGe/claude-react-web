@@ -33,9 +33,11 @@ export interface RichPromptHandle {
    *  or an open-quote drill string), leaving the caret at the replacement's end. */
   replaceAtWord(text: string): void
   /** Insert a select-to-quote passage as a line-leading blockquote run at the
-   *  caret (or the draft end when the editor has no live caret), settling it as
-   *  an atomic quote chip with the caret left PAST the run's end. `text` is the
-   *  selected VISIBLE text; it is formatted with `formatQuoteText` here. */
+   *  caret — the live caret, else the last caret remembered while the editor
+   *  held the selection (the toolbar click blurs it), else the draft end —
+   *  settling it as an atomic quote chip with the caret left PAST the run's end.
+   *  `text` is the selected VISIBLE text; it is formatted with `formatQuoteText`
+   *  here. */
   insertQuoteAtCaret(text: string): void
   /** Offset pair for the current selection, or null when nothing is selected. */
   selectionOffsets(): { start: number; end: number } | null
@@ -136,6 +138,13 @@ export function RichPromptInput({
   // Set while an IME composition is in flight. Re-rendering the DOM from
   // `value` mid-composition moves the caret and can drop the candidate.
   const composingRef = useRef(false)
+  // Last caret offset (VALUE space) seen while the selection was inside the
+  // editor. A select-to-quote insert blurs the editor — the document selection
+  // moves to the transcript — so the live caret is gone by the time the Quote
+  // button is clicked. This remembers where the user was typing so the quote
+  // lands at that caret (design §4), not appended at the draft end. null until
+  // the editor has held a caret at least once.
+  const lastCaretRef = useRef<number | null>(null)
 
   // ------------------------------------------------------------------
   // Caret queries -- bridge the pure helpers to the live DOM selection.
@@ -220,18 +229,24 @@ export function RichPromptInput({
    *  a hand-composed quote token: a leading `\n` when the run would otherwise
    *  start mid-line, and a blank line before following prose that has no break
    *  of its own. The caret lands AFTER the trailing separator, so it is past the
-   *  run's end (the caret gate is end-inclusive) and the chip settles. When the
-   *  editor has no live caret — the select-to-quote toolbar click blurs it — the
-   *  run appends at the draft end. */
+   *  run's end (the caret gate is end-inclusive) and the chip settles.
+   *
+   *  The insert offset is the live caret when the selection is inside the
+   *  editor; otherwise the last caret remembered while it was (the
+   *  select-to-quote toolbar click blurs the editor), clamped to the current
+   *  value length; only an editor that never held a caret falls back to the
+   *  draft end. */
   const insertQuoteAtCaret = (text: string) => {
     const el = ref.current
     if (!el) return
     const doc = el.ownerDocument
     const selection = doc.getSelection()
-    const off =
+    const live =
       selection !== null && selection.rangeCount > 0 && el.contains(selection.anchorNode)
         ? valueOffsetOf(el, selection.anchorNode!, selection.anchorOffset)
-        : value.length
+        : null
+    const off =
+      live ?? (lastCaretRef.current === null ? value.length : Math.min(lastCaretRef.current, value.length))
     const run = formatQuoteText(text)
     const before = value.slice(0, off)
     const after = value.slice(off)
@@ -242,6 +257,7 @@ export function RichPromptInput({
     el.focus()
     el.replaceChildren(renderTokens(doc, tokenize(next), caret))
     placeCaretAtOffset(el, caret)
+    lastCaretRef.current = caret
     onChange(next)
   }
 
@@ -470,6 +486,24 @@ export function RichPromptInput({
       el.removeEventListener('blur', onBlur)
     }
   }, [onChange, ref, dropEmptyResidue])
+
+  // Remember the caret whenever the selection moves inside the editor, so an
+  // insert that arrives while the editor is blurred (select-to-quote) still
+  // lands at the caret the user chose. Read-only: it never mutates the DOM or
+  // the selection, so it cannot disturb typing or IME composition.
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const doc = el.ownerDocument
+    const onSelectionChange = () => {
+      const sel = doc.getSelection()
+      if (sel !== null && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
+        lastCaretRef.current = valueOffsetOf(el, sel.anchorNode!, sel.anchorOffset)
+      }
+    }
+    doc.addEventListener('selectionchange', onSelectionChange)
+    return () => doc.removeEventListener('selectionchange', onSelectionChange)
+  }, [ref])
 
   // Attach caret-query methods directly to the DOM element so callers holding
   // editorRef can use them (e.g. `ref.current.getSlashWordAtCaret()`).

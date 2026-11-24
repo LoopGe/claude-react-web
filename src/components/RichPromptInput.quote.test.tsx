@@ -236,4 +236,43 @@ describe('RichPromptInput insertQuoteAtCaret (select-to-quote insert)', () => {
     expect(onChange).toHaveBeenLastCalledWith('> line one\n> line two\n')
     expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> line one\n> line two')
   })
+
+  it('inserts at the remembered mid-draft caret once the selection leaves the editor', () => {
+    const { el, handle, onChange } = mount('hello world')
+    // Caret mid-text; a caret move inside the editor is remembered.
+    placeCaretAtOffset(el, 5)
+    el.ownerDocument.dispatchEvent(new Event('selectionchange'))
+    // Selecting transcript text moves the selection out of the editor.
+    el.ownerDocument.getSelection()!.removeAllRanges()
+    handle.insertQuoteAtCaret('q')
+    expect(onChange).toHaveBeenLastCalledWith('hello\n> q\n\n world')
+    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> q')
+  })
+
+  it('tracks the latest caret, not the first remembered one', () => {
+    const { el, handle, onChange } = mount('hello world')
+    placeCaretAtOffset(el, 5)
+    el.ownerDocument.dispatchEvent(new Event('selectionchange'))
+    placeCaretAtOffset(el, 8)
+    el.ownerDocument.dispatchEvent(new Event('selectionchange'))
+    el.ownerDocument.getSelection()!.removeAllRanges()
+    handle.insertQuoteAtCaret('q')
+    expect(onChange).toHaveBeenLastCalledWith('hello wo\n> q\n\nrld')
+  })
+
+  it('clamps a remembered caret to a draft that has since shrunk', () => {
+    const onChange = vi.fn()
+    const ref = createRef<HTMLDivElement & RichPromptHandle>()
+    const { rerender } = render(
+      <RichPromptInput value="hello world" onChange={onChange} editorRef={ref} ariaLabel="Q" />,
+    )
+    const el = ref.current!
+    placeCaretAtOffset(el, 8)
+    el.ownerDocument.dispatchEvent(new Event('selectionchange'))
+    // Selection leaves the editor, then the draft is replaced by a shorter one.
+    el.ownerDocument.getSelection()!.removeAllRanges()
+    rerender(<RichPromptInput value="hi" onChange={onChange} editorRef={ref} ariaLabel="Q" />)
+    ref.current!.insertQuoteAtCaret('q')
+    expect(onChange).toHaveBeenLastCalledWith('hi\n> q\n')
+  })
 })

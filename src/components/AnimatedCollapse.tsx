@@ -693,6 +693,9 @@ export function AnimatedDetails({
         className={summaryClassName || undefined}
         aria-expanded={open}
         onClick={handleSummaryClick}
+        // Fold chrome (the toggle label / preview), not quotable content — a
+        // selection spanning a tool-result / thinking / bash fold must drop it.
+        data-text-interaction-exclude=""
       >
         {summary}
       </summary>

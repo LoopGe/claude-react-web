@@ -97,6 +97,13 @@ describe('readTextSelection', () => {
     expect(readTextSelection(root, sel)).toBeNull()
   })
 
+  it('returns null when a source ancestor is inert', () => {
+    const root = makeRoot(`<div inert>${source('<p>inert</p>')}</div>`)
+    const src = root.querySelector(`[${TEXT_INTERACTION_SOURCE}]`)!
+    const sel = selectContents(src)
+    expect(readTextSelection(root, sel)).toBeNull()
+  })
+
   it('returns null for a null selection', () => {
     const root = makeRoot(source('<p>x</p>'))
     expect(readTextSelection(root, null)).toBeNull()
@@ -154,6 +161,17 @@ describe('selectedText projection', () => {
     expect(project(
       `<p>output<span ${TEXT_INTERACTION_EXCLUDE} class="tool-status">done</span><span ${TEXT_INTERACTION_EXCLUDE} class="msg-file-chip">file.ts 2 KB</span> rest</p>`,
     )).toBe('output rest')
+  })
+
+  it('keeps mention-chip text (user content, not chrome) even though it is a button', () => {
+    expect(project('<p>see <button class="msg-mention-chip">@src/a.ts</button> ok</p>'))
+      .toBe('see @src/a.ts ok')
+  })
+
+  it('drops an excluded fold summary (AnimatedDetails chrome)', () => {
+    expect(project(
+      `<details><summary ${TEXT_INTERACTION_EXCLUDE}>show 3 more lines</summary><div>body text</div></details>`,
+    )).toBe('body text')
   })
 
   it('returns null for a whitespace-only projection', () => {

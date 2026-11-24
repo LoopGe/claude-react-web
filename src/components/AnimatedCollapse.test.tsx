@@ -1,7 +1,7 @@
 import { type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, render } from '@testing-library/react'
-import { AnimatedCollapse } from './AnimatedCollapse'
+import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { setCollapseAnimating } from './collapse-animation'
 import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../test/resize-observer-stub'
 import {
@@ -907,5 +907,18 @@ describe('AnimatedCollapse — trace diagnostics', () => {
       kind: 'fold',
       writtenHeight: expect.any(Number),
     })
+  })
+})
+
+describe('AnimatedDetails selection chrome', () => {
+  it('marks the fold summary as text-interaction-exclude so a spanning selection drops it', () => {
+    const { container } = render(
+      <AnimatedDetails summary={<span>show 3 more lines</span>}>
+        <div>body</div>
+      </AnimatedDetails>,
+    )
+    const summary = container.querySelector('summary')!
+    expect(summary).not.toBeNull()
+    expect(summary.hasAttribute('data-text-interaction-exclude')).toBe(true)
   })
 })

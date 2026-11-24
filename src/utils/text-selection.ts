@@ -17,6 +17,11 @@ export const TEXT_INTERACTION_SOURCE = 'data-text-interaction-source'
  *  the whole subtree. */
 export const TEXT_INTERACTION_EXCLUDE = 'data-text-interaction-exclude'
 
+// Selectors built from the protocol constants so the marking and the projection
+// can never drift apart.
+const SOURCE_SELECTOR = `[${TEXT_INTERACTION_SOURCE}]`
+const EXCLUDE_SELECTOR = `[${TEXT_INTERACTION_EXCLUDE}]`
+
 const PROJECTED_BLOCK_TAGS = new Set([
   'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DD', 'DIV', 'DL', 'DT', 'FIGCAPTION',
   'FIGURE', 'FOOTER', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HEADER', 'LI', 'MAIN',
@@ -25,8 +30,11 @@ const PROJECTED_BLOCK_TAGS = new Set([
 const PROJECTED_CELL_TAGS = new Set(['TD', 'TH'])
 
 function excluded(element: Element): boolean {
-  if (element.matches('.katex-mathml, [data-text-interaction-exclude], [hidden], .sr-only')) return true
+  if (element.matches(`.katex-mathml, ${EXCLUDE_SELECTOR}, [hidden], .sr-only`)) return true
   if (element.matches('[aria-hidden="true"]') && !element.matches('.katex-html')) return true
+  // A mention chip is genuine user CONTENT (the `@path` token), not renderer
+  // chrome — keep its text even though it renders as a button in the transcript.
+  if (element.matches('.msg-mention-chip')) return false
   return element.tagName === 'BUTTON' && element.parentElement?.tagName !== 'CODE'
 }
 
@@ -174,10 +182,10 @@ export function readTextSelection(root: HTMLElement, selection: Selection | null
   if (selection === null || selection.rangeCount !== 1 || selection.isCollapsed) return null
   const range = selection.getRangeAt(0)
   const sourceOf = (node: Node): HTMLElement | null =>
-    (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>('[data-text-interaction-source]') ?? null
+    (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>(SOURCE_SELECTOR) ?? null
   const source = sourceOf(range.startContainer)
   if (source === null || source !== sourceOf(range.endContainer) || !root.contains(source)
-    || source.closest('[hidden], [inert], [data-text-interaction-exclude]') !== null) return null
+    || source.closest(`[hidden], [inert], ${EXCLUDE_SELECTOR}`) !== null) return null
   return { source, range }
 }
 
