@@ -282,6 +282,11 @@
   --code-fg: #c9d1d9;
   --code-bar-bg: color-mix(in srgb, var(--code-bg) 85%, var(--border));
   --code-block-border: var(--border);
+  /* Peak colour of the numbered-view navigation band (file-viewer.css
+     code-nav-band keyframe). A momentary accent wash that fades in, holds, then
+     fades out — stronger than a static tint so the fade reads. Light theme tunes
+     the percentage down (its accent is darker/more saturated). */
+  --code-nav-band: color-mix(in srgb, var(--accent) 26%, transparent);
   --bg-elev-1: #181c24;
   /* Syntax-highlighting token colours (atom-one-dark palette) */
   --hljs-fg: #abb2bf;
@@ -453,6 +458,9 @@
   --code-fg: #383a42;
   --code-bar-bg: #ebedf0;
   --code-block-border: #d0d4db;
+  /* Navigation band peak, light theme (see :root). Lower percentage: the light
+     accent is darker, so the same wash would read heavier here. */
+  --code-nav-band: color-mix(in srgb, var(--accent) 20%, transparent);
   --bg-elev-1: #f0f1f4;
   /* Syntax-highlighting token colours (atom-one-light palette) */
   --hljs-fg: #383a42;

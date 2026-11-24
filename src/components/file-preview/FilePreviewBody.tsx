@@ -6,10 +6,12 @@
 // Image/markdown detection follows `path` (the bytes actually read), never the
 // display `title` — callers may pass a bare label there.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Markdown } from '../Markdown'
 import { MsgImage } from '../MsgImage'
 import { NumberedCode } from './NumberedCode'
+import { FrontmatterFields } from './FrontmatterFields'
+import { splitFrontmatter } from '../../utils/frontmatter'
 import { detectLanguage, imageMediaTypeOf, splitFilePath } from '../../utils/file-display'
 import { imageDataUrl } from '../../utils/image-block'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
@@ -18,7 +20,8 @@ import { IMAGE_PREVIEW_MAX_BYTES, type FileReadResult } from '../../../shared/re
 export interface FilePreviewBodyProps {
   /** Absolute path of the bytes in `data` (drives image/markdown detection). */
   path: string | null
-  /** Display title (the code block's language hint comes from it). */
+  /** Display title — the code block's bar label. The highlight language comes
+   *  from `path` (detectLanguage), never from this label. */
   title: string
   /** null = no response has landed yet (initial paint / in flight). */
   data: FileReadResult | null
@@ -70,6 +73,14 @@ export function FilePreviewBody({
   const available = data?.available ?? false
   const contents = data?.contents
   const truncated = data?.truncated
+  // Preview-mode metadata split: a leading frontmatter block renders as a
+  // field list above the markdown body. Source mode is untouched — it always
+  // shows the FULL original contents, delimiters included — so the split is
+  // only computed in preview mode, memoized on its inputs.
+  const markdownSplit = useMemo(
+    () => (!showSource && isMarkdown && contents !== undefined ? splitFrontmatter(contents) : null),
+    [showSource, isMarkdown, contents],
+  )
 
   return (
     <>
@@ -112,7 +123,14 @@ export function FilePreviewBody({
                 CSS-hidden (overlay-scrollbar.css) — only this outer container
                 scrolls natively, so it gets the overlay thumb too. */}
             <div className="file-viewer-md" ref={setCodeOs}>
-              <Markdown text={contents} />
+              {markdownSplit?.frontmatter != null ? (
+                <>
+                  <FrontmatterFields source={markdownSplit.frontmatter} />
+                  <Markdown text={markdownSplit.body} />
+                </>
+              ) : (
+                <Markdown text={contents} />
+              )}
             </div>
             {truncated && (
               <div className="hint file-viewer-truncated">
@@ -133,7 +151,8 @@ export function FilePreviewBody({
             )}
             <NumberedCode
               contents={contents}
-              lang={splitFilePath(title).base || title}
+              lang={path ? (detectLanguage(path) ?? undefined) : undefined}
+              label={splitFilePath(title).base || title}
               line={line}
               endLine={endLine}
               revision={revision}
