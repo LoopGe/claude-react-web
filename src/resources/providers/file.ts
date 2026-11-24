@@ -18,10 +18,14 @@
 
 import { api } from '../../hooks/useApi'
 import { parseFileResource } from '../../../shared/resource-address'
-import { imageMediaTypeOf } from '../../utils/file-display'
+import { imageMediaTypeOf, isPdfPath } from '../../utils/file-display'
 import { formatError } from '../../utils/format-error'
 import { isPathInside } from '../../../shared/app-plugins/path-security'
-import { IMAGE_PREVIEW_MAX_BYTES, type FileReadResult } from '../../../shared/read-file'
+import {
+  IMAGE_PREVIEW_MAX_BYTES,
+  PDF_PREVIEW_MAX_BYTES,
+  type FileReadResult,
+} from '../../../shared/read-file'
 import type { InvalidationSource, ResourceFrame, ResourceProvider } from '../registry'
 import { failure } from './shared'
 
@@ -53,11 +57,16 @@ export function createFileProvider(request: Request = api.get): ResourceProvider
         yield failure('file/invalid-address', 'This address does not name a file.')
         return
       }
-      const requestPath = (): string =>
-        `/sessions/${parsed.sessionId}/read-file?path=${encodeURIComponent(parsed.path)}` +
-        (imageMediaTypeOf(parsed.path)
-          ? `&encoding=base64&maxBytes=${IMAGE_PREVIEW_MAX_BYTES}`
-          : '')
+      const requestPath = (): string => {
+        const base = `/sessions/${parsed.sessionId}/read-file?path=${encodeURIComponent(parsed.path)}`
+        if (imageMediaTypeOf(parsed.path)) {
+          return `${base}&encoding=base64&maxBytes=${IMAGE_PREVIEW_MAX_BYTES}`
+        }
+        if (isPdfPath(parsed.path)) {
+          return `${base}&encoding=base64&maxBytes=${PDF_PREVIEW_MAX_BYTES}`
+        }
+        return base
+      }
 
       const read = async (): Promise<ResourceFrame<FileReadResult>> => {
         try {

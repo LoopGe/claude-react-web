@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   imageMediaTypeOf,
+  isPdfPath,
   splitFilePath,
   shortenDir,
   getFileLanguage,
@@ -121,5 +122,22 @@ describe('imageMediaTypeOf', () => {
     // svg is text — it stays in the code view (EXT_TO_LANG maps it to xml)
     // rather than being downgraded to an <img>.
     expect(imageMediaTypeOf('logo.svg')).toBe(null)
+  })
+})
+
+describe('isPdfPath', () => {
+  it('detects the .pdf extension case-insensitively across separators', () => {
+    expect(isPdfPath('doc.pdf')).toBe(true)
+    expect(isPdfPath('DOC.PDF')).toBe(true)
+    expect(isPdfPath('/repo/manual.pdf')).toBe(true)
+    expect(isPdfPath('C:\\docs\\manual.PDF')).toBe(true)
+  })
+
+  it('returns false for non-pdf, suffixed and extensionless names', () => {
+    expect(isPdfPath('doc.pdf.bak')).toBe(false)
+    expect(isPdfPath('pdf')).toBe(false)
+    expect(isPdfPath('Makefile')).toBe(false)
+    expect(isPdfPath('image.png')).toBe(false)
+    expect(isPdfPath('')).toBe(false)
   })
 })
