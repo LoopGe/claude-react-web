@@ -8,7 +8,7 @@ import type { ResumableSession } from '../../types'
 vi.mock('../../hooks/useApi', () => ({ api: { get: vi.fn() } }))
 
 const { measureMock } = vi.hoisted(() => ({ measureMock: vi.fn() }))
-vi.mock('./resume-list-measure', () => ({ measureResumeListHeight: measureMock }))
+vi.mock('../../utils/capped-height-measure', () => ({ measureCappedContentHeight: measureMock }))
 
 const SESSIONS: ResumableSession[] = Array.from({ length: 5 }, (_, i) => ({
   sessionId: `session-${i}`,

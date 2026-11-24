@@ -15,7 +15,7 @@ import { useListSelection } from '../../hooks/useListSelection'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useAutoHeightTransition } from '../../hooks/useAutoHeightTransition'
 import { useMergedRef } from '../../utils/mergedRef'
-import { measureResumeListHeight } from './resume-list-measure'
+import { measureCappedContentHeight } from '../../utils/capped-height-measure'
 import { shortenPath } from '../../utils/paths'
 import type { ResumableSession } from '../../types'
 import { PanelOverlay } from '../PanelOverlay'
@@ -90,8 +90,9 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   const measureListHeight = useCallback(() => {
     const list = listRef.current
     const content = listContentRef.current
-    if (!list || !content) return null
-    return measureResumeListHeight(list, content)
+    const card = list?.closest('.modal, .panel-overlay-card') as HTMLElement | null
+    if (!list || !content || !card) return null
+    return measureCappedContentHeight(list, content, card)
   }, [])
   const listAnimationKey = `${loading}|${error ?? ''}|${filtered.length}`
   useAutoHeightTransition(listRef, listAnimationKey, {
