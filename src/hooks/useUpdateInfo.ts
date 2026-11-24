@@ -12,8 +12,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
+import { useOptionalWsHub } from './useWsHub'
 import type { PublishedVersions, UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 import { formatError } from '../utils/format-error'
+import { mergeUpdateInfoSnapshot } from '../utils/update-info-merge'
 
 /** Server allows up to 120s for `npm i -g`; give the client request room
  *  beyond that so it doesn't time out before npm does. */
@@ -134,7 +136,9 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
                 ? '/update-info?force=1'
                 : '/update-info'
           const next = await api.get<UpdateInfo>(path, { signal: controller.signal })
-          if (mountedRef.current && !controller.signal.aborted) setInfo(next)
+          if (mountedRef.current && !controller.signal.aborted) {
+            setInfo((prev) => mergeUpdateInfoSnapshot(prev, next))
+          }
         } catch (err) {
           if (controller.signal.aborted) {
             aborted = true
@@ -171,6 +175,21 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
     // initiated when the dependency flips.
     void fetchInfo(false)
   }, [enabled, fetchInfo])
+
+  // Live frames: the server's always-on update-info channel pushes every
+  // meaningful snapshot change (periodic probe, Check now, install
+  // completion). Merge — never replace — so the GET-only About overlays
+  // survive, and the checkedAt fence keeps a late GET from regressing core
+  // fields. Null hub (component tests / no provider) → REST-only, as before.
+  const hub = useOptionalWsHub()
+  useEffect(() => {
+    if (!hub) return
+    return hub.addListener((frame) => {
+      if (frame.kind !== 'update-info') return
+      if (!mountedRef.current) return
+      setInfo((prev) => mergeUpdateInfoSnapshot(prev, frame.info))
+    })
+  }, [hub])
 
   const refresh = useCallback(
     (registryOverride?: string) => {
