@@ -280,6 +280,12 @@ export function collectSegments(root: Node, stop?: StopPoint): DomSegment[] {
  * range length is the SERIALIZATION length (the exact run, line breaks counted),
  * never the decoded excerpt the chip displays — so the gate's offsets line up
  * with the value the caret arithmetic indexes into.
+ *
+ * ArrowRight crossing a settled chip lands the caret at the run end, where the
+ * end-inclusive gate demotes it to editable `> …` text for that one keystroke;
+ * the next caret move past the end re-settles it. This demote-on-cross is
+ * accepted — it is the same end-inclusive semantics the mention gate uses, not a
+ * defect to special-case.
  */
 function demoteCaretMentions(
   tokens: PastedTextToken[],

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatQuoteText, messageQuoteRanges, quoteTextOf } from './quote-text.js'
+import { formatQuoteText, messageQuoteRanges, offsetInQuoteLine, quoteTextOf } from './quote-text.js'
 
 describe('formatQuoteText', () => {
   it('prefixes every line of a multi-line selection', () => {
@@ -147,5 +147,58 @@ describe('messageQuoteRanges', () => {
 
   it('returns no ranges for empty text', () => {
     expect(messageQuoteRanges('')).toEqual([])
+  })
+})
+
+describe('offsetInQuoteLine', () => {
+  it('catches the forming-quote gesture: caret after a lone blank marker', () => {
+    // `> ` decodes to blank, so messageQuoteRanges excludes it — but a paste-ref
+    // dropped here WOULD be swallowed once its label makes the run non-blank.
+    expect(offsetInQuoteLine('> ', 2)).toBe(true)
+    expect(offsetInQuoteLine('>', 1)).toBe(true)
+  })
+
+  it('is true with the caret inside or at the end of a non-blank quote line', () => {
+    expect(offsetInQuoteLine('> hello', 4)).toBe(true)
+    expect(offsetInQuoteLine('> hello', 7)).toBe(true)
+  })
+
+  it('is false with the caret at/before the marker (a ref there stays live)', () => {
+    // Inserting in front of the `>` breaks the line-leading marker, so the ref
+    // is not swallowed — the collapse policy may keep it.
+    expect(offsetInQuoteLine('> hello', 0)).toBe(false)
+    expect(offsetInQuoteLine('  > hi', 2)).toBe(false)
+    expect(offsetInQuoteLine('  > hi', 3)).toBe(true)
+  })
+
+  it('is false on an unquoted line or an inline greater-than', () => {
+    expect(offsetInQuoteLine('plain', 3)).toBe(false)
+    expect(offsetInQuoteLine('a > b', 4)).toBe(false)
+    expect(offsetInQuoteLine('', 0)).toBe(false)
+  })
+
+  it('rejects a four-space indent (not a quote marker)', () => {
+    expect(offsetInQuoteLine('    > x', 5)).toBe(false)
+  })
+
+  it('reads the caret’s own line, not the whole run', () => {
+    // Caret on the prose line after a run → not a quote line.
+    expect(offsetInQuoteLine('> q\nafter', 5)).toBe(false)
+    // Caret at the end of the quote line, before its break → still quoted.
+    expect(offsetInQuoteLine('> q\nafter', 3)).toBe(true)
+    // Second line of a multi-line run: past its own marker → true; at/before
+    // that line's marker → false (a ref there splits the run, stays live).
+    expect(offsetInQuoteLine('> a\n> b', 6)).toBe(true)
+    expect(offsetInQuoteLine('> a\n> b', 4)).toBe(false)
+  })
+
+  it('treats CRLF and unicode separators as line boundaries (matches ^ with m)', () => {
+    expect(offsetInQuoteLine('> a\r\n> b', 7)).toBe(true)
+    const ls = String.fromCharCode(0x2028)
+    const ps = String.fromCharCode(0x2029)
+    expect(offsetInQuoteLine('> a' + ls + '> b', 6)).toBe(true)
+    expect(offsetInQuoteLine('> a' + ps + '> b', 6)).toBe(true)
+    // Caret on the blank line right after a run's trailing break → not quoted.
+    expect(offsetInQuoteLine('> q\n', 4)).toBe(false)
   })
 })

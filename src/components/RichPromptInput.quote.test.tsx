@@ -1,10 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createRef } from 'react'
-import { render, fireEvent } from '@testing-library/react'
+import { createRef, useState } from 'react'
+import { render, fireEvent, createEvent } from '@testing-library/react'
 import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
 import { QUOTE_CHIP_ATTR, QUOTE_CHIP_CLASS, QUOTE_REMOVE_ATTR, MENTION_CHIP_CLASS } from '../utils/richPromptDom'
 import { placeCaretAtOffset, offsetOf } from './richPromptCaret'
-import { quoteTextOf } from '../utils/quote-text'
+import { quoteTextOf, formatQuoteText } from '../utils/quote-text'
+import { pasteAtCaret } from './richPromptApi'
+import { usePastedTexts } from '../hooks/usePastedTexts'
+import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
+import { composeOutgoing } from '../utils/outgoing-text'
 
 // RTL cleanup is registered globally in src/test-setup.ts (globals: false means
 // it never self-registers); no per-file afterEach here.
@@ -274,5 +278,87 @@ describe('RichPromptInput insertQuoteAtCaret (select-to-quote insert)', () => {
     rerender(<RichPromptInput value="hi" onChange={onChange} editorRef={ref} ariaLabel="Q" />)
     ref.current!.insertQuoteAtCaret('q')
     expect(onChange).toHaveBeenLastCalledWith('hi\n> q\n')
+  })
+
+  it('is a no-op when the editor is disabled (a terminated session is still selectable)', () => {
+    const onChange = vi.fn()
+    const ref = createRef<HTMLDivElement & RichPromptHandle>()
+    const { container } = render(
+      <RichPromptInput value="draft" onChange={onChange} editorRef={ref} ariaLabel="Q" disabled />,
+    )
+    const el = editor(container)
+    expect(el.getAttribute('contenteditable')).toBe('false')
+    ref.current!.insertQuoteAtCaret('q')
+    expect(onChange).not.toHaveBeenCalled()
+    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)).toBeNull()
+  })
+})
+
+describe('RichPromptInput paste into a quote run (insertion-time opacity)', () => {
+  // A long paste landing on a line-leading quote line must stay verbatim-quoted:
+  // a collapsed `[Pasted text #N]` ref there is swallowed by the quote run
+  // (tokenize's quote-first merge) and composeOutgoing's map-blind opacity ships
+  // it as a literal placeholder — the pasted body would never reach the model.
+  // The policy therefore inserts formatQuoteText(body) inline instead.
+  function mountPasteHarness(initial: string) {
+    const api: { value: string; expand: (t: string) => string } = {
+      value: initial,
+      expand: (t) => t,
+    }
+    function Harness() {
+      const [value, setValue] = useState(initial)
+      const { add, expand } = usePastedTexts()
+      const { placePastedText } = usePastedTextEditing({ addPastedText: add })
+      api.value = value
+      api.expand = expand
+      return (
+        <RichPromptInput
+          value={value}
+          onChange={setValue}
+          onPasteText={pasteAtCaret(placePastedText)}
+          ariaLabel="M"
+        />
+      )
+    }
+    const { container } = render(<Harness />)
+    return { el: editor(container), api }
+  }
+
+  function paste(el: HTMLElement, text: string) {
+    fireEvent(
+      el,
+      createEvent.paste(el, {
+        clipboardData: { getData: (t: string) => (t === 'text/plain' ? text : '') },
+      }),
+    )
+  }
+
+  const longBody = Array.from({ length: 16 }, (_, i) => `line ${i + 1}`).join('\n')
+
+  it('type "> " then paste a long body → the body ships as quoted lines, not an orphaned placeholder', () => {
+    const { el, api } = mountPasteHarness('')
+    typeText(el, '> ')
+    paste(el, longBody)
+    // The body lands inline as quoted lines — no collapsed ref for the run to swallow.
+    expect(api.value).toBe('> ' + formatQuoteText(longBody))
+    const { full } = composeOutgoing(api.value, api.expand)
+    expect(full).not.toContain('[Pasted text #')
+    expect(full).toContain('> line 1')
+    expect(full).toContain('> line 16')
+  })
+
+  it('pasting at the end of a forming quote line keeps the body quoted', () => {
+    const { el, api } = mountPasteHarness('')
+    typeText(el, '> hello')
+    paste(el, longBody)
+    expect(api.value).toBe('> hello' + formatQuoteText(longBody))
+    expect(composeOutgoing(api.value, api.expand).full).not.toContain('[Pasted text #')
+  })
+
+  it('still collapses a long paste OUTSIDE a quote to a live ref that expands on send', () => {
+    const { el, api } = mountPasteHarness('')
+    paste(el, longBody)
+    expect(api.value).toBe('[Pasted text #1 +15 lines]')
+    expect(composeOutgoing(api.value, api.expand).full).toBe(longBody)
   })
 })

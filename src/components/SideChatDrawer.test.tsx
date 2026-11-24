@@ -20,7 +20,7 @@
 //   · SideChatAutoScroll reading items length + streamingContent from the store
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { act, render, fireEvent, within, screen } from '@testing-library/react'
+import { act, render, fireEvent, createEvent, within, screen } from '@testing-library/react'
 import { getEscapeStackCount } from '../hooks/floating-surface-registry'
 import type { Key, ReactNode } from 'react'
 
@@ -300,6 +300,46 @@ describe('SideChatDrawer (session-synchronizer migration)', () => {
 
     // The rollback removed the optimistic placeholder → items count is back.
     expect(store.getSnapshot().items.length).toBe(beforeCount)
+  })
+
+  it('keeps a quoted paste-ref opaque on send (same composeOutgoing chokepoint as the main composer)', async () => {
+    const props = makeProps()
+    seedPage(props.session.id, [])
+    const { container } = render(<SideChatDrawer {...props} />)
+    await act(() => sleep(50))
+    const editor = container.querySelector('[contenteditable="true"]') as HTMLElement
+
+    // Register a LIVE paste body: a long paste into the empty editor collapses to
+    // ref #1 whose body lives in the drawer's side map.
+    const body = Array.from({ length: 16 }, (_, i) => `side line ${i + 1}`).join('\n')
+    await act(() => {
+      fireEvent(
+        editor,
+        createEvent.paste(editor, {
+          clipboardData: { getData: (t: string) => (t === 'text/plain' ? body : '') },
+        }),
+      )
+    })
+
+    // Wrap the live ref in a line-leading quote (typing '> ' before the chip).
+    await act(() => {
+      editor.textContent = '> [Pasted text #1 +15 lines]'
+      editor.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    postMock.mockResolvedValueOnce({ ok: true, message: { uuid: 'side-uuid', receivedAt: 1 } })
+    const sendBtn = container.querySelector('.side-chat-drawer-actions .btn-primary') as HTMLButtonElement
+    await act(async () => {
+      sendBtn.click()
+      await sleep(50)
+    })
+
+    // The quoted ref ships LITERAL — the stored body is not spliced into the quote
+    // (a bare expandPastedText(input.trim()) would expand it and break opacity).
+    expect(postMock).toHaveBeenCalledWith(
+      `/sessions/${props.session.id}/messages`,
+      { text: '> [Pasted text #1 +15 lines]' },
+    )
   })
 
   // ── Older-history paging (paging prop → OlderHistoryFloat) ─────────

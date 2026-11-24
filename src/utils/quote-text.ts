@@ -9,7 +9,7 @@
  * to `\n` first, so an empty line becomes a bare `> ` marker line.
  */
 export function formatQuoteText(text: string): string {
-  return text.replace(/\r\n?/gu, '\n').split('\n').map(line => `> ${line}`).join('\n')
+  return text.replace(/\r\n?/gu, '\n').split('\n').map((line) => `> ${line}`).join('\n')
 }
 
 /**
@@ -43,4 +43,33 @@ export function messageQuoteRanges(text: string): readonly MessageQuoteRange[] {
     if (quoteTextOf(match[0]).trim() !== '') ranges.push({ start: match.index, end: match.index + match[0].length })
   }
   return ranges
+}
+
+/**
+ * Whether an insertion at `offset` lands inside a line-leading blockquote line —
+ * on a line matching `^ {0,3}>` and PAST its `>` marker, so the marker survives
+ * the insert and the line stays quoted.
+ *
+ * This is the insertion-time complement to `messageQuoteRanges`, which excludes
+ * a run whose decoded text is blank: a lone `> ` (the forming-quote gesture) is
+ * NOT a range there, yet a paste-ref dropped after its marker WOULD be swallowed
+ * by the quote run once the label makes the run non-blank. So the test is
+ * per-line, not per-run: it reads the caret's own line for the line-leading
+ * marker and requires the offset past it. An offset at/before the marker is
+ * excluded — a ref inserted there lands in front of the `>`, breaking the
+ * line-leading marker, so it stays a live reference. Line boundaries are exactly
+ * the set a multiline `^` treats as such (LF, CR, U+2028, U+2029), matching
+ * `messageQuoteRanges`; char codes keep those two members readable.
+ */
+export function offsetInQuoteLine(text: string, offset: number): boolean {
+  let lineStart = 0
+  for (let i = offset - 1; i >= 0; i--) {
+    const c = text.charCodeAt(i)
+    if (c === 0x0a || c === 0x0d || c === 0x2028 || c === 0x2029) {
+      lineStart = i + 1
+      break
+    }
+  }
+  const marker = /^ {0,3}>/.exec(text.slice(lineStart))
+  return marker !== null && offset >= lineStart + marker[0].length
 }

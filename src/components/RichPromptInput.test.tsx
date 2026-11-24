@@ -285,7 +285,9 @@ describe('RichPromptInput paste', () => {
     )
     const el = editor(container)
     paste(el, { 'text/plain': 'anything' })
-    expect(onPasteText).toHaveBeenCalledWith('anything')
+    // The policy gets the raw text plus the insertion context (current value +
+    // caret offset) so it can keep a paste landing in a quote run verbatim-quoted.
+    expect(onPasteText).toHaveBeenCalledWith('anything', expect.objectContaining({ value: '' }))
     expect(el.textContent).toBe('')
   })
 

@@ -232,7 +232,8 @@ async function sendAndRead(page: Page, request: APIRequestContext, sentHasText: 
   return lastSentText(request)
 }
 
-test.beforeEach(async ({ page }) => {  await page.goto('/', { waitUntil: 'domcontentloaded' })
+test.beforeEach(async ({ page }) => {
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
   const showSidebar = page.getByRole('button', { name: 'Show sidebar' })
   if (await showSidebar.isVisible()) await showSidebar.click()
   await openSession(page, Q)
@@ -476,6 +477,33 @@ test('quote: a quoted paste-ref is not expanded while a live ref expands (opacit
   const sentChip = sent.locator('.quote-chip[data-quote-preview]')
   await expect(sentChip).toHaveCount(1)
   await expect(sentChip.locator('.quote-chip-text')).toHaveText('[Pasted text #1 +3 lines]')
+
+  expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
+})
+
+test('quote: pasting a long body into a forming quote ships quoted lines, not an orphaned placeholder', async ({ page, request, pageErrors }) => {
+  // The insertion-time complement to the opacity test above: type '> ' (a
+  // forming, blank-decoded quote line) then paste a body past the collapse
+  // threshold. A collapsed ref here would be swallowed by the quote run and ship
+  // as a literal placeholder (content loss), so the policy inserts the body as
+  // quoted lines instead. The seq-store oracle pins what the MODEL receives.
+  await editor(page).click()
+  await page.keyboard.type('> ')
+  const body = Array.from({ length: 16 }, (_, i) => `paste line ${i + 1}`).join('\n')
+  await editor(page).evaluate((el, text) => {
+    const dt = new DataTransfer()
+    dt.setData('text/plain', text)
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+  }, body)
+
+  // The draft holds the body inline as quoted lines — no collapsed reference.
+  await expect.poll(() => draftValue(page)).toContain('> paste line 1')
+  await expect.poll(() => draftValue(page)).not.toContain('[Pasted text #')
+
+  const wire = await sendAndRead(page, request, 'paste line 1')
+  expect(wire).toContain('> paste line 1')
+  expect(wire).toContain('> paste line 16')
+  expect(wire).not.toContain('[Pasted text #')
 
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])
 })

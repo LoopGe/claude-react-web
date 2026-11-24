@@ -1,4 +1,5 @@
 import { offsetOf, placeCaretAtOffset } from './richPromptCaret'
+import type { PasteInsertionContext, PastePlan } from '../utils/pastedText'
 
 /**
  * Offset-based selection helpers over the rich-prompt contenteditable editor.
@@ -73,15 +74,29 @@ export function selectAll(el: HTMLElement): void {
  * on the browser's undo stack — a caller that wrote the value through React
  * state instead would rebuild the DOM behind the browser's back and make every
  * paste un-undoable.
+ *
+ * The editor hands over the insertion `context` (current value + caret offset)
+ * so the policy can keep a paste landing inside a line-leading quote run
+ * verbatim-quoted rather than collapsing it to a reference the run would swallow.
  */
 export function pasteAtCaret(
-  placePastedText: (raw: string, insert: (text: string) => void) => void,
-): (raw: string) => string | null {
-  return (raw: string) => {
+  placePastedText: (
+    raw: string,
+    insert: (text: string) => void,
+    plan?: PastePlan,
+    context?: PasteInsertionContext,
+  ) => void,
+): (raw: string, context?: PasteInsertionContext) => string | null {
+  return (raw: string, context?: PasteInsertionContext) => {
     let textToInsert: string | null = null
-    placePastedText(raw, (text) => {
-      textToInsert = text
-    })
+    placePastedText(
+      raw,
+      (text) => {
+        textToInsert = text
+      },
+      undefined,
+      context,
+    )
     return textToInsert
   }
 }

@@ -1961,9 +1961,11 @@ export const Chat = memo(function Chat({
   }, [input, scheduled, setInput, clearPastedImages, pastedImages, fileDrafts, expandPastedText, setComposerFocusSignal, setLocalError, session.id, toast])
   /** Snippets are persisted server-side and re-inserted in later sessions, so
    *  a `[Pasted text #N]` reference saved as-is would outlive the body backing
-   *  it and resolve to nothing (or to a different paste). Store the text. */
+   *  it and resolve to nothing (or to a different paste). Store the text — via
+   *  the same composeOutgoing chokepoint as send, so a quoted reference stays
+   *  literal and the saved snippet keeps its quote structure intact. */
   const handleSaveCurrentAsSnippet = useCallback(
-    (content: string) => onSaveCurrentAsSnippet(expandPastedText(content)),
+    (content: string) => onSaveCurrentAsSnippet(composeOutgoing(content, expandPastedText).full),
     [onSaveCurrentAsSnippet, expandPastedText],
   )
   const handleInterrupt = useCallback(() => void interrupt(), [interrupt])

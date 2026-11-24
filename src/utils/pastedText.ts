@@ -284,6 +284,16 @@ export function planPaste(raw: string): PastePlan {
   }
 }
 
+/** Where a paste lands: the current composer value and the UTF-16 offset the
+ *  text inserts at (the live caret, or a saved selection's start). The collapse
+ *  policy reads it to keep a paste that would land inside a line-leading quote
+ *  run verbatim-quoted instead of collapsing it to a reference the run would
+ *  swallow. Optional — a caller with no caret context keeps the plain policy. */
+export type PasteInsertionContext = {
+  value: string
+  offset: number
+}
+
 /**
  * Splice each reference's stored content back into the text.
  *

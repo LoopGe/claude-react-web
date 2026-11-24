@@ -698,12 +698,17 @@ export const Composer = memo(function Composer({
       if (!raw) return
       // Goes to the range snapshotted when the menu opened, not the live
       // caret: the menu holds focus, so the editor is blurred while this
-      // runs. insertAtSavedSelection also restores focus afterwards.
-      placePastedText(raw, insertAtSavedSelection)
+      // runs. insertAtSavedSelection also restores focus afterwards. The
+      // insertion context (value + saved start) lets the policy keep a paste
+      // landing inside a quote run verbatim-quoted, same as the Ctrl+V path.
+      placePastedText(raw, insertAtSavedSelection, undefined, {
+        value: input,
+        offset: savedSelection.start,
+      })
     } catch {
       toast.error('Paste failed — use Ctrl+V instead.')
     }
-  }, [insertAtSavedSelection, placePastedText, toast])
+  }, [insertAtSavedSelection, placePastedText, toast, input, savedSelection])
 
   const handleSelectAll = useCallback(() => {
     requestAnimationFrame(() => {

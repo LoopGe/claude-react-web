@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
-import { isLineTerminator, joinTokens, tokenize } from '../utils/pastedText'
+import { isLineTerminator, joinTokens, tokenize, type PasteInsertionContext } from '../utils/pastedText'
 import { formatQuoteText } from '../utils/quote-text'
 import { renderTokens, serializeTokens, domRepresentsValue, mentionChipFacts, MENTION_CHIP_ATTR, QUOTE_CHIP_ATTR, QUOTE_REMOVE_ATTR } from '../utils/richPromptDom'
 import { syncEditorHeight } from '../utils/editor-height'
@@ -62,15 +62,18 @@ interface Props {
   onSubmit?: () => void
   /** Shift+Enter or Ctrl/Cmd+Enter. */
   onNewline?: () => void
-  /** Called with a raw paste; returns WHAT to insert. A string is inserted
-   *  (usually the raw clipboard text, or a `[Pasted text #N]` reference for a
-   *  collapsed paste); `null` means insert nothing.
+  /** Called with a raw paste and the insertion context (current value + caret
+   *  offset); returns WHAT to insert. A string is inserted (usually the raw
+   *  clipboard text, or a `[Pasted text #N]` reference for a collapsed paste);
+   *  `null` means insert nothing. The context lets the policy keep a paste that
+   *  would land inside a line-leading quote run verbatim-quoted instead of a
+   *  reference the run would swallow.
    *
    *  The callback answers with the text rather than placing it, because the
    *  editor has to perform the insert: that is what puts it on the browser's
    *  undo stack. A caller that spliced its own state instead would make every
    *  paste un-undoable. */
-  onPasteText?: (raw: string) => string | null
+  onPasteText?: (raw: string, context: PasteInsertionContext) => string | null
   /** Image handler — supported `image/*` clipboard items are collected and
    *  handed over as ONE batch (each entry is the `getAsFile()` result). The
    *  editor never accepts image bytes itself; the parent attaches them as
@@ -237,6 +240,10 @@ export function RichPromptInput({
    *  value length; only an editor that never held a caret falls back to the
    *  draft end. */
   const insertQuoteAtCaret = (text: string) => {
+    // A terminated session's transcript is still selectable, so a Quote click
+    // can arrive while the editor is disabled (contentEditable=false). No-op:
+    // there is no draft to mutate.
+    if (disabled) return
     const el = ref.current
     if (!el) return
     const doc = el.ownerDocument
@@ -359,7 +366,19 @@ export function RichPromptInput({
     // stack, and a caller that spliced its own state instead would make every
     // paste invisible to Ctrl+Z.
     if (onPasteText) {
-      const toInsert = onPasteText(raw)
+      // Insertion context for the collapse policy: the current value and the
+      // caret / selection-start offset in VALUE space, so a paste landing inside
+      // a line-leading quote run stays verbatim-quoted (a reference there would
+      // be swallowed by the run and ship as a literal placeholder). No live
+      // selection → the insert appends at the draft end.
+      const el = ref.current
+      const selection = el?.ownerDocument.getSelection() ?? null
+      const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null
+      const offset =
+        el && range && el.contains(range.startContainer)
+          ? valueOffsetOf(el, range.startContainer, range.startOffset)
+          : value.length
+      const toInsert = onPasteText(raw, { value, offset })
       if (toInsert === null) return
       insertPlainTextAtCaret(toInsert)
       return
@@ -507,7 +526,9 @@ export function RichPromptInput({
 
   // Attach caret-query methods directly to the DOM element so callers holding
   // editorRef can use them (e.g. `ref.current.getSlashWordAtCaret()`).
-  // The closures close over value, ref, and onChange -- all present in deps.
+  // The closures close over value, ref, onChange and disabled -- all present in
+  // deps (disabled included so insertQuoteAtCaret's guard re-reads a terminated
+  // session's flag even when the draft and onChange are unchanged).
   /* eslint-disable react-hooks/exhaustive-deps */
   useLayoutEffect(() => {
     const el = ref.current
@@ -522,7 +543,7 @@ export function RichPromptInput({
     handle.placeCaretIn = (offset: number) => placeCaretIn(el, offset)
     handle.selectAll = () => selectAll(el)
     handle.isComposing = () => composingRef.current
-  }, [value, ref, onChange])
+  }, [value, ref, onChange, disabled])
   /* eslint-enable react-hooks/exhaustive-deps */
 
   return (

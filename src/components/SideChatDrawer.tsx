@@ -47,6 +47,7 @@ import { BottomCardMotion } from './BottomCardMotion'
 import { shouldMountWorkingBubble } from '../utils/task-actions'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { buildOutgoingBody } from '../utils/message-body'
+import { composeOutgoing } from '../utils/outgoing-text'
 import { motionSuppressed } from '../utils/reduced-motion'
 import { computeWaiting } from '../session-store/normalize'
 import { hasTranscriptBackground } from '../session-store/sidechain-index'
@@ -182,8 +183,10 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const planContent = useSessionField(session.id, 'planContent')
 
   const handleSend = useCallback(async () => {
-    // Expand first so no bare `[Pasted text #N]` can reach the model.
-    const text = expandPastedText(input.trim())
+    // The same outgoing chokepoint as the main composer and scheduled sends:
+    // expands live paste refs, keeps quote runs opaque (a quoted `[Pasted text
+    // #N]` stays literal), and never trims into a quote's leading indent.
+    const { text } = composeOutgoing(input, expandPastedText)
     if (sending) return
     if (pastedImages.pending) {
       toast.info('Images are still processing')
