@@ -4,14 +4,16 @@
 // Rendered through a portal on <body> — see the `createPortal` call below for
 // why that is load-bearing, not cosmetic.
 
-import { useLayoutEffect, useMemo, useRef } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { SlashCommand } from '../types'
 import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { PANEL_SELECTOR, markPortaledSurface } from '../theme'
 import { pluginTagOf } from '../utils/text'
 import { clamp } from '../utils/clamp'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 
 interface Props {
   commands: SlashCommand[]
@@ -78,6 +80,8 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   const filtered = commands.filter((c) => matches(c, query))
   const groups = useMemo(() => groupCommands(filtered), [filtered])
   const rootRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const listContentRef = useRef<HTMLDivElement>(null)
 
   // --- Positioning: fixed, above the textarea, clamped to viewport ---
   useLayoutEffect(() => {
@@ -91,29 +95,58 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
     if (!anchor) return
 
     const rect = anchor.getBoundingClientRect()
+    // Reset any prior viewport cap so the height read is the natural CSS-capped
+    // size (the cap is re-applied below only for the flip-below case).
+    el.style.maxHeight = ''
     const pickerH = el.offsetHeight
     const pickerW = el.offsetWidth
     const vw = window.innerWidth
     const vh = window.innerHeight
     const gap = 4
 
-    // Prefer above the textarea; flip below if not enough room.
-    let top = rect.top - gap - pickerH
-    if (top < 8) top = rect.bottom + gap
-
     // Left-align with the textarea, clamped to viewport.
     let left = rect.left
     if (left + pickerW > vw - 8) left = vw - pickerW - 8
     if (left < 8) left = 8
-
-    // If overflows bottom, cap height via max-height.
-    if (top + pickerH > vh - 8) {
-      el.style.maxHeight = `${vh - top - 8}px`
-    }
-
     el.style.left = `${left}px`
-    el.style.top = `${top}px`
+
+    // Glue the edge NEAREST the anchor, not a computed top: the height hook
+    // tweens the list after this effect runs, so a top computed for the settled
+    // height would teleport the bottom edge when the hook pins the list back to
+    // its start height. Anchoring the bottom edge (above case) keeps it glued to
+    // the anchor top while the height animates upward; the flip-below case glues
+    // the top edge and grows downward.
+    const roomAbove = rect.top - gap - 8
+    if (pickerH <= roomAbove) {
+      el.style.top = 'auto'
+      el.style.bottom = `${vh - rect.top + gap}px`
+    } else {
+      const top = rect.bottom + gap
+      el.style.bottom = 'auto'
+      el.style.top = `${top}px`
+      el.style.maxHeight = `${Math.max(0, vh - top - 8)}px`
+    }
   }, [anchorRef, filtered.length])
+
+  // The list grows/shrinks as the query filters; tween its height instead of
+  // jumping. The measure caps at the card ceiling (pin-independent) so a short
+  // list does not overshoot and snap. The observer watches the content-sized
+  // wrapper; the key also drives the tween without ResizeObserver. The picker
+  // mounts/unmounts with the open cycle, so each open starts from a fresh
+  // baseline. The positioning effect above glues the bottom edge to the anchor,
+  // so this height tween grows the picker upward from a fixed bottom — no
+  // teleport (top-edge positioning jumped when the hook pinned the start height).
+  const measureListHeight = useCallback(() => {
+    const list = listRef.current
+    const content = listContentRef.current
+    const card = list?.closest('.cmd-picker') as HTMLElement | null
+    if (!list || !content || !card) return null
+    return measureCappedContentHeight(list, content, card)
+  }, [])
+  useAutoHeightTransition(listRef, `${query}|${filtered.length}`, {
+    measureTargetHeight: measureListHeight,
+    observe: listContentRef,
+  })
 
   // --- Outside-click dismissal (Escape is owned by the shared stack below) ---
   // Capture phase, as before: this surface must collapse before any other
@@ -150,37 +183,41 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   return (
     <FloatingSurfaceProvider surfaceId={surfaceId}>
       {createPortal(
-    <div className="cmd-picker os-hidden" ref={rootRef} role="listbox">
-      {filtered.length === 0 ? (
-        <div className="cmd-picker-empty">No matching commands</div>
-      ) : (
-        groups.map((group) => (
-          <div key={group.plugin ?? '__builtin__'}>
-            {group.plugin && <div className="cmd-picker-group-header">{group.plugin}</div>}
-            {group.commands.map((cmd) => {
-              const i = flatIdx++
-              const isActive = i === idx
-              return (
-                <button
-                  key={cmd.name}
-                  ref={isActive ? activeRef : undefined}
-                  className={`cmd-picker-item${isActive ? ' active' : ''}`}
-                  role="option"
-                  aria-selected={isActive}
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    onSelect(cmd)
-                  }}
-                >
-                  <span className="cmd-picker-name">/{cmd.name}</span>
-                  {cmd.argumentHint && <span className="cmd-picker-args">{cmd.argumentHint}</span>}
-                  {cmd.description && <span className="cmd-picker-desc">{cmd.description}</span>}
-                </button>
-              )
-            })}
-          </div>
-        ))
-      )}
+    <div className="cmd-picker" ref={rootRef}>
+      <div className="cmd-picker-list os-hidden" ref={listRef} role="listbox">
+        <div className="cmd-picker-list-content" ref={listContentRef} role="presentation">
+          {filtered.length === 0 ? (
+            <div className="cmd-picker-empty">No matching commands</div>
+          ) : (
+            groups.map((group) => (
+              <div key={group.plugin ?? '__builtin__'}>
+                {group.plugin && <div className="cmd-picker-group-header">{group.plugin}</div>}
+                {group.commands.map((cmd) => {
+                  const i = flatIdx++
+                  const isActive = i === idx
+                  return (
+                    <button
+                      key={cmd.name}
+                      ref={isActive ? activeRef : undefined}
+                      className={`cmd-picker-item${isActive ? ' active' : ''}`}
+                      role="option"
+                      aria-selected={isActive}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        onSelect(cmd)
+                      }}
+                    >
+                      <span className="cmd-picker-name">/{cmd.name}</span>
+                      {cmd.argumentHint && <span className="cmd-picker-args">{cmd.argumentHint}</span>}
+                      {cmd.description && <span className="cmd-picker-desc">{cmd.description}</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
     </div>,
     document.body,
       )}

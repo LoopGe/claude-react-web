@@ -19,6 +19,8 @@ import { useToast } from '../hooks/useToast'
 import { writeClipboard } from '../hooks/useCopy'
 import { useUploads } from '../hooks/useUploads'
 import { useUploadQueue, startUploads, dismissItem, consumeCompletion, type BatchCompletion } from '../hooks/useUploadQueue'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import { formatBytes, formatRelativeTime } from '../utils/format'
 import type { UploadListItem } from '../../shared/uploads'
 import {
@@ -146,6 +148,35 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
   // viewports, so the tooltip keeps the full aggregate readable.
   const statsText = `${stats.count} ${stats.count === 1 ? 'file' : 'files'} · ${formatBytes(stats.bytes)}`
 
+  // The body height tweens between content changes: the fetch-on-open
+  // loading→list swap, the in-flight progress section mounting/clearing, the
+  // filter shrinking the list, and row deletes. A persistent box wraps the
+  // whole conditional region so the loading→list swap animates (the list alone
+  // only mounts after the fetch). The measure caps at the .perm-card ceiling
+  // (pin-independent); the observer watches the content-sized wrapper.
+  //
+  // The nested ConfirmDialog / UploadPreview render as CHILDREN of this card
+  // (their absolute .perm-overlay backdrop is card-scoped). While one is mounted
+  // it enters the cap's chrome sum and collapses the ceiling, so the measure
+  // refuses (returns null) until it closes — the height change behind a nested
+  // modal rebases cleanly on close rather than tweening to a poisoned target.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyContentRef = useRef<HTMLDivElement>(null)
+  const nestedOverlayOpen = deleteTarget !== null || cleanMissingOpen || previewTarget !== null
+  const measureBodyHeight = useCallback(() => {
+    if (nestedOverlayOpen) return null
+    const body = bodyRef.current
+    const content = bodyContentRef.current
+    const card = body?.closest('.perm-card') as HTMLElement | null
+    if (!body || !content || !card) return null
+    return measureCappedContentHeight(body, content, card)
+  }, [nestedOverlayOpen])
+  const bodyAnimationKey = `${uploads === null}|${error !== null}|${rows.length}|${items.length}|${filter}|${nestedOverlayOpen}`
+  useAutoHeightTransition(bodyRef, bodyAnimationKey, {
+    measureTargetHeight: measureBodyHeight,
+    observe: bodyContentRef,
+  })
+
   const copyPath = async (u: UploadListItem) => {
     // Plain `writeClipboard`: this row reports BOTH outcomes itself, with
     // wording that names the fallback ("select the path manually").
@@ -229,6 +260,11 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
         />
       </div>
 
+      {/* Persistent animated body: wraps the whole conditional region (progress,
+          loading/error, toolbar, list) so the loading→list swap tweens. The
+          content wrapper is content-sized; the body is the scroll container. */}
+      <div className="uploads-body" ref={bodyRef}>
+      <div className="uploads-body-content" ref={bodyContentRef}>
       {/* ── In-flight upload progress ─────────────────────────────── */}
       {items.length > 0 && (
         <div className="modal-section uploads-progress-section">
@@ -367,6 +403,8 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
           )}
         </>
       )}
+      </div>
+      </div>
 
       {previewTarget && (
         <UploadPreview key={previewTarget.id} target={previewTarget} onClose={() => setPreviewTarget(null)} />

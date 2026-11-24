@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react'
+import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../test/resize-observer-stub'
 
 const mockGet = vi.fn()
 const mockDelete = vi.fn()
@@ -14,6 +15,11 @@ vi.mock('../hooks/useApi', () => ({
 vi.mock('../hooks/useToast', () => ({
   useToast: () => mockToast,
 }))
+
+// Height-animation wiring: the cap math is unit-tested in capped-height-measure.test.ts;
+// here the measure is mocked to controlled heights so the wiring is what's under test.
+const { measureMock } = vi.hoisted(() => ({ measureMock: vi.fn() }))
+vi.mock('../utils/capped-height-measure', () => ({ measureCappedContentHeight: measureMock }))
 
 // Import AFTER the mocks.
 import { UploadsManagerDialog } from './UploadsManagerDialog'
@@ -135,5 +141,64 @@ describe('UploadsManagerDialog', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /close preview/i }))
     expect(screen.queryByRole('dialog', { name: /file preview/i })).toBeNull()
+  })
+})
+
+describe('UploadsManagerDialog height animation', () => {
+  beforeEach(() => {
+    measureMock.mockReset()
+    mockGet.mockResolvedValue({ uploads: ROWS })
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
+    stubResizeObserver()
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(0)
+  })
+  afterEach(() => {
+    clearResizeObserverStub()
+    vi.restoreAllMocks()
+  })
+
+  const body = () => document.querySelector<HTMLElement>('.uploads-body')!
+  const content = () => document.querySelector<HTMLElement>('.uploads-body-content')!
+
+  it('tweens the body height on a content-driven resize', async () => {
+    let height = 200
+    measureMock.mockImplementation(() => height)
+    render(<UploadsManagerDialog open onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
+    height = 400
+    fireResize(content())
+    expect(body().classList.contains('auto-height-animating')).toBe(true)
+    expect(body().style.height).toBe('200px')
+  })
+
+  it('releases the pin when the tween finishes', async () => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    let height = 200
+    measureMock.mockImplementation(() => height)
+    render(<UploadsManagerDialog open onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
+    height = 400
+    fireResize(content())
+    expect(body().style.height).toBe('400px')
+    act(() => {
+      const evt = new Event('transitionend', { bubbles: true })
+      Object.defineProperty(evt, 'propertyName', { value: 'height' })
+      body().dispatchEvent(evt)
+    })
+    expect(body().classList.contains('auto-height-animating')).toBe(false)
+    expect(body().style.height).toBe('')
+  })
+
+  it('refuses to measure while a nested confirm dialog is open (card-child chrome)', async () => {
+    measureMock.mockImplementation(() => 300)
+    render(<UploadsManagerDialog open onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
+    fireEvent.click(screen.getAllByRole('button', { name: /^delete file$/i })[0])
+    // The ConfirmDialog backdrop is a child of the card; measuring now would
+    // collapse the ceiling. The gate returns null instead — no tween, no pin.
+    measureMock.mockClear()
+    fireResize(content())
+    expect(measureMock).not.toHaveBeenCalled()
+    expect(body().classList.contains('auto-height-animating')).toBe(false)
   })
 })

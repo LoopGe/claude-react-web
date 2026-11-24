@@ -98,6 +98,38 @@ await writeTree(repoCwd, {
   'space file.txt': 'e2e-space-file-content\n',
   'ignored.txt': 'ignored content\n',
   'skipdir/hidden.txt': 'hidden content\n',
+  // ---- file-preview polish fixtures (preview-polish.spec.ts) ----
+  // polish.ts: a multi-line block comment (lines 1-3, the span-carry case),
+  // CJK string + comment content, an unbreakable 300-char ASCII line and a
+  // long CJK line (the wrap-geometry cases). notes.md: YAML frontmatter
+  // (CJK title, a list, a number) over a 40-line filler body with bare
+  // `#L50` / `#L50-L52` links (the fading-band navigation cases).
+  'polish.ts': [
+    '/* e2e-polish block comment start',
+    '   中间行 still inside the comment',
+    '   block comment end */',
+    "export const greeting = '你好，世界'",
+    `export const longLine = '${'abcdefghij'.repeat(30)}'`,
+    `export const 长句 = '${'这是一段很长的中文内容，用来验证换行。'.repeat(6)}'`,
+    'export const answer = 42',
+    '',
+  ].join('\n'),
+  'notes.md': [
+    '---',
+    'title: 预览打磨笔记',
+    'tags:',
+    '  - preview',
+    '  - polish',
+    'count: 3',
+    '---',
+    '',
+    '# Notes body',
+    '',
+    ...Array.from({ length: 40 }, (_, i) => `filler ${String(i + 1).padStart(2, '0')} — 中文段落内容。`),
+    '',
+    'Jump to [the deep line](#L50) or [the last lines](#L50-L52).',
+    '',
+  ].join('\n'),
 })
 // ---- PDF preview fixtures (pdf-preview.spec.ts) ----
 // Hand-built PDFs (tests/pdf-fixture.ts), written as binary into the same

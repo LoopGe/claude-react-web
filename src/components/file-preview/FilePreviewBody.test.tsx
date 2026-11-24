@@ -147,6 +147,26 @@ describe('FilePreviewBody markdown and text', () => {
     expect(document.body.textContent).toContain('export const x = 1')
   })
 
+  it('highlights via detectLanguage(path), not the display filename', () => {
+    // A bare display label carries no extension; the language must come from the
+    // read path, and the label must still land in the bar.
+    renderBody('/repo/a.js', 'Screenshot', { available: true, contents: 'const x = 1' })
+    expect(document.body.querySelector('[data-line="1"] .hljs-keyword')?.textContent).toBe('const')
+    expect(document.body.querySelector('.code-block-lang')?.textContent).toBe('Screenshot')
+  })
+
+  it('shows the filename as the bar label while highlighting the detected language', () => {
+    renderBody('/repo/a.ts', 'a.ts', { available: true, contents: 'const x = 1' })
+    expect(document.body.querySelector('.code-block-lang')?.textContent).toBe('a.ts')
+    expect(document.body.querySelector('[data-line="1"] .hljs-keyword')).not.toBeNull()
+  })
+
+  it('renders an unknown-extension file as plain text without throwing', () => {
+    renderBody('/repo/a.xyz', 'a.xyz', { available: true, contents: 'const x = 1' })
+    expect(document.body.querySelector('.hljs-keyword')).toBeNull()
+    expect(document.body.querySelector('[data-line="1"]')?.textContent).toBe('const x = 1')
+  })
+
   it('renders a markdown file as formatted markdown, not code', () => {
     const src = `# Hello
 
@@ -181,6 +201,47 @@ plain`
     renderBody('/repo/README.md', 'Notes', { available: true, contents: '# Hi' })
     expect(document.body.querySelector('.file-viewer-md')).not.toBeNull()
     expect(document.body.querySelector('.file-viewer-code')).toBeNull()
+  })
+})
+
+describe('FilePreviewBody frontmatter', () => {
+  const FM = '---\ntitle: My note\ndraft: false\n---\n\n# Hello\n\nbody text'
+
+  it('renders the frontmatter as a field list above the markdown body', async () => {
+    renderBody('README.md', 'README.md', { available: true, contents: FM })
+    // The yaml chunk is lazy; allow a cold transform on first load.
+    await screen.findByText('My note', undefined, { timeout: 3000 })
+    const md = document.body.querySelector('.file-viewer-md')
+    expect(md?.querySelector('.frontmatter-fields')).not.toBeNull()
+    expect(md?.querySelector('h1,h2,h3,h4,h5,h6')?.textContent).toBe('Hello')
+    // The metadata block must not render as markdown (a leading --- rule).
+    expect(md?.querySelector('hr')).toBeNull()
+  })
+
+  it('source mode shows the full original contents, frontmatter included', () => {
+    renderBody('README.md', 'README.md', { available: true, contents: FM }, { line: 1 })
+    const code = document.body.querySelector('.file-viewer-code')
+    expect(code?.textContent).toContain('title: My note')
+    expect(code?.textContent).toContain('# Hello')
+    expect(document.body.querySelector('.frontmatter-fields')).toBeNull()
+  })
+
+  it('the source toggle shows the full contents including the delimiters', async () => {
+    renderBody('README.md', 'README.md', { available: true, contents: FM })
+    await screen.findByText('My note', undefined, { timeout: 3000 })
+    fireEvent.click(screen.getByRole('button', { name: /view source/i }))
+    const code = document.body.querySelector('.file-viewer-code')
+    expect(code?.textContent).toContain('---')
+    expect(code?.textContent).toContain('title: My note')
+    expect(document.body.querySelector('.frontmatter-fields')).toBeNull()
+  })
+
+  it('does not eat a leading horizontal rule with no closing delimiter', () => {
+    const src = '---\n\n# Hello\n\ntext'
+    renderBody('README.md', 'README.md', { available: true, contents: src })
+    expect(document.body.querySelector('.frontmatter-fields')).toBeNull()
+    expect(document.body.querySelector('.file-viewer-md hr')).not.toBeNull()
+    expect(document.body.querySelector('h1,h2,h3,h4,h5,h6')?.textContent).toBe('Hello')
   })
 })
 

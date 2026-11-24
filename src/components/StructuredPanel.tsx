@@ -3,11 +3,13 @@
 // read back the parsed JSON. Unlike the per-session overlays this is
 // session-agnostic — no session id, no WS, no persistence.
 
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
 import { formatJson } from '../utils/format'
 import { useCopy } from '../hooks/useCopy'
 import { useStructuredRun } from '../hooks/useStructuredRun'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import { IconX } from './icons/ToolIcons'
 import type { StructuredPermissionMode, StructuredRunRequest, StructuredRunResult } from '../../shared/structured'
 import { formatError } from '../utils/format-error'
@@ -54,6 +56,42 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
   const [maxBudgetUsd, setMaxBudgetUsd] = useState('')
   const [permissionMode, setPermissionMode] = useState<StructuredPermissionMode>('default')
   const { copied, copy } = useCopy()
+
+  // The dialog's two scrollers change height as content mounts/unmounts: the
+  // form body grows on "Show advanced" and on a schema-error row, and the result
+  // section grows from "Running…" to the parsed JSON / error. Tween each instead
+  // of jumping. The measure caps at the card ceiling (pin-independent) so a short
+  // dialog does not overshoot and snap; the observer watches a content-sized
+  // wrapper inside each scroller, and the key drives the discrete swaps.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyContentRef = useRef<HTMLDivElement>(null)
+  const resultRef = useRef<HTMLDivElement>(null)
+  const resultContentRef = useRef<HTMLDivElement>(null)
+  const measureBodyHeight = useCallback(() => {
+    const box = bodyRef.current
+    const content = bodyContentRef.current
+    const card = box?.closest('.modal') as HTMLElement | null
+    if (!box || !content || !card) return null
+    return measureCappedContentHeight(box, content, card)
+  }, [])
+  const measureResultHeight = useCallback(() => {
+    const box = resultRef.current
+    const content = resultContentRef.current
+    const card = box?.closest('.modal') as HTMLElement | null
+    if (!box || !content || !card) return null
+    return measureCappedContentHeight(box, content, card)
+  }, [])
+  // The result section mounting flex-squeezes this body under a capped card, so
+  // its presence is part of the key — otherwise the body's baseline goes stale
+  // and the next body tween starts from a too-tall pin.
+  useAutoHeightTransition(bodyRef, `${showAdvanced}|${schemaError != null}|${result != null}|${error != null}|${running}`, {
+    measureTargetHeight: measureBodyHeight,
+    observe: bodyContentRef,
+  })
+  useAutoHeightTransition(resultRef, `${running}|${error ?? ''}|${result ? String(result.ok) : ''}`, {
+    measureTargetHeight: measureResultHeight,
+    observe: resultContentRef,
+  })
 
   const close = () => {
     if (running) cancel()
@@ -110,7 +148,8 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
         </button>
       </div>
 
-      <div className="modal-section structured-body">
+      <div className="modal-section structured-body" ref={bodyRef}>
+        <div className="structured-body-content" ref={bodyContentRef}>
         <label className="field-label">Prompt</label>
         <textarea
           className="textarea"
@@ -171,10 +210,12 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
             </label>
           </div>
         )}
+        </div>
       </div>
 
       {(result || error || running) && (
-        <div className="modal-section structured-result">
+        <div className="modal-section structured-result" ref={resultRef}>
+          <div className="structured-result-content" ref={resultContentRef}>
           {error && <div className="field-error">{error}</div>}
           {result && !result.ok && (
             <div className="field-error">{errorMessage(result.errorSubtype, result.errors)}</div>
@@ -195,6 +236,7 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
             </>
           )}
           {running && <div className="hint">Running…</div>}
+          </div>
         </div>
       )}
 

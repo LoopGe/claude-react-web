@@ -11,10 +11,13 @@
 // user's decision goes back through POST /sessions/:id/elicitations/:eid/
 // decide and resolves the SDK's awaited onElicitation promise.
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { Markdown } from './Markdown'
 import type { ElicitationDecision, ElicitationRequestUi } from '../types'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { useMergedRef } from '../utils/mergedRef'
 import { Overlay } from './Overlay'
 import { IconShield, IconExternalLink } from './icons/ToolIcons'
 
@@ -110,6 +113,9 @@ export function ElicitationDialog({ open = true, request, onDecide }: Props) {
   })
   const [fieldError, setFieldError] = useState<string | null>(null)
   const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyContentRef = useRef<HTMLDivElement>(null)
+  const bodyRefMerged = useMergedRef(bodyRef, setBodyOs)
 
   const { fields } = useMemo(
     () => parseSchemaFields(request.requestedSchema),
@@ -176,6 +182,23 @@ export function ElicitationDialog({ open = true, request, onDecide }: Props) {
     }
   }, [busy, open, rawText, submitDecision])
 
+  // The body swaps between the field form and the raw-JSON textarea, and the
+  // validation error rows mount inline; tween the height instead of jumping.
+  // The measure caps at the .perm-card ceiling (pin-independent); the observer
+  // watches the content-sized wrapper (message markdown settles async).
+  const measureBodyHeight = useCallback(() => {
+    const body = bodyRef.current
+    const content = bodyContentRef.current
+    const card = body?.closest('.perm-card') as HTMLElement | null
+    if (!body || !content || !card) return null
+    return measureCappedContentHeight(body, content, card)
+  }, [])
+  useAutoHeightTransition(
+    bodyRef,
+    `${request.id}|${rawMode}|${rawError != null}|${fieldError != null}|${isForm}|${isUrl}|${fields.length}`,
+    { measureTargetHeight: measureBodyHeight, observe: bodyContentRef },
+  )
+
   return (
     <Overlay
       variant="perm"
@@ -199,7 +222,8 @@ export function ElicitationDialog({ open = true, request, onDecide }: Props) {
         </span>
       </div>
 
-      <div className="modal-section question-body" ref={setBodyOs}>
+      <div className="modal-section question-body" ref={bodyRefMerged}>
+        <div className="question-body-content" ref={bodyContentRef} role="presentation">
         {request.description && <div className="elicit-description">{request.description}</div>}
         {request.message && <Markdown text={request.message} />}
 
@@ -301,6 +325,7 @@ export function ElicitationDialog({ open = true, request, onDecide }: Props) {
             </div>
           )
         )}
+        </div>
       </div>
 
       <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>

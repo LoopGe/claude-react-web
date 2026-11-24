@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ResumeSessionDialog } from './ResumeSessionDialog'
 import { api } from '../../hooks/useApi'
+import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../../test/resize-observer-stub'
 import type { ResumableSession } from '../../types'
 
 vi.mock('../../hooks/useApi', () => ({ api: { get: vi.fn() } }))
+
+const { measureMock } = vi.hoisted(() => ({ measureMock: vi.fn() }))
+vi.mock('../../utils/capped-height-measure', () => ({ measureCappedContentHeight: measureMock }))
 
 const SESSIONS: ResumableSession[] = Array.from({ length: 5 }, (_, i) => ({
   sessionId: `session-${i}`,
@@ -153,5 +157,86 @@ describe('ResumeSessionDialog', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(onResume).toHaveBeenCalledWith('session-1')
+  })
+})
+
+// The session list grows from the "Loading…" placeholder to N rows and
+// shrinks/grows as the query filters — those height changes tween via
+// useAutoHeightTransition instead of jumping. The cap math (flex ceiling + the
+// list's own 50vh) is unit-tested in resume-list-measure.test.ts; here the
+// measure is mocked to controlled heights so the WIRING is what's under test.
+// These tests run under happy-dom (vitest environmentMatchGlobs). rAF is stubbed
+// inert so the tween holds its start pin and the assertion does not race the
+// retargeting frame.
+describe('ResumeSessionDialog height animation', () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset()
+    vi.mocked(api.get).mockResolvedValue({ sessions: SESSIONS })
+    measureMock.mockReset()
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
+    stubResizeObserver()
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(0)
+  })
+
+  afterEach(() => {
+    clearResizeObserverStub()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('tweens the list height on a content-driven resize (observer path)', async () => {
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    render(<ResumeSessionDialog onResume={vi.fn()} onCancel={vi.fn()} />)
+    await waitFor(() => expect(rows()).toHaveLength(SESSIONS.length))
+    const list = document.querySelector<HTMLElement>('.palette-list')!
+    const content = document.querySelector<HTMLElement>('.resume-list-content')!
+    // Grow the content past the tracked baseline; the observer on the wrapper
+    // must start a tween from the baseline (100), pinning the list there.
+    height = 300
+    fireResize(content)
+    expect(list.classList.contains('auto-height-animating')).toBe(true)
+    expect(list.style.height).toBe('100px')
+  })
+
+  it('tweens the list height on the loading→loaded key change (key path)', async () => {
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    render(<ResumeSessionDialog onResume={vi.fn()} onCancel={vi.fn()} />)
+    // The mount baseline is the loading placeholder height (100). When the
+    // fetch lands the key changes (loading false, rows present) and the measure
+    // reads 300 — the key-driven layout effect must tween from 100. This is the
+    // path that still animates where ResizeObserver is unavailable.
+    height = 300
+    await waitFor(() => expect(rows()).toHaveLength(SESSIONS.length))
+    const list = document.querySelector<HTMLElement>('.palette-list')!
+    expect(list.classList.contains('auto-height-animating')).toBe(true)
+    expect(list.style.height).toBe('100px')
+  })
+
+  it('releases the pin and reaches the target when the tween finishes', async () => {
+    // Fire rAF synchronously so the target height lands at once, then drive the
+    // finish via transitionend: the pin, animating class and overflow must all
+    // clear (the snap-on-release contract the cap math guarantees).
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    render(<ResumeSessionDialog onResume={vi.fn()} onCancel={vi.fn()} />)
+    await waitFor(() => expect(rows()).toHaveLength(SESSIONS.length))
+    const list = document.querySelector<HTMLElement>('.palette-list')!
+    const content = document.querySelector<HTMLElement>('.resume-list-content')!
+    height = 300
+    fireResize(content)
+    expect(list.style.height).toBe('300px')
+    // happy-dom's TransitionEvent does not carry propertyName from the helper,
+    // so craft the event the hook's onEnd matches (target + propertyName).
+    act(() => {
+      const evt = new Event('transitionend', { bubbles: true })
+      Object.defineProperty(evt, 'propertyName', { value: 'height' })
+      list.dispatchEvent(evt)
+    })
+    expect(list.classList.contains('auto-height-animating')).toBe(false)
+    expect(list.style.height).toBe('')
+    expect(list.style.overflow).toBe('')
   })
 })

@@ -3,10 +3,12 @@
 // the `/help` slash command (with commands) or Shift+/ / the command palette
 // (shortcuts only).
 
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
 import type { SlashCommand } from '../types'
 import { formatCombo } from '../utils/format-combo'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import { Overlay } from './Overlay'
 
 type Tab = 'commands' | 'shortcuts'
@@ -31,6 +33,24 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
   // close) so useState re-initializes fresh each time the dialog opens.
   const [tab, setTab] = useState<Tab>(commands.length > 0 ? 'commands' : 'shortcuts')
 
+  // The commands and shortcuts tables are different heights; tween the section
+  // between them instead of jumping. The measure caps at the card ceiling
+  // (pin-independent). The observer watches the content-sized wrapper; the key
+  // also drives the tween on tab swaps and late command/shortcut changes.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyContentRef = useRef<HTMLDivElement>(null)
+  const measureBodyHeight = useCallback(() => {
+    const body = bodyRef.current
+    const content = bodyContentRef.current
+    const card = body?.closest('.modal') as HTMLElement | null
+    if (!body || !content || !card) return null
+    return measureCappedContentHeight(body, content, card)
+  }, [])
+  useAutoHeightTransition(bodyRef, `${tab}|${commands.length}|${visible.length}`, {
+    measureTargetHeight: measureBodyHeight,
+    observe: bodyContentRef,
+  })
+
   return (
     <Overlay variant="modal" ariaLabel={showCommands ? 'Help' : 'Keyboard shortcuts'} open={open} onClose={onClose} cardStyle={{ maxWidth: 440 }}>
         <div className="modal-header">
@@ -54,7 +74,8 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
           </div>
         )}
 
-        <div className="modal-section">
+        <div className="modal-section" ref={bodyRef}>
+          <div className="modal-section-content" ref={bodyContentRef}>
           {showCommands && tab === 'commands' && (
             <table className="shortcut-table">
               <thead>
@@ -92,6 +113,7 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
               </tbody>
             </table>
           )}
+          </div>
         </div>
 
         <div className="modal-footer" style={{ justifyContent: 'flex-end' }}>

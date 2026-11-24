@@ -23,6 +23,22 @@
   margin-right: auto;
 }
 
+/* Persistent animated body: the card's flexible remainder and the scroll
+   container for the whole conditional region (progress, loading/error, toolbar,
+   list). The content wrapper inside is a plain content-sized block, so the
+   height hook reads its scrollHeight as the natural content height. */
+.uploads-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* While the height hook pins the body, flex-grow must not fight the inline
+   height — the same override every useAutoHeightTransition consumer carries. */
+.uploads-body.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
+}
+
 .uploads-stats {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
@@ -51,16 +67,22 @@
   gap: var(--space-2);
   align-items: center;
   padding: var(--space-2) var(--space-4);
+  /* The body scrolls as one unit now; keep the filter reachable by sticking the
+     toolbar to the top of the scrollport (opaque card bg hides rows beneath). */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-elev);
 }
 
 .uploads-toolbar .input {
   flex: 1;
 }
 
+/* Plain content inside the scrolling .uploads-body (the body is the scroll
+   container now, so the list itself no longer scrolls). */
 .uploads-list {
-  overflow-y: auto;
   padding: 0 var(--space-2) var(--space-3);
-  min-height: 0;
 }
 
 .uploads-row {

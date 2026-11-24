@@ -1,13 +1,15 @@
 // Command palette - fuzzy-searchable list of actions, sessions, and message hits.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MessageSearchHit, MessageSearchResponse } from '../../shared/search-results.js'
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
 import { api } from '../hooks/useApi'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { useListSelection } from '../hooks/useListSelection'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useMergedRef } from '../utils/mergedRef'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import type { SessionInfo } from '../types'
 import { formatCombo } from '../utils/format-combo'
 import { Overlay } from './Overlay'
@@ -46,6 +48,7 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
   const [messageSearchError, setMessageSearchError] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const listContentRef = useRef<HTMLDivElement>(null)
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
   // <Overlay variant="palette"> owns the focus trap + restore (opened from the
@@ -160,6 +163,23 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
     tabFocusRef: inputRef,
   })
 
+  // The list grows/shrinks as the query filters and the async message search
+  // lands; tween its height instead of jumping. The measure caps at the card
+  // ceiling (pin-independent) so a short list does not overshoot and snap. The
+  // observer watches the content-sized wrapper; the key also drives the tween
+  // without ResizeObserver.
+  const measureListHeight = useCallback(() => {
+    const list = listRef.current
+    const content = listContentRef.current
+    const card = list?.closest('.palette') as HTMLElement | null
+    if (!list || !content || !card) return null
+    return measureCappedContentHeight(list, content, card)
+  }, [])
+  useAutoHeightTransition(listRef, `${trimmedQuery}|${filtered.length}|${messageSearchLoading}|${messageSearchError}`, {
+    measureTargetHeight: measureListHeight,
+    observe: listContentRef,
+  })
+
   /* eslint-disable react-hooks/set-state-in-effect -- intentional UI reset on open */
   useLayoutEffect(() => {
     if (open) {
@@ -205,6 +225,7 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
           aria-activedescendant={filtered[activeIndex] ? `palette-item-${activeIndex}` : undefined}
         />
         <div className="palette-list" ref={listRefMerged} id="palette-list" role="listbox">
+          <div className="palette-list-content" ref={listContentRef} role="presentation">
           {filtered.length === 0 && !showSearching && !showSearchError && (
             <div className="palette-empty">No matches</div>
           )}
@@ -234,6 +255,7 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
           })}
           {showSearching && <div className="palette-empty">Searching messages...</div>}
           {showSearchError && <div className="palette-empty">Message search failed</div>}
+          </div>
         </div>
     </Overlay>
   )

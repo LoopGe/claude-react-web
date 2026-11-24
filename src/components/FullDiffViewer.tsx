@@ -12,6 +12,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
 import { IconX } from './icons/ToolIcons'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 
 /** How much of the fetched body is painted per step. 256 KB of text lays out
  *  comfortably; more than one step's worth is available via "Show more". */
@@ -31,6 +33,8 @@ export function FullDiffViewer({ open, onClose, name, fetchText }: Props) {
   const [text, setText] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [shown, setShown] = useState(FULL_DIFF_CHUNK_CHARS)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyContentRef = useRef<HTMLDivElement>(null)
   // fetchText identity is caller-owned; keep the latest in a ref so a
   // re-render can't re-trigger the fetch (or fire a stale one). Synced in
   // an effect, never during render (react-hooks/refs).
@@ -69,6 +73,22 @@ export function FullDiffViewer({ open, onClose, name, fetchText }: Props) {
   const visible = text === null ? '' : text.slice(0, shown)
   const hasMore = text !== null && shown < text.length
 
+  // The body grows from the loading hint to the full pre, and as "Show more"
+  // appends chunks (until the card cap binds); tween its height instead of
+  // jumping. The measure caps at the card ceiling (pin-independent). The
+  // observer watches the content-sized wrapper; the key also drives the tween.
+  const measureBodyHeight = useCallback(() => {
+    const body = bodyRef.current
+    const content = bodyContentRef.current
+    const card = body?.closest('.file-viewer') as HTMLElement | null
+    if (!body || !content || !card) return null
+    return measureCappedContentHeight(body, content, card)
+  }, [])
+  useAutoHeightTransition(bodyRef, `${error ?? ''}|${text === null ? 'loading' : 'ready'}|${shown}|${hasMore}`, {
+    measureTargetHeight: measureBodyHeight,
+    observe: bodyContentRef,
+  })
+
   return (
     <Overlay
       open={open}
@@ -86,17 +106,19 @@ export function FullDiffViewer({ open, onClose, name, fetchText }: Props) {
         <h3 className="file-viewer-title" title={name}>{name}</h3>
         <button className="btn btn-icon-sm" onClick={onClose} aria-label="Close"><IconX /></button>
       </div>
-      <div className="modal-section file-viewer-body">
-        {error && <div className="field-error">{error}</div>}
-        {!error && text === null && <div className="hint">Loading full diff…</div>}
-        {!error && text !== null && (
-          <pre className="full-diff-body" data-testid="full-diff-body">{visible}</pre>
-        )}
-        {hasMore && (
-          <button type="button" className="btn full-diff-more" onClick={showMore}>
-            Show more ({Math.ceil((text!.length - shown) / 1024)}&nbsp;KB remaining)
-          </button>
-        )}
+      <div className="modal-section file-viewer-body" ref={bodyRef}>
+        <div className="file-viewer-body-content" ref={bodyContentRef} role="presentation">
+          {error && <div className="field-error">{error}</div>}
+          {!error && text === null && <div className="hint">Loading full diff…</div>}
+          {!error && text !== null && (
+            <pre className="full-diff-body" data-testid="full-diff-body">{visible}</pre>
+          )}
+          {hasMore && (
+            <button type="button" className="btn full-diff-more" onClick={showMore}>
+              Show more ({Math.ceil((text!.length - shown) / 1024)}&nbsp;KB remaining)
+            </button>
+          )}
+        </div>
       </div>
     </Overlay>
   )

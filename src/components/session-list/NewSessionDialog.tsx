@@ -14,6 +14,8 @@ import type { ModelGroupConfig } from '../../types/config'
 import { PERMISSION_MODES, EFFORT_LEVELS } from '../../types'
 import { useExitPresence } from '../../hooks/useExitPresence'
 import { useAgentDefinitions } from '../../hooks/useAgentDefinitions'
+import { useAutoHeightTransition } from '../../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../../utils/capped-height-measure'
 import { Overlay } from '../Overlay'
 
 // McpInstaller is only opened when the user clicks "Add MCP" from inside
@@ -628,6 +630,29 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       .catch(() => { /* ignore */ })
   }
 
+  // The dialog body grows after open as the MCP-server and plugin fetches land
+  // (their sections mount inside Advanced options) and as fields toggle
+  // (thinking budget, env rows, the provider switch hiding plugins). Tween the
+  // body height instead of jumping. The measure caps at the `.modal` ceiling
+  // (pin-independent); the observer watches the content-sized wrapper, which
+  // also catches the uncontrolled <details> open/close. The nested
+  // DirectoryPicker / McpInstaller render as siblings of the Overlay (not card
+  // children), so they never enter the cap's chrome sum.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyContentRef = useRef<HTMLDivElement>(null)
+  const measureBodyHeight = useCallback(() => {
+    const body = bodyRef.current
+    const content = bodyContentRef.current
+    const card = body?.closest('.modal') as HTMLElement | null
+    if (!body || !content || !card) return null
+    return measureCappedContentHeight(body, content, card)
+  }, [])
+  const bodyAnimationKey = `${globalMcpServers.length}|${allPluginKeys.length}|${provider}|${thinkingMode}|${envRows.length}`
+  useAutoHeightTransition(bodyRef, bodyAnimationKey, {
+    measureTargetHeight: measureBodyHeight,
+    observe: bodyContentRef,
+  })
+
   return (
     <>
       <Overlay
@@ -650,7 +675,8 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
             </button>
           </div>
 
-          <div className="modal-section">
+          <div className="modal-section" ref={bodyRef}>
+            <div className="new-session-content" ref={bodyContentRef}>
             <div className="settings-field">
               <label htmlFor={uid + '-project'}>Project</label>
               <ProjectPicker
@@ -1129,6 +1155,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                 </div>
               </div>
             </details>
+            </div>
           </div>
 
           <div className="modal-footer">

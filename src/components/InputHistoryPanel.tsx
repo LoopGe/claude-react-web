@@ -16,11 +16,13 @@
 // everything else ("All sessions" / "Other sessions"), including legacy
 // unattributed entries.
 
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { useInputHistoryPanel, type HistoryPanelEntry } from '../hooks/useInputHistoryPanel'
 import { useListSelection } from '../hooks/useListSelection'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useMergedRef } from '../utils/mergedRef'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import { PanelOverlay } from './PanelOverlay'
 
 interface Props {
@@ -37,6 +39,7 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const listContentRef = useRef<HTMLDivElement>(null)
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
 
@@ -44,6 +47,23 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
     currentSessionId,
     query,
   )
+
+  // The list grows/shrinks as the query filters and the store updates; tween its
+  // height instead of jumping. The measure caps at the card ceiling (pin-
+  // independent) so a short panel does not overshoot and snap. The observer
+  // watches the content-sized wrapper; the key also drives the tween without
+  // ResizeObserver. The panel mounts/unmounts with the open cycle.
+  const measureListHeight = useCallback(() => {
+    const list = listRef.current
+    const content = listContentRef.current
+    const card = list?.closest('.panel-overlay-card') as HTMLElement | null
+    if (!list || !content || !card) return null
+    return measureCappedContentHeight(list, content, card)
+  }, [])
+  useAutoHeightTransition(listRef, `${query}|${flat.length}`, {
+    measureTargetHeight: measureListHeight,
+    observe: listContentRef,
+  })
 
   // Hover only moves the highlight; arrow keys and the open/query resets also
   // scroll the selected entry into view (see useListSelection). The displayed
@@ -118,19 +138,21 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
         aria-activedescendant={flat[activeIndex] != null ? `history-item-${activeIndex}` : undefined}
       />
       <div className="palette-list" ref={listRefMerged} id="history-list" role="listbox">
-        {flat.length === 0 && (
-          <div className="palette-empty">{totalCount === 0 ? 'No history yet' : 'No matches'}</div>
-        )}
-        {sessionItems.length > 0 && currentSessionId != null && (
-          <div className="palette-section-label">This session</div>
-        )}
-        {sessionItems.map((entry, i) => renderItem(entry, i))}
-        {otherItems.length > 0 && (
-          <div className="palette-section-label">
-            {currentSessionId != null ? 'Other sessions' : 'All sessions'}
-          </div>
-        )}
-        {otherItems.map((entry, i) => renderItem(entry, sessionItems.length + i))}
+        <div className="palette-list-content" ref={listContentRef} role="presentation">
+          {flat.length === 0 && (
+            <div className="palette-empty">{totalCount === 0 ? 'No history yet' : 'No matches'}</div>
+          )}
+          {sessionItems.length > 0 && currentSessionId != null && (
+            <div className="palette-section-label">This session</div>
+          )}
+          {sessionItems.map((entry, i) => renderItem(entry, i))}
+          {otherItems.length > 0 && (
+            <div className="palette-section-label">
+              {currentSessionId != null ? 'Other sessions' : 'All sessions'}
+            </div>
+          )}
+          {otherItems.map((entry, i) => renderItem(entry, sessionItems.length + i))}
+        </div>
       </div>
     </PanelOverlay>
   )

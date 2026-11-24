@@ -18,6 +18,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Markdown } from './Markdown'
 import type { PermissionRequest, QuestionSpec } from '../types'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { useMergedRef } from '../utils/mergedRef'
 import { Overlay } from './Overlay'
 import { IconMessageCircle, IconCheckSquare, IconSquare, IconCircleDot, IconCircle, IconX } from './icons/ToolIcons'
 
@@ -76,11 +79,15 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
   const [clarifying, setClarifying] = useState(false)
   const [feedback, setFeedback] = useState('')
   const feedbackRef = useRef<HTMLTextAreaElement>(null)
-  // Two scroll regions (questions list / clarification), one mounted at a
-  // time. Same overlay scrollbar every other dialog uses; without it these
-  // show the native 10px scrollbar instead of the project's floating thumb.
-  const setQuestionsOs = useOverlayScrollbar({ autoHide: 'leave' })
-  const setClarifyingOs = useOverlayScrollbar({ autoHide: 'leave' })
+  // One persistent scroll body whose content swaps between the questions list
+  // and the clarification textarea (a single box keeps the height tween's start
+  // point across the swap). Same overlay scrollbar every other dialog uses;
+  // without it the body shows the native 10px scrollbar instead of the floating
+  // thumb.
+  const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyContentRef = useRef<HTMLDivElement>(null)
+  const bodyRefMerged = useMergedRef(bodyRef, setBodyOs)
 
   // Persist the in-progress draft upward (keyed by request id in Chat) so
   // minimizing then re-opening restores the user's selections. Keep the
@@ -238,6 +245,24 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
   // explicit skip button.
   const hasAnyAnswer = choices.some((c) => c != null)
 
+  // The body swaps between the questions list and the clarification textarea,
+  // and each "Other" free-text input mounts a row; tween the height instead of
+  // jumping. The measure caps at the .perm-card ceiling (pin-independent); the
+  // observer watches the content-sized wrapper (option-preview markdown settles
+  // async). The key captures the clarifying swap and which Other inputs are open.
+  const measureBodyHeight = useCallback(() => {
+    const body = bodyRef.current
+    const content = bodyContentRef.current
+    const card = body?.closest('.perm-card') as HTMLElement | null
+    if (!body || !content || !card) return null
+    return measureCappedContentHeight(body, content, card)
+  }, [])
+  useAutoHeightTransition(
+    bodyRef,
+    `${request.id}|${clarifying}|${otherActive.join(',')}|${(request.questions ?? []).length}`,
+    { measureTargetHeight: measureBodyHeight, observe: bodyContentRef },
+  )
+
   return (
     <Overlay
       variant="perm"
@@ -268,39 +293,41 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
         </button>
       </div>
 
-      {clarifying ? (
-        <div className="modal-section question-body" ref={setClarifyingOs}>
-          <label className="hint" htmlFor="question-clarification">Ask a follow-up or provide context.</label>
-          <textarea
-            ref={feedbackRef}
-            id="question-clarification"
-            className="textarea question-clarify-input"
-            value={feedback}
-            onChange={(e) => setFeedback(e.target.value)}
-            placeholder="Ask a follow-up or provide context..."
-            maxLength={4000}
-            rows={5}
-            disabled={busy}
-          />
+      <div className="modal-section question-body" ref={bodyRefMerged}>
+        <div className="question-body-content" ref={bodyContentRef} role="presentation">
+          {clarifying ? (
+            <>
+              <label className="hint" htmlFor="question-clarification">Ask a follow-up or provide context.</label>
+              <textarea
+                ref={feedbackRef}
+                id="question-clarification"
+                className="textarea question-clarify-input"
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                placeholder="Ask a follow-up or provide context..."
+                maxLength={4000}
+                rows={5}
+                disabled={busy}
+              />
+            </>
+          ) : (
+            (request.questions ?? []).map((q, qIdx) => (
+              <QuestionBlock
+                key={qIdx}
+                index={qIdx}
+                question={q}
+                value={choices[qIdx]}
+                onSingle={(label) => setSingle(qIdx, label)}
+                onMulti={(label) => toggleMulti(qIdx, label)}
+                otherActive={otherActive[qIdx]}
+                otherText={otherTexts[qIdx]}
+                onOtherToggle={() => toggleOther(qIdx)}
+                onOtherTextChange={(text) => setOtherText(qIdx, text)}
+              />
+            ))
+          )}
         </div>
-      ) : (
-        <div className="modal-section question-body" ref={setQuestionsOs}>
-          {(request.questions ?? []).map((q, qIdx) => (
-            <QuestionBlock
-              key={qIdx}
-              index={qIdx}
-              question={q}
-              value={choices[qIdx]}
-              onSingle={(label) => setSingle(qIdx, label)}
-              onMulti={(label) => toggleMulti(qIdx, label)}
-              otherActive={otherActive[qIdx]}
-              otherText={otherTexts[qIdx]}
-              onOtherToggle={() => toggleOther(qIdx)}
-              onOtherTextChange={(text) => setOtherText(qIdx, text)}
-            />
-          ))}
-        </div>
-      )}
+      </div>
 
       <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
         <span className="hint" style={{ textAlign: 'center' }}>

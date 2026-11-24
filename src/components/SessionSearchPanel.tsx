@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { IconX } from './icons/ToolIcons'
 import { SearchField } from './SearchField'
 import { SessionSearchPreview } from './SessionSearchPreview'
 import { useListSelection } from '../hooks/useListSelection'
 import { useSessionSearch } from '../hooks/useSessionSearch'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useMergedRef } from '../utils/mergedRef'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import type { MessagePreviewTarget } from '../hooks/useMessagePreview'
 import { renderMatchMarks } from '../utils/highlight-matches'
 import type { SessionSearchHit, SessionSearchRole } from '../../shared/session-search'
@@ -52,6 +54,7 @@ export function SessionSearchPanel({
   const [preview, setPreview] = useState<MessagePreviewTarget | null>(initialTarget ?? null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const listContentRef = useRef<HTMLDivElement>(null)
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
   const search = useSessionSearch(sessionId, query, { enabled: !initialTarget || !preview })
@@ -109,6 +112,31 @@ export function SessionSearchPanel({
   const showDegraded = !!trimmed && !stale && !search.loading && !search.error && search.indexStatus === 'degraded'
   const showEmpty = !!trimmed && !stale && !search.loading && !search.error && !showDegraded && hits.length === 0
 
+  // The results list grows/shrinks as hits land and the loading/empty/error
+  // states swap per keystroke; tween its height instead of jumping. The measure
+  // caps at the card ceiling (pin-independent). The fixed-height preview view
+  // (height:100% Virtuoso) is deliberately NOT animated — only this content-
+  // sized results box is.
+  //
+  // `preview` is a dependency: the results list unmounts while a preview is
+  // open and remounts as a fresh node on return. Refusing the measure during a
+  // preview both answers "no height" for that view and re-arms the hook's
+  // ResizeObserver on the view switch (the observer effect re-runs when this
+  // callback's identity changes), so it never keeps watching the detached
+  // pre-preview node.
+  const measureListHeight = useCallback(() => {
+    if (preview) return null
+    const list = listRef.current
+    const content = listContentRef.current
+    const card = list?.closest('.search-panel') as HTMLElement | null
+    if (!list || !content || !card) return null
+    return measureCappedContentHeight(list, content, card)
+  }, [preview])
+  useAutoHeightTransition(listRef, `${trimmed}|${showLoading}|${showError}|${showDegraded}|${showEmpty}|${hits.length}`, {
+    measureTargetHeight: measureListHeight,
+    observe: listContentRef,
+  })
+
   return (
     <aside
       className={`search-panel${preview ? ' has-preview' : ''}`}
@@ -165,6 +193,7 @@ export function SessionSearchPanel({
           />
 
           <div className="search-panel-list" ref={listRefMerged} id="session-search-list" role="listbox" aria-label="Search results">
+            <div className="search-panel-list-content" ref={listContentRef} role="presentation">
             {!trimmed ? (
               <div className="search-panel-empty">
                 <b>Search full history</b>
@@ -213,6 +242,7 @@ export function SessionSearchPanel({
                 </div>
               ))
             )}
+            </div>
           </div>
 
           <footer className="search-panel-footer">

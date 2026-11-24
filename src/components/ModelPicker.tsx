@@ -12,7 +12,7 @@
 // option, an extra "use <term> (custom)" row lets the user commit an
 // arbitrary id — important for proxy models the SDK doesn't advertise.
 
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, useIsPresent } from 'motion/react'
 import type { ModelOptions } from '../hooks/useModelOptions'
@@ -20,8 +20,10 @@ import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useListSelection } from '../hooks/useListSelection'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { PANEL_SELECTOR, markPortaledSurface } from '../theme'
 import { useMergedRef } from '../utils/mergedRef'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import { usePopoverMotion } from '../utils/transitions'
 import { IconCheck } from './icons/ToolIcons'
 import { SearchField } from './SearchField'
@@ -66,6 +68,7 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
   const ref = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const listContentRef = useRef<HTMLDivElement>(null)
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
   const [query, setQuery] = useState('')
@@ -195,6 +198,28 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
     markPortaledSurface(el, anchor.source?.closest(PANEL_SELECTOR) ?? null)
   }, [anchor.x, anchor.y, anchor.source, rows.length])
 
+  // The list grows/shrinks as the query filters; tween its height instead of
+  // jumping. The measure caps at the card ceiling (pin-independent) so a short
+  // list does not overshoot and snap. The observer watches the content-sized
+  // wrapper; the key also drives the tween without ResizeObserver. The picker
+  // mounts/unmounts with the open cycle, so each open starts from a fresh
+  // baseline. The viewport clamp above reads the card's current height, so a
+  // keystroke landing mid-tween clamps for the transient pinned size; tracking
+  // the animated height would need a transition-safe settled-height read —
+  // machinery beyond the committed height primitives, so it is left as a known
+  // limit of animating this one-shot-positioned popover.
+  const measureListHeight = useCallback(() => {
+    const list = listRef.current
+    const content = listContentRef.current
+    const card = list?.closest('.model-picker') as HTMLElement | null
+    if (!list || !content || !card) return null
+    return measureCappedContentHeight(list, content, card)
+  }, [])
+  useAutoHeightTransition(listRef, `${query}|${rows.length}`, {
+    measureTargetHeight: measureListHeight,
+    observe: listContentRef,
+  })
+
   // Esc closes via the shared escape stack, so it wins over the chat panel's
   // handlers and never closes the panel beneath this popover. Must be called
   // BEFORE the autofocus layout effect below: this popover renders via
@@ -258,30 +283,32 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
         ariaAutocomplete="list"
       />
       <div className="model-picker-list" ref={listRefMerged} role="listbox">
-        {rows.length === 0 && <div className="model-picker-empty">No matches</div>}
-        {rows.map((row, i) => (
-          <div key={row.key}>
-            {row.heading !== undefined && (
-              <div className="model-picker-heading">{row.heading}</div>
-            )}
-            <button
-              type="button"
-              data-row={i}
-              className={`model-picker-item${i === activeIndex ? ' selected' : ''}${row.active ? ' active' : ''}`}
-              role="option"
-              aria-selected={i === activeIndex}
-              disabled={disabled}
-              onMouseEnter={() => hover(i)}
-              onClick={() => row.select()}
-            >
-              <span className="model-picker-item-text">
-                <span className="model-picker-item-label">{row.label}</span>
-                {row.sub && <span className="model-picker-item-sub">{row.sub}</span>}
-              </span>
-              {row.active && <IconCheck size={14} aria-hidden />}
-            </button>
-          </div>
-        ))}
+        <div className="model-picker-list-content" ref={listContentRef} role="presentation">
+          {rows.length === 0 && <div className="model-picker-empty">No matches</div>}
+          {rows.map((row, i) => (
+            <div key={row.key}>
+              {row.heading !== undefined && (
+                <div className="model-picker-heading">{row.heading}</div>
+              )}
+              <button
+                type="button"
+                data-row={i}
+                className={`model-picker-item${i === activeIndex ? ' selected' : ''}${row.active ? ' active' : ''}`}
+                role="option"
+                aria-selected={i === activeIndex}
+                disabled={disabled}
+                onMouseEnter={() => hover(i)}
+                onClick={() => row.select()}
+              >
+                <span className="model-picker-item-text">
+                  <span className="model-picker-item-label">{row.label}</span>
+                  {row.sub && <span className="model-picker-item-sub">{row.sub}</span>}
+                </span>
+                {row.active && <IconCheck size={14} aria-hidden />}
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
     </motion.div>,
     // Portal to <body>: `anchor` arrives in VIEWPORT coordinates and the clamp

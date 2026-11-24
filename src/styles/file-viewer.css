@@ -79,12 +79,84 @@
   user-select: none;
 }
 
+/* Fading navigation band: the target/range background animates in, holds, then
+   fades out (one shared keyframe). NumberedCode remounts just these spans on a
+   navigation revision bump so the band replays; a same-content refetch keeps the
+   nodes, so it does not. The peak colour is the theme token --code-nav-band; the
+   range derives a weaker peak from the same token. */
+.code-line-target,
+.code-line-in-range {
+  animation: code-nav-band 2s both;
+}
+
 .code-line-target {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  --nav-band-peak: var(--code-nav-band);
 }
 
 .code-line-in-range {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  --nav-band-peak: color-mix(in srgb, var(--code-nav-band) 55%, transparent);
+}
+
+/* ~2s total: ease-in rise (0→30%), ~0.6s hold at peak (30→60%), ease-out fade
+   (60→100%). `both` holds the transparent end frame so no tint lingers. */
+@keyframes code-nav-band {
+  0% { background-color: transparent; animation-timing-function: ease-in; }
+  30% { background-color: var(--nav-band-peak); }
+  60% { background-color: var(--nav-band-peak); animation-timing-function: ease-out; }
+  100% { background-color: transparent; }
+}
+
+/* Reduced motion: the band's feedback IS the animation (the keyframe ends
+   transparent), so a blanket animation:none would leave the target line with
+   NO highlight at all. Keep a STATIC tint at the same --nav-band-peak token
+   instead — target full strength, range the weaker mix, exactly as the peak
+   frames — so reduced-motion users still see which line they jumped to. */
+@media (prefers-reduced-motion: reduce) {
+  .code-line-target,
+  .code-line-in-range {
+    animation: none;
+    background-color: var(--nav-band-peak);
+  }
+}
+
+/* Word wrap for the numbered view (toggle in the bar). The gutter is the
+   absolutely-positioned .code-line::before counter above, so a wrapped line's
+   number stays on its first visual row and the count is untouched.
+   overflow-wrap:anywhere breaks unbreakable tokens (minified code) instead of
+   overflowing horizontally. */
+.numbered-code-wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Bar actions group: wrap toggle + Copy sit together on the right (the bar is
+   space-between — label left, actions right). */
+.code-block-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+
+/* Wrap toggle icon button. Always visible (it reports the reading state);
+   pressed = wrap ON. Reuses theme vars — no new palette. */
+.code-block-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--code-block-border);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.code-block-wrap:hover {
+  background: var(--bg-elev);
+  color: var(--fg);
+}
+.code-block-wrap[aria-pressed='true'] {
+  color: var(--accent-text);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--code-block-border));
 }
 
 .file-viewer-truncated {
@@ -116,6 +188,23 @@
 .full-diff-more {
   flex: 0 0 auto;
   margin-top: var(--space-1-5);
+}
+
+/* FullDiffViewer height animation (useAutoHeightTransition). The body is the
+   scroller and the content wrapper is content-sized (flex:0 0 auto — a plain
+   block container for the hint / pre / Show-more), so its scrollHeight reads the
+   natural diff height even while the hook pins the body mid-tween. Scoped to
+   .full-diff-viewer so the shared .file-viewer-body (the resource modal's
+   FilePreviewBody host) keeps its own flex-fill chain. */
+.full-diff-viewer .file-viewer-body {
+  overflow-y: auto;
+}
+.full-diff-viewer .file-viewer-body-content {
+  flex: 0 0 auto;
+}
+.full-diff-viewer .file-viewer-body.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
 }
 /* Markdown preview body (FileViewer). Scrolls like the code view; the
    rendered pipeline is the transcript's, so images inside it already open
@@ -375,4 +464,56 @@
   .pdf-zoom-controls {
     transition-duration: 0.01ms;
   }
+}
+
+/* YAML frontmatter field list (FrontmatterFields), rendered above the
+   markdown body inside .file-viewer-md. Existing theme vars only. */
+.frontmatter-fields {
+  margin: 0 0 var(--space-2-5);
+  padding: var(--space-2) var(--space-2-5);
+  background: var(--bg-elev);
+  border: 1px solid var(--code-block-border);
+  border-radius: var(--radius-sm);
+}
+
+.frontmatter-field {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.frontmatter-field + .frontmatter-field {
+  margin-top: var(--space-1);
+}
+
+.frontmatter-field-key {
+  flex: 0 0 auto;
+  min-width: 10ch;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.frontmatter-field-value {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Verbatim frontmatter: the lazy-chunk loading view AND the parse-failure /
+   non-object fallback (one proven contract state, one look). */
+.frontmatter-verbatim {
+  margin: 0 0 var(--space-2-5);
+  padding: var(--space-2) var(--space-2-5);
+  background: var(--code-bg);
+  border: 1px solid var(--code-block-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

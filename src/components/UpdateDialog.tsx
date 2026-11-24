@@ -13,9 +13,11 @@
 // this version — but `current` mode must NOT write it: viewing your own
 // version's notes says nothing about whether a newer version is available.
 
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
 import { Markdown } from './Markdown'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import { useCopy } from '../hooks/useCopy'
 import { useReleaseNotes } from '../hooks/useReleaseNotes'
 import { useToast } from '../hooks/useToast'
@@ -57,6 +59,8 @@ export function UpdateDialog({ open, mode, info, updating, onUpdate, onClose }: 
   const { releases, loading, error } = useReleaseNotes(open, info.current, notesTo, isCurrent)
   const [updateError, setUpdateError] = useState<string | null>(null)
   const { copied, copy } = useCopy()
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const bodyContentRef = useRef<HTMLDivElement>(null)
 
   const latest = info.latest
   /** The title's version: the range's own upper bound, falling back to the
@@ -118,6 +122,23 @@ export function UpdateDialog({ open, mode, info, updating, onUpdate, onClose }: 
           }
         : { text: 'Release notes are unavailable right now.', href: null }
 
+  // The body grows from the loading hint to the rendered releases (or the empty
+  // state); tween its height instead of jumping. The measure caps at the card
+  // ceiling (pin-independent). The observer watches the content-sized wrapper
+  // (markdown images/fonts settle async); the key also drives the tween. The
+  // update-error row lives in the fixed footer, so it is not part of this box.
+  const measureBodyHeight = useCallback(() => {
+    const body = bodyRef.current
+    const content = bodyContentRef.current
+    const card = body?.closest('.update-dialog-card') as HTMLElement | null
+    if (!body || !content || !card) return null
+    return measureCappedContentHeight(body, content, card)
+  }, [])
+  useAutoHeightTransition(bodyRef, `${loading}|${releases?.length ?? 0}|${error ?? ''}|${mode}`, {
+    measureTargetHeight: measureBodyHeight,
+    observe: bodyContentRef,
+  })
+
   return (
     <Overlay
       // Always the portalled `modal` layer. The panel-scoped `perm` layer is
@@ -146,7 +167,8 @@ export function UpdateDialog({ open, mode, info, updating, onUpdate, onClose }: 
         </button>
       </div>
 
-      <div className="update-dialog-body">
+      <div className="update-dialog-body" ref={bodyRef}>
+        <div className="update-dialog-body-content" ref={bodyContentRef} role="presentation">
         {mode === 'deprecation' && (
           <div className="update-dialog-deprecation">
             <IconAlertTriangle size={14} aria-hidden />
@@ -197,6 +219,7 @@ export function UpdateDialog({ open, mode, info, updating, onUpdate, onClose }: 
               {r.body && <Markdown text={r.body} breaks />}
             </section>
           ))}
+        </div>
       </div>
 
       <div className="update-dialog-footer">

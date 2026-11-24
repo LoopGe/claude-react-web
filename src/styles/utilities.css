@@ -2607,6 +2607,14 @@ button.tool-group-failed-jump:focus-visible {
 
 /* New-session dialog: width + small icon close button (was inline). */
 .modal-new-session { width: min(560px, 92vw); }
+/* Content-sized wrapper inside the animated body: carries .modal-section's
+   flex-column + gap so the fields keep their spacing, but does NOT flex-fill
+   (the height hook reads its scrollHeight as the natural content height). */
+.new-session-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2-5);
+}
 .btn-icon-sm {
   padding: var(--space-1);
   display: inline-flex;

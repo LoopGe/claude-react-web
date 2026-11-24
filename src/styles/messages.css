@@ -407,48 +407,50 @@
   word-break: break-word;
 }
 
-/* Syntax-highlighting token colours, scoped to .md so they only apply
-   inside chat messages. Colours are driven by --hljs-* variables so the
-   light / dark theme palettes are swapped automatically. */
-.md .hljs {
+/* Syntax-highlighting token colours, scoped to .md (chat messages) and the
+   file-preview code surfaces, which render outside .md: .numbered-code (the
+   numbered view) and .file-viewer-code (the over-cap CodeBlock fallback pre,
+   which carries only .file-viewer-code). Colours are driven by --hljs-*
+   variables so the light / dark theme palettes are swapped automatically. */
+:is(.md, .numbered-code, .file-viewer-code) .hljs {
   color: var(--hljs-fg);
 }
-.md .hljs-comment,
-.md .hljs-quote { color: var(--hljs-comment); font-style: italic; }
-.md .hljs-doctag,
-.md .hljs-keyword,
-.md .hljs-formula { color: var(--hljs-keyword); }
-.md .hljs-section,
-.md .hljs-name,
-.md .hljs-selector-tag,
-.md .hljs-deletion,
-.md .hljs-subst { color: var(--hljs-red); }
-.md .hljs-literal { color: var(--hljs-cyan); }
-.md .hljs-string,
-.md .hljs-regexp,
-.md .hljs-addition,
-.md .hljs-attribute,
-.md .hljs-meta .hljs-string { color: var(--hljs-green); }
-.md .hljs-attr,
-.md .hljs-variable,
-.md .hljs-template-variable,
-.md .hljs-type,
-.md .hljs-selector-class,
-.md .hljs-selector-attr,
-.md .hljs-selector-pseudo,
-.md .hljs-number { color: var(--hljs-orange); }
-.md .hljs-symbol,
-.md .hljs-bullet,
-.md .hljs-link,
-.md .hljs-meta,
-.md .hljs-selector-id,
-.md .hljs-title { color: var(--hljs-blue); }
-.md .hljs-built_in,
-.md .hljs-title.class_,
-.md .hljs-class .hljs-title { color: var(--hljs-yellow); }
-.md .hljs-emphasis { font-style: italic; }
-.md .hljs-strong { font-weight: bold; }
-.md .hljs-link { text-decoration: underline; }
+:is(.md, .numbered-code, .file-viewer-code) .hljs-comment,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-quote { color: var(--hljs-comment); font-style: italic; }
+:is(.md, .numbered-code, .file-viewer-code) .hljs-doctag,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-keyword,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-formula { color: var(--hljs-keyword); }
+:is(.md, .numbered-code, .file-viewer-code) .hljs-section,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-name,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-selector-tag,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-deletion,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-subst { color: var(--hljs-red); }
+:is(.md, .numbered-code, .file-viewer-code) .hljs-literal { color: var(--hljs-cyan); }
+:is(.md, .numbered-code, .file-viewer-code) .hljs-string,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-regexp,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-addition,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-attribute,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-meta .hljs-string { color: var(--hljs-green); }
+:is(.md, .numbered-code, .file-viewer-code) .hljs-attr,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-variable,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-template-variable,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-type,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-selector-class,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-selector-attr,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-selector-pseudo,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-number { color: var(--hljs-orange); }
+:is(.md, .numbered-code, .file-viewer-code) .hljs-symbol,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-bullet,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-link,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-meta,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-selector-id,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-title { color: var(--hljs-blue); }
+:is(.md, .numbered-code, .file-viewer-code) .hljs-built_in,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-title.class_,
+:is(.md, .numbered-code, .file-viewer-code) .hljs-class .hljs-title { color: var(--hljs-yellow); }
+:is(.md, .numbered-code, .file-viewer-code) .hljs-emphasis { font-style: italic; }
+:is(.md, .numbered-code, .file-viewer-code) .hljs-strong { font-weight: bold; }
+:is(.md, .numbered-code, .file-viewer-code) .hljs-link { text-decoration: underline; }
 
 /* Markdown renderer (react-markdown output) */
 .md > *:first-child { margin-top: 0; }
@@ -1896,6 +1898,24 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+/* While the height hook pins a dialog body (NewSessionDialog, the snippets
+   list), flex-grow must not fight the inline height — the same override every
+   useAutoHeightTransition consumer carries (.modal-list, .palette-list). The
+   class only lands when that hook animates, so other .modal-section consumers
+   (ConfirmDialog, PermissionDialog, …) are unaffected. */
+.modal-section.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
+}
+/* Content-sized wrapper inside an animated .modal-section body (ShortcutHelp,
+   ProfileCreateDialog, RunAsAgentControl). Mirrors the section's own column gap
+   so wrapping the rows does not collapse their spacing — same shape as
+   .new-session-content. Plain content height, never flex-fill. */
+.modal-section-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2-5);
 }
 .perm-headline {
   font-size: calc(15px * var(--fs-scale));
@@ -3372,6 +3392,15 @@ details.decision-card > summary > .decision-card-header {
   overflow-wrap: anywhere;
 }
 .question-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3-5);
+}
+/* Content-sized wrapper inside the animated question/elicitation body
+   (.modal-section.question-body). Carries the body's wider column gap so the
+   question blocks / form fields keep their spacing; never flex-fill, so the
+   height hook reads its scrollHeight as the natural content height. */
+.question-body-content {
   display: flex;
   flex-direction: column;
   gap: var(--space-3-5);

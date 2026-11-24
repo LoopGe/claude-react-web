@@ -759,6 +759,12 @@
   overflow-y: auto;
   padding: var(--space-1);
 }
+/* While the height hook pins the list (useAutoHeightTransition), flex-grow must
+   not fight the inline height. The class only lands during a tween. */
+.model-picker-list.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
+}
 .model-picker-empty {
   padding: var(--space-5);
   text-align: center;
@@ -826,11 +832,12 @@
    ctx-menu-in/out for parity with the other listbox pickers. */
 .cmd-picker {
   position: fixed;
+  display: flex;
+  flex-direction: column;
   min-width: 280px;
   max-width: 420px;
   max-height: 320px;
-  overflow-y: auto;
-  padding: var(--space-1);
+  overflow: hidden;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -840,6 +847,20 @@
   user-select: none;
   transform-origin: bottom left;
   animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
+}
+/* The scroller lives INSIDE the card (like .model-picker-list) so the height
+   hook can pin it while the card's max-height stays the cap the measure reads.
+   The card itself no longer scrolls. */
+.cmd-picker-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-1);
+}
+/* While the height hook pins the list (useAutoHeightTransition), flex-grow must
+   not fight the inline height. The class only lands during a tween. */
+.cmd-picker-list.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
 }
 .cmd-picker-item {
   display: flex;

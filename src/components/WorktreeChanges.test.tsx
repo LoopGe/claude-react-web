@@ -6,12 +6,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { fireEvent, render, screen, act } from '@testing-library/react'
 import { WorktreeChanges } from './WorktreeChanges'
 import { parseDiffResource } from '../../shared/resource-address'
+import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../test/resize-observer-stub'
 
 const mockOpenResource = vi.hoisted(() => vi.fn())
 vi.mock('../resources/context', () => ({
   useOpenResource: () => mockOpenResource,
   useOptionalOpenResource: () => null,
 }))
+
+// Height-animation wiring: measure mocked to controlled heights (cap math is
+// unit-tested in capped-height-measure.test.ts). With no implementation it
+// returns undefined → the hook stands down, so the diff-preview tests are
+// unaffected.
+const { measureMock } = vi.hoisted(() => ({ measureMock: vi.fn() }))
+vi.mock('../utils/capped-height-measure', () => ({ measureCappedContentHeight: measureMock }))
 
 const statusState = {
   data: {
@@ -142,5 +150,49 @@ describe('WorktreeChanges diff preview entry', () => {
       path: 'src/a.ts',
       basis: { type: 'range', from: 'main', to: 'feat', mergeBase: false },
     })
+  })
+})
+
+describe('WorktreeChanges height animation', () => {
+  beforeEach(() => {
+    measureMock.mockReset()
+    stubResizeObserver()
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(0)
+  })
+
+  afterEach(() => {
+    clearResizeObserverStub()
+    vi.restoreAllMocks()
+  })
+
+  it('tweens the tab body height on a content-driven resize', () => {
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    renderPane()
+    const box = document.querySelector<HTMLElement>('.git-panel-scroll')!
+    const content = document.querySelector<HTMLElement>('.git-panel-scroll-content')!
+    height = 300
+    fireResize(content)
+    expect(box.classList.contains('auto-height-animating')).toBe(true)
+    expect(box.style.height).toBe('100px')
+  })
+
+  it('releases the pin when the tween finishes', () => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    renderPane()
+    const box = document.querySelector<HTMLElement>('.git-panel-scroll')!
+    const content = document.querySelector<HTMLElement>('.git-panel-scroll-content')!
+    height = 300
+    fireResize(content)
+    expect(box.style.height).toBe('300px')
+    act(() => {
+      const evt = new Event('transitionend', { bubbles: true })
+      Object.defineProperty(evt, 'propertyName', { value: 'height' })
+      box.dispatchEvent(evt)
+    })
+    expect(box.classList.contains('auto-height-animating')).toBe(false)
+    expect(box.style.height).toBe('')
   })
 })

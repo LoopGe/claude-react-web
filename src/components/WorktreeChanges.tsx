@@ -26,6 +26,9 @@ import { useOpenResource } from '../resources/context'
 import { FullDiffViewer } from './FullDiffViewer'
 import { HoverHint } from './HoverHint'
 import { DiffView } from './DiffView'
+import { AnimatedCollapse } from './AnimatedCollapse'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import {
   useGitStatus,
   useGitDiff,
@@ -108,6 +111,8 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
     [tab, cwd, baseRef, branchName, sessionId, openResource],
   )
   const tablistRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const scrollContentRef = useRef<HTMLDivElement>(null)
   // Unique-per-instance tab ids: up to 3 panels can hold this overlay open at
   // once, and duplicate DOM ids would make aria-controls/aria-labelledby
   // resolve to the first instance (review finding).
@@ -152,6 +157,24 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
   const refresh = () => {
     status.refresh(); branchRange.refresh(); baseRange.refresh()
   }
+
+  // The tab body grows/shrinks as file lists load and tabs switch; tween its
+  // height instead of jumping. The measure caps at the card ceiling (pin-
+  // independent). `.git-panel-scroll-content` is the content-sized wrapper the
+  // observer watches; the key also drives the tween without ResizeObserver.
+  // A row's diff fold (AnimatedCollapse in RowShell) owns its own height motion
+  // — the hook stands down for it and follows natively.
+  const measureScrollHeight = useCallback(() => {
+    const box = scrollRef.current
+    const content = scrollContentRef.current
+    const card = box?.closest('.git-panel') as HTMLElement | null
+    if (!box || !content || !card) return null
+    return measureCappedContentHeight(box, content, card)
+  }, [])
+  useAutoHeightTransition(scrollRef, `${tab}|${loading}|${error ?? ''}|${uncommittedFiles.length}|${rangeFiles.length}`, {
+    measureTargetHeight: measureScrollHeight,
+    observe: scrollContentRef,
+  })
 
   return (
     <Overlay variant="git" ariaLabel="Worktree changes" open onClose={onClose} renderCard={false} trapRefTarget="backdrop" focusEscapeSelector=".chat-panel">
@@ -219,7 +242,9 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
           id={tabpanelId}
           aria-labelledby={tabIdOf(tab)}
           tabIndex={0}
+          ref={scrollRef}
         >
+          <div className="git-panel-scroll-content" ref={scrollContentRef}>
           {!cwd || !branchName ? (
             <div className="git-panel-empty">
               No matching worktree confirmed in git yet (a timing gap right after EnterWorktree, or the claim is stale).
@@ -256,6 +281,7 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
               onOpenDiff={handleOpenDiff}
             />
           )}
+          </div>
         </div>
 
         </div>
@@ -460,31 +486,33 @@ function RowShell(props: {
           </div>
         )}
       </div>
-      {open && (
-        <div className="git-file-diff-wrap">
-          <div className="git-file-diff-header">
-            <button
-              type="button"
-              className="git-diff-open-preview"
-              aria-label={`Open diff preview for ${path}`}
-              onClick={() => onOpenDiff(path, row.staged)}
-            >
-              Open diff preview
-            </button>
+      <AnimatedCollapse open={open} animateResize className="git-file-diff-collapse">
+        {open && (
+          <div className="git-file-diff-wrap">
+            <div className="git-file-diff-header">
+              <button
+                type="button"
+                className="git-diff-open-preview"
+                aria-label={`Open diff preview for ${path}`}
+                onClick={() => onOpenDiff(path, row.staged)}
+              >
+                Open diff preview
+              </button>
+            </div>
+            {diff.loading && <div className="git-file-diff-loading">Loading…</div>}
+            {diff.error && <div className="git-file-diff-error">{diff.error}</div>}
+            {diff.data && diff.data.isBinary && <div className="git-file-diff-binary">(binary file)</div>}
+            {diff.data && !diff.data.isBinary && (
+              <DiffView
+                text={diff.data.text}
+                truncated={diff.data.truncated}
+                totalLines={diff.data.totalLines}
+                onShowFull={openFull}
+              />
+            )}
           </div>
-          {diff.loading && <div className="git-file-diff-loading">Loading…</div>}
-          {diff.error && <div className="git-file-diff-error">{diff.error}</div>}
-          {diff.data && diff.data.isBinary && <div className="git-file-diff-binary">(binary file)</div>}
-          {diff.data && !diff.data.isBinary && (
-            <DiffView
-              text={diff.data.text}
-              truncated={diff.data.truncated}
-              totalLines={diff.data.totalLines}
-              onShowFull={openFull}
-            />
-          )}
-        </div>
-      )}
+        )}
+      </AnimatedCollapse>
       <FullDiffViewer
         open={showFull}
         onClose={() => setShowFull(false)}

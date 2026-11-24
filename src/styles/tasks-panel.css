@@ -54,6 +54,12 @@
   overflow-x: hidden;
   overflow-y: auto;
 }
+/* While the height hook pins the scroller (useAutoHeightTransition), flex-grow
+   must not fight the inline height. The class only lands during a tween. */
+.tasks-panel-scroll.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
+}
 .tasks-overlay[data-state='open'] > .tasks-panel {
   animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both;
 }
