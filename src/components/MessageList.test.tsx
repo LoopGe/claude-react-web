@@ -6363,4 +6363,23 @@ describe('unroutable completion rows (store-backed)', () => {
     })
     expect(container.querySelector('[data-message-id="n1"]')).toBeTruthy()
   })
+
+  it('drops the card for a backfilled record (subagent, backgrounded, no toolUseId)', () => {
+    // The server creates this shape when the original record was evicted by
+    // the terminal cap: keyed by taskId (agentId), no launch tool_use. The
+    // client hides the row purely on the content match — no toolUseId needed.
+    getSessionStore(SID).dispatch({ type: 'MESSAGE', message: injection('a1') })
+    const { container, rerender } = render(list())
+    act(() => {
+      getSessionStore(SID).dispatch({
+        type: 'TASKS_SNAPSHOT',
+        tasks: [{
+          taskId: 'a1', description: 'Agent "x" finished', taskType: 'subagent',
+          status: 'completed', isBackgrounded: true, result: 'the report', updatedAt: 1,
+        }],
+      })
+      rerender(list())
+    })
+    expect(container.querySelector('[data-message-id="n1"]')).toBeNull()
+  })
 })

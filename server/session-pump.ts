@@ -424,9 +424,8 @@ export function pruneAndBroadcastTasks(session: Session): void {
 }
 
 /** Fold a harness `<task-notification>` user-role XML injection into
- *  `session.tasks`. Today this shape never reaches the task map at all
- *  (`applyTaskEvent` early-returns for non-system frames), so background
- *  shell/monitor completions are invisible in the TasksPanel.
+ *  `session.tasks`. `applyTaskEvent` only handles the system-frame shape,
+ *  so this fold is the XML injection's only path into the task map.
  *
  *  KEYING (Review Focus #1): `applyTaskEvent` keys the map by `task_id`.
  *  The XML injection may carry no `<task-id>` at all, in which case
@@ -443,11 +442,13 @@ export function pruneAndBroadcastTasks(session: Session): void {
  *
  *  UNROUTABLE COMPLETIONS: an injection with a non-empty `<result>` but no
  *  `<tool-use-id>` (a background agent stopping again after a resume) is
- *  merged into the EXISTING record keyed by its `<task-id>` — never created.
- *  With no record there is no home for the payload, so the transcript keeps
- *  its neutral card (the client's row filter hides the row only when the
- *  record holds THIS result, by content generation). Monitor `<event>`-only
- *  and status-only notices never settle a record.
+ *  merged into the record keyed by its `<task-id>`, CREATING a terminal
+ *  record when none exists (the original was evicted by the terminal cap or
+ *  never seeded). The created record keys the disk transcript by taskId
+ *  (the agentId), so it needs no toolUseId. The client's row filter hides
+ *  the transcript row only when the record holds THIS result, by content
+ *  generation. Monitor `<event>`-only and status-only notices never settle
+ *  or create a record.
  *
  *  Returns whether a record was written, so the caller persists the task
  *  sidecar only on an actual fold. */
@@ -458,15 +459,25 @@ export function applyTaskNotificationInjection(session: Session, msg: SDKMessage
     const completion = parseUnroutableCompletion(frame)
     if (!completion) return false
     const existing = session.tasks.get(completion.taskId)
-    if (!existing) return false
     const now = Date.now()
-    session.tasks.set(completion.taskId, {
-      ...existing,
-      status: completion.status,
-      result: completion.result,
-      endedAt: now,
-      updatedAt: now,
-    })
+    session.tasks.set(completion.taskId, existing
+      ? {
+          ...existing,
+          status: completion.status,
+          result: completion.result,
+          endedAt: now,
+          updatedAt: now,
+        }
+      : {
+          taskId: completion.taskId,
+          description: completion.summary ?? '',
+          taskType: 'subagent',
+          status: completion.status,
+          isBackgrounded: true,
+          result: completion.result,
+          endedAt: now,
+          updatedAt: now,
+        })
     pruneAndBroadcastTasks(session)
     return true
   }
@@ -1260,9 +1271,9 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // Fold the injection into session.tasks (the task map's XML path —
         // applyTaskEvent only handles the system-frame shape). The function
         // itself decides foldability: a <tool-use-id> keys/upserts a record,
-        // a result-bearing no-id completion merges into an EXISTING task-id
-        // record, and anything else (monitor events, status-only notices,
-        // no record) is a no-op. Persist the sidecar only on an actual fold.
+        // a result-bearing no-id completion merges into (or creates) the
+        // task-id record, and anything else (monitor events, status-only
+        // notices) is a no-op. Persist the sidecar only on an actual fold.
         if (isNotif && applyTaskNotificationInjection(session, msg)) {
           try { deps.recordTasksSnapshot?.(session.id) }
           catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }

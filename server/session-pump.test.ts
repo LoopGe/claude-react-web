@@ -2114,12 +2114,32 @@ describe('applyTaskNotificationInjection', () => {
     expect(snapshots.at(-1)).toBeTruthy()
   })
 
-  it('does NOT create a record for a no-tool-use-id completion when none exists', () => {
+  it('creates a terminal record keyed by task-id when none exists', () => {
+    const { session, snapshots } = makeTaskSession()
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>a1</task-id><status>completed</status>' +
+      '<summary>Agent "x" finished</summary><result>THE-REPORT</result></task-notification>'))
+    expect(session.tasks.size).toBe(1)
+    const rec = session.tasks.get('a1')!
+    expect(rec.taskId).toBe('a1')
+    expect(rec.status).toBe('completed')
+    expect(rec.result).toBe('THE-REPORT')
+    expect(rec.description).toBe('Agent "x" finished')
+    expect(rec.taskType).toBe('subagent')
+    expect(rec.isBackgrounded).toBe(true)
+    // No launch tool_use exists for a re-notification — the record keys the
+    // disk transcript by taskId (agentId), not by toolUseId.
+    expect(rec.toolUseId).toBeUndefined()
+    expect(rec.endedAt).toBeTypeOf('number')
+    expect(snapshots.at(-1)).toBeTruthy()
+  })
+
+  it('leaves description empty for a created record with no summary', () => {
     const { session } = makeTaskSession()
     applyTaskNotificationInjection(session, xml(
       '<task-notification><task-id>a1</task-id><status>completed</status>' +
-      '<result>THE-REPORT</result></task-notification>'))
-    expect(session.tasks.size).toBe(0)
+      '<result>R</result></task-notification>'))
+    expect(session.tasks.get('a1')!.description).toBe('')
   })
 
   it('leaves an existing record untouched for a monitor event-only notification', () => {
@@ -2194,6 +2214,31 @@ describe('applyTaskNotificationInjection', () => {
     const recordTasksSnapshot = vi.fn()
     await pump(session, makePumpDeps({ recordTasksSnapshot }))
     expect(session.tasks.get('m1')!.result).toBeUndefined()
+    expect(recordTasksSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('pump creates a record for a no-tool-use-id completion when none exists and persists the sidecar', async () => {
+    // The late re-notification case: the original record was evicted by the
+    // terminal cap (or never seeded). The fold backfills a record so the
+    // report has a home and the transcript row can hide.
+    const notif = userMsg(
+      '<task-notification><task-id>a1</task-id><status>completed</status>' +
+      '<summary>Agent "x" finished</summary><result>REPORT</result></task-notification>')
+    const { session } = makePumpSession([notif])
+    const recordTasksSnapshot = vi.fn()
+    await pump(session, makePumpDeps({ recordTasksSnapshot }))
+    expect(session.tasks.get('a1')!.result).toBe('REPORT')
+    expect(session.tasks.get('a1')!.taskType).toBe('subagent')
+    expect(recordTasksSnapshot).toHaveBeenCalledWith('s-pump')
+  })
+
+  it('pump creates nothing for a monitor event with no record', async () => {
+    const notif = userMsg(
+      '<task-notification><task-id>m1</task-id><event>exe produced</event></task-notification>')
+    const { session } = makePumpSession([notif])
+    const recordTasksSnapshot = vi.fn()
+    await pump(session, makePumpDeps({ recordTasksSnapshot }))
+    expect(session.tasks.size).toBe(0)
     expect(recordTasksSnapshot).not.toHaveBeenCalled()
   })
 })

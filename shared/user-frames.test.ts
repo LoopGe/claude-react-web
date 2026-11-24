@@ -121,8 +121,17 @@ describe('parseUnroutableCompletion', () => {
       '<summary>Agent "x" finished</summary><result>the report</result></task-notification>'))).toEqual({
       taskId: 'a1',
       status: 'completed',
+      summary: 'Agent "x" finished',
       result: 'the report',
     })
+  })
+
+  it('leaves summary undefined when the injection carries none', () => {
+    const p = parseUnroutableCompletion(msg(
+      '<task-notification><task-id>a1</task-id><status>completed</status>' +
+      '<result>the report</result></task-notification>'))
+    expect(p?.summary).toBeUndefined()
+    expect(p?.result).toBe('the report')
   })
 
   it('returns null for a foldable injection (the tool-use-id parser owns it)', () => {

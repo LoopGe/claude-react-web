@@ -71,11 +71,11 @@ export function shouldHideByDefault(msg: VisibilityShape): boolean {
   //     visible HERE (this gate is content-only, shared with the server
   //     search index). A result-bearing completion gets a second,
   //     state-dependent gate in the client's row model: the server folds it
-  //     into an EXISTING task record keyed by `<task-id>` (never creates
-  //     one), and `buildTranscriptRows` drops the row only when that record
-  //     holds THIS payload (`taskResultVersions` content-generation match).
-  //     With no record, a different result, or a monitor `<event>` (no other
-  //     render path), the neutral card stays.
+  //     into the task record keyed by `<task-id>` (creating a terminal stub
+  //     when none exists), and `buildTranscriptRows` drops the row only when
+  //     that record holds THIS payload (`taskResultVersions`
+  //     content-generation match). A different result or a monitor `<event>`
+  //     (no other render path) keeps the neutral card.
   //
   // The frame MUST still reach the store and the disk JSONL in every case:
   // the reducer's activeSubagents merge and `backfillSubagentCompletions`

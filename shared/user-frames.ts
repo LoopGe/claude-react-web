@@ -298,13 +298,15 @@ export function classifyTaskNotificationInjection(msg: UserFrameShape): TaskNoti
 export interface UnroutableCompletion {
   taskId: string
   status: TaskNotificationStatus
+  /** The completion note (`<summary>`) — seeds a created record's description. */
+  summary?: string
   result: string
 }
 
 export function parseUnroutableCompletion(msg: UserFrameShape): UnroutableCompletion | null {
   const raw = readTaskNotification(msg)
   if (!raw || raw.toolUseId || !raw.taskId || !raw.result?.trim()) return null
-  return { taskId: raw.taskId, status: raw.status, result: raw.result }
+  return { taskId: raw.taskId, status: raw.status, summary: raw.summary, result: raw.result }
 }
 
 // ---------------------------------------------------------------------------

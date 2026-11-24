@@ -56,15 +56,13 @@ The third bullet's "nothing to key a task record on" was too strong: the
 injection's `<task-id>` IS the task map's primary key (the subagent's
 agentId). A result-bearing no-`<tool-use-id>` completion — the harness's
 re-notification when a previously-launched background agent stops again
-(e.g. after a SendMessage resume) — now folds into an EXISTING record under
-that key, and its transcript row is dropped once the record holds the
-payload. The contract is deliberately conservative:
+(e.g. after a SendMessage resume) — now folds into a record under that key,
+and its transcript row is dropped once the record holds the payload.
 
 - server: `applyTaskNotificationInjection` parses the shape with
   `parseUnroutableCompletion` (shared/user-frames.ts — non-empty `<result>`,
   no `<tool-use-id>`, present `<task-id>`) and merges status/result/endedAt
-  into `session.tasks.get(taskId)` ONLY when a record exists. No record →
-  no-op; the neutral card stays. Monitor `<event>`-only and status-only
+  into `session.tasks.get(taskId)`. Monitor `<event>`-only and status-only
   notices never settle a record (the original rejection's concern).
 - client: the hide decision is state-dependent, so it lives in the row
   model, NOT in `shouldHideByDefault` (which stays content-only for the
@@ -81,10 +79,45 @@ payload. The contract is deliberately conservative:
   Live replay and disk replay agree because both read the same tasks
   snapshot (sidecar-seeded after restart).
 
-No disk backfill: old sessions heal only if the record already carries a
-result from another path. Known gap, same class as before: in-session search
-still indexes the injection (its `hiddenByDefault` stays false) and can
-point at a row the row model drops.
+No disk backfill: without a live re-notification, old sessions heal only if
+the record already carries a result from another path (the 2026-11-24
+update below adds healing via a fresh re-notification that creates the
+record). Known gap, same class as before: in-session search still indexes
+the injection (its `hiddenByDefault` stays false) and can point at a row the
+row model drops.
+
+### Update 2026-11-24: backfill a record when none exists
+
+The 2026-11-23 contract was deliberately conservative ("only merge into an
+EXISTING record, never create"). Its visible cost showed up in a live
+session: a background agent's record had been evicted by the 50-terminal
+cap (`MAX_TERMINAL_TASKS`), so its late re-notification found no record,
+the fold no-op'd, and the raw-XML card stayed — correct fail-visible
+behavior, but the report had no TasksPanel home even though the agent's
+disk transcript still existed.
+
+The user chose to lift the never-create rule: when no record exists, the
+fold now CREATES a terminal record keyed by the injection's `<task-id>` —
+`taskType: 'subagent'`, `isBackgrounded: true`, `description` from
+`<summary>` (the parser now carries it), `result`/`status` from the
+injection, no `toolUseId` (there is no launch tool_use for a
+re-notification). TasksPanel already renders this shape: the drill-in
+viewer keys the disk transcript by `taskId` (the agentId), the result block
+reads the record's result, and the elapsed timer is gated on `startedAt`
+(absent here). The client hide mechanism is unchanged — the created record
+holds THIS payload by construction, so the content-generation match drops
+the row.
+
+What this gives up: the conservative guarantee that the task map only ever
+gains records from real launch/progress frames. A created record is a
+terminal stub born from a completion notice; it is subject to the same
+50-terminal cap, so a sufficiently long session can still evict it and a
+later re-notification would re-create it. Monitor `<event>`-only and
+status-only notices still never create (the parser gates on a non-empty
+`<result>`), so the original rejection's monitor concern stays handled.
+Raising `MAX_TERMINAL_TASKS` was the alternative lever; it only delays
+eviction and does not restore already-evicted records, so backfill was
+chosen instead.
 
 ## Alternatives considered
 
