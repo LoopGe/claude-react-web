@@ -41,6 +41,7 @@ import { getClaudeHealth } from './health-routes.js'
 import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info.js'
 import { parseSemver } from '../../shared/update-info.js'
 import { getReleaseNotes, REPO_URL } from '../release-notes.js'
+import { publishUpdateInfo } from '../update-info-hub.js'
 
 const log = createLogger('update')
 
@@ -75,7 +76,7 @@ async function withVersionOverlays(
   return out
 }
 
-export function buildUpdateRouter(claudeBinary?: string): Hono {
+export function buildUpdateRouter(claudeBinary?: string, host: 'web' | 'desktop' = 'web'): Hono {
   const app = new Hono()
 
   app.get('/update-info', async (c) => {
@@ -175,6 +176,12 @@ export function buildUpdateRouter(claudeBinary?: string): Hono {
   })
 
   app.post('/update', async (c) => {
+    // The desktop app updates its own Electron bundle (electron-updater),
+    // never the npm package — an npm i -g from the embedded server would
+    // install a parallel CLI the app does not run.
+    if (host === 'desktop') {
+      throw new HttpError(400, 'in-app npm update is not available on the desktop host')
+    }
     const installMethod = detectInstallMethod()
 
     // Use server-trusted values — the package name we were built as and the
@@ -222,6 +229,11 @@ export function buildUpdateRouter(claudeBinary?: string): Hono {
       `running npm install: ${info.packageName}@${targetVersion ?? 'latest'} from ${registry}`,
     )
     await runNpmInstall(info.packageName, registry, targetVersion)
+
+    // The install rewrote the package on disk — publish the flipped overlay
+    // (updateAppliedToDisk) so every tab's nag suppresses immediately,
+    // without waiting for the next probe.
+    publishUpdateInfo(getCachedUpdateInfo())
 
     // Confirm the install actually rewrote the package on disk. The running
     // process still reports the OLD build-time version (getCurrentVersion()),

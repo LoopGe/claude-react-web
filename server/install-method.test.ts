@@ -40,4 +40,13 @@ describe('detectInstallMethod path classification', () => {
       __classifyForTests('/root/.npm/_npx/h/node_modules/.bin/../@mi/x/dist/cli.mjs'),
     ).toBe('npx')
   })
+
+  it('classifies a packaged-desktop app.asar entry as unknown', () => {
+    // The Electron bundle runs dist/cli.mjs from inside app.asar — no
+    // node_modules / _npx segment. Documents why the desktop host needs the
+    // explicit POST /update 400 gate rather than relying on install method.
+    expect(
+      __classifyForTests('C:\\Users\\x\\AppData\\Local\\Programs\\claude-react-web\\resources\\app.asar\\dist\\cli.mjs'),
+    ).toBe('unknown')
+  })
 })
