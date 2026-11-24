@@ -41,6 +41,12 @@ export function measureCappedContentHeight(
   const prevHeight = box.style.height
   const prevFlex = box.style.flex
   const prevMaxHeight = box.style.maxHeight
+  const prevTransition = box.style.transition
+  // Disable the box's height transition for the lift: mid-tween the hook has set
+  // `transition: height …`, so a forced height would ANIMATE toward 100000px and
+  // the card-height read below would catch the stale (pre-lift) height, collapsing
+  // the ceiling — a one-shot oscillation on open. Snap the lift instead.
+  box.style.transition = 'none'
   box.style.flex = '0 0 auto'
   box.style.maxHeight = 'none'
   box.style.height = '100000px'
@@ -49,6 +55,7 @@ export function measureCappedContentHeight(
   box.style.height = prevHeight
   box.style.flex = prevFlex
   box.style.maxHeight = prevMaxHeight
+  box.style.transition = prevTransition
   void card.offsetHeight
 
   const cardStyle = window.getComputedStyle(card)

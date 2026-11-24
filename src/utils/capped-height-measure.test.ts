@@ -105,6 +105,25 @@ it('restores the box height/flex/max-height after the empirical cap read', () =>
   expect(list.style.maxHeight).toBe('50vh')
 })
 
+it('disables the box transition during the cap read, then restores it', () => {
+  // Regression: mid-tween the hook sets `transition: height …` on the box. The
+  // empirical lift forces a tall height to read the card cap; with the transition
+  // still active that height ANIMATES and the cap read catches the stale height,
+  // collapsing the ceiling (a one-shot oscillation). The lift must snap.
+  const { list, content, card } = flatFixture(900)
+  list.style.transition = 'height 240ms ease'
+  const transitionsAtRead: string[] = []
+  vi.spyOn(card, 'offsetHeight', 'get').mockImplementation(() => {
+    transitionsAtRead.push(list.style.transition)
+    return 468
+  })
+  measureCappedContentHeight(list, content, card)
+  // The cap-read lift snaps (transition none); the post-restore read sees the
+  // restored transition again.
+  expect(transitionsAtRead[0]).toBe('none')
+  expect(list.style.transition).toBe('height 240ms ease')
+})
+
 it('targets zero when the chrome consumes the whole cap', () => {
   const { list, content, card } = flatFixture(900, 10)
   expect(measureCappedContentHeight(list, content, card)).toBe(0)
