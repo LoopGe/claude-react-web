@@ -1285,6 +1285,19 @@ mark.search-hl.search-hl-active {
   overflow-y: auto;
   padding: var(--space-1-5) var(--space-1-5) var(--space-3);
 }
+/* While the height hook pins the list (useAutoHeightTransition), flex-grow must
+   not fight the inline height. The class only lands during a tween. */
+.search-panel-list.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
+}
+/* Content-sized wrapper the height hook's ResizeObserver measures. flow-root
+   contains the groups' trailing margin-bottom so scrollHeight reads the full
+   natural height (a plain block would let that margin collapse out and the
+   measure would settle a few px short, snapping on pin release). */
+.search-panel-list-content {
+  display: flow-root;
+}
 .search-panel-group {
   margin-bottom: var(--space-1);
 }

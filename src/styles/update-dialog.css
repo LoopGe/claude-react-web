@@ -45,6 +45,14 @@
   overflow-y: auto;
   padding: var(--space-1) var(--space-5) var(--space-3);
 }
+/* While the height hook pins the body, flex-grow must not fight the inline
+   height — the same override every useAutoHeightTransition consumer carries.
+   The .update-dialog-body-content wrapper is a plain content-sized block, so
+   its scrollHeight reads the natural releases height even mid-tween. */
+.update-dialog-body.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
+}
 
 .update-dialog-deprecation {
   margin: var(--space-2) 0 0;

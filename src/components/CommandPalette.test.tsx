@@ -1,9 +1,17 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { CommandPalette } from './CommandPalette'
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
 import { createMessageJumpTarget } from '../../shared/message-jump'
 import type { MessageSearchHit } from '../../shared/search-results'
+import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../test/resize-observer-stub'
+
+// The height-animation wiring (last describe) mocks the cap measure to controlled
+// heights; the cap math itself is unit-tested in capped-height-measure.test.ts.
+// The mock is inert (returns undefined) for the behavioral tests above, so the
+// hook never tweens there.
+const { measureMock } = vi.hoisted(() => ({ measureMock: vi.fn() }))
+vi.mock('../utils/capped-height-measure', () => ({ measureCappedContentHeight: measureMock }))
 
 // happy-dom implements scrollIntoView natively; these tests replace it with a
 // spy, and this puts the real method back so nothing leaks into other files.
@@ -170,5 +178,64 @@ describe('CommandPalette', () => {
     fireEvent.click(document.querySelector('[data-palette-option]')!)
     expect(paletteAction).toHaveBeenCalledOnce()
     expect(handler).not.toHaveBeenCalled()
+  })
+})
+
+describe('CommandPalette height animation', () => {
+  beforeEach(() => {
+    measureMock.mockReset()
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
+    stubResizeObserver()
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(0)
+  })
+
+  afterEach(() => {
+    clearResizeObserverStub()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  function setupPalette() {
+    render(
+      <CommandPalette
+        open
+        onClose={vi.fn()}
+        shortcuts={[shortcut('one', 'mod+1'), shortcut('two', 'mod+2')]}
+        sessions={[]}
+        onSelectSession={vi.fn()}
+        onSelectMessage={vi.fn()}
+      />,
+    )
+  }
+
+  it('tweens the list height on a content-driven resize', () => {
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    setupPalette()
+    const list = document.querySelector<HTMLElement>('.palette-list')!
+    const content = document.querySelector<HTMLElement>('.palette-list-content')!
+    height = 300
+    fireResize(content)
+    expect(list.classList.contains('auto-height-animating')).toBe(true)
+    expect(list.style.height).toBe('100px')
+  })
+
+  it('releases the pin when the tween finishes', () => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    setupPalette()
+    const list = document.querySelector<HTMLElement>('.palette-list')!
+    const content = document.querySelector<HTMLElement>('.palette-list-content')!
+    height = 300
+    fireResize(content)
+    expect(list.style.height).toBe('300px')
+    act(() => {
+      const evt = new Event('transitionend', { bubbles: true })
+      Object.defineProperty(evt, 'propertyName', { value: 'height' })
+      list.dispatchEvent(evt)
+    })
+    expect(list.classList.contains('auto-height-animating')).toBe(false)
+    expect(list.style.height).toBe('')
   })
 })

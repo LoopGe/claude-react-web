@@ -1,9 +1,16 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionSearchPanel } from './SessionSearchPanel'
 import type { SessionSearchHit } from '../../shared/session-search'
 import type { SessionSearchState } from '../hooks/useSessionSearch'
 import type { MessagePreviewState } from '../hooks/useMessagePreview'
+import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../test/resize-observer-stub'
+
+// Height-animation wiring: measure mocked to controlled heights (cap math is
+// unit-tested in capped-height-measure.test.ts). With no implementation it
+// returns undefined → the hook stands down, so the render tests are unaffected.
+const { measureMock } = vi.hoisted(() => ({ measureMock: vi.fn() }))
+vi.mock('../utils/capped-height-measure', () => ({ measureCappedContentHeight: measureMock }))
 
 const mocks = vi.hoisted(() => ({
   search: null as SessionSearchState | null,
@@ -167,5 +174,60 @@ describe('SessionSearchPanel', () => {
     expect(input.value).toBe('search')
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
     expect(onClose).toHaveBeenCalled()
+  })
+})
+
+describe('SessionSearchPanel height animation', () => {
+  beforeEach(() => {
+    measureMock.mockReset()
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
+    stubResizeObserver()
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(0)
+  })
+
+  afterEach(() => {
+    clearResizeObserverStub()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('tweens the results list height on a content-driven resize', () => {
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    renderPanel()
+    const box = document.querySelector<HTMLElement>('.search-panel-list')!
+    const content = document.querySelector<HTMLElement>('.search-panel-list-content')!
+    height = 300
+    fireResize(content)
+    expect(box.classList.contains('auto-height-animating')).toBe(true)
+    expect(box.style.height).toBe('100px')
+  })
+
+  it('releases the pin when the tween finishes', () => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    renderPanel()
+    const box = document.querySelector<HTMLElement>('.search-panel-list')!
+    const content = document.querySelector<HTMLElement>('.search-panel-list-content')!
+    height = 300
+    fireResize(content)
+    expect(box.style.height).toBe('300px')
+    act(() => {
+      const evt = new Event('transitionend', { bubbles: true })
+      Object.defineProperty(evt, 'propertyName', { value: 'height' })
+      box.dispatchEvent(evt)
+    })
+    expect(box.classList.contains('auto-height-animating')).toBe(false)
+    expect(box.style.height).toBe('')
+  })
+
+  it('does not measure the results list while a preview is open', () => {
+    measureMock.mockImplementation(() => 200)
+    renderPanel({}, { initialTarget: { kind: 'uuid', uuid: 'u20', query: 'search' } })
+    // The results list is unmounted in the preview view; the measure refuses
+    // (returns null) so no height is pinned on a box that is not there.
+    expect(measureMock).not.toHaveBeenCalled()
+    expect(document.querySelector('.search-panel-list')).toBeNull()
   })
 })

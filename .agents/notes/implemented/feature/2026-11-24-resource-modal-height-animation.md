@@ -1,4 +1,4 @@
-# Agent Note: Resource preview + resume picker height animation
+# Agent Note: Panel height-change animation
 
 Status: implemented
 
@@ -106,6 +106,37 @@ surface extraction needed, and a fresh baseline on every open.
   style, so it is resolved against the parent's content height; vh/px caps read
   straight. Verified live to equal the list's used height and to be unchanged
   when the list is pinned mid-tween.
+
+## Generic measure and broader rollout
+
+The same treatment extends to twelve more surfaces: CommandPalette,
+InputHistoryPanel, FullDiffViewer, UpdateDialog, StructuredPanel, McpInstaller,
+McpImportDialog, NewSessionDialog, SnippetsManagerDialog, UploadsManagerDialog,
+TasksPanel, SessionSearchPanel, WorktreeChanges. Rather than a bespoke measure
+per surface, these share `measureCappedContentHeight(box, content, card)`
+(`src/utils/capped-height-measure.ts`): the resume ceiling idea generalized to
+any nesting by walking from the box up to the card and summing each level's
+padding, flex gaps, and in-flow sibling outer heights. The card cap is read
+EMPIRICALLY — force the box tall (lift its height/flex/max-height), read the
+card's clamped used height, restore — because computed style leaves percentage
+and `min()` caps unresolved. Each surface adds a content-sized wrapper (the
+observer target), a measure callback finding its card via `closest`, and a
+state key; `TasksPanel`/`WorktreeChanges` row folds use `AnimatedCollapse`
+(`animateResize`) and the card hook stands down for them via
+`claimCollapseMotionInside`. Fixed-height views (the SessionSearchPanel preview,
+terminal, drawers) are intentionally not animated.
+
+Two robustness rules the generic measure must honor (both found in review and
+verified live):
+
+- **Skip out-of-flow children in the chrome sum.** The overlay scrollbar appends
+  an absolute track to the card whose height equals the scroller's; counting it
+  as chrome collapsed the ceiling to ~0 whenever the scroller overflowed.
+  Absolute/fixed children consume no flex space, so they are excluded (this also
+  removes the need for a per-consumer nested-overlay refusal).
+- **Floor the target at the box's `min-height`.** A snippets list's 120px floor
+  means a short list renders taller than its natural content; a target below the
+  floor diverges from the used height and gives a growth tween a dead zone.
 
 ## Alternatives considered
 

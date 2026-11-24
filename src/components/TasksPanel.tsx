@@ -16,11 +16,15 @@
 //     SDK emits a terminal task_notification which flips the row via the
 //     normal snapshot path; no optimistic state here.
 
-import { memo, useCallback, useState } from 'react'
+import { memo, useCallback, useRef, useState } from 'react'
 import { useSessionField, useSessionTaskCounts } from '../session-store/selectors'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { useMergedRef } from '../utils/mergedRef'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { AnimatedCollapse } from './AnimatedCollapse'
 import { useCountUp } from '../hooks/useCountUp'
 import { ElapsedTimer } from './ElapsedTimer'
 import { HoverHint } from './HoverHint'
@@ -71,6 +75,9 @@ export const TasksPanel = memo(function TasksPanel({
 }) {
   const tasks = useSessionField(sessionId, 'tasks')
   const setPanelOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const scrollRefMerged = useMergedRef(scrollRef, setPanelOs)
   const toast = useToast()
   const [stopping, setStopping] = useState<Set<string>>(new Set())
   const [transcript, setTranscript] = useState<{ agentId: string; label: string } | null>(null)
@@ -116,6 +123,25 @@ export const TasksPanel = memo(function TasksPanel({
   const ambientActive = active.length - indicatorCount
   const animatedActive = Math.round(useCountUp(indicatorCount, 300))
 
+  // The scroll region grows/shrinks as task rows mount/unmount from WS
+  // snapshots; tween its height instead of jumping. The measure caps at the
+  // card ceiling (pin-independent) so a short panel does not overshoot and
+  // snap. `.tasks-panel-body` is the content-sized wrapper the observer
+  // watches; the key also drives the tween without ResizeObserver. A row's
+  // result fold (AnimatedCollapse below) owns its own height motion — the
+  // hook stands down for it and follows natively (see claimCollapseMotionInside).
+  const measureScrollHeight = useCallback(() => {
+    const box = scrollRef.current
+    const content = bodyRef.current
+    const card = box?.closest('.tasks-panel') as HTMLElement | null
+    if (!box || !content || !card) return null
+    return measureCappedContentHeight(box, content, card)
+  }, [])
+  useAutoHeightTransition(scrollRef, `${active.length}|${finished.length}`, {
+    measureTargetHeight: measureScrollHeight,
+    observe: bodyRef,
+  })
+
   return (
     <aside className="tasks-panel" role="region" aria-label="Tasks">
       <header className="tasks-panel-header">
@@ -144,8 +170,8 @@ export const TasksPanel = memo(function TasksPanel({
           overlay backdrop) would leave the track pinned to the backdrop's
           right edge. Nesting it makes the parent the card, whose right edge is
           where the thumb belongs. */}
-      <div className="tasks-panel-scroll" ref={setPanelOs}>
-        <div className="tasks-panel-body">
+      <div className="tasks-panel-scroll" ref={scrollRefMerged}>
+        <div className="tasks-panel-body" ref={bodyRef}>
           {tasks.length === 0 && (
             <div className="tasks-panel-empty">
               No tasks yet. Background commands and subagents the model launches appear here.
@@ -250,7 +276,11 @@ const TaskRow = memo(function TaskRow({
             </span>
           </HoverHint>
         )}
-        {hasResultBody && resultOpen && <TaskResultView sessionId={sessionId} task={task} enabled={panelVisible} />}
+        {hasResultBody && (
+          <AnimatedCollapse open={resultOpen} animateResize className="tasks-row-result-collapse">
+            {resultOpen && <TaskResultView sessionId={sessionId} task={task} enabled={panelVisible} />}
+          </AnimatedCollapse>
+        )}
       </span>
       {!terminal && (
         <span className="tasks-row-timer-wrap">

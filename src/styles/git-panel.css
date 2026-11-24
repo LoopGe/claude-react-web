@@ -45,6 +45,23 @@
   display: flex;
   flex-direction: column;
 }
+/* While the height hook pins the scroller (useAutoHeightTransition), flex-grow
+   must not fight the inline height. The class only lands during a tween. */
+.git-panel-scroll.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
+}
+/* Content-sized wrapper inside the scroller (WorktreeChanges) — the box the
+   height hook's ResizeObserver measures. flex: 0 0 auto keeps it at its
+   intrinsic height so a row appearing/disappearing is always reported, even
+   while the scroller is pinned mid-tween (mirrors .todo-panel
+   .animated-collapse-content). The column flex mirrors the scroller's own
+   layout so the file rows keep their flex-item semantics. */
+.git-panel-scroll-content {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+}
 .git-overlay[data-state="open"] > .git-panel { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
 .git-overlay[data-state="closing"] > .git-panel { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
 /* The panel is programmatically focused on open (tabIndex=-1) so the ↑↓

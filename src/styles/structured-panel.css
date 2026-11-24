@@ -106,3 +106,26 @@
 .structured-panel .structured-meta {
   margin-top: var(--space-1-5);
 }
+
+/* Height-animation content wrappers: content-sized (not flex-fill) so the
+   measure reads the natural content height while the scroller is pinned
+   mid-tween. Each carries its scroller's flex-column gap so the fields keep
+   their spacing now that they are one wrapper child rather than direct ones. */
+.structured-panel .structured-body-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.structured-panel .structured-result-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2-5);
+}
+/* While the height hook pins a scroller, flex-grow must not fight the inline
+   height — the same override every useAutoHeightTransition consumer carries
+   (.settings-panel-body, .resource-modal-body, .palette-list). */
+.structured-panel .structured-body.auto-height-animating,
+.structured-panel .structured-result.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
+}

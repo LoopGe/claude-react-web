@@ -3,9 +3,12 @@
 // Renders a structured form instead of raw JSON. Dynamic key-value rows
 // for env vars and headers, type-specific fields, client + server validation.
 
-import { useId, useState } from 'react'
+import { useCallback, useId, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { useMergedRef } from '../utils/mergedRef'
 import type { McpServerConfigMeta, McpServerInput } from '../types'
 import { IconX } from './icons/ToolIcons'
 import { Overlay } from './Overlay'
@@ -68,6 +71,27 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
   const [headerRows, setHeaderRows] = useState<KvRow[]>(() => initialKvRows(server?.headerKeys))
   const [errors, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
+
+  // The form body's height changes as fields mount/unmount: the stdio↔url type
+  // swap, env/header rows added or removed, and validation errors appearing.
+  // Tween it instead of jumping. The body carries its own 65vh cap inline and
+  // sits in the .modal card (84vh); the measure honors both (min of content,
+  // card ceiling, body sub-cap) so a short form does not overshoot and snap. The
+  // observer watches a content-sized wrapper; the key drives the discrete swaps.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const setBodyRef = useMergedRef(setBodyOs, bodyRef)
+  const measureBodyHeight = useCallback(() => {
+    const box = bodyRef.current
+    const content = contentRef.current
+    const card = box?.closest('.modal') as HTMLElement | null
+    if (!box || !content || !card) return null
+    return measureCappedContentHeight(box, content, card)
+  }, [])
+  useAutoHeightTransition(bodyRef, `${type}|${envRows.length}|${headerRows.length}|${errors.length}`, {
+    measureTargetHeight: measureBodyHeight,
+    observe: contentRef,
+  })
 
   const updateRow = (rows: KvRow[], setter: (r: KvRow[]) => void, id: string, field: 'key' | 'value', val: string) => {
     setter(rows.map((r) => (r.id === id ? { ...r, [field]: val } : r)))
@@ -169,7 +193,8 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
           <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close"><IconX size={14} /></button>
         </div>
 
-        <div ref={setBodyOs} style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12, maxHeight: '65vh', overflowY: 'auto' }}>
+        <div ref={setBodyRef} style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12, maxHeight: '65vh', overflowY: 'auto' }}>
+          <div ref={contentRef} className="mcp-installer-content" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {/* Name */}
           <div className="settings-field">
             <label htmlFor={nameId}>Name</label>
@@ -280,6 +305,7 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
               {errors.map((e, i) => <div key={i}>{e}</div>)}
             </div>
           )}
+          </div>
         </div>
 
         <div className="modal-footer">

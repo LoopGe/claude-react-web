@@ -117,6 +117,23 @@
   flex: 0 0 auto;
   margin-top: var(--space-1-5);
 }
+
+/* FullDiffViewer height animation (useAutoHeightTransition). The body is the
+   scroller and the content wrapper is content-sized (flex:0 0 auto — a plain
+   block container for the hint / pre / Show-more), so its scrollHeight reads the
+   natural diff height even while the hook pins the body mid-tween. Scoped to
+   .full-diff-viewer so the shared .file-viewer-body (the resource modal's
+   FilePreviewBody host) keeps its own flex-fill chain. */
+.full-diff-viewer .file-viewer-body {
+  overflow-y: auto;
+}
+.full-diff-viewer .file-viewer-body-content {
+  flex: 0 0 auto;
+}
+.full-diff-viewer .file-viewer-body.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
+}
 /* Markdown preview body (FileViewer). Scrolls like the code view; the
    rendered pipeline is the transcript's, so images inside it already open
    the Lightbox. */

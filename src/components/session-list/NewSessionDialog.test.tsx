@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, waitFor, screen, act } from '@testing-library/react'
 import { NewSessionDialog } from './NewSessionDialog'
 import type { NewSessionForm } from '../../types'
+import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../../test/resize-observer-stub'
 
 // Cleanup is registered globally in src/test-setup.ts — do not re-add a
 // per-file afterEach(cleanup) (CLAUDE.md).
@@ -14,6 +15,12 @@ vi.mock('../../hooks/useApi', () => ({
 }))
 
 import { api } from '../../hooks/useApi'
+
+// Height-animation wiring: the cap math is unit-tested in capped-height-measure.test.ts;
+// here the measure is mocked to controlled heights so the wiring (observer + key
+// paths, pin release) is what's under test. Existing tests never read the measure.
+const { measureMock } = vi.hoisted(() => ({ measureMock: vi.fn() }))
+vi.mock('../../utils/capped-height-measure', () => ({ measureCappedContentHeight: measureMock }))
 
 // jsdom doesn't implement matchMedia; useExitPresence probes it when a
 // nested modal closes (reduced-motion check). Report "no reduced motion" so
@@ -1115,5 +1122,55 @@ describe('NewSessionDialog synchronous Create double-write', () => {
     expect(
       JSON.parse(localStorage.getItem('claude-react-web:recent-cwds')!),
     ).toEqual(['/new/project', '/existing/project'])
+  })
+})
+
+describe('NewSessionDialog height animation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+    measureMock.mockReset()
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
+    stubResizeObserver()
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(0)
+  })
+  afterEach(() => {
+    clearResizeObserverStub()
+    vi.restoreAllMocks()
+  })
+
+  // The dialog portals to <body>, so read the box/content from document.
+  const body = () => document.querySelector<HTMLElement>('.modal-new-session .modal-section')!
+  const content = () => document.querySelector<HTMLElement>('.new-session-content')!
+
+  it('tweens the body height on a content-driven resize', () => {
+    let height = 200
+    measureMock.mockImplementation(() => height)
+    render(<NewSessionDialog {...baseProps} />)
+    height = 400
+    fireResize(content())
+    expect(body().classList.contains('auto-height-animating')).toBe(true)
+    expect(body().style.height).toBe('200px')
+  })
+
+  it('releases the pin when the tween finishes', () => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    let height = 200
+    measureMock.mockImplementation(() => height)
+    render(<NewSessionDialog {...baseProps} />)
+    height = 400
+    fireResize(content())
+    expect(body().style.height).toBe('400px')
+    act(() => {
+      const evt = new Event('transitionend', { bubbles: true })
+      Object.defineProperty(evt, 'propertyName', { value: 'height' })
+      body().dispatchEvent(evt)
+    })
+    expect(body().classList.contains('auto-height-animating')).toBe(false)
+    expect(body().style.height).toBe('')
   })
 })

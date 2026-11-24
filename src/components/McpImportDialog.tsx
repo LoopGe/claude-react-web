@@ -3,8 +3,10 @@
 // renders new / conflict / invalid sections, then posts the checked
 // selection to /import.
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import type { McpImportPreviewServer, McpImportResult } from '../types'
 import { Overlay } from './Overlay'
 import { IconX } from './icons/ToolIcons'
@@ -25,6 +27,25 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
   const [fileText, setFileText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [summary, setSummary] = useState<McpImportResult | null>(null)
+
+  // Each phase renders a different-height body (loading → preview → importing →
+  // summary); tween between them instead of jumping. The body carries its own
+  // 62vh cap inline and sits in the .modal card (84vh); the measure honors both
+  // (min of content, card ceiling, body sub-cap). The observer watches a
+  // content-sized wrapper; the key drives the phase swaps.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const measureBodyHeight = useCallback(() => {
+    const box = bodyRef.current
+    const content = contentRef.current
+    const card = box?.closest('.modal') as HTMLElement | null
+    if (!box || !content || !card) return null
+    return measureCappedContentHeight(box, content, card)
+  }, [])
+  useAutoHeightTransition(bodyRef, `${phase}|${error != null}|${preview.length}`, {
+    measureTargetHeight: measureBodyHeight,
+    observe: contentRef,
+  })
 
   // Load + preview the file each time the dialog opens with a file present.
   /* eslint-disable react-hooks/set-state-in-effect -- intentional UI reset on open / file change */
@@ -102,7 +123,8 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
         <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close"><IconX size={14} /></button>
       </div>
 
-      <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12, maxHeight: '62vh', overflowY: 'auto' }}>
+      <div ref={bodyRef} style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 12, maxHeight: '62vh', overflowY: 'auto' }}>
+        <div ref={contentRef} className="mcp-import-content" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {phase === 'loading' && <div className="hint">Reading file…</div>}
         {phase === 'importing' && <div className="hint">Importing…</div>}
 
@@ -166,6 +188,7 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
             )}
           </div>
         )}
+        </div>
       </div>
 
       <div className="modal-footer">

@@ -15,6 +15,15 @@
   flex-direction: column;
   gap: var(--space-2);
 }
+/* Content-sized wrapper inside the animated list: carries the list's
+   flex-column + gap so rows keep their spacing, but does NOT flex-fill (the
+   height hook reads its scrollHeight as the natural content height). The
+   flex:0 0 auto pin override comes from .modal-section.auto-height-animating. */
+.snippets-manager-list-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
 .snippets-manager-empty {
   color: var(--fg-muted);
   font-size: var(--fs-sm);

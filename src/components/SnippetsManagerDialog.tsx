@@ -19,6 +19,8 @@ import { IconPencil, IconTrash, IconArrowUp, IconArrowDown } from './icons/ToolI
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { Overlay } from './Overlay'
 import { HoverHint } from './HoverHint'
+import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
+import { measureCappedContentHeight } from '../utils/capped-height-measure'
 
 interface Props {
   open?: boolean
@@ -104,6 +106,26 @@ export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
     }
   }, [isDirty, onClose])
 
+  // The list grows/shrinks as rows are added/deleted and as a row expands into
+  // the inline edit form (input + textarea + actions). Tween its height instead
+  // of jumping. The measure caps at the .perm-card ceiling (pin-independent);
+  // the observer watches the content-sized wrapper. confirmingDiscard re-measures
+  // so a footer swap that changes the ceiling (card capped) tweens the list too.
+  const listRef = useRef<HTMLDivElement>(null)
+  const listContentRef = useRef<HTMLDivElement>(null)
+  const measureListHeight = useCallback(() => {
+    const list = listRef.current
+    const content = listContentRef.current
+    const card = list?.closest('.perm-card') as HTMLElement | null
+    if (!list || !content || !card) return null
+    return measureCappedContentHeight(list, content, card)
+  }, [])
+  const listAnimationKey = `${api.snippets.length}|${editingId ?? ''}|${confirmingDiscard}`
+  useAutoHeightTransition(listRef, listAnimationKey, {
+    measureTargetHeight: measureListHeight,
+    observe: listContentRef,
+  })
+
   // Override the focus trap's default first-focusable-child behaviour. The
   // trap's effect also runs after mount; this one runs after-after so it
   // wins. We also intentionally don't re-focus on every state change — the
@@ -124,7 +146,8 @@ export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
         <h3>Composer snippets</h3>
       </div>
 
-      <div className="modal-section snippets-manager-list">
+      <div className="modal-section snippets-manager-list" ref={listRef}>
+        <div className="snippets-manager-list-content" ref={listContentRef}>
         {api.snippets.length === 0 ? (
           <div className="snippets-manager-empty">
             No snippets yet. Add one below — they appear in the right-click menu of every chat composer.
@@ -225,6 +248,7 @@ export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
             )
           })
         )}
+        </div>
       </div>
 
       <div className="modal-section snippets-manager-add">

@@ -1,10 +1,19 @@
-import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { parseTaskResource } from '../../shared/resource-address'
 import type { TaskRecordUi } from '../types'
+import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../test/resize-observer-stub'
 
 const mockOpenResource = vi.hoisted(() => vi.fn())
 vi.mock('../resources/context', () => ({ useOptionalOpenResource: () => mockOpenResource }))
+
+// Height-animation wiring: the cap math is unit-tested in capped-height-measure.test.ts;
+// here the measure is mocked to controlled heights so the wiring (observer + key
+// paths, pin release) is what's under test. Mocked file-wide, but with no
+// implementation it returns undefined → the hook treats it as "no measurement"
+// and stands down, so the render tests above are unaffected.
+const { measureMock } = vi.hoisted(() => ({ measureMock: vi.fn() }))
+vi.mock('../utils/capped-height-measure', () => ({ measureCappedContentHeight: measureMock }))
 
 // The panel's data comes from two selectors; drive them directly so the test
 // is about the RENDERED counts, not the store plumbing.
@@ -206,5 +215,51 @@ describe('TasksPanel result block', () => {
     const { container, queryByRole } = renderTasks(tasks)
     expect(container.querySelector('.tasks-icon-err')).toBeTruthy()
     expect(queryByRole('button', { name: /show output/i })).toBeNull()
+  })
+})
+
+describe('TasksPanel height animation', () => {
+  beforeEach(() => {
+    measureMock.mockReset()
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
+    stubResizeObserver()
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(0)
+  })
+
+  afterEach(() => {
+    clearResizeObserverStub()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('tweens the scroll region height on a content-driven resize', () => {
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    const { container } = renderTasks([task({ taskId: 't1' })])
+    const box = container.querySelector<HTMLElement>('.tasks-panel-scroll')!
+    const content = container.querySelector<HTMLElement>('.tasks-panel-body')!
+    height = 300
+    fireResize(content)
+    expect(box.classList.contains('auto-height-animating')).toBe(true)
+    expect(box.style.height).toBe('100px')
+  })
+
+  it('releases the pin when the tween finishes', () => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    let height = 100
+    measureMock.mockImplementation(() => height)
+    const { container } = renderTasks([task({ taskId: 't1' })])
+    const box = container.querySelector<HTMLElement>('.tasks-panel-scroll')!
+    const content = container.querySelector<HTMLElement>('.tasks-panel-body')!
+    height = 300
+    fireResize(content)
+    expect(box.style.height).toBe('300px')
+    act(() => {
+      const evt = new Event('transitionend', { bubbles: true })
+      Object.defineProperty(evt, 'propertyName', { value: 'height' })
+      box.dispatchEvent(evt)
+    })
+    expect(box.classList.contains('auto-height-animating')).toBe(false)
+    expect(box.style.height).toBe('')
   })
 })

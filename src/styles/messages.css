@@ -1897,6 +1897,15 @@
   min-height: 0;
   overflow-y: auto;
 }
+/* While the height hook pins a dialog body (NewSessionDialog, the snippets
+   list), flex-grow must not fight the inline height — the same override every
+   useAutoHeightTransition consumer carries (.modal-list, .palette-list). The
+   class only lands when that hook animates, so other .modal-section consumers
+   (ConfirmDialog, PermissionDialog, …) are unaffected. */
+.modal-section.auto-height-animating {
+  flex: 0 0 auto;
+  will-change: height;
+}
 .perm-headline {
   font-size: calc(15px * var(--fs-scale));
   font-weight: 600;
