@@ -89,6 +89,7 @@ export default [
       'desktop/**/*.mjs',
       'vitest.config.ts',
       'vite.config.ts',
+      'build/**/*.ts',
       'playwright.config.ts',
       'build.mjs',
       'tests/browser/**/*.ts',

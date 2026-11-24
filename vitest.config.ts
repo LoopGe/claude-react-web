@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitest/config'
 import { availableParallelism } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { pdfjsAssetsPlugin } from './build/pdfjs-assets-plugin'
 // Type-only: erased at runtime, so it pulls nothing from the `vitest` entry.
 import type { Reporter } from 'vitest'
 
@@ -93,6 +94,9 @@ function groupKey(filepath: string, root: string): string {
 }
 
 export default defineConfig({
+  // Resolves `virtual:pdfjs-assets` for src/utils/pdf-assets.ts (same plugin
+  // the client build uses, so tests exercise the real inlined asset map).
+  plugins: [pdfjsAssetsPlugin()],
   test: {
     reporters: ['default', durationReporter()],
     // Client tests need explicit RTL cleanup: `globals: false` below means RTL's

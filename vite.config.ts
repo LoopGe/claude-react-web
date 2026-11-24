@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { pdfjsAssetsPlugin } from './build/pdfjs-assets-plugin'
 
 // Frontend Vite config. Output goes to dist/client/ so the Node server can
 // serve it as static assets after `npm run build`.
@@ -11,7 +12,11 @@ import react from '@vitejs/plugin-react'
 const apiPort = Number(process.env.CRW_PORT) || 3456
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), pdfjsAssetsPlugin()],
+  // pdf.js ships self-contained ESM; pre-bundling it would crawl the worker
+  // source and divorce the `?raw`/virtual-module assets from the installed
+  // package. Serve it as-is so the lazy PDF chunk stays version-locked.
+  optimizeDeps: { exclude: ['pdfjs-dist'] },
   server: {
     port: Number(process.env.VITE_PORT) || 5174,
     proxy: {
