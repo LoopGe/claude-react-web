@@ -113,7 +113,9 @@ manager 对 hook 零感知——只认识 `enqueue` / `drain` / `delivered` 三�
 
 ### 5.3 与现有 Stop hook 的合并（关键）
 
-同 matcher 多 hook 并行注册时 decision 输出的合并行为未定义（探针 3 一并验证）。因此**不并列注册第二个 Stop hook**，而是把 steering drain **并入现有 `buildStop`**：一个回调内先跑任务快照/运行日志逻辑（不变），再跑 steering drain，pending 非空时返回值从 `undefined` 变为 `{ decision: 'block', reason }`。`buildInProcessHooks` 增加一个 steering 参数，与现有三个参数同款模式。
+同 matcher 多 hook 并行注册时 decision 输出的合并行为未定义（探针 3 一并验证）。因此**不并列注册第二个 Stop hook**，而是把 steering drain **并入现有 `buildStop`**：一个回调内先跑任务快照/运行日志逻辑（不变），再跑 steering drain，pending 非空时返回 `{ decision: 'block', reason }`，空输出为 `{}`。`buildInProcessHooks` 增加一个 steering 参数，与现有三个参数同款模式。
+
+> 输出契约修订（2026-11-24）：no-op 输出必须是 `{}`（合法的空 `SyncHookJSONOutput`），**不能是 `undefined`**——SDK 会在 JSON 序列化时丢掉 undefined 响应体，CLI 按对象 union 校验失败并在 stderr 刷 ZodError。见 [hook-noop-output-object](../../../.agents/notes/implemented/bug-fix/2026-11-24-hook-noop-output-object.md)。
 
 ### 5.4 指令包装（multica 提示词工程移植）
 

@@ -37,7 +37,11 @@ describe('buildInProcessHooks', () => {
   it('does not forward when no forward is provided', async () => {
     const hooks = buildInProcessHooks()
     const matchers = (hooks as Record<string, unknown>).Stop as { hooks: Array<(input: any) => Promise<unknown>> }[]
-    await expect(matchers[0].hooks[0]({ session_id: 's1', transcript_path: '/tmp/t.json' })).resolves.toBeUndefined()
+    // No-op output must be an OBJECT: the CLI validates the hook response
+    // against the SyncHookJSONOutput | AsyncHookJSONOutput union, and an
+    // undefined payload fails it ("Error in hook callback hook_N: ZodError"
+    // on the CLI stderr, tee'd into the server log by process-monitor).
+    await expect(matchers[0].hooks[0]({ session_id: 's1', transcript_path: '/tmp/t.json' })).resolves.toEqual({})
   })
 
   it('defensiveHook swallows a throwing inner callback instead of rejecting', async () => {
@@ -246,9 +250,26 @@ describe('SubagentStop hook registration', () => {
   it('does not fire on an unusable payload and never rejects', async () => {
     const onSubagentStop = vi.fn()
     const cb = subagentCb(onSubagentStop as InProcessSubagentStop)
-    await expect(cb({ session_id: 's1' })).resolves.not.toThrow()
-    await expect(cb(null)).resolves.not.toThrow()
+    await expect(cb({ session_id: 's1' })).resolves.toEqual({})
+    await expect(cb(null)).resolves.toEqual({})
     expect(onSubagentStop).not.toHaveBeenCalled()
+  })
+
+  it('aborted signal returns an empty object without firing', async () => {
+    const onSubagentStop = vi.fn()
+    const hooks = buildInProcessHooks(undefined, undefined, onSubagentStop as InProcessSubagentStop)
+    const cb = (hooks.SubagentStop as { hooks: Array<(input: any, toolUseID?: string, deps?: { signal?: AbortSignal }) => Promise<unknown>> }[])[0].hooks[0]
+    const ac = new AbortController()
+    ac.abort()
+    expect(await cb({ session_id: 's1', agent_id: 'a1' }, undefined, { signal: ac.signal })).toEqual({})
+    expect(onSubagentStop).not.toHaveBeenCalled()
+  })
+
+  it('swallows a throwing handler and still returns an empty object', async () => {
+    const onSubagentStop = vi.fn(() => { throw new Error('handler blew up') })
+    const cb = subagentCb(onSubagentStop as InProcessSubagentStop)
+    await expect(cb({ session_id: 's1', agent_id: 'a1' })).resolves.toEqual({})
+    expect(onSubagentStop).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -285,8 +306,9 @@ describe('buildInProcessHooks with steering', () => {
       toolUseID?: string,
       deps?: { signal?: AbortSignal },
     ) => Promise<unknown>
-    // 空 pending：返回 undefined（现状不变），且 run-log forward 照常触发
-    expect(await stopCb({ session_id: 's1' }, undefined, {})).toBeUndefined()
+    // 空 pending：返回 {}（合法的空 SyncHookJSONOutput——CLI 的 Zod union
+    // 拒绝 undefined），且 run-log forward 照常触发
+    expect(await stopCb({ session_id: 's1' }, undefined, {})).toEqual({})
     expect(forward).toHaveBeenCalledWith('s1', expect.objectContaining({ kind: 'completed' }))
     // 空 Stop 已按语义关闭 admission——模拟下一轮 prompt 读取重开后再注入
     steering.notePromptConsumed()
@@ -297,7 +319,7 @@ describe('buildInProcessHooks with steering', () => {
     expect(forward).toHaveBeenCalledTimes(2)
   })
 
-  it('PreToolUse matcher returns additionalContext when pending, undefined otherwise', async () => {
+  it('PreToolUse matcher returns additionalContext when pending, an empty object otherwise', async () => {
     const steering = mkSteering()
     const hooks = buildInProcessHooks(undefined, undefined, undefined, steering)
     const cb = hooks.PreToolUse![0]!.hooks[0]! as unknown as (
@@ -305,14 +327,14 @@ describe('buildInProcessHooks with steering', () => {
       toolUseID?: string,
       deps?: { signal?: AbortSignal },
     ) => Promise<unknown>
-    expect(await cb({}, undefined, {})).toBeUndefined()
+    expect(await cb({}, undefined, {})).toEqual({})
     steering.enqueue({ uuid: 'u1', text: 'go' })
     expect(await cb({}, undefined, {})).toEqual({
       hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: expect.stringContaining('go') },
     })
   })
 
-  it('subagent agent_id returns undefined and leaves pending intact', async () => {
+  it('subagent agent_id returns an empty object and leaves pending intact', async () => {
     const steering = mkSteering()
     steering.enqueue({ uuid: 'u1', text: 'go' })
     const hooks = buildInProcessHooks(undefined, undefined, undefined, steering)
@@ -321,7 +343,7 @@ describe('buildInProcessHooks with steering', () => {
       toolUseID?: string,
       deps?: { signal?: AbortSignal },
     ) => Promise<unknown>
-    expect(await cb({ agent_id: 'agent-9' }, undefined, {})).toBeUndefined()
+    expect(await cb({ agent_id: 'agent-9' }, undefined, {})).toEqual({})
     expect(steering.drainUndelivered()).toEqual([{ uuid: 'u1' }])
   })
 
@@ -336,7 +358,22 @@ describe('buildInProcessHooks with steering', () => {
     ) => Promise<unknown>
     const ac = new AbortController()
     ac.abort()
-    expect(await cb({}, undefined, { signal: ac.signal })).toBeUndefined()
+    expect(await cb({}, undefined, { signal: ac.signal })).toEqual({})
+    expect(steering.drainUndelivered()).toEqual([{ uuid: 'u1' }])
+  })
+
+  it('aborted Stop returns an empty object and leaves pending intact', async () => {
+    const steering = mkSteering()
+    steering.enqueue({ uuid: 'u1', text: 'go' })
+    const hooks = buildInProcessHooks(undefined, undefined, undefined, steering)
+    const cb = hooks.Stop![0]!.hooks[0]! as unknown as (
+      input: unknown,
+      toolUseID?: string,
+      deps?: { signal?: AbortSignal },
+    ) => Promise<unknown>
+    const ac = new AbortController()
+    ac.abort()
+    expect(await cb({ session_id: 's1' }, undefined, { signal: ac.signal })).toEqual({})
     expect(steering.drainUndelivered()).toEqual([{ uuid: 'u1' }])
   })
 })

@@ -15,16 +15,21 @@ export function capHookInput(s: string, max: number = DEFAULT_CAP): string {
   return `${s.slice(0, keep)}…[truncated ${s.length - keep} chars]`.slice(0, max)
 }
 
-/** Wrap a callback so a throw/slow inner never crashes the host query() process. */
+/** Wrap a callback so a throw/slow inner never crashes the host query() process.
+ *  The no-op output is `{}` — a valid empty SyncHookJSONOutput. It must NOT be
+ *  undefined: the SDK drops an undefined response payload in JSON.stringify,
+ *  and the CLI validates the hook response against the
+ *  SyncHookJSONOutput | AsyncHookJSONOutput object union, logging
+ *  "Error in hook callback hook_N: ZodError" to its stderr on every call. */
 function defensiveHook(fn: (input: unknown) => void): (input: unknown, toolUseID: string | undefined, deps?: { signal?: AbortSignal }) => Promise<unknown> {
   return async (input: unknown, _toolUseID?: string, deps?: { signal?: AbortSignal }): Promise<unknown> => {
-    if (deps?.signal?.aborted) return undefined
+    if (deps?.signal?.aborted) return {}
     try {
       fn(input)
     } catch {
       // In-process hook observed input; a malformed/throwy input must not crash the pump.
     }
-    return undefined
+    return {}
   }
 }
 
@@ -175,36 +180,36 @@ export function buildInProcessHooks(
 
 /** Stop 单回调（spec §5.3 合并）：现有快照/运行日志逻辑（保持 defensiveHook
  *  的 abort 检查与吞异常语义）在前，steering drain 在后——有 pending 时返回
- *  {decision:'block', reason} 续跑，无 pending 返回 undefined 放行。 */
+ *  {decision:'block', reason} 续跑，无 pending 返回 {} 放行（handleBoundary
+ *  空输出本就是 {}；不能归一为 undefined——CLI 的 Zod union 拒绝非对象响应，
+ *  见 defensiveHook 注释）。 */
 function stopHook(
   logic: (input: unknown) => void,
   steering?: SupplementSession,
 ): (input: unknown, toolUseID: string | undefined, deps?: { signal?: AbortSignal }) => Promise<unknown> {
   return async (input: unknown, _toolUseID?: string, deps?: { signal?: AbortSignal }): Promise<unknown> => {
-    if (deps?.signal?.aborted) return undefined
+    if (deps?.signal?.aborted) return {}
     try {
       logic(input)
     } catch {
       // In-process hook observed input; a malformed/throwy input must not crash the pump.
     }
-    if (!steering) return undefined
+    if (!steering) return {}
     const agentId = (input as { agent_id?: string } | null | undefined)?.agent_id
-    const out = steering.handleBoundary('Stop', { agent_id: agentId })
-    return Object.keys(out).length > 0 ? out : undefined
+    return steering.handleBoundary('Stop', { agent_id: agentId })
   }
 }
 
 /** steering 工具边界回调：透传 handleBoundary 的输出（agent_id 过滤在状态机
- *  内做——子代理继承的 hook 不消费主线程 steering）；空输出归一为 undefined，
- *  与 defensiveHook 的无操作语义一致。 */
+ *  内做——子代理继承的 hook 不消费主线程 steering）；空输出保持 {}，
+ *  与 defensiveHook 的无操作语义一致（undefined 会被 CLI 的 Zod 校验拒绝）。 */
 function boundaryHook(
   event: SteerBoundary,
   steering: SupplementSession,
 ): (input: unknown, toolUseID: string | undefined, deps?: { signal?: AbortSignal }) => Promise<unknown> {
   return async (input: unknown, _toolUseID?: string, deps?: { signal?: AbortSignal }): Promise<unknown> => {
-    if (deps?.signal?.aborted) return undefined
+    if (deps?.signal?.aborted) return {}
     const agentId = (input as { agent_id?: string } | null | undefined)?.agent_id
-    const out = steering.handleBoundary(event, { agent_id: agentId })
-    return Object.keys(out).length > 0 ? out : undefined
+    return steering.handleBoundary(event, { agent_id: agentId })
   }
 }
