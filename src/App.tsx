@@ -651,7 +651,8 @@ export function App() {
   // The About tab's "what did this version bring" entry — same dialog, the
   // read-only `current` mode.
   const openCurrentReleaseNotes = useCallback(() => setUpdateNagDialog('current'), [])
-  useUpdateNag(updateInfo.info, openUpdateNagDialog)
+  // useUpdateNag itself is called below, after hostCaps — the npm nag chain
+  // is web-only (desktop updates its Electron bundle, not the npm package).
 
   /** Apply a /config body to App state. Single copy — the mount fetch,
    *  refreshConfigResponse and the store subscription all go through here. */
@@ -948,6 +949,11 @@ export function App() {
   // Host capabilities (stable for the life of the page). Drives the custom
   // titlebar class, the Windows ☰ menu, and the caption-overlay theme sync.
   const hostCaps = useMemo(() => getHostCapabilities(), [])
+
+  // The npm-channel nag is web-only: on desktop the app bundle updates via
+  // electron-updater, and an npm nag would offer an install path the app
+  // does not run (POST /update is 400-gated there too). Single decision point.
+  useUpdateNag(hostCaps.npxSelfUpdate ? updateInfo.info : null, openUpdateNagDialog)
 
   // Keep the Windows caption overlay colours in sync with the app theme.
   // The overlay is painted by the OS; without this it stays on the spawn-time
@@ -5770,10 +5776,13 @@ export function App() {
             updating={updateInfo.updating}
             onUpdate={updateInfo.update}
             onClose={() => {
-              // One nag per version: any closure of a NAG dialog counts as
-              // "seen". The policy for which modes own a key (and why the
-              // read-only `current` viewer does not) lives beside the rest of
-              // the nag logic in useUpdateNag.
+              // Closing = "remind me later": writes nothing. The persistent
+              // per-version dismissal is the explicit Skip action below.
+              setUpdateNagDialog(null)
+            }}
+            onSkip={() => {
+              // Only nag modes own a dismissal key; nagDismissValueFor returns
+              // null for the read-only `current` viewer (which renders no Skip).
               const info = updateInfo.info
               const seen = info ? nagDismissValueFor(updateNagDialog, info) : null
               if (seen) writeNagDismiss(seen)

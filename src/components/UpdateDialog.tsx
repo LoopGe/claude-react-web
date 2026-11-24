@@ -38,7 +38,10 @@ interface Props {
   info: UpdateInfo
   updating: boolean
   onUpdate: () => Promise<UpdateActionResult>
+  /** Close = "remind me later": writes nothing. The persistent per-version
+   *  dismissal is this explicit action instead (nag modes only). */
   onClose: () => void
+  onSkip?: () => void
 }
 
 /** "2026-09-10" from an ISO timestamp — enough precision for a release
@@ -47,7 +50,7 @@ function dateShort(iso: string): string {
   return iso.slice(0, 10)
 }
 
-export function UpdateDialog({ open, mode, info, updating, onUpdate, onClose }: Props) {
+export function UpdateDialog({ open, mode, info, updating, onUpdate, onClose, onSkip }: Props) {
   const toast = useToast()
   const isCurrent = mode === 'current'
   // The version the notes are FOR. `current` mode asks for the running
@@ -255,6 +258,11 @@ export function UpdateDialog({ open, mode, info, updating, onUpdate, onClose }: 
         )}
         <span className="update-dialog-footer-spacer" />
         {updateError && <span className="update-dialog-error">{updateError}</span>}
+        {!isCurrent && onSkip && (
+          <button type="button" className="btn" onClick={onSkip}>
+            Skip this version
+          </button>
+        )}
         <button type="button" className="btn" onClick={onClose}>
           {isCurrent ? 'Close' : 'Later'}
         </button>

@@ -196,7 +196,7 @@ export function buildApiRouter(
   // prompt. Stateless, so no SessionManager or store dependency.
   // claudeBinary is threaded through so the About tab can surface the
   // CLI version alongside the npm-update info (single round-trip).
-  app.route('/', buildUpdateRouter(claudeBinary))
+  app.route('/', buildUpdateRouter(claudeBinary, host))
   // Static first-party tool-server listing (GET /first-party-tools) — the
   // in-process analog of the normal MCP "List tools" probe. Stateless, like
   // the update router: serves the code-registered registry directly.

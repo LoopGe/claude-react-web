@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { ToastProvider } from '../components/ToastProvider'
 import { useToastList } from './useToast'
@@ -60,14 +60,16 @@ describe('useUpdateNag', () => {
     vi.restoreAllMocks()
   })
 
-  it('pushes a sticky update toast when a newer version exists', () => {
+  it('pushes a sticky three-action toast with no dismiss icon', () => {
     const { result } = useHarness(baseInfo())
     expect(result.current).toHaveLength(1)
     const t = result.current[0]
     expect(t.title).toBe('New version available')
     expect(t.message).toContain('0.7.2')
     expect(t.message).toContain('0.8.0')
-    expect(t.actionLabel).toBe('Update')
+    expect(t.actions?.map((a) => a.label)).toEqual(['Update', 'Remind me later', 'Skip this version'])
+    expect(t.hideDismiss).toBe(true)
+    expect(t.onDismiss).toBeUndefined() // no hidden skip-write behind a close
     expect(t.durationMs).toBe(0) // sticky
   })
 
@@ -106,43 +108,66 @@ describe('useUpdateNag', () => {
     // The toast still on screen was pushed by the FIRST render; its action must
     // call the LATEST opener — that is what the synced ref is for.
     act(() => {
-      result.current[0].onClick?.()
+      result.current[0].actions?.[0].onClick()
     })
     expect(second).toHaveBeenCalledWith('update')
     expect(first).not.toHaveBeenCalled()
   })
 
-  it('action click opens the dialog and dismissal persists the key', () => {
+  it('Update opens the dialog and writes NOTHING', () => {
     const onOpenDialog = vi.fn()
     const { result } = useHarness(baseInfo(), onOpenDialog)
-    const t = result.current[0]
     act(() => {
-      t.onClick?.()
+      result.current[0].actions?.[0].onClick()
     })
     expect(onOpenDialog).toHaveBeenCalledWith('update')
-    // The provider auto-dismisses after an action click -> onDismiss fires ->
-    // key persisted.
-    expect(readNagDismiss()).toBe('0.8.0')
+    expect(readNagDismiss()).toBeNull()
   })
 
-  it('toast x (dismiss) persists the key', () => {
+  it('Remind me later closes the reminder and writes NOTHING', () => {
     const { result } = useHarness(baseInfo())
-    const t = result.current[0]
     act(() => {
-      t.onDismiss?.() // simulate the provider firing the callback on x
+      result.current[0].actions?.[1].onClick()
+    })
+    expect(readNagDismiss()).toBeNull()
+  })
+
+  it('Skip this version persists the dismiss key', () => {
+    const { result } = useHarness(baseInfo())
+    act(() => {
+      result.current[0].actions?.[2].onClick()
     })
     expect(readNagDismiss()).toBe('0.8.0')
   })
 
-  it('deprecation nag uses the deprecated sentinel and copy', () => {
+  it('a remount after Remind me later re-nags the same version', () => {
+    const first = useHarness(baseInfo())
+    act(() => {
+      first.result.current[0].actions?.[1].onClick()
+    })
+    first.unmount()
+    // No persistent record was written — a fresh mount (reload / new tab)
+    // offers the version again. That is the whole "later" mechanism.
+    const second = useHarness(baseInfo())
+    expect(second.result.current).toHaveLength(1)
+  })
+
+  it('deprecation nag: Skip persists the sentinel, Update writes nothing', () => {
+    const onOpenDialog = vi.fn()
     const { result } = useHarness(
       baseInfo({ latest: undefined, hasUpdate: false, deprecated: 'Use 0.9.' }),
+      onOpenDialog,
     )
     expect(result.current).toHaveLength(1)
     expect(result.current[0].title).toBe('Version 0.7.2 is deprecated')
     expect(result.current[0].message).toBe('Use 0.9.')
     act(() => {
-      result.current[0].onClick?.()
+      result.current[0].actions?.[0].onClick()
+    })
+    expect(onOpenDialog).toHaveBeenCalledWith('deprecation')
+    expect(readNagDismiss()).toBeNull()
+    act(() => {
+      result.current[0].actions?.[2].onClick()
     })
     expect(readNagDismiss()).toBe('deprecated:0.7.2')
   })
@@ -153,6 +178,38 @@ describe('useUpdateNag', () => {
     )
     expect(result.current).toHaveLength(1)
     expect(result.current[0].title).toBe('New version available')
+  })
+
+  it('withdraws the live nag when the registry is disabled mid-run', async () => {
+    const { result, rerender } = useHarness(baseInfo())
+    expect(result.current).toHaveLength(1)
+    rerender({ info: baseInfo({ disabled: true, latest: undefined, hasUpdate: false }), onOpenDialog: vi.fn() })
+    await waitFor(() => expect(result.current).toHaveLength(0))
+  })
+
+  it('withdraws the live nag once the update is applied to disk', async () => {
+    const { result, rerender } = useHarness(baseInfo())
+    expect(result.current).toHaveLength(1)
+    rerender({ info: baseInfo({ updateAppliedToDisk: true }), onOpenDialog: vi.fn() })
+    await waitFor(() => expect(result.current).toHaveLength(0))
+  })
+
+  it('replaces the nag on a newer latest instead of stacking sticky toasts', async () => {
+    const { result, rerender } = useHarness(baseInfo())
+    expect(result.current).toHaveLength(1)
+    rerender({ info: baseInfo({ latest: '0.9.0' }), onOpenDialog: vi.fn() })
+    await waitFor(() => {
+      expect(result.current).toHaveLength(1)
+      expect(result.current[0].message).toContain('0.9.0')
+    })
+  })
+
+  it('a re-enabled registry re-nags after a disabled withdrawal', async () => {
+    const { result, rerender } = useHarness(baseInfo())
+    rerender({ info: baseInfo({ disabled: true, latest: undefined, hasUpdate: false }), onOpenDialog: vi.fn() })
+    await waitFor(() => expect(result.current).toHaveLength(0))
+    rerender({ info: baseInfo(), onOpenDialog: vi.fn() })
+    await waitFor(() => expect(result.current).toHaveLength(1))
   })
 })
 

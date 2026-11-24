@@ -268,3 +268,45 @@ describe('UpdateDialog', () => {
     }
   })
 })
+
+describe('UpdateDialog — explicit Skip this version', () => {
+  beforeEach(() => {
+    getNotes.mockReset()
+    getNotes.mockReturnValue([NOTE])
+    getError.mockReset()
+    getError.mockReturnValue(null)
+  })
+
+  it('renders Skip this version in nag modes and clicking calls onSkip only', () => {
+    for (const mode of ['update', 'deprecation'] as const) {
+      cleanup()
+      const onSkip = vi.fn()
+      const onClose = vi.fn()
+      const { getByText } = render(<UpdateDialog {...baseProps({ mode, onSkip, onClose })} />)
+      fireEvent.click(getByText('Skip this version'))
+      expect(onSkip).toHaveBeenCalledOnce()
+      expect(onClose).not.toHaveBeenCalled()
+    }
+  })
+
+  it('never renders Skip in the read-only current mode', () => {
+    const { queryByText } = render(
+      <UpdateDialog {...baseProps({ mode: 'current', onSkip: vi.fn() })} />,
+    )
+    expect(queryByText('Skip this version')).toBeNull()
+  })
+
+  it('absent without onSkip', () => {
+    const { queryByText } = render(<UpdateDialog {...baseProps()} />)
+    expect(queryByText('Skip this version')).toBeNull()
+  })
+
+  it('closing via Later calls only onClose', () => {
+    const onSkip = vi.fn()
+    const onClose = vi.fn()
+    const { getByText } = render(<UpdateDialog {...baseProps({ onSkip, onClose })} />)
+    fireEvent.click(getByText('Later'))
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(onSkip).not.toHaveBeenCalled()
+  })
+})

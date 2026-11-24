@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('./installed-version.js', () => ({
   readInstalledVersion: vi.fn(),
 }))
+vi.mock('./update-info-hub.js', () => ({
+  publishUpdateInfo: vi.fn(),
+}))
 
 import { __setConfigForTest } from './config.js'
 import {
@@ -15,9 +18,11 @@ import {
   getCachedUpdateInfo,
   getCurrentVersion,
   isVersionNewer,
+  probeRegistry,
   withInstalledOverlay,
 } from './update-checker.js'
 import { readInstalledVersion } from './installed-version.js'
+import { publishUpdateInfo } from './update-info-hub.js'
 import type { UpdateInfo } from '../shared/update-info.js'
 
 const TEST_REGISTRY = 'https://registry.example.com'
@@ -430,5 +435,71 @@ describe('withInstalledOverlay / updateAppliedToDisk (server SSOT)', () => {
     const notApplied = getCachedUpdateInfo()
     expect(notApplied.installed).toBe('0.0.1')
     expect(notApplied.updateAppliedToDisk).toBe(false)
+  })
+})
+
+describe('snapshot-mutation publishes', () => {
+  beforeEach(() => {
+    __resetUpdateCheckerForTests()
+    vi.mocked(publishUpdateInfo).mockClear()
+    vi.mocked(readInstalledVersion).mockReturnValue(null)
+    __setConfigForTest({ updateCheckRegistry: TEST_REGISTRY })
+  })
+
+  afterEach(() => {
+    __setConfigForTest({ updateCheckRegistry: '' })
+    vi.unstubAllGlobals()
+  })
+
+  function stubLatest(version: string) {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ version }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })))
+  }
+
+  it('a forced successful probe publishes the overlaid snapshot once', async () => {
+    vi.mocked(readInstalledVersion).mockReturnValue('99.99.99')
+    stubLatest('99.99.99')
+    await checkForUpdates(true)
+    expect(publishUpdateInfo).toHaveBeenCalledTimes(1)
+    expect(publishUpdateInfo).toHaveBeenCalledWith(expect.objectContaining({
+      latest: '99.99.99',
+      installed: '99.99.99',
+      updateAppliedToDisk: true,
+    }))
+  })
+
+  it('a forced failed probe publishes the error snapshot once', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    await checkForUpdates(true)
+    expect(publishUpdateInfo).toHaveBeenCalledTimes(1)
+    expect(publishUpdateInfo).toHaveBeenCalledWith(expect.objectContaining({
+      error: expect.any(String),
+    }))
+  })
+
+  it('a disabled-registry call publishes the disabled snapshot', async () => {
+    __setConfigForTest({ updateCheckRegistry: '' })
+    await checkForUpdates()
+    expect(publishUpdateInfo).toHaveBeenCalledTimes(1)
+    expect(publishUpdateInfo).toHaveBeenCalledWith(expect.objectContaining({ disabled: true }))
+  })
+
+  it('probeRegistry does NOT publish (it never touches the cache)', async () => {
+    stubLatest('99.99.99')
+    await probeRegistry(TEST_REGISTRY)
+    expect(publishUpdateInfo).not.toHaveBeenCalled()
+  })
+
+  it('clearing the registry mid-run publishes the disabled transition', async () => {
+    stubLatest('99.99.99')
+    await checkForUpdates(true)
+    expect(publishUpdateInfo).toHaveBeenLastCalledWith(expect.objectContaining({ hasUpdate: true }))
+    vi.mocked(publishUpdateInfo).mockClear()
+    __setConfigForTest({ updateCheckRegistry: '' })
+    await checkForUpdates()
+    expect(publishUpdateInfo).toHaveBeenCalledTimes(1)
+    expect(publishUpdateInfo).toHaveBeenCalledWith(expect.objectContaining({ disabled: true }))
   })
 })

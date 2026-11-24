@@ -35,6 +35,7 @@ import { config } from './config.js'
 import { detectInstallMethod } from './install-method.js'
 import { readInstalledVersion } from './installed-version.js'
 import { createLogger } from './log.js'
+import { publishUpdateInfo } from './update-info-hub.js'
 
 const log = createLogger('update-checker')
 
@@ -315,6 +316,7 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
       source: 'npm',
       disabled: true,
     }
+    publishUpdateInfo(withInstalledOverlay(cached))
     return cached
   }
 
@@ -367,6 +369,7 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
         checkedAt: Date.now(),
         source: 'npm',
       }
+      publishUpdateInfo(withInstalledOverlay(cached))
     } catch (err) {
       log.warn(`registry probe failed: ${(err as Error).message ?? err}`)
       cached = {
@@ -386,6 +389,7 @@ export async function checkForUpdates(force = false): Promise<UpdateInfo> {
         error: err instanceof Error ? err.message : String(err),
         source: 'npm',
       }
+      publishUpdateInfo(withInstalledOverlay(cached))
     } finally {
       inFlight = null
       inFlightForce = false

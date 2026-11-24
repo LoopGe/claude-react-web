@@ -16,16 +16,18 @@ import {
 
 // vi.mock factories are hoisted above module-scope consts, so the mock fns
 // must be created inside vi.hoisted to avoid a TDZ ReferenceError.
-const { detectInstallMethod, runNpmInstall, readInstalledVersion } = vi.hoisted(() => ({
+const { detectInstallMethod, runNpmInstall, readInstalledVersion, publishUpdateInfo } = vi.hoisted(() => ({
   detectInstallMethod: vi.fn<() => 'global' | 'npx' | 'unknown'>(),
   runNpmInstall:
     vi.fn<(pkg: string, registry?: string, version?: string) => Promise<{ stdout: string; stderr: string }>>(),
   readInstalledVersion: vi.fn<(expectedName: string) => string | null>(),
+  publishUpdateInfo: vi.fn(),
 }))
 
 vi.mock('../install-method.js', () => ({ detectInstallMethod }))
 vi.mock('../npm-install.js', () => ({ runNpmInstall }))
 vi.mock('../installed-version.js', () => ({ readInstalledVersion }))
+vi.mock('../update-info-hub.js', () => ({ publishUpdateInfo }))
 
 // Import the router AFTER the mocks are registered.
 const { buildUpdateRouter } = await import('./update-routes.js')
@@ -585,5 +587,43 @@ describe('GET /api/release-notes', () => {
       expect(body.releases, qs).toEqual([])
       vi.unstubAllGlobals()
     }
+  })
+})
+
+describe('POST /api/update — install-completion publish + desktop host gate', () => {
+  beforeEach(() => {
+    __resetUpdateCheckerForTests()
+    detectInstallMethod.mockReset()
+    detectInstallMethod.mockReturnValue('global')
+    runNpmInstall.mockReset()
+    runNpmInstall.mockResolvedValue({ stdout: 'ok', stderr: '' })
+    readInstalledVersion.mockReset()
+    readInstalledVersion.mockReturnValue(null)
+    publishUpdateInfo.mockClear()
+  })
+
+  it('publishes the overlaid snapshot after an install flips the on-disk version', async () => {
+    await primeUpdateInfo()
+    publishUpdateInfo.mockClear() // drop the probe's own publish
+    readInstalledVersion.mockReturnValue('99.99.99')
+
+    const res = await makeApp().request('/update', { method: 'POST' })
+    expect(res.status).toBe(200)
+    expect(publishUpdateInfo).toHaveBeenCalledWith(expect.objectContaining({
+      installed: '99.99.99',
+      updateAppliedToDisk: true,
+    }))
+  })
+
+  it('answers 400 on the desktop host without running npm', async () => {
+    // Prime so the ONLY thing that can refuse is the host gate — an
+    // unconfigured registry would 400 for the wrong reason.
+    await primeUpdateInfo()
+    const app = new Hono()
+    app.onError(createErrorHandler('[test]'))
+    app.route('/', buildUpdateRouter(undefined, 'desktop'))
+    const res = await app.request('/update', { method: 'POST' })
+    expect(res.status).toBe(400)
+    expect(runNpmInstall).not.toHaveBeenCalled()
   })
 })

@@ -120,6 +120,10 @@ interface ConfigFile {
    *  disable the update check entirely (banner stays hidden, About tab
    *  shows "disabled"). Override to point at a private registry. */
   updateCheckRegistry?: string
+  /** Milliseconds between periodic update probes (the web-host npm scheduler
+   *  and the desktop feed check share this one value). Set to 0 to disable
+   *  periodic checking — startup and manual checks still run. Default: 12 h. */
+  updateCheckIntervalMs?: number
   skillLoadMode: string
   enabledSkills: string[]
   /** Model for the auto-mode permission classifier. EMPTY = use the
@@ -245,6 +249,9 @@ export interface ServerConfig {
    *  Stored as a string (not optional) so callers can do plain
    *  `if (config.updateCheckRegistry)` without defending against undefined. */
   readonly updateCheckRegistry: string
+  /** Periodic update-probe interval — see ConfigFile.updateCheckIntervalMs.
+   *  0 disables periodic checking; default 12 h. */
+  readonly updateCheckIntervalMs: number
   readonly skillLoadMode: SkillLoadMode
   readonly enabledSkills: readonly string[]
   /** Model used by the auto-mode security classifier. EMPTY (the default)
@@ -345,6 +352,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   accessToken: '',
   logToFile: false,
   updateCheckRegistry: 'https://registry.npmjs.org',
+  updateCheckIntervalMs: 12 * 60 * 60 * 1000,
   skillLoadMode: 'default',
   enabledSkills: Object.freeze([]),
   autoClassifierModel: '',
@@ -673,6 +681,14 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     }
   }
 
+  // Number.isFinite matters here (unlike workingStuckMs): an Infinity interval
+  // turns the scheduler's jitter math into NaN, and setTimeout(NaN) fires
+  // immediately — a probe storm from one config typo (JSON `1e999`).
+  if (typeof file_.updateCheckIntervalMs === 'number' && Number.isFinite(file_.updateCheckIntervalMs) && file_.updateCheckIntervalMs >= 0) {
+    ;(merged as { updateCheckIntervalMs: number }).updateCheckIntervalMs = Math.round(file_.updateCheckIntervalMs)
+    log.info(`updateCheckIntervalMs: ${merged.updateCheckIntervalMs}`)
+  }
+
   // Blank/unset falls through to DEFAULTS.autoClassifierModel, which is ''
   // — i.e. "use the session's own model". The truthiness gate is what makes
   // an explicit '' indistinguishable from a removed key, and that is fine:
@@ -836,6 +852,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'logLevel',
   'logScopes',
   'updateCheckRegistry',
+  'updateCheckIntervalMs',
   'skillLoadMode',
   'enabledSkills',
   'autoClassifierModel',

@@ -230,6 +230,19 @@ export interface WsCliNotification {
   notification: CliNotification
 }
 
+/** Update-checker snapshot on the GLOBAL channel (always-on, seeded on every
+ *  new connection). Published by the update-info hub whenever a meaningful
+ *  snapshot field changes (latest / deprecated / error / updateAppliedToDisk /
+ *  disabled) — regardless of trigger (scheduled probe, Check now, install
+ *  completion, registry-disabled reset). Carries the core checker snapshot
+ *  with the installed overlay; the route-level CLI/SDK overlays stay GET-only
+ *  and the client merges frames without dropping them. SDK-agnostic payload
+ *  (shared/update-info.ts), so no generic parameters. */
+export interface WsUpdateInfo {
+  kind: 'update-info'
+  info: import('./update-info.js').UpdateInfo
+}
+
 /** Live SDK message. Durable transcript messages carry `seq` + `generation`
  *  (the seq-window protocol); the server omits both on ephemeral / synthetic
  *  frames (stream events, thinking tokens, pump errors), which the client
@@ -827,6 +840,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsSessionRemoved
   | WsGlobalPermissionRequest<Perm>
   | WsCliNotification
+  | WsUpdateInfo
   | WsSubscribeResult
   | WsMessage<Msg>
   | WsPermissionRequest<Perm>

@@ -29,6 +29,7 @@ import { ProviderSubagentTranscriptHub } from './subagent-transcript-source.js'
 import { NativeSubagentTranscriptSource } from './providers/native-subagent-transcript-source.js'
 import { createNativeHostPorts } from './providers/native-host-adapters.js'
 import { checkForUpdates } from './update-checker.js'
+import { startUpdateSchedule } from './update-schedule.js'
 import { startEventLoopProbe } from './event-loop-probe.js'
 import { normalizeClaudeConfigDirEnv } from './claude-config-dir.js'
 import { parseServerArgs, parseArgv, HELP, type CliArgs } from './cli/args.js'
@@ -213,6 +214,12 @@ async function runServer(args: CliArgs): Promise<void> {
       // when the registry is unreachable behind a firewall. Skipped
       // entirely when no registry is configured (info.disabled).
       void checkForUpdates().then((upd) => {
+        // The periodic schedule takes over from the startup probe's
+        // completion (completion-based). It exists even while the registry
+        // is unconfigured — ticks read live config, so the first-run wizard
+        // case heals without a restart. Web-only by construction: the
+        // desktop host never runs cli.ts.
+        startUpdateSchedule()?.arm()
         if (upd.disabled) return
         if (upd.hasUpdate && upd.latest) {
           log.info(`update available: ${upd.current} → ${upd.latest}`)
