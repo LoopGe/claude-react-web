@@ -1,21 +1,27 @@
-// Proactive update nag — pushes ONE sticky toast per offered version.
+// Proactive update nag — pushes ONE sticky toast per offered version, with
+// three explicit actions and NO dismiss icon:
+//
+//   - Update            → opens the What's New dialog; writes nothing.
+//   - Remind me later   → closes the reminder; writes NOTHING. The per-mount
+//                         toastedRef is the whole "later" mechanism: this tab
+//                         stays silent, the next mount (reload / new tab /
+//                         restart) offers the version again.
+//   - Skip this version → writes the persistent dismissal key.
 //
 // Gates (mandatory, see shared/update-info.ts):
 //   - update branch:  isUpdateNagNeeded(info)  (suppresses once an in-app
 //     update is on disk pending restart — hasUpdate alone re-nags every tab)
 //   - deprecation branch: info.deprecated && !isUpdateAppliedToDisk(info)
 //
-// Persistence: localStorage NAG_DISMISS_STORAGE_KEY holds the dismissed
-// value — the offered `latest` for the update branch, `deprecated:<current>`
-// for the deprecation branch. A newer `latest` (or a new deprecation target)
-// differs from the stored value → re-notify. The toast's onDismiss callback
-// writes the key on ANY dismissal (✕, action-click auto-dismiss); the App
-// host also writes it when the dialog closes — one nag per version, any
-// closure counts as "seen".
+// Persistence: localStorage NAG_DISMISS_STORAGE_KEY holds the SKIPPED value —
+// the offered `latest` for the update branch, `deprecated:<current>` for the
+// deprecation branch. A newer `latest` (or a new deprecation target) differs
+// from the stored value → re-notify. Only the explicit Skip action (here and
+// in the dialog's onSkip) writes it; a bare close never does.
 //
 // Per-mount dedup: toastedRef remembers the value already pushed by THIS
 // hook instance so effect re-runs (info identity churn, StrictMode double
-// invoke) can't stack toasts. Cross-tab dedup is the localStorage key.
+// invoke) can't stack toasts. Cross-tab skip dedup is the localStorage key.
 
 import { useEffect, useRef } from 'react'
 import { useToast } from './useToast'
@@ -90,6 +96,15 @@ export function useUpdateNag(
   }, [onOpenDialog])
   const toastedRef = useRef<string | null>(null)
 
+  // The three explicit choices. No onDismiss and no ✕ (hideDismiss): a bare
+  // close must not silently mean "skip forever" — that was the misleading
+  // part of the old single-action toast.
+  const nagActions = (mode: UpdateNagMode, value: string) => [
+    { label: 'Update', onClick: () => onOpenRef.current(mode) },
+    { label: 'Remind me later', onClick: () => { /* stateless by design */ } },
+    { label: 'Skip this version', onClick: () => writeNagDismiss(value) },
+  ]
+
   useEffect(() => {
     if (!info || info.checking) return
 
@@ -103,12 +118,8 @@ export function useUpdateNag(
       toast.show('info', `${info.current} → ${info.latest} — see what changed`, {
         title: 'New version available',
         durationMs: 0, // sticky — the only proactive surface now that the banner is gone
-        actionLabel: 'Update',
-        onClick: () => {
-          writeNagDismiss(value)
-          onOpenRef.current('update')
-        },
-        onDismiss: () => writeNagDismiss(value),
+        hideDismiss: true,
+        actions: nagActions('update', value),
       })
       return
     }
@@ -125,12 +136,8 @@ export function useUpdateNag(
       toast.show('info', message, {
         title: `Version ${info.current} is deprecated`,
         durationMs: 0,
-        actionLabel: 'Update',
-        onClick: () => {
-          writeNagDismiss(value)
-          onOpenRef.current('deprecation')
-        },
-        onDismiss: () => writeNagDismiss(value),
+        hideDismiss: true,
+        actions: nagActions('deprecation', value),
       })
     }
   }, [info, toast])
