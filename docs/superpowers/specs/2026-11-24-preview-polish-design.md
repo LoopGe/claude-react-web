@@ -1,8 +1,8 @@
 # File Preview Polish — Design (wrap / line highlighting / fading band / frontmatter)
 
 Date: 2026-11-24
-Status: proposed (awaiting approval)
-Agent Note: [.agents/notes/proposed/feature/2026-11-24-preview-polish.md](../../../.agents/notes/proposed/feature/2026-11-24-preview-polish.md)
+Status: implemented
+Agent Note: [.agents/notes/implemented/feature/2026-11-24-preview-polish.md](../../../.agents/notes/implemented/feature/2026-11-24-preview-polish.md)
 
 ## Intent
 
