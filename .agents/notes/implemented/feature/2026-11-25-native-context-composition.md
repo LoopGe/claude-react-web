@@ -106,6 +106,21 @@ density rule shared by the table, the skills payload and the MCP payload.
 `estimate.ts` is neutral-core (vocabulary-only imports) and covered by the
 neutrality pins.
 
+The composition reads the session's effective tool snapshot
+(`this.tools` / `mcpToolServers`), which `rebuildTools()` refreshes. The
+constructor's rebuild runs before the fire-and-forget MCP connect pass
+settles, so a pre-turn reader (the Context tab opened right after
+create/resume) saw no MCP row until a turn ran `rebuildTools` — an
+intermittent "MCP missing after restart, gone after a message" gap, proven
+by a fresh-session probe (pre-turn MCP absent, post-turn present). The
+constructor now also refreshes the snapshot once `mcp.whenReady()` resolves
+(guarded by `_closed`), so the birth invariant `tools = builtins + Agent +
+Task + MCP defs` holds after discovery, not only after a turn. A one-shot
+refresh suffices: later live MCP mutations already call `rebuildTools`.
+The alternative — rebuilding inside `getContextUsage` — was rejected: a
+read probe must not mutate the tool snapshot, and awaiting discovery there
+would block the manager's post-turn probe on a slow server.
+
 ## Related
 
 - Capacity resolution for the same payload's `maxTokens` /
