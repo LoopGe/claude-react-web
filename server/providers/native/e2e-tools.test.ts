@@ -24,6 +24,7 @@ import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
 import { fakeWebCalls, resetFakeWebTransport, setFakeWebHandler } from './tools/web-test-transport.js'
+import { loadNativeSessionLogSync } from './session-log/log.js'
 import type { CanonicalEvent } from './canonical.js'
 
 // Never resolve a real hostname. The auxiliary Anthropic/title calls still go
@@ -662,6 +663,12 @@ describe('native P1.6 tools end to end through SessionManager', () => {
     expect(titled.title).toBe('Native tools e2e')
     expect(fx.sm.list().find((s) => s.id === id)?.title).toBe('Native tools e2e')
     expect(fx.store.get(id)?.title).toBe('Native tools e2e')
+    // Claude persist:true parity: the auto-title is durable in the session
+    // LOG too (provider-side append), trimmed like the manager's own write.
+    const titles = loadNativeSessionLogSync(stateDir, id)!.neutralEvents!
+      .filter((e) => e.type === 'session/title')
+    expect(titles).toHaveLength(1)
+    expect(titles[0]).toMatchObject({ type: 'session/title', data: { title: 'Native tools e2e' } })
 
     const auxCall = fetchMock.mock.calls.find(([u]) => String(u).endsWith('/v1/messages'))
     expect(auxCall).toBeDefined()
@@ -678,6 +685,9 @@ describe('native P1.6 tools end to end through SessionManager', () => {
     const again = await fx.sm.autoGenerateTitle(id, 'a different description')
     expect(again.title).toBe('Native tools e2e')
     expect(fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/v1/messages'))).toHaveLength(1)
+    // The entry guard also kept the log single-titled: no second append.
+    expect(loadNativeSessionLogSync(stateDir, id)!.neutralEvents!
+      .filter((e) => e.type === 'session/title')).toHaveLength(1)
 
     // Native has no account state to report; the route serializes undefined as
     // { account: null } rather than inventing fields.

@@ -2330,9 +2330,17 @@ export class NativeSession implements NativeSessionCore {
   /** Auto-title through the injected auxiliary LLM port. The model is
    *  resolved at CALL time: the profile's recapModel when set, else the
    *  session's CURRENT model (a live switch must reach this call). The
-   *  manager trims and persists the returned first text block. */
+   *  manager trims and persists the returned first text block.
+   *
+   *  Claude `persist:true` parity: the trimmed title is also appended as a
+   *  durable `session/title` event through the live writer BEFORE returning,
+   *  so an auto-titled session recovers with its title. The log-level
+   *  no-overwrite guard skips the append when any title event already exists
+   *  (a manual rename that landed first); a manual rename landing after wins
+   *  latest-wins. A failed append propagates — the manager's timeSdkControl
+   *  surfaces it and leaves the session untitled. */
   async generateTitle(description: string): Promise<unknown> {
-    return this.opts.ports.auxLlm.call({
+    const raw = await this.opts.ports.auxLlm.call({
       model: this.opts.profile?.recapModel || this.model,
       system: TITLE_PROMPT,
       userContent: description,
@@ -2346,6 +2354,13 @@ export class NativeSession implements NativeSessionCore {
       caller: 'session-title',
       target: this.opts.credentials(),
     })
+    // The trim mirrors the manager's own normalization; the scan is per-call
+    // (auto-title runs once per session) — no cached state.
+    const text = String(raw ?? '').trim()
+    if (text && !neutralEventsOf(this.log).some((e) => e.type === 'session/title')) {
+      await this.log.appendDurable({ type: 'session/title', time: Date.now(), data: { title: text } })
+    }
+    return raw
   }
 
   /** The native provider talks to an Anthropic-compatible endpoint with the

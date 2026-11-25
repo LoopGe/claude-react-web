@@ -12,7 +12,7 @@ import { makeNativePorts } from '../native-host-adapters.js'
 import type { NativeAuxLlmPort } from './ports.js'
 import type { NativeMcpConnections, NativeMcpServerInstance } from './mcp/connections.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
-import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
+import { NativeSessionLog, appendSessionTitle, loadNativeSessionLogSync } from './session-log/log.js'
 import { nativeSessionDir, nativeSessionLogPath } from './session-log/paths.js'
 import { historyFromEvents } from './session-log/replay.js'
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
@@ -7022,6 +7022,95 @@ describe('NativeSession', () => {
         await session.setModel?.('m2')
         await expect(session.generateTitle?.('describe')).resolves.toBe('First title')
         expect(requests[0].model).toBe('m2')
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('generateTitle appends one durable session/title event with the trimmed text', async () => {
+      const dir = await tempDir('native-title-persist-')
+      const { port: auxLlm } = stubAuxLlm('  Padded title  ')
+      const provider = new NativeProvider({ stateDir: dir, ports: { ...makeNativePorts({ stateDir: dir }), auxLlm } })
+      const session = provider.createSession({
+        id: 'title-persist',
+        cwd: dir,
+        model: 'm1',
+        profile: profile(''),
+      })
+      try {
+        // Return contract UNCHANGED: the raw aux result — the manager trims.
+        await expect(session.generateTitle?.('describe')).resolves.toBe('  Padded title  ')
+        // Durable on disk (appendDurable flushes), trimmed exactly like the
+        // manager's own normalization.
+        const snap = loadNativeSessionLogSync(dir, 'title-persist')!
+        const titles = snap.neutralEvents!.filter((e) => e.type === 'session/title')
+        expect(titles).toHaveLength(1)
+        expect(titles[0]).toMatchObject({ type: 'session/title', data: { title: 'Padded title' } })
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('generateTitle appends nothing when a session/title event already exists', async () => {
+      const dir = await tempDir('native-title-guard-')
+      const { port: auxLlm } = stubAuxLlm()
+      const provider = new NativeProvider({ stateDir: dir, ports: { ...makeNativePorts({ stateDir: dir }), auxLlm } })
+      const session = provider.createSession({
+        id: 'title-guard',
+        cwd: dir,
+        model: 'm1',
+        profile: profile(''),
+      })
+      try {
+        // A manual rename that landed BEFORE the auto call: the log-level
+        // no-overwrite guard skips the append; the raw result still returns.
+        await appendSessionTitle(dir, 'title-guard', 'Manual first')
+        await expect(session.generateTitle?.('describe')).resolves.toBe('First title')
+        const snap = loadNativeSessionLogSync(dir, 'title-guard')!
+        const titles = snap.neutralEvents!.filter((e) => e.type === 'session/title')
+        expect(titles).toHaveLength(1)
+        expect(titles[0]).toMatchObject({ data: { title: 'Manual first' } })
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('generateTitle appends nothing for an empty or whitespace aux result', async () => {
+      const dir = await tempDir('native-title-empty-')
+      for (const [index, answer] of ['', '   '].entries()) {
+        const { port: auxLlm } = stubAuxLlm(answer)
+        const provider = new NativeProvider({ stateDir: dir, ports: { ...makeNativePorts({ stateDir: dir }), auxLlm } })
+        const id = `title-empty-${index}`
+        const session = provider.createSession({ id, cwd: dir, model: 'm1', profile: profile('') })
+        try {
+          await expect(session.generateTitle?.('describe')).resolves.toBe(answer)
+          const snap = loadNativeSessionLogSync(dir, id)!
+          expect(snap.neutralEvents!.some((e) => e.type === 'session/title')).toBe(false)
+        } finally {
+          await session.destroy()
+        }
+      }
+    })
+
+    it('auto-title then manual rename: latest-wins folds to the manual title', async () => {
+      const dir = await tempDir('native-title-order-')
+      const { port: auxLlm } = stubAuxLlm()
+      const provider = new NativeProvider({ stateDir: dir, ports: { ...makeNativePorts({ stateDir: dir }), auxLlm } })
+      const session = provider.createSession({
+        id: 'title-order',
+        cwd: dir,
+        model: 'm1',
+        profile: profile(''),
+      })
+      try {
+        await expect(session.generateTitle?.('describe')).resolves.toBe('First title')
+        // A manual rename AFTER the auto append rides the same live writer;
+        // latest-wins (the last title event) selects the manual title.
+        await appendSessionTitle(dir, 'title-order', 'Manual later')
+        const snap = loadNativeSessionLogSync(dir, 'title-order')!
+        const titles = snap.neutralEvents!.filter((e) => e.type === 'session/title')
+        expect(titles).toHaveLength(2)
+        expect(titles.at(-1)).toMatchObject({ data: { title: 'Manual later' } })
       } finally {
         await session.destroy()
       }
