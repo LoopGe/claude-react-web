@@ -79,8 +79,8 @@ it('does not append when $ARGUMENTS matched', () => {
 it('does not append for empty args', () => {
   expect(substituteSkillArguments('Body', '')).toBe('Body')
 })
-it('renders escaped \\$ literally', () => {
-  expect(substituteSkillArguments('\\$ARGUMENTS', 'x')).toBe('$ARGUMENTS')
+it('renders escaped \\$ literally and still appends ARGUMENTS', () => {
+  expect(substituteSkillArguments('\\$ARGUMENTS', 'x')).toBe('$ARGUMENTS\n\nARGUMENTS: x')
 })
 it('does not re-substitute inserted args text', () => {
   expect(substituteSkillArguments('$ARGUMENTS', '$0')).toBe('$0')
