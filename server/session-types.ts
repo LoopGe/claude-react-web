@@ -428,8 +428,8 @@ export interface Session {
    *  hands it to the CLI, native derives its compaction threshold from
    *  `min(modelWindow, pin)`. Spawn-time only — claude's runtime
    *  `applyFlagSettings` channel is inert for this key
-   *  (docs/research/2026-11-25-claude-cli-auto-compact.md §4.2.1), and native's
-   *  live setter is a separate follow-up. */
+   *  (docs/research/2026-11-25-claude-cli-auto-compact.md §4.2.1), and native
+   *  has no live-setter channel. */
   autoCompactWindow?: number
   handle: ProviderSessionHandle
   subscribers: Map<string, Subscriber>

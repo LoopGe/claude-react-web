@@ -4364,15 +4364,17 @@ describe('liteContextUsageFromResult with authoritative facts', () => {
     expect(liteContextUsageFromResult(msg, undefined, { windowOverride: 200000 })!.autoCompactThreshold).toBe(167000)
   })
 
-  it('keeps a pinned native session’s probe threshold over the claude formula replica', () => {
-    // The native provider derives its trigger from the ratio policy on the
-    // effective window: pin 150000 → min(floor(150000×0.8), 150000−16384) =
-    // 120000. The claude formula replica against that same pin would say
-    // 150000 − min(32000,20000) − 13000 = 117000. When the provider's probe
-    // (cached as lastSdkAutoCompact, passed here as `facts`) carries a
-    // threshold for the matching model, the fold must KEEP it — the replica
-    // is a claude-only fallback, never an override of an authoritative
-    // provider value, even when the two policies disagree on the pin.
+  it('keeps an authoritative facts threshold over the claude formula replica under a spawn pin', () => {
+    // Shared authority rule: a facts threshold for the matching model always
+    // wins over the claude formula replica — the replica is a fallback only.
+    // The fixture is claude-shaped: native result frames carry no modelUsage,
+    // so this function returns null for them and a native threshold reaches
+    // the bar through the probe fold (applySdkAutoCompactFacts) into the same
+    // facts cache read here. The facts value 120000 is what native's ratio
+    // policy derives at pin 150000 (min(floor(150000×0.8), 150000−16384));
+    // the claude replica against that same pin would say 150000 −
+    // min(32000,20000) − 13000 = 117000. The fold keeps the authoritative
+    // value even when the two policies disagree on the pin.
     const msg = makeResult({
       usage: { input_tokens: 1000 },
       modelUsage: { 'claude-opus-4-7': { contextWindow: 200000, maxOutputTokens: 32000 } },
