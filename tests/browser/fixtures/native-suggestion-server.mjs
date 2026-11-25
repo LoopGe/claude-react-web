@@ -92,8 +92,12 @@ const mainScript = [
   textTurn('回复3'),
 ]
 // The fork (detected by the SUGGESTION MODE marker in its flattened messages)
-// answers with the predicted prompt the spec asserts.
-const forkScript = [textTurn('跑测试')]
+// answers with the predicted prompt the spec asserts. The SECOND entry is a
+// trap: turn 3 is cache-cold (its textTurn reports no cache reads), so its
+// fork must be suppressed — if that suppression regressed, the fork would
+// consume this entry and refill the placeholder, failing the spec's final
+// placeholder-default assertion (non-vacuous turn-3 leg).
+const forkScript = [textTurn('跑测试'), textTurn('不该出现')]
 const SUGGESTION_MARKER = '[SUGGESTION MODE:'
 
 const nativeProvider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir }) })

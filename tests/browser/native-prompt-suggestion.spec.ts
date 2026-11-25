@@ -13,7 +13,8 @@
 //   turn 1 (warm) → first-turn suppression, NO suggestion placeholder;
 //   turn 2 (warm) → fork predicts '跑测试' → placeholder shows it;
 //   bare Tab → fills the input; send → placeholder cleared (and turn 3 is
-//   cache-cold, so no fresh suggestion re-fills it).
+//   cache-cold, so no fresh suggestion re-fills it — the fixture's second
+//   fork entry is a trap that WOULD refill it if that suppression regressed).
 // Zero uncaught page errors across the flow.
 
 import { expect, test as base, type Page } from '@playwright/test'
@@ -81,10 +82,19 @@ test('native suggestion: first-turn suppression → placeholder → Tab fill →
   await expect(editor(page)).toHaveText('跑测试')
 
   // Send the filled suggestion: the reducer clears the placeholder, and turn 3
-  // is cache-cold so no fresh suggestion re-fills it.
+  // is cache-cold so no fresh suggestion re-fills it. The fixture keeps a
+  // SECOND fork entry ('不该出现') as a trap: a regressed turn-3 suppression
+  // would consume it right after the terminal result and refill the
+  // placeholder. Anchor on the working bubble's unmount (the terminal result
+  // has been processed client-side — the bubble only leaves when the turn
+  // settles), then give the would-be psug frame a grace window, so the
+  // default-placeholder assertion below distinguishes real suppression from
+  // the reducer's send-clear instead of racing it.
   await page.keyboard.press('Enter')
   await expect(editor(page)).toHaveText('')
   await expect(assistant(page, '回复3')).toBeVisible({ timeout: 20_000 })
+  await expect(panel(page).locator('.working-bar')).toBeHidden({ timeout: 20_000 })
+  await page.waitForTimeout(500)
   expect(await editor(page).getAttribute('data-placeholder')).toMatch(DEFAULT_PLACEHOLDER)
 
   expect(pageErrors, 'no uncaught page errors across the whole flow').toEqual([])

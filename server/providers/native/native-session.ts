@@ -1219,6 +1219,7 @@ export class NativeSession implements NativeSessionCore {
     // The gate proved the snapshot non-null and no await ran since, so this
     // synchronous read holds exactly the gated snapshot.
     const snap = this.suggestionSnapshot!
+    const startedAt = Date.now()
     try {
       const last = this.history[this.history.length - 1]
       if (last === undefined || last.role !== 'assistant') {
@@ -1246,6 +1247,12 @@ export class NativeSession implements NativeSessionCore {
         // Same model gate as the main request: a non-thinking model/gateway
         // must not receive an unexpected thinking field. No effort/fastMode/
         // temperature/thinkingDisplay — prediction needs none of them.
+        // Known limitation (design §11): always-on-thinking Anthropic models
+        // (e.g. Opus 5.5 / Sonnet 5.5 / Fable 5) 400 on thinking:disabled at
+        // every effort level, yet the keyword classifier returns true for
+        // them — the fork silently skips there (contained by the silent-
+        // failure contract). A thinking-mode-aware gate is a scheduled
+        // follow-up.
         ...(supportsThinkingForModel(snap.model) === true ? { thinking: { type: 'disabled' as const } } : {}),
         signal,
       }
@@ -1285,7 +1292,9 @@ export class NativeSession implements NativeSessionCore {
         parentToolUseId: null,
       })
       metrics.count('native_prompt_suggestion_total', { outcome: 'generated' })
-      log.debug(`[${this.opts.id}] prompt suggestion generated (textLen=${screened.text.length})`)
+      // §8 parity: textLen + elapsed (from fork start) + the cacheRead evidence
+      // that authorized this generation (the gate proved it non-zero).
+      log.debug(`[${this.opts.id}] prompt suggestion generated (textLen=${screened.text.length}, elapsed=${Date.now() - startedAt}ms, cacheRead=${this.lastRoundUsage?.cacheReadTokens ?? 0})`)
     } catch (err) {
       if (signal.aborted) return // aborted → silent
       log.debug(`[${this.opts.id}] prompt suggestion failed:`, err)
@@ -1315,6 +1324,10 @@ export class NativeSession implements NativeSessionCore {
         signal: req.signal,
       })
     }
+    // The fork inherits the transport's cap behavior — no separate idle
+    // timeout: a wedged fork on an idle session is bounded by the 1024 output
+    // cap and aborted on user activity/destroy. A fork-specific idle cap is a
+    // possible follow-up (design §10 left the choice to the implementer).
     return streamAnthropicMessages({ ...this.opts.credentials(), ...req }, async () => {})
   }
 
