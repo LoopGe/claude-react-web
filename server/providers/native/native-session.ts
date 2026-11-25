@@ -480,9 +480,10 @@ export class NativeSession implements NativeSessionCore {
    *  as-is: the wire projection builds fresh arrays per round, so the snapshot
    *  holds that round's arrays unchanged. */
   private suggestionSnapshot: SuggestionSnapshot | null = null
-  /** The LAST API round's neutral usage — each persisted assistant frame
-   *  overwrites it, so after a turn it holds the last round's reading, not the
-   *  turn total. The suggestion cache-evidence gate reads it. */
+  /** The LAST MAIN-thread API round's neutral usage — each main-thread
+   *  assistant frame overwrites it (nested frames never do), so after a turn it
+   *  holds the last round's reading, not the turn total. The suggestion
+   *  cache-evidence gate reads it. */
   private lastRoundUsage: TokenUsage | null = null
   /** Per-model totals for the /usage panel. Accumulated from every persisted
    *  assistant frame (one per API round), which keeps the live value identical
@@ -1203,9 +1204,11 @@ export class NativeSession implements NativeSessionCore {
       return
     }
     if (frame.type !== 'assistant-frame') return
-    // One assistant frame = one API round; keep the LAST round's reading for
-    // the suggestion cache-evidence gate (overwritten every round).
-    this.lastRoundUsage = frame.usage
+    // One assistant frame = one API round; keep the LAST MAIN-thread round's
+    // reading for the suggestion cache-evidence gate (overwritten every round).
+    // Nested runners share this persist path with a non-null parent — their
+    // usage must not clobber the main-thread evidence the snapshot pairs with.
+    if (parentToolUseId === null) this.lastRoundUsage = frame.usage
     const time = Date.now()
     const time0 = this.roundFirstChunkAt ?? time
     this.roundFirstChunkAt = null

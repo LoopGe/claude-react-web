@@ -6227,6 +6227,47 @@ describe('NativeSession', () => {
       await session.destroy()
     })
 
+    it('nested (subagent) rounds never overwrite lastRoundUsage or the snapshot', async () => {
+      const dir = await tempDir('native-suggestion-')
+      const provider = new NativeProvider({
+        stateDir: dir,
+        agentStore: agentStoreOf({ reviewer: agentDefinition() }),
+        ports: makeNativePorts({ stateDir: dir }),
+      })
+      const mainRound: CanonicalEvent[] = [
+        { kind: 'message_start', usage: { input_tokens: 200, output_tokens: 1, cache_read_input_tokens: 8192 } },
+        { kind: 'block_start', index: 0, block: { type: 'text' } },
+        { kind: 'block_delta', index: 0, delta: { type: 'text', text: 'main done' } },
+        { kind: 'block_end', index: 0 },
+        { kind: 'message_end', stopReason: 'end_turn', usage: { output_tokens: 9 } },
+      ]
+      const captured: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        rawCapturingStreamer([mainRound, textTurn('nested done')], captured)
+      const session = provider.createSession({ id: 'sug-nested', cwd: dir })
+      const frames: Frame[] = []
+      void (async () => {
+        for await (const f of session.messages) frames.push(f as Frame)
+      })()
+      session.enqueueUserMessage(userMsg('main turn') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+      })
+      const usageOf = () => (coreOf(session) as { lastRoundUsage: TokenUsage | null }).lastRoundUsage
+      expect(usageOf()).toEqual({ inputTokens: 200, outputTokens: 9, cacheReadTokens: 8192 })
+      const snapshotBefore = snapshotOf(session)
+      expect(snapshotBefore).not.toBeNull()
+      // A real nested Agent round: its assistant frame reaches persistFrame
+      // with a NON-null parent (agentDeps.emit) and its stream bypasses the
+      // main turn's capture lambda — neither field may change.
+      const outcome = await runNestedAgent(session, dir, { description: 'd', prompt: 'p', subagent_type: 'reviewer' })
+      expect(outcome.text).toBe('nested done')
+      expect(captured).toHaveLength(2)
+      expect(usageOf()).toEqual({ inputTokens: 200, outputTokens: 9, cacheReadTokens: 8192 })
+      expect(snapshotOf(session)).toBe(snapshotBefore)
+      await session.destroy()
+    })
+
     it('promptSuggestions: false reaches the core opts', async () => {
       const dir = await tempDir('native-suggestion-')
       const provider = providerWithStreamer([], dir)
