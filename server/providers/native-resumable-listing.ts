@@ -142,7 +142,9 @@ function eligiblePrompt(event: Extract<NativeSessionEvent, { type: 'user/message
   const joined = stripHandles(texts.join(' '))
   if (joined) {
     if (SYNTHETIC_FRAME_PREFIX_RE.test(joined)) return undefined
-    return condensePromptPreview(joined)
+    // Mirror parseLastUserPrompt's `if (text)` guard: an empty condense records
+    // no preview (and never falls back to attachment names on this branch).
+    return condensePromptPreview(joined) || undefined
   }
   return attachmentNameFallback(content)
 }

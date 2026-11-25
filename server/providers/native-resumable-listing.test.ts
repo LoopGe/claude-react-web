@@ -184,6 +184,38 @@ describe('previews', () => {
     expect(rows[0].lastPrompt).toBe('final text')
   })
 
+  it('never emits an empty-string preview for whitespace-only text (reference parity)', async () => {
+    const stateDir = await freshStateDir()
+    const id = randomUUID()
+    const idOnlyWhitespace = randomUUID()
+    // Several empty text blocks join to ' ' — the reviewer's claimed trigger
+    // for a truthy-but-all-whitespace `joined`.
+    const emptyBlocks: NativeNeutralEventInput = {
+      type: 'user/message',
+      time: Date.now(),
+      parentToolUseId: null,
+      data: createUserMessage({
+        content: [{ type: 'text', text: '' }, { type: 'text', text: '' }],
+        source: { kind: 'user' },
+      }),
+    }
+    await writeFixture(stateDir, id, '/repo', [
+      userEvent('real prompt'),
+      userEvent('   '),
+      emptyBlocks,
+    ])
+    await writeFixture(stateDir, idOnlyWhitespace, '/repo', [userEvent('   ')])
+    const rows = await listNativeResumableRows(stateDir)
+    const byId = new Map(rows.map((row) => [row.sessionId, row]))
+    // A trailing whitespace-only message must not clobber the real lastPrompt
+    // with '' (parseLastUserPrompt records no hit for an empty condense).
+    expect(byId.get(id)!.firstPrompt).toBe('real prompt')
+    expect(byId.get(id)!.lastPrompt).toBe('real prompt')
+    // A whitespace-only session has no preview at all.
+    expect(byId.get(idOnlyWhitespace)!.firstPrompt).toBeUndefined()
+    expect(byId.get(idOnlyWhitespace)!.lastPrompt).toBeUndefined()
+  })
+
   it('falls back to attachment names for an attachment-only message', async () => {
     const stateDir = await freshStateDir()
     const id = randomUUID()
