@@ -4364,6 +4364,27 @@ describe('liteContextUsageFromResult with authoritative facts', () => {
     expect(liteContextUsageFromResult(msg, undefined, { windowOverride: 200000 })!.autoCompactThreshold).toBe(167000)
   })
 
+  it('keeps a pinned native session’s probe threshold over the claude formula replica', () => {
+    // The native provider derives its trigger from the ratio policy on the
+    // effective window: pin 150000 → min(floor(150000×0.8), 150000−16384) =
+    // 120000. The claude formula replica against that same pin would say
+    // 150000 − min(32000,20000) − 13000 = 117000. When the provider's probe
+    // (cached as lastSdkAutoCompact, passed here as `facts`) carries a
+    // threshold for the matching model, the fold must KEEP it — the replica
+    // is a claude-only fallback, never an override of an authoritative
+    // provider value, even when the two policies disagree on the pin.
+    const msg = makeResult({
+      usage: { input_tokens: 1000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000, maxOutputTokens: 32000 } },
+    })
+    const facts: SdkAutoCompactFacts = { model: 'claude-opus-4-7', threshold: 120000 }
+    const out = liteContextUsageFromResult(msg, facts, { windowOverride: 150000 })
+    expect(out!.autoCompactThreshold).toBe(120000)
+    // The pin rides the marker, not the denominator: the bar keeps the model
+    // window (the same convention the unpinned facts case pins above).
+    expect(out!.maxTokens).toBe(200000)
+  })
+
   it('ignores facts computed for a different model', () => {
     // A model switch (or a CLI-side fallback) changes the window, so the
     // cached number describes something that is no longer in play.

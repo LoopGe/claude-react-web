@@ -79,9 +79,12 @@ export interface SessionMeta {
   /** Spawn intent: the auto-compact window chosen on the New session form
    *  (absolute tokens; undefined = auto). Folded into
    *  `Options.settings.autoCompactWindow` on EVERY spawn (create / resume /
-   *  fork / clear / restart) — the only channel the CLI honors for this key
-   *  (applyFlagSettings is inert for it). Like taskBudget: pure spawn-time,
-   *  never touches a running subprocess. */
+   *  fork / clear / restart). Both providers consume it at spawn as a policy
+   *  window clamped under the model window (native derives its threshold from
+   *  `min(modelWindow, pin)`). Spawn-time only: claude's runtime
+   *  `applyFlagSettings` channel is inert for this key
+   *  (docs/research/2026-11-25-claude-cli-auto-compact.md §4.2.1), so it never
+   *  touches a running subprocess. */
   autoCompactWindow?: number
   /** Structured hook configuration applied via Query.applyFlagSettings(). */
   hooks?: SessionHooksConfig

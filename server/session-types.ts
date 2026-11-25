@@ -423,8 +423,13 @@ export interface Session {
   thinkingSupported?: boolean
   /** Spawn intent: the auto-compact window chosen on the New session form
    *  (absolute tokens; undefined = auto). Folded into
-   *  `Options.settings.autoCompactWindow` on every spawn — the only channel
-   *  the CLI honors for this key. Pure spawn-time, like taskBudget. */
+   *  `Options.settings.autoCompactWindow` on every spawn. Both providers read
+   *  it at spawn as a policy window clamped under the model window: claude
+   *  hands it to the CLI, native derives its compaction threshold from
+   *  `min(modelWindow, pin)`. Spawn-time only — claude's runtime
+   *  `applyFlagSettings` channel is inert for this key
+   *  (docs/research/2026-11-25-claude-cli-auto-compact.md §4.2.1), and native's
+   *  live setter is a separate follow-up. */
   autoCompactWindow?: number
   handle: ProviderSessionHandle
   subscribers: Map<string, Subscriber>
