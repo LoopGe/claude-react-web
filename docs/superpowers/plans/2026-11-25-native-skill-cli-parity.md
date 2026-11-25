@@ -119,7 +119,10 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Modify: `server/providers/native/skills.ts:222-240` (`bodyOfFor`/`expandFor`/`canonicalBodyOf`), `:43-59` (view interfaces)
 - Modify: `server/providers/native/native-session.ts:204-223` (`skillInvocationForTurn`), `:613-617` (`skillToolFor`)
 - Modify: `server/providers/native/tools/skill.ts:27-35`
-- Test: `server/providers/native/skill-render.test.ts`, `server/providers/native/e2e-skill-invocation.test.ts`
+- Test: `server/providers/native/skill-render.test.ts`, `server/providers/native/e2e-skill-invocation.test.ts`, `server/providers/native/tools/skill.test.ts`, `server/providers/native/e2e-skills.test.ts`, `server/providers/native/native-session.test.ts`
+- Modify: `.agents/notes/implemented/architecture/2026-11-12-native-skill-invocation-recovery.md` (owning note → new contract; CLAUDE.md same-change rule)
+
+> Scope ruling (execution): the contract change breaks pins beyond the original line deltas — `tools/skill.test.ts` (`## User Request` + whitespace-only args now append, CLI-faithful), `e2e-skills.test.ts` (slash-body pins), `native-session.test.ts` (~10 body pins; the two asserting the OLD "args stay only in raw" contract are REWORKED to the new contract, not deleted), and extra `e2e-skill-invocation.test.ts` body pins. All update in the same commit; no replay/fork/compact path changes.
 
 **Interfaces:**
 - Consumes: `substituteSkillArguments` (Task 1).
@@ -154,7 +157,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - [ ] **Step 7: Commit**
 
 ```bash
-git add server/providers/native/skill-render.ts server/providers/native/skills.ts server/providers/native/native-session.ts server/providers/native/tools/skill.ts server/providers/native/skill-render.test.ts server/providers/native/e2e-skill-invocation.test.ts
+git add server/providers/native/skill-render.ts server/providers/native/skills.ts server/providers/native/native-session.ts server/providers/native/tools/skill.ts server/providers/native/skill-render.test.ts server/providers/native/e2e-skill-invocation.test.ts server/providers/native/tools/skill.test.ts server/providers/native/e2e-skills.test.ts server/providers/native/native-session.test.ts .agents/notes/implemented/architecture/2026-11-12-native-skill-invocation-recovery.md
 git commit -m "feat(native): substitute skill args in slash and tool paths
 
 Co-Authored-By: Claude Code <noreply@anthropic.com>"
