@@ -39,8 +39,9 @@ export interface AssistantFrame {
 }
 
 /** Neutral envelope facts carried inline by the enveloped operational frames
- *  (init / api_retry / informational / result). Task frames are envelope-less —
- *  they carry no session_id/uuid/parent on the SDK frame either. */
+ *  (init / api_retry / informational / result / prompt_suggestion). Task frames
+ *  are envelope-less — they carry no session_id/uuid/parent on the SDK frame
+ *  either. */
 interface OperationalEnvelope {
   sessionId: string
   uuid: string
@@ -85,6 +86,8 @@ export type OperationalFrame =
       isError: boolean
       fastMode?: boolean
     } & OperationalEnvelope)
+  // Live-only next-prompt prediction (R6: never persisted); parentToolUseId always null — main turn only.
+  | ({ type: 'prompt/suggestion'; suggestion: string } & OperationalEnvelope)
 
 /** A conversation frame carrying its sidechain emission context (neutral).
  *  The core stamps `parentToolUseId` at emission — null for the main thread,

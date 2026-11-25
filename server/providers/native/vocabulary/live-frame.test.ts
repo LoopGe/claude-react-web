@@ -134,14 +134,17 @@ describe('live-frame shapes (runtime)', () => {
     expect(frame.replayState).toBeUndefined()
   })
 
-  it('OperationalFrame covers the six native live-only kinds with neutral discriminants', () => {
+  it('OperationalFrame covers the seven native live-only kinds with neutral discriminants', () => {
     const init: OperationalFrame = { type: 'init', sessionId: 's', uuid: 'u', parentToolUseId: null, fastMode: true }
     const retry: OperationalFrame = { type: 'api/retry', sessionId: 's', uuid: 'u', parentToolUseId: null, attempt: 1, maxRetries: 10, delayMs: 5 }
     const info: OperationalFrame = { type: 'informational', sessionId: 's', uuid: 'u', parentToolUseId: null, text: 'note' }
     const started: OperationalFrame = { type: 'task/started', taskId: 't', toolUseId: 'tu', taskType: 'local_bash', description: 'd', time: 1 }
     const notified: OperationalFrame = { type: 'task/notification', taskId: 't', toolUseId: 'tu', description: 'd', status: 'completed', time: 2 }
     const result: OperationalFrame = { type: 'result', sessionId: 's', uuid: 'u', parentToolUseId: null, result: 'ok', usage, numTurns: 1, durationMs: 3, isError: false }
-    const kinds = [init, retry, info, started, notified, result].map((f) => f.type)
-    expect(kinds).toEqual(['init', 'api/retry', 'informational', 'task/started', 'task/notification', 'result'])
+    const suggestion: OperationalFrame = { type: 'prompt/suggestion', sessionId: 's', uuid: 'u', parentToolUseId: null, suggestion: '跑测试' }
+    const kinds = [init, retry, info, started, notified, result, suggestion].map((f) => f.type)
+    expect(kinds).toEqual(['init', 'api/retry', 'informational', 'task/started', 'task/notification', 'result', 'prompt/suggestion'])
+    expect(typeof suggestion.suggestion).toBe('string')
+    expect(suggestion.parentToolUseId).toBeNull()
   })
 })
