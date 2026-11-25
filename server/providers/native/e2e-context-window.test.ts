@@ -147,4 +147,49 @@ describe('native model-window compaction', () => {
       sub.unsubscribe()
     }
   }, 20000)
+
+  it('exposes a provider-anchored composition through the manager after a turn', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-composition-'))
+    dirs.push(dir)
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    const retrieve = vi.fn(async () => 200_000)
+    const provider = new NativeProvider({
+      stateDir: dir,
+      modelContext: new NativeModelContextResolver({ discovery: { retrieve } }),
+      ports: makeNativePorts({ stateDir: dir }),
+    })
+    provider._testStream = async function* () {
+      for (const event of textTurn('reply', 100_000)) yield event
+    }
+    const registry = new ProviderRegistry()
+    registry.register(provider)
+    const sm = new SessionManager({ store, providers: registry })
+    managers.push(sm)
+
+    const info = await sm.create({ cwd: dir, model: 'small', provider: 'native', title: 'composition' })
+    const sub = sm.subscribe(info.id)
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const frame of sub.iterable) frames.push(frame as Frame)
+    })()
+    try {
+      await sm.send(info.id, 'prompt')
+      await vi.waitFor(() => {
+        expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1)
+      }, { timeout: 5000 })
+      // The manager's public context-usage path (route → adapter → core):
+      // used rows sum to the real sample, Messages is the residual.
+      const usage = (await sm.contextUsage(info.id)) as {
+        totalTokens: number
+        categories: Array<{ name: string; tokens: number; kind: string }>
+      }
+      expect(usage.totalTokens).toBe(100_000)
+      const used = usage.categories.filter((c) => c.kind === 'used')
+      expect(used.reduce((s, c) => s + c.tokens, 0)).toBe(100_000)
+      expect(used.some((c) => c.name === 'Messages')).toBe(true)
+    } finally {
+      sub.unsubscribe()
+    }
+  }, 20000)
 })

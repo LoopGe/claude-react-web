@@ -382,3 +382,34 @@ describe('NativeSkillCatalog — discovery', () => {
     expect(catalog.commands()).toEqual([{ name: 'alpha', description: 'project alpha', argumentHint: '' }])
   })
 })
+
+describe('view.listing', () => {
+  it('lists policy-visible skills with their rendered line and scope', async () => {
+    await writeSkill('demo', { description: '演示技能' })
+    await writeSkill('other')
+    const catalog = await load(['demo'])
+    const listing = catalog.view(['demo']).listing()
+    expect(listing.total).toBe(2)
+    expect(listing.listed).toEqual([
+      { name: 'demo', source: 'project', line: '- demo: 演示技能' },
+    ])
+  })
+  it('name-only state renders the bare line; off skills are absent', async () => {
+    await writeSkill('demo')
+    const catalog = await load(undefined) // default = name-only
+    expect(catalog.view().listing().listed).toEqual([
+      { name: 'demo', source: 'project', line: '- demo' },
+    ])
+    catalog.applyOverrides({ demo: 'off' })
+    expect(catalog.view().listing().listed).toEqual([])
+    expect(catalog.view().listing().total).toBe(1)
+  })
+  it('listing lines reconstruct the section exactly', async () => {
+    await writeSkill('a')
+    await writeSkill('b')
+    const catalog = await load('all')
+    const view = catalog.view('all')
+    const { listed } = view.listing()
+    expect(view.section()).toBe(`<available_skills>\n${listed.map(s => s.line).join('\n')}\n</available_skills>`)
+  })
+})

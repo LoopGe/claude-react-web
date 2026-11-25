@@ -81,6 +81,7 @@ function skillView(policy?: readonly string[] | 'all'): NativeSkillView {
     section: () => '',
     bodyOf: (name) => ({ text: `${Array.isArray(policy) ? policy.join(',') : policy}: ${name}` }),
     commands: () => [],
+    listing: () => ({ total: 0, listed: [] }),
   }
 }
 

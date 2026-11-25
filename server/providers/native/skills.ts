@@ -14,7 +14,7 @@
 import { promises as fs } from 'node:fs'
 import { dirname } from 'node:path'
 import { MAX_SKILL_BYTES } from '../../../shared/skills.js'
-import type { SkillRecord } from '../../../shared/skills.js'
+import type { SkillRecord, SkillScope } from '../../../shared/skills.js'
 import { createLogger } from '../../log.js'
 import type { NativeSkillPort } from './ports.js'
 import { renderNativeSkillBody } from './skill-render.js'
@@ -45,6 +45,10 @@ export interface NativeSkillView {
   bodyOf(name: string): { text: string; isError?: boolean }
   expand?(name: string): { name: string; body: string } | null
   commands(): NativeSkillCommand[]
+  /** The policy-applied listing behind `section()`: every model-listable
+   *  skill with its exact rendered line, plus the catalog's total entry
+   *  count (listed + hidden). Reads the same snapshot the section renders. */
+  listing(): { total: number; listed: Array<{ name: string; source: SkillScope; line: string }> }
 }
 
 /** Invocation-capable view returned by the catalog. The base interface keeps
@@ -142,6 +146,7 @@ export class NativeSkillCatalog {
       bodyOf: (name) => this.bodyOfFor(name, scopedPolicy),
       expand: (name) => this.expandFor(name, scopedPolicy),
       commands: () => this.commandsFor(scopedPolicy),
+      listing: () => this.listingFor(scopedPolicy),
     }
   }
 
@@ -168,15 +173,36 @@ export class NativeSkillCatalog {
     return this.view(this.policy).expand(name)
   }
 
+  /** The one listing-line renderer: `sectionFor` and `listingFor` share it
+   *  so the per-skill rows can never drift from the prompt section. Null
+   *  for states the model never sees listed. */
+  private lineFor(entry: CatalogEntry, policy: readonly string[] | 'all' | undefined): string | null {
+    const state = this.stateOf(entry, policy)
+    if (state === 'on') return `- ${entry.record.name}: ${entry.record.description}`
+    if (state === 'name-only') return `- ${entry.record.name}`
+    return null
+  }
+
   private sectionFor(policy: readonly string[] | 'all' | undefined): string {
     const lines: string[] = []
     for (const entry of this.entries) {
-      const state = this.stateOf(entry, policy)
-      if (state === 'on') lines.push(`- ${entry.record.name}: ${entry.record.description}`)
-      else if (state === 'name-only') lines.push(`- ${entry.record.name}`)
+      const line = this.lineFor(entry, policy)
+      if (line !== null) lines.push(line)
     }
     if (lines.length === 0) return ''
     return `<available_skills>\n${lines.join('\n')}\n</available_skills>`
+  }
+
+  private listingFor(policy: readonly string[] | 'all' | undefined): {
+    total: number
+    listed: Array<{ name: string; source: SkillScope; line: string }>
+  } {
+    const listed: Array<{ name: string; source: SkillScope; line: string }> = []
+    for (const entry of this.entries) {
+      const line = this.lineFor(entry, policy)
+      if (line !== null) listed.push({ name: entry.record.name, source: entry.record.scope, line })
+    }
+    return { total: this.entries.length, listed }
   }
 
   private commandsFor(policy: readonly string[] | 'all' | undefined): NativeSkillCommand[] {
