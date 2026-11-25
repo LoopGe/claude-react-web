@@ -320,10 +320,6 @@ export interface Session {
    *  session; persisted via SessionMeta so resume/restart/fork keep the
    *  persona (dropped with a warning if its def is later deleted/disabled). */
   agent?: string
-  /** Active model group id (set at create time; the group's resolved main
-   *  model becomes `model`). Stored on the live session; persisted via
-   *  SessionMeta so resume/restart/fork keep the group identity. */
-  modelGroupId?: string
   /** Provider profile id this session is pinned to. Undefined = follow the
    *  active profile. Persisted via SessionMeta; resolved at spawn. */
   profileId?: string

@@ -40,10 +40,6 @@ export interface SessionMeta {
    *  Persisted so resume/restart/fork keep spinning the session in the same
    *  persona; dropped (with a warning) if the def is later deleted/disabled. */
   agent?: string
-  /** Active model group id. Set at create time; the group's resolved main
-   *  model becomes `model`. Persisted so resume/restart/fork keep the group
-   *  identity. */
-  modelGroupId?: string
   /** Provider profile id this session is pinned to. Persisted so
    *  resume/fork/clear keep the pin. */
   profileId?: string
@@ -259,7 +255,6 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     cwd: typeof r.cwd === 'string' ? r.cwd : undefined,
     model: typeof r.model === 'string' ? r.model : undefined,
     agent: typeof r.agent === 'string' ? r.agent : undefined,
-    modelGroupId: typeof r.modelGroupId === 'string' ? r.modelGroupId : undefined,
     profileId: typeof r.profileId === 'string' ? r.profileId : undefined,
     permissionMode: typeof r.permissionMode === 'string' ? (r.permissionMode as PermissionMode) : undefined,
     title: typeof r.title === 'string' ? r.title : undefined,

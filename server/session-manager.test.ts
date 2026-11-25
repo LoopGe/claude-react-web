@@ -723,9 +723,8 @@ describe('SessionManager', () => {
 
     it('create ignores a modelGroupId body key and pins the requested model', async () => {
       __setConfigForTest({ modelGroups: [{ id: 'g1', name: 'G', opus: 'model-b' }] })
-      const info = await sm.create({ cwd: TEST_CWD, model: 'model-a', modelGroupId: 'g1' } as Parameters<SessionManager['create']>[0])
+      const info = await sm.create({ cwd: TEST_CWD, model: 'model-a', modelGroupId: 'g1' } as any)
       expect(info.model).toBe('model-a')
-      expect(info.modelGroupId).toBeUndefined()
     })
 
     it('resolves the aux target model to the session model without a group', async () => {

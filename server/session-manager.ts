@@ -1797,7 +1797,6 @@ export class SessionManager {
       cwd: s.cwd,
       model: s.model,
       agent: s.agent,
-      modelGroupId: s.modelGroupId,
       // The profile pin must survive a restart: resume() re-pins from it
       // (below), and the auxiliary-call resolution (auxTargetFor)
       // needs it to resolve the session's own model group — without it a
@@ -1900,7 +1899,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; taskBudget?: { total: number }; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; taskBudget?: { total: number }; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -1986,7 +1985,7 @@ export class SessionManager {
    *  For resume, use `resume()` instead — this path always allocates a
    *  fresh UUID and won't wire up SDK `resume`. */
   async create(
-    opts: Options & { provider?: string; modelGroupId?: string },
+    opts: Options & { provider?: string },
     customEnv?: Record<string, string>,
     /** Set by the restart flow: the id of the session Y joins. Threaded
      *  through to spawn() so the `created` broadcast carries `joinGroupOf`,
@@ -2018,7 +2017,7 @@ export class SessionManager {
     // selected — instead of an undefined that silently resolves to whatever
     // model the `claude` CLI happens to pick. Resume/fork are unaffected:
     // they carry the persisted model forward through their own opts.
-    const withDefault: Options & { provider?: string; modelGroupId?: string } = {
+    const withDefault: Options & { provider?: string } = {
       ...opts,
       provider: opts.provider ?? this.defaultProvider,
       model: opts.model ?? profileDefaultModel(profile),
@@ -2381,7 +2380,6 @@ export class SessionManager {
       // consistent for a resume that did NOT walk the recreate chain too).
       worktree: meta.worktree,
       model: resolvedModel,
-      modelGroupId: meta.modelGroupId,
       // Use the persisted permissionMode if available (sessions we created).
       // For CLI sessions adopted from disk (no permissionMode in meta), fall
       // back to the caller-supplied mode (the user's current panel mode) so
@@ -2502,7 +2500,6 @@ export class SessionManager {
       provider,
       cwd: meta.cwd,
       model: meta.model,
-      modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
       title: meta.title,
       effortLevel: meta.effortLevel,
@@ -2802,7 +2799,6 @@ export class SessionManager {
       // the fork's own create path.
       cwd: meta.worktree?.mainRepoPath ?? meta.cwd,
       model: meta.model,
-      modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
       title,
       // Carry effort + thinking forward so the fork matches the source.
@@ -2820,7 +2816,7 @@ export class SessionManager {
       hooks: meta.hooks,
       enabledPlugins: meta.enabledPlugins,
       cliDebug: meta.cliDebug,
-    }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; cliDebug?: boolean }
+    }) as Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; cliDebug?: boolean }
     forkOpts.resume = id
     forkOpts.forkSession = true
     // Carry the start-as agent forward only while its def still exists and
@@ -3485,7 +3481,7 @@ export class SessionManager {
   /** Shared spawn path for create(), resume(), and fork(). */
   private spawn(
     id: string,
-    opts: Options & { provider?: string; modelGroupId?: string },
+    opts: Options & { provider?: string },
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
@@ -3538,7 +3534,7 @@ export class SessionManager {
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
-    const fullOpts: Options & { provider?: string; modelGroupId?: string } = { ...opts, provider: providerName }
+    const fullOpts: Options & { provider?: string } = { ...opts, provider: providerName }
     if (this.isSessionDeleteTombstoned(id)) {
       // delete() may overtake any slow async path via its op-lock escape
       // hatch. A tombstone covers both resume and turn-less fresh respawns,
@@ -3926,7 +3922,7 @@ export class SessionManager {
       // provider builds its prompt in-process and has no SDK options, so it
       // gets the texts through this provider-level field.
       systemPromptAppend: nativeSystemPromptAppend((fullOpts as { parentId?: string }).parentId),
-      providerExtras: { sdkOptions, modelGroupId: session.modelGroupId },
+      providerExtras: { sdkOptions },
     })
     session.handle = handle
     this.syncEffectiveSettings(session)
@@ -5656,7 +5652,6 @@ export class SessionManager {
         provider: s.provider,
         cwd: s.cwd,
         model: resetBase ? resetBase.model : s.model,
-        modelGroupId: s.modelGroupId,
         permissionMode: (resetBase ? resetBase.permissionMode : s.permissionMode) as Session['permissionMode'],
         // Plain /clear starts a FRESH conversation, so Y is untitled — the
         // sidebar falls back to the id prefix and the first post-clear message
@@ -5745,7 +5740,6 @@ export class SessionManager {
         provider: settings.provider,
         cwd: settings.cwd,
         model: settings.model,
-        modelGroupId: settings.modelGroupId,
         permissionMode: settings.permissionMode,
         title: settings.title,
         effortLevel: settings.effortLevel,
@@ -5759,7 +5753,7 @@ export class SessionManager {
         // delete-confirm dirty check, worktree cleanup) while running in the
         // inherited worktree dir.
         worktree: settings.worktree,
-      }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; parentId?: string }
+      }) as Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; parentId?: string }
       // Carry the base spawn-time skill policy separately from skillOverride.
       // preserveBaseSkillPolicy below makes even an explicit undefined base win
       // over the spawn projection; the RAM override is re-applied afterward.
@@ -6402,7 +6396,6 @@ export class SessionManager {
       await this.switchModelWithRetry(s, () => pickModel(model))
       s.model = model
       this.syncEffectiveSettings(s)
-      s.modelGroupId = undefined
       s.lastActivityAt = Date.now()
       // The model changed — recompute its effort capability (keyword-based,
       // so a switch between model classes changes what's available), then
@@ -11745,7 +11738,6 @@ export class SessionManager {
     cwd?: string
     model?: string
     agent?: string
-    modelGroupId?: string
     profileId?: string
     permissionMode?: PermissionMode
     title?: string
@@ -11784,7 +11776,6 @@ export class SessionManager {
       // which persists it, and the sidebar/panel must not show a resumable
       // session as agent-less.
       agent: x.agent,
-      modelGroupId: x.modelGroupId,
       profileId: x.profileId,
       profileName: this.profileNameFor(x.profileId),
       permissionMode: x.permissionMode,
@@ -12453,14 +12444,13 @@ export class SessionManager {
    *  real per-path differences. NOT used by buildResumeOpts below, which
    *  builds a narrower `providerExtras.sdkOptions` payload for a different
    *  sub-system (respawnInPlace calls provider.createSession() directly,
-   *  bypassing spawn() and reading model/modelGroupId/enabledPlugins/etc.
+   *  bypassing spawn() and reading model/enabledPlugins/etc.
    *  straight off the live Session instead of through this Options object). */
   private baseSpawnOptions(source: {
     provider?: string
     cwd?: string
     worktree?: WorktreeInfo
     model?: string
-    modelGroupId?: string
     permissionMode?: PermissionMode
     title?: string
     effortLevel?: EffortLevel
@@ -12471,7 +12461,7 @@ export class SessionManager {
     hooks?: SessionHooksConfig
     enabledPlugins?: string[]
     cliDebug?: boolean
-  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; cliDebug?: boolean; worktree?: WorktreeInfo } {
+  }): Options & { provider?: string; enabledPlugins?: string[]; cliDebug?: boolean; worktree?: WorktreeInfo } {
     return {
       provider: source.provider,
       cwd: source.cwd,
@@ -12481,7 +12471,6 @@ export class SessionManager {
       // merge keeps the persisted value alive there.
       worktree: source.worktree,
       model: source.model,
-      modelGroupId: source.modelGroupId,
       permissionMode: source.permissionMode,
       title: source.title,
       effort: source.effortLevel,

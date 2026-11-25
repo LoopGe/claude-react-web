@@ -217,7 +217,6 @@ describe('session create body validation (narrowCreateBody)', () => {
       provider: 'claude',
       cwd: '/tmp/x',
       model: 'claude-sonnet-4-6',
-      modelGroupId: 'g1',
       agent: 'reviewer',
       permissionMode: 'default',
       systemPrompt: 'be brief',

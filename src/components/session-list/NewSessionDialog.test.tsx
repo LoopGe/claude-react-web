@@ -648,7 +648,6 @@ describe('NewSessionDialog field pickers (model / permission mode / group)', () 
     fireEvent.click(fieldItems().find((el) => el.textContent?.includes('claude-opus-4-20250514'))!)
     const form = await clickCreate(onSubmit)
     expect(form.model).toBe('claude-opus-4-20250514')
-    expect(form.modelGroupId).toBeUndefined()
   })
 
   it('renders Agent / Effort / Thinking as field pickers', async () => {
