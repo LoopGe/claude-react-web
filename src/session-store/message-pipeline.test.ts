@@ -219,6 +219,75 @@ describe('applyMessage step 1: FIFO consume oldest optimistic placeholder', () =
   })
 })
 
+// ── Step 1: FIFO fallback gated to raw sending optimistics ───────────────────
+// The result sweep now keeps server-confirmed queued placeholders alive across
+// the result→materialization window. The FIFO fallback must not eat them: a
+// server-uuid-keyed placeholder can never be the materialization of a
+// different-uuid echo (e.g. a parentless <task-notification> injection).
+
+/** A server-confirmed queued placeholder (acked / message-queued): keyed by
+ *  server uuid, no `sending`, deliveryStatus 'queued' (msg.receivedAt set). */
+function queuedPlaceholderItem(serverUuid: string, text: string): TranscriptItem {
+  const msg: SdkMessage = {
+    type: 'user',
+    uuid: serverUuid,
+    parent_tool_use_id: null,
+    receivedAt: 2_000,
+    message: { role: 'user', content: text },
+  } as unknown as SdkMessage
+  return {
+    id: serverUuid,
+    msg,
+    plainText: null,
+    isCompactSummary: false,
+    hiddenByDefault: false,
+    deliveryStatus: 'queued',
+    receivedAt: 2_000,
+  }
+}
+
+describe('applyMessage step 1: FIFO fallback skips server-confirmed placeholders', () => {
+  it('a foreign parentless echo does NOT consume a queued survivor (no exact match)', () => {
+    let state = withPlaceholders(freshState(), [queuedPlaceholderItem('srv-1', 'image message')])
+    state = applyMessage(state, userMsg('foreign-uuid', '<task-notification>…'))
+    // Queued survivor intact; the foreign frame appended with no optimisticSourceId.
+    expect(state.intent.pendingPlaceholders.has('srv-1')).toBe(true)
+    expect(state.mirror.items.at(-1)?.id).toBe('foreign-uuid')
+    expect(state.mirror.items.at(-1)?.optimisticSourceId).toBeUndefined()
+  })
+
+  it('FIFO picks the oldest SENDING optimistic, skipping an older queued survivor', () => {
+    let state = withPlaceholders(freshState(), [
+      queuedPlaceholderItem('srv-1', 'queued first'),
+      placeholderItem('optimistic:2', 'raw second'),
+    ])
+    state = applyMessage(state, userMsg('foreign-uuid', 'echo'))
+    expect(state.intent.pendingPlaceholders.has('srv-1')).toBe(true)
+    expect(state.intent.pendingPlaceholders.has('optimistic:2')).toBe(false)
+    expect(state.mirror.items.at(-1)?.optimisticSourceId).toBe('optimistic:2')
+  })
+
+  it('an acked placeholder without receivedAt (status undefined) is not FIFO-eaten', () => {
+    const ackedNoReceived: TranscriptItem = {
+      id: 'srv-x',
+      msg: { type: 'user', uuid: 'srv-x', parent_tool_use_id: null, message: { role: 'user', content: 'x' } } as unknown as SdkMessage,
+      plainText: null,
+      isCompactSummary: false,
+      hiddenByDefault: false,
+    }
+    let state = withPlaceholders(freshState(), [ackedNoReceived])
+    state = applyMessage(state, userMsg('foreign-uuid', 'echo'))
+    expect(state.intent.pendingPlaceholders.has('srv-x')).toBe(true)
+  })
+
+  it('exact-uuid match still consumes a queued survivor (materialization echo)', () => {
+    let state = withPlaceholders(freshState(), [queuedPlaceholderItem('srv-1', 'image message')])
+    state = applyMessage(state, userMsg('srv-1', 'image message'))
+    expect(state.intent.pendingPlaceholders.has('srv-1')).toBe(false)
+    expect(state.mirror.items.at(-1)?.id).toBe('srv-1')
+  })
+})
+
 // ── Step 2: effectiveConsumedAt ──────────────────────────────────────────────
 
 describe('applyMessage step 2: effectiveConsumedAt propagation', () => {

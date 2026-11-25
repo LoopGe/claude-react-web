@@ -90,6 +90,10 @@ export class SessionEventBroadcaster {
     /** Current transcript generation — stamped on the withdrawal-window seed
      *  frame (spec §8.3) so a reconnecting tab can generation-guard it. */
     private transcriptGenerationOf?: (id: string) => number | undefined,
+    /** Pending queued-not-published prompts as `message-queued` frames — seeded
+     *  to a fresh msgstat subscriber so a tab reconnecting/reloading during the
+     *  queue window recovers the pending bubble (the live frame is fired once). */
+    private queuedFramesOf?: (id: string) => WsMessageQueued[],
   ) {}
 
   /** AsyncIterable of context-usage snapshots for one session.
@@ -171,11 +175,16 @@ export class SessionEventBroadcaster {
   } | null {
     const s = this.sessions.get(id)
     if (!s) return null
-    return this.subscribePushableSet(s, s.messageStatusSubscribers, 'msgstat', 50, () =>
-      s.withdrawnUuids.length > 0
+    return this.subscribePushableSet(s, s.messageStatusSubscribers, 'msgstat', 50, () => {
+      // Queued-not-published prompts first (a reconnecting tab recovers its
+      // pending bubbles), then the withdrawal window. Both have no replay
+      // mirror — the queued prompt is unpublished, the withdrawn ones are gone.
+      const queued = this.queuedFramesOf?.(id) ?? []
+      const withdrawn = s.withdrawnUuids.length > 0
         ? [{ kind: 'messages-withdrawn' as const, sessionId: id, uuids: [...s.withdrawnUuids], generation: this.transcriptGenerationOf?.(id) ?? 0 }]
-        : [],
-    )
+        : []
+      return [...queued, ...withdrawn]
+    })
   }
 
   /** AsyncIterable of recap-update events for one session. Returns the

@@ -22,6 +22,7 @@ import {
   applyMessageConsumed,
   applyMessageSteered,
   clearSendingPlaceholders,
+  clearAbandonedPlaceholders,
 } from './user-message-lifecycle'
 import { stampMessageConsumed, stampMessageSteered } from './transcript-log'
 import {
@@ -386,5 +387,55 @@ describe('clearSendingPlaceholders: pure intent helper', () => {
     // Other intent fields preserved.
     expect(cleared.dismissedSubagents).toBe(intent.dismissedSubagents)
     expect(cleared.error).toBe(intent.error)
+  })
+})
+
+// ── clearAbandonedPlaceholders (result-branch narrow sweep) ──────────────────
+
+describe('clearAbandonedPlaceholders: keeps server-confirmed queued, drops the rest', () => {
+  function queuedItem(id: string): TranscriptItem {
+    const base = placeholderItem(id, 'queued')
+    return { ...base, sending: undefined, deliveryStatus: 'queued', msg: { ...base.msg, receivedAt: 2_000 } }
+  }
+  function consumedItem(id: string): TranscriptItem {
+    const base = placeholderItem(id, 'consumed', { consumedAt: 100 })
+    return { ...base, sending: undefined, deliveryStatus: 'consumed' }
+  }
+  function intentWith(items: TranscriptItem[]): ClientIntent {
+    return { ...createInitialClientIntent(), pendingPlaceholders: new Map(items.map((i) => [i.id, i])) }
+  }
+
+  it('keeps a queued placeholder, drops raw optimistic and consumed', () => {
+    const intent = intentWith([placeholderItem('optimistic:1', 'raw'), queuedItem('srv-1'), consumedItem('srv-2')])
+    const next = clearAbandonedPlaceholders(intent)
+    expect([...next.pendingPlaceholders.keys()]).toEqual(['srv-1'])
+  })
+
+  it('is identity-stable for an empty map', () => {
+    const intent = createInitialClientIntent()
+    expect(clearAbandonedPlaceholders(intent)).toBe(intent)
+  })
+
+  it('is identity-stable when every entry is queued', () => {
+    const intent = intentWith([queuedItem('srv-1'), queuedItem('srv-2')])
+    expect(clearAbandonedPlaceholders(intent)).toBe(intent)
+  })
+
+  it('preserves the Map insertion order of survivors', () => {
+    const intent = intentWith([
+      placeholderItem('optimistic:1', 'raw'),
+      queuedItem('srv-1'),
+      placeholderItem('optimistic:2', 'raw'),
+      queuedItem('srv-2'),
+    ])
+    const next = clearAbandonedPlaceholders(intent)
+    expect([...next.pendingPlaceholders.keys()]).toEqual(['srv-1', 'srv-2'])
+  })
+
+  it('preserves other intent fields', () => {
+    const intent = { ...intentWith([placeholderItem('optimistic:1', 'raw')]), error: 'boom' }
+    const next = clearAbandonedPlaceholders(intent)
+    expect(next.error).toBe('boom')
+    expect(next.pendingPlaceholders.size).toBe(0)
   })
 })

@@ -382,6 +382,15 @@ export class TranscriptWriter {
     return this.queued.length
   }
 
+  /** Read-only view of the queued-not-published ops awaiting materialization.
+   *  Seeds a fresh msgstat subscriber with `message-queued` frames so a tab
+   *  reconnecting/reloading during the queue window recovers the pending bubble
+   *  (the live `publishQueued` frame is fired once and never re-served). Each op
+   *  carries the full public payload + clientOperationId. */
+  get queuedOps(): readonly DispatchOp[] {
+    return this.queued
+  }
+
   /** Remove + return queued-not-published ops (withdrawal on interrupt, Task 5). */
   drainQueued(): DispatchOp[] {
     return this.queued.splice(0)

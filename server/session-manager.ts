@@ -1361,7 +1361,11 @@ export class SessionManager {
     // Sessions map is passed by reference — the broadcaster reads/mutates
     // subscriber sets directly on Session objects, so it needs no other
     // wiring back to SessionManager (see session-broadcaster.ts header).
-    this.broadcaster = new SessionEventBroadcaster(this.sessions, (id) => this.transcriptHead(id)?.generation)
+    this.broadcaster = new SessionEventBroadcaster(
+      this.sessions,
+      (id) => this.transcriptHead(id)?.generation,
+      (id) => this.queuedStatusFrames(id),
+    )
 
     this.backgroundWatchers = new BackgroundWatcherRegistry({
       applyTaskEvent: (s, msg) => {
@@ -4827,15 +4831,8 @@ export class SessionManager {
           publishQueued: (op) => {
             const s = session()
             if (!s) return
-            const uuid = (op.payload as { uuid?: string }).uuid
-            if (typeof uuid !== 'string') return
-            this.pushMessageStatus(s.id, {
-              kind: 'message-queued',
-              sessionId: s.id,
-              uuid,
-              message: op.payload,
-              ...(op.clientOperationId !== undefined ? { clientOperationId: op.clientOperationId } : {}),
-            })
+            const frame = this.queuedStatusFrame(s.id, op)
+            if (frame) this.pushMessageStatus(s.id, frame)
           },
           // Ring append + lifecycle bookkeeping for a materialized prompt, AFTER
           // appendDurable's seq allocation + fsync + broadcast (durable-before-
@@ -5180,6 +5177,40 @@ export class SessionManager {
     for (const sub of s.messageStatusSubscribers) {
       try { sub.push(frame) } catch { /* subscriber dead — skip */ }
     }
+  }
+
+  /** Shape one queued-not-published op into a `message-queued` frame body (no
+   *  generation — the live path stamps it at emission via pushMessageStatus; the
+   *  subscribe seed stamps it explicitly). Shared by publishQueued and the seed
+   *  so the two cannot drift. Null when the op has no string uuid. */
+  private queuedStatusFrame(id: string, op: DispatchOp): WsMessageQueued | null {
+    const uuid = (op.payload as { uuid?: string }).uuid
+    if (typeof uuid !== 'string') return null
+    return {
+      kind: 'message-queued',
+      sessionId: id,
+      uuid,
+      message: op.payload,
+      ...(op.clientOperationId !== undefined ? { clientOperationId: op.clientOperationId } : {}),
+    }
+  }
+
+  /** Pending queued-not-published prompts as `message-queued` frames, for
+   *  seeding a fresh msgstat subscriber (a tab reconnecting/reloading during the
+   *  queue window — the live publishQueued frame is fired once, never re-served).
+   *  Reads the writer's queued set directly; must NOT use writerFor (that would
+   *  create a writer for a dormant session). Generation stamped like
+   *  pushMessageStatus so the client can generation-guard the seed. */
+  private queuedStatusFrames(id: string): WsMessageQueued[] {
+    const ops = this.transcriptWriters.get(id)?.queuedOps ?? []
+    if (ops.length === 0) return []
+    const generation = this.transcriptHead(id)?.generation ?? 0
+    const frames: WsMessageQueued[] = []
+    for (const op of ops) {
+      const frame = this.queuedStatusFrame(id, op)
+      if (frame) frames.push({ ...frame, generation })
+    }
+    return frames
   }
 
   /** Background in-flight foreground tasks (Bash commands + subagents) —

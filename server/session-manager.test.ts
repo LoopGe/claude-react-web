@@ -15907,6 +15907,44 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       late!.unsubscribe()
     })
 
+    it('seeds a late message-status subscriber with pending queued-not-published prompts (reconnect during the queue window)', async () => {
+      const { info, queuedUuids } = await setupQueued(1)
+      await tick()
+      // Subscribe BEFORE materialization: a tab reloading during the queue
+      // window missed the live message-queued frame (fired once, never
+      // re-served); the seed re-serves it so the pending bubble is recovered.
+      const frames: Array<{ kind?: string; uuid?: string; message?: unknown; generation?: number }> = []
+      const late = sm.subscribeMessageStatus(info.id)
+      void (async () => {
+        for await (const v of late!.iterable) frames.push(v as (typeof frames)[number])
+      })()
+      await waitFor(() => frames.some((f) => f.kind === 'message-queued'))
+      const q = frames.find((f) => f.kind === 'message-queued')!
+      expect(q.uuid).toBe(queuedUuids[0])
+      expect(q.message).toBeDefined()
+      expect(typeof q.generation).toBe('number')
+      late!.unsubscribe()
+    })
+
+    it('does not seed a queued prompt once it has materialized (no pending op)', async () => {
+      const { info, h, queuedUuids } = await setupQueued(1)
+      await tick()
+      h.emit({
+        type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id,
+        is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {},
+      })
+      // Materialization moves the op out of writer.queued into the ring.
+      await waitFor(() => ringOf(info.id).some((m) => m.uuid === queuedUuids[0]))
+      const frames: Array<{ kind?: string; uuid?: string }> = []
+      const late = sm.subscribeMessageStatus(info.id)
+      void (async () => {
+        for await (const v of late!.iterable) frames.push(v as (typeof frames)[number])
+      })()
+      await tick()
+      expect(frames.some((f) => f.kind === 'message-queued' && f.uuid === queuedUuids[0])).toBe(false)
+      late!.unsubscribe()
+    })
+
     /** Read live turn-tracking fields off the manager's internal session. */
     const turnStateOf = (sid: string): { pendingTurns: number; workingSince?: number; turnActive?: boolean } => {
       const smAny = sm as unknown as {

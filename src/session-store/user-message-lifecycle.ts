@@ -291,16 +291,48 @@ export function applyMessageSteered(
   return withMirror(state, nextMirror)
 }
 
-/** Drop all optimistic placeholders from the intent. Called from
- *  `message-pipeline.applyMessage`'s result branch (and the reducer's
- *  SESSION_TERMINATED branch): after a `result` frame the SDK has finished
- *  processing — any lingering placeholders are abandoned. The matching server
- *  messages are already in mirror.items by this point (the result frame lands
- *  AFTER the user echo).
+/** Drop ALL placeholders from the intent. Called from the reducer's
+ *  SESSION_TERMINATED branch: a terminated session never materializes a pending
+ *  prompt, so every lingering placeholder is abandoned. (The result branch uses
+ *  the narrower `clearAbandonedPlaceholders` instead — a queued-not-published
+ *  prompt still has a materialization echo pending after `result`.)
  *
  *  Pure intent helper — no mirror writes. Identity-stable when the intent has
  *  no placeholders. */
 export function clearSendingPlaceholders(intent: ClientIntent): ClientIntent {
   if (intent.pendingPlaceholders.size === 0) return intent
   return { ...intent, pendingPlaceholders: new Map<string, TranscriptItem>() }
+}
+
+/** Result-branch sweep: drop abandoned placeholders but KEEP server-confirmed
+ *  queued ones (`deliveryStatus === 'queued'`).
+ *
+ *  A queued-not-published prompt (a mid-turn send that could not steer) lives
+ *  ONLY as a placeholder until the turn terminal materializes it — and the pump
+ *  broadcasts `result` BEFORE that materialization (fan-out precedes
+ *  `onTurnSettling`; `materializeQueued` is fire-and-forget). Its echo is thus
+ *  still pending at result time, so the placeholder must survive: the exact-uuid
+ *  echo-merge consumes it when the materialized frame lands, and an interrupt
+ *  withdrawal evicts it via EVICT_MESSAGES → dropEchoedPlaceholders.
+ *
+ *  Dropped: raw pre-ack optimistics (`sending`, no server receivedAt → status
+ *  undefined) and acked-`'consumed'` entries (publication already happened, so
+ *  no future echo is pending — keeping one would strand a ghost bubble).
+ *  `'injecting'/'injected'` never occur here (steered messages are real mirror
+ *  items, not placeholders).
+ *
+ *  Pure intent helper — no mirror writes. Identity-stable when the map is empty
+ *  or every entry is queued; preserves the Map insertion order of survivors. */
+export function clearAbandonedPlaceholders(intent: ClientIntent): ClientIntent {
+  if (intent.pendingPlaceholders.size === 0) return intent
+  let changed = false
+  const next = new Map<string, TranscriptItem>()
+  for (const [id, item] of intent.pendingPlaceholders) {
+    if (item.deliveryStatus === 'queued') {
+      next.set(id, item)
+      continue
+    }
+    changed = true
+  }
+  return changed ? { ...intent, pendingPlaceholders: next } : intent
 }

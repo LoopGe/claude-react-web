@@ -123,9 +123,12 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       // result frame can ever arrive. Without it a stranded SYNC subagent
       // record stays `running` forever and its card spins on a dead session —
       // the case TASKS_SNAPSHOT deliberately skips below on the assumption
-      // that the result-frame sweep covers it. `liveTurn: null` and the
-      // placeholder clear match that branch's reasoning: the SDK is finished,
-      // so no echo is expected for anything still marked as sending.
+      // that the result-frame sweep covers it. `liveTurn: null` matches that
+      // branch. The placeholder clear is DELIBERATELY the clear-all helper, not
+      // the result branch's keep-queued `clearAbandonedPlaceholders`: a
+      // terminated session never materializes a queued-not-published prompt, so
+      // even a server-confirmed queued survivor has no echo coming and must be
+      // dropped (the result branch keeps it because materialization is pending).
       //
       // Idempotent by design: the dispatcher fires again after each replay (a
       // reload of a terminated session rebuilds the records the sweep must

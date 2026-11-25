@@ -535,6 +535,23 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(state.mirror.thinkingTokens).toBeNull()
   })
 
+  it('clears even a server-confirmed queued survivor at SESSION_TERMINATED (no materialization coming)', () => {
+    // The result branch keeps a queued-not-published placeholder alive (its
+    // materialization echo is still pending). A terminated session never
+    // materializes, so SESSION_TERMINATED must clear ALL placeholders — including
+    // the queued survivor — via the clear-all helper.
+    let state = createInitialSessionState('s1')
+    state = applyOptimistic(state, 'image message', 'optimistic:q')
+    state = applyAck(state, 'optimistic:q', 'srv-q')
+    expect(state.intent.pendingPlaceholders.get('srv-q')?.deliveryStatus).toBe('queued')
+
+    state = reduceSessionState(state, { type: 'MESSAGE', message: { type: 'result', subtype: 'success', uuid: 'r-1' } as unknown as SdkMessage })
+    expect(state.intent.pendingPlaceholders.has('srv-q')).toBe(true)
+
+    state = reduceSessionState(state, { type: 'SESSION_TERMINATED' })
+    expect(state.intent.pendingPlaceholders.size).toBe(0)
+  })
+
   it('is a true no-op when re-dispatched after the sweep (no subscriber churn)', () => {
     // The dispatcher re-fires after every replay of a terminated session, so
     // a second dispatch must return the IDENTICAL state — otherwise each

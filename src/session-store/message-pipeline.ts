@@ -3,11 +3,11 @@
  *  Composes transcript-log (items/messages/activeWorktree append + evict +
  *  trim), live-turn (delta/rate/prune), index-pipeline (tool/sidechain
  *  indexes + pendingResults drain), turn-status (turn-end sweep), and
- *  user-message-lifecycle (clearSendingPlaceholders in the result branch)
+ *  user-message-lifecycle (clearAbandonedPlaceholders in the result branch)
  *  in the EXACT order the spec pins (see §7 of the reducer-state-owners
  *  design):
  *
- *    1.  FIFO consume oldest optimistic placeholder (intent)
+ *    1.  consume matching placeholder (exact uuid, else oldest sending optimistic)
  *    2.  compute effectiveConsumedAt
  *    3.  route apiRetry / thinkingTokens transient slots
  *    4.  update live-turn
@@ -18,7 +18,7 @@
  *    9.  supersede draft
  *    10. cleanup pendingConsumedMessages
  *    11. result branch: freeze draft, sweep turn, clear liveTurn,
- *         clearSendingPlaceholders
+ *         clearAbandonedPlaceholders
  *    12. trimFront
  *    13. refusal-fallback / supersedes eviction
  *
@@ -61,7 +61,7 @@ import {
   trimFront,
   updateTranscriptMirror,
 } from './transcript-log'
-import { clearSendingPlaceholders } from './user-message-lifecycle'
+import { clearAbandonedPlaceholders } from './user-message-lifecycle'
 import { retractedUuidsOf } from './normalize'
 
 /** Apply one streamed or replayed message to a session's state.
@@ -98,14 +98,21 @@ export function applyMessage(state: SessionState, message: SdkMessage): SessionS
   ) {
     // Prefer an EXACT uuid match: a server-confirmed queued bubble
     // (MESSAGE_QUEUED, spec §8.1) is keyed by its server uuid, so its
-    // materialization echo replaces it precisely — not the FIFO oldest, which
-    // could be an unrelated optimistic send on a multi-tab panel. Optimistic
-    // placeholders (keyed by their local id, not the server uuid) fall back to
-    // the oldest-send FIFO match below.
-    const oldestKey = workingIntent.pendingPlaceholders.keys().next().value
-    const matchKey = messageUuid && workingIntent.pendingPlaceholders.has(messageUuid)
+    // materialization echo replaces it precisely. The FIFO fallback is a GUESS
+    // that is only sound while the placeholder's server uuid is still unknown —
+    // i.e. a raw pre-ack optimistic (`sending === true`). A server-uuid-keyed
+    // placeholder can never be the materialization of a DIFFERENT-uuid echo, so
+    // the fallback skips it: otherwise a parentless <task-notification>
+    // injection (which clusters at turn end) would FIFO-eat a queued survivor
+    // the result sweep now keeps alive. No sending entry → no consumption.
+    let matchKey = messageUuid && workingIntent.pendingPlaceholders.has(messageUuid)
       ? messageUuid
-      : oldestKey
+      : undefined
+    if (matchKey === undefined) {
+      for (const [key, item] of workingIntent.pendingPlaceholders) {
+        if (item.sending === true) { matchKey = key; break }
+      }
+    }
     if (typeof matchKey === 'string') {
       // Forward any consumedAt previously stamped on the placeholder (via a
       // MESSAGE_CONSUMED frame that landed before this echo). The placeholder
@@ -282,13 +289,17 @@ export function applyMessage(state: SessionState, message: SdkMessage): SessionS
       ? { ...m, frozenDrafts: [...m.frozenDrafts, ...entries], draft: null, thinkingDraft: null }
       : m
     // Turn-end sweep via the shared helper. The live-only concerns
-    // (liveTurn=null, clearSendingPlaceholders) are applied on top.
+    // (liveTurn=null, clearAbandonedPlaceholders) are applied on top.
     working = {
       sessionId: working.sessionId,
       mirror: { ...sweepAtTurnEnd(frozen), liveTurn: null },
-      // Clear any lingering optimistic placeholders — the result frame means
-      // the SDK has finished processing, so no server echo is expected anymore.
-      intent: clearSendingPlaceholders(working.intent),
+      // Drop abandoned placeholders (raw pre-ack optimistic, acked-consumed) but
+      // KEEP server-confirmed queued ones: a queued-not-published prompt is
+      // materialized AFTER the result frame is broadcast (the pump's fan-out
+      // precedes onTurnSettling; materializeQueued is fire-and-forget), so its
+      // echo is still pending — the exact-uuid echo-merge above consumes it when
+      // it lands, and an interrupt withdrawal evicts it via EVICT_MESSAGES.
+      intent: clearAbandonedPlaceholders(working.intent),
     }
   }
 
