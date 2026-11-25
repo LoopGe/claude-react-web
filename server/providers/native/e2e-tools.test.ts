@@ -669,7 +669,7 @@ describe('native P1.6 tools end to end through SessionManager', () => {
     expect(String(auxCall![0])).toBe('https://api.example.test/v1/messages')
     const auxInit = auxCall![1] as RequestInit
     const auxBody = JSON.parse(String(auxInit.body)) as Record<string, unknown>
-    expect(auxBody).toMatchObject({ model: 'test-model', max_tokens: 64, temperature: 0.3 })
+    expect(auxBody).toMatchObject({ model: 'test-model', max_tokens: 1024, temperature: 0.3 })
     expect(auxBody.system).toBe(TITLE_PROMPT)
     expect(auxBody.messages).toEqual([{ role: 'user', content: 'covering the new native tools' }])
     expect((auxInit.headers as Record<string, string>).Authorization).toBe('Bearer profile-token')
