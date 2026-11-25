@@ -13,7 +13,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { writeAtomic } from './json-file-store.js'
 import type { SkillLoadMode } from '../shared/skills.js'
-import type { ModelGroupConfig, ProviderProfile } from '../shared/profile.js'
+import type { ProviderProfile } from '../shared/profile.js'
 import type { RowGapPreset } from '../shared/row-gap.js'
 import { isRowGapPreset, DEFAULT_ROW_GAP } from '../shared/row-gap.js'
 import type { TextSpacingPreset } from '../shared/text-spacing.js'
@@ -37,12 +37,11 @@ const log = createLogger('config')
 
 // Profile types live in shared/profile.ts (neutral, host-free); config
 // re-exports them so consumers can keep importing from here.
-export type { ModelGroupConfig, ProviderProfile } from '../shared/profile.js'
+export type { ProviderProfile } from '../shared/profile.js'
 
 /** Schema for config.json */
 interface ConfigFile {
   modelList?: string[]
-  modelGroups?: ModelGroupConfig[]
   modelContextWindows?: Record<string, number>
   /** Model used for AI session recaps (the "(default)" option in the
    *  profile UI). EMPTY — the default — means "use the session's own model";
@@ -211,7 +210,6 @@ interface ConfigFile {
 
 export interface ServerConfig {
   readonly modelList: readonly string[]
-  readonly modelGroups: readonly ModelGroupConfig[]
   readonly defaultModel: string
   /** Derived from the active profile. EMPTY = use the session's own model —
    *  read this with plain truthiness (`config.recapModel || sessionModel`). */
@@ -329,7 +327,6 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
     'claude-opus-4-20250514',
     'claude-haiku-3-5-20241022',
   ]),
-  modelGroups: Object.freeze([]),
   defaultModel: 'anthropic/claude-sonnet-4-20250514',
   // These three are deliberately EMPTY: empty = "use the session's own model".
   // A hardcoded default (previously 'claude-haiku-4-5-20251001') is a model id
@@ -393,7 +390,6 @@ export const DEFAULT_PROFILE: ProviderProfile = Object.freeze({
   authToken: '',
   baseUrl: DEFAULTS.baseUrl,
   modelList: Object.freeze([...DEFAULTS.modelList]),
-  modelGroups: Object.freeze([...DEFAULTS.modelGroups]),
   recapModel: DEFAULTS.recapModel,
   commitMessageModel: DEFAULTS.commitMessageModel,
 })
@@ -476,7 +472,6 @@ export async function loadConfig(stateDir: string): Promise<void> {
           authToken: '',
           baseUrl: DEFAULTS.baseUrl,
           modelList: [...config.modelList],
-          modelGroups: [...config.modelGroups],
           // recapModel / commitMessageModel are deliberately NOT scaffolded:
           // writing a concrete model id here would bake in a model the
           // user's provider may not serve (and it is what made a fresh
@@ -518,7 +513,7 @@ export async function loadConfig(stateDir: string): Promise<void> {
 /** The pre-`profiles` top-level credential/model keys. Exported because writers
  *  that materialize a profile also have to retire them in the same pass —
  *  leaving one behind lets a later empty `profiles` resurrect a stale value. */
-export const LEGACY_PROFILE_KEYS = ['authToken', 'baseUrl', 'modelList', 'modelGroups', 'modelContextWindows', 'recapModel', 'commitMessageModel'] as const
+export const LEGACY_PROFILE_KEYS = ['authToken', 'baseUrl', 'modelList', 'modelContextWindows', 'recapModel', 'commitMessageModel'] as const
 
 /** Hard-migrate the seven legacy top-level credential/model fields into a
  *  `profiles[0]` + `activeProfileId` on first load. Runs once: when `profiles`
@@ -578,7 +573,6 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
   // in the reader covers every writer (PUT /config, activate, hand edits) at once.
   ;(merged as { activeProfileId: string }).activeProfileId = active.id
   ;(merged as { modelList: readonly string[] }).modelList = Object.freeze([...active.modelList])
-  ;(merged as { modelGroups: readonly ModelGroupConfig[] }).modelGroups = Object.freeze([...active.modelGroups])
   ;(merged as { defaultModel: string }).defaultModel = profileDefaultModel(active)
   ;(merged as { recapModel: string }).recapModel = active.recapModel
   ;(merged as { commitMessageModel: string }).commitMessageModel = active.commitMessageModel

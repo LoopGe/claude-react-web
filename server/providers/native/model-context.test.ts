@@ -14,7 +14,6 @@ function makeProfile(id = 'profile-a', modelContextWindows?: Readonly<Record<str
     authToken: `token-for-${id}`,
     baseUrl: 'https://gateway.example',
     modelList: ['vendor/model'],
-    modelGroups: [],
     recapModel: '',
     commitMessageModel: '',
     ...(modelContextWindows ? { modelContextWindows } : {}),

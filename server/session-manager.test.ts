@@ -717,12 +717,7 @@ describe('SessionManager', () => {
   })
 
   describe('aux model resolution and single-model routing', () => {
-    afterEach(() => {
-      __setConfigForTest({ modelGroups: [] })
-    })
-
     it('create ignores a modelGroupId body key and pins the requested model', async () => {
-      __setConfigForTest({ modelGroups: [{ id: 'g1', name: 'G', opus: 'model-b' }] })
       const info = await sm.create({ cwd: TEST_CWD, model: 'model-a', modelGroupId: 'g1' } as any)
       expect(info.model).toBe('model-a')
     })
@@ -733,7 +728,6 @@ describe('SessionManager', () => {
     })
 
     it('aux target ignores a legacy modelGroupId — falls back to the session model', async () => {
-      __setConfigForTest({ modelGroups: [{ id: 'g1', name: 'G', opus: 'gw/main', haiku: 'gw/haiku', main: 'opus' }] })
       const info = await sm.create({ cwd: TEST_CWD, model: 'gw/main' })
       // A pre-migration session could still carry a group tag; aux must not
       // route to the group's haiku slot anymore.
@@ -750,17 +744,15 @@ describe('SessionManager', () => {
       const before = {
         profiles: defaultConfig.profiles,
         activeProfileId: defaultConfig.activeProfileId,
-        modelGroups: defaultConfig.modelGroups,
       }
       const profile = (id: string, recapModel: string): import('./config.js').ProviderProfile => ({
         id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
-        modelList: ['vendor/model'], modelGroups: [], recapModel, commitMessageModel: '',
+        modelList: ['vendor/model'], recapModel, commitMessageModel: '',
       })
       try {
         __setConfigForTest({
           profiles: [profile('A', 'vendor/from-a'), profile('B', 'vendor/from-b')],
           activeProfileId: 'A',
-          modelGroups: [],
         })
         const info = await sm.create({ cwd: TEST_CWD, profileId: 'B', model: 'vendor/model' } as Parameters<SessionManager['create']>[0])
         expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({
@@ -788,18 +780,16 @@ describe('SessionManager', () => {
       const before = {
         profiles: defaultConfig.profiles,
         activeProfileId: defaultConfig.activeProfileId,
-        modelGroups: defaultConfig.modelGroups,
       }
       const profile = (id: string): import('./config.js').ProviderProfile => ({
         id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
         modelList: ['vendor/big', 'vendor/small'],
-        modelGroups: [], recapModel: '', commitMessageModel: '',
+        recapModel: '', commitMessageModel: '',
       })
       try {
         __setConfigForTest({
           profiles: [profile('A'), profile('B')],
           activeProfileId: 'A',
-          modelGroups: [],
         })
         const info = await sm.create({
           cwd: TEST_CWD, profileId: 'B', model: 'vendor/big',
@@ -13078,14 +13068,13 @@ describe('SessionManager', () => {
       const before = {
         profiles: defaultConfig.profiles,
         activeProfileId: defaultConfig.activeProfileId,
-        modelGroups: defaultConfig.modelGroups,
       }
       const profile = (id: string): import('./config.js').ProviderProfile => ({
         id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
-        modelList: ['vendor/model-' + id], modelGroups: [], recapModel: '', commitMessageModel: '',
+        modelList: ['vendor/model-' + id], recapModel: '', commitMessageModel: '',
       })
       try {
-        __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A', modelGroups: [] })
+        __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A' })
         const x = await liveWithTurn({ profileId: 'A', model: 'vendor/model-A' })
         const { gate, calls } = parkFirstCall('buildResumeOpts')
         const handlesBefore = mockHandles.length
@@ -13139,7 +13128,7 @@ describe('SessionManager', () => {
       const before = { profiles: defaultConfig.profiles, activeProfileId: defaultConfig.activeProfileId }
       const profile = (id: string): import('./config.js').ProviderProfile => ({
         id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
-        modelList: ['vendor/model-' + id], modelGroups: [], recapModel: '', commitMessageModel: '',
+        modelList: ['vendor/model-' + id], recapModel: '', commitMessageModel: '',
       })
       try {
         __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A' })

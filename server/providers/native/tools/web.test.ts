@@ -56,7 +56,6 @@ function profile(overrides: Partial<ProviderProfile> = {}): ProviderProfile {
     authToken: 'tok',
     baseUrl: 'https://api.example.test',
     modelList: [],
-    modelGroups: [],
     recapModel: '',
     commitMessageModel: '',
     ...overrides,

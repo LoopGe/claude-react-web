@@ -62,7 +62,6 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
         authToken: config.authToken ?? '',
         baseUrl: config.baseUrl,
         modelList: config.modelList,
-        modelGroups: config.modelGroups,
         recapModel: config.recapModel,
         commitMessageModel: config.commitMessageModel,
       }

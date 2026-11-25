@@ -15,7 +15,6 @@ function makeRoute(): NativeModelRoute {
     authToken: TOKEN,
     baseUrl: BASE_URL,
     modelList: [MODEL],
-    modelGroups: [],
     recapModel: '',
     commitMessageModel: '',
   }

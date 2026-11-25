@@ -16,7 +16,6 @@ vi.mock('../config.js', () => ({
         authToken: 'keep-me',
         baseUrl: 'https://gw',
         modelList: ['stale-m1'],
-        modelGroups: [{ id: 'stale', name: 'stale' }],
         recapModel: 'stale-r',
         commitMessageModel: 'stale-c',
       }],
@@ -24,7 +23,6 @@ vi.mock('../config.js', () => ({
   }),
   DEFAULT_PROFILE: {
     modelList: ['default-m1'],
-    modelGroups: [],
     recapModel: 'default-r',
     commitMessageModel: 'default-c',
   },
@@ -155,7 +153,7 @@ describe('POST /config/reset', () => {
     const fixture = {
       profiles: [{
         id: 'default', name: 'Default', authToken: 'keep-me', baseUrl: 'https://gw',
-        modelList: ['stale-m1'], modelGroups: [{ id: 'stale', name: 'stale' }],
+        modelList: ['stale-m1'],
         recapModel: 'stale-r', commitMessageModel: 'stale-c',
       }],
     }
@@ -168,7 +166,6 @@ describe('POST /config/reset', () => {
     expect(p.baseUrl).toBe('https://gw')
     // Model fields reset to DEFAULT_PROFILE.
     expect(p.modelList).toEqual(['default-m1'])
-    expect(p.modelGroups).toEqual([])
     expect(p.recapModel).toBe('default-r')
     expect(p.commitMessageModel).toBe('default-c')
     expect(loadConfig).toHaveBeenCalled()

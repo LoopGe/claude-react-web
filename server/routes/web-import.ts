@@ -224,7 +224,6 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
       if (cred.present.authToken) prof.authToken = cred.authToken
       if (cred.present.baseUrl) prof.baseUrl = cred.baseUrl
       if (cred.present.modelList) prof.modelList = cred.modelList
-      if (cred.present.modelGroups) prof.modelGroups = cred.modelGroups
       if (cred.present.modelContextWindows) {
         prof.modelContextWindows = { ...cred.modelContextWindows }
       } else if (cred.present.modelList || cred.present.baseUrl) {

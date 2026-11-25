@@ -1248,11 +1248,11 @@ describe('NativeSession', () => {
     const previous = { ...config }
     const profileA = {
       id: 'profile-a', name: 'Profile A', authToken: 'token-a', baseUrl: 'https://a.example.test',
-      modelList: [], modelGroups: [], recapModel: '', commitMessageModel: '',
+      modelList: [], recapModel: '', commitMessageModel: '',
     }
     const profileB = {
       id: 'profile-b', name: 'Profile B', authToken: 'token-b', baseUrl: 'https://b.example.test',
-      modelList: [], modelGroups: [], recapModel: '', commitMessageModel: '',
+      modelList: [], recapModel: '', commitMessageModel: '',
     }
     let seen: { providerId: string; baseUrl: string; authToken: string } | undefined
     const discovery = vi.spyOn(AnthropicModelDiscovery.prototype, 'retrieve').mockImplementation(async (route) => {
@@ -1290,11 +1290,11 @@ describe('NativeSession', () => {
     const previous = { ...config }
     const profileA = {
       id: 'profile-a', name: 'Profile A', authToken: '', baseUrl: 'https://a.example.test',
-      modelList: [], modelGroups: [], recapModel: '', commitMessageModel: '',
+      modelList: [], recapModel: '', commitMessageModel: '',
     }
     const profileB = {
       id: 'profile-b', name: 'Profile B', authToken: 'token-b', baseUrl: 'https://b.example.test',
-      modelList: [], modelGroups: [], recapModel: '', commitMessageModel: '',
+      modelList: [], recapModel: '', commitMessageModel: '',
     }
     let route: NativeModelRoute | undefined
     const discovery = vi.spyOn(AnthropicModelDiscovery.prototype, 'retrieve').mockImplementation(async (candidate) => {
@@ -3170,7 +3170,6 @@ describe('NativeSession', () => {
         authToken: 'tok',
         baseUrl: 'https://api.example.test',
         modelList: [],
-        modelGroups: [],
         recapModel: '',
         commitMessageModel: '',
       },
@@ -6182,7 +6181,6 @@ describe('NativeSession', () => {
         authToken: 'tok',
         baseUrl: 'https://api.anthropic.com',
         modelList: ['claude-opus-4-8', 'claude-sonnet-4-5', 'claude-haiku-3-5'],
-        modelGroups: [],
         recapModel: '',
         commitMessageModel: '',
       },
@@ -6954,7 +6952,6 @@ describe('NativeSession', () => {
       authToken: 'tok',
       baseUrl: 'https://api.example.test',
       modelList: [],
-      modelGroups: [],
       recapModel,
       commitMessageModel: '',
     })

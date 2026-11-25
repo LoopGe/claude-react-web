@@ -32,7 +32,6 @@ function toWire(profiles: readonly unknown[], activeProfileId: string) {
         authTokenMasked: maskToken(typeof raw.authToken === 'string' ? raw.authToken : undefined),
         baseUrl: raw.baseUrl,
         modelList: raw.modelList,
-        modelGroups: raw.modelGroups ?? [],
         recapModel: raw.recapModel,
         commitMessageModel: raw.commitMessageModel,
         isActive: raw.id === activeProfileId,
@@ -55,7 +54,7 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
     if (!configDir) throw new HttpError(500, 'configDir not set')
     const body = await safeJson<{
       name?: string; authToken?: string; baseUrl?: string; modelList?: string[];
-      modelGroups?: unknown[]; recapModel?: string; commitMessageModel?: string;
+      recapModel?: string; commitMessageModel?: string;
       template?: unknown
     }>(c.req)
     const name = typeof body.name === 'string' ? body.name.trim() : ''
@@ -87,7 +86,6 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
       baseUrl: typeof body.baseUrl === 'string' && body.baseUrl.trim()
         ? body.baseUrl.trim().replace(/\/+$/, '') : templateSource?.baseUrl ?? DEFAULT_PROFILE.baseUrl,
       modelList: normalizeModelList(body.modelList, templateSource?.modelList ?? DEFAULT_PROFILE.modelList),
-      modelGroups: Array.isArray(body.modelGroups) ? body.modelGroups : templateSource?.modelGroups ?? DEFAULT_PROFILE.modelGroups,
       // An explicitly-sent value wins on create too — including '' and null
       // ("unset", the same rule PUT /profiles/:id applies, since the settings
       // tab sends `value || null`). Only an ABSENT field templates from the
@@ -153,10 +151,6 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
         if (list.length === 0) throw new HttpError(400, 'a profile needs at least one model')
         next.modelList = list
       }
-      // modelGroups is the one collection that CAN be empty, so null clears it
-      // (the card sends null when its local group list is empty).
-      if (body.modelGroups === null) next.modelGroups = []
-      else if (Array.isArray(body.modelGroups)) next.modelGroups = body.modelGroups
       // An explicitly-supplied recap/commit model replaces the stored one —
       // including the CLEAR case. `null` (which the UI sends for its
       // "(default)" option) and `''` both mean "unset = use the session's own

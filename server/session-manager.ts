@@ -369,15 +369,7 @@ export function effectiveProfileFor(profileId: string | undefined): ProviderProf
     if (found) return found
     log.warn(`[profile] ${profileId} no longer exists — falling back to active profile`)
   }
-  const active = resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE)
-  // In legacy mode (no profiles configured) the top-level modelGroups carries
-  // the active profile's groups (set by applyParsedConfig / __setConfigForTest).
-  // Inherit them so callers that look at profile.modelGroups always see the
-  // right set regardless of whether profiles are populated.
-  if (active.modelGroups.length === 0 && defaultConfig.modelGroups.length > 0) {
-    return { ...active, modelGroups: defaultConfig.modelGroups }
-  }
-  return active
+  return resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE)
 }
 
 /** Merge result frames from the sidecar back into a disk-read history seed.

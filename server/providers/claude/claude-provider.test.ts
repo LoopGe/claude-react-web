@@ -32,8 +32,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 const PROFILE: ProviderProfile = {
   id: 'p', name: 'P', authToken: 'profile-token',
   baseUrl: 'https://gw.example.com',
-  modelList: ['m/one'], modelGroups: [],
-  recapModel: 'r', commitMessageModel: 'c',
+  modelList: ['m/one'],  recapModel: 'r', commitMessageModel: 'c',
 }
 
 describe('buildProfileEnv', () => {
@@ -215,7 +214,6 @@ describe('createSession tier routing (single model)', () => {
     const profile: ProviderProfile = {
       ...PROFILE,
       modelList: ['gw/main', 'gw/opus'],
-      modelGroups: [{ id: 'g1', name: 'G', opus: 'gw/opus', main: 'opus' }],
     }
     provider.createSession({
       id: 's1', cwd: '/x', model: 'gw/main', profile,

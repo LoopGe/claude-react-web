@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ModelGroupConfig, ProviderProfile } from './config.js'
+import type { ProviderProfile } from './config.js'
 import {
-  coerceModelGroups, coerceProfileEntries, coerceProfiles, findProfile, maskToken,
+  coerceProfileEntries, coerceProfiles, findProfile, maskToken,
   normalizeModelList, profileDefaultModel, profileFromLegacyFields, resolveActiveProfile,
 } from './profiles.js'
 
@@ -20,7 +20,7 @@ const FALLBACK: ProviderProfile = {
   // below asserts that a missing field is filled FROM this fallback, which
   // '' vs '' cannot distinguish. The shipped value is locked separately by
   // the DEFAULT_PROFILE contract test.
-  modelGroups: [], recapModel: 'fb/recap', commitMessageModel: 'fb/commit',
+  recapModel: 'fb/recap', commitMessageModel: 'fb/commit',
 }
 const P = (id: string, modelList: string[] = ['a/' + id]): ProviderProfile =>
   ({ ...FALLBACK, id, name: 'P ' + id, modelList })
@@ -229,24 +229,12 @@ describe('model context window overrides', () => {
   })
 })
 
-describe('coerceModelGroups', () => {
-  it('mirrors the legacy validation: drops malformed, keeps last dup', () => {
-    const groups: ModelGroupConfig[] = [
-      { id: 'g', name: 'G', opus: 'o', sonnet: 's' },
-      { id: 'g', name: 'G2', main: 'sonnet', opus: 'o2' },
-    ]
-    expect(coerceModelGroups([{ id: 'bad' }, groups[0], groups[1]])).toEqual([
-      { id: 'g', name: 'G2', main: 'sonnet', opus: 'o2' },
-    ])
-  })
-})
-
 describe('profileFromLegacyFields', () => {
   it('maps full legacy fields into a default profile', () => {
     const p = profileFromLegacyFields(
       {
         authToken: 'tok', baseUrl: 'https://gw/', modelList: ['m'], recapModel: 'r',
-        commitMessageModel: 'c', modelGroups: [], modelContextWindows: { 'vendor/a': 1_000_000 },
+        commitMessageModel: 'c', modelContextWindows: { 'vendor/a': 1_000_000 },
       },
       FALLBACK,
     )

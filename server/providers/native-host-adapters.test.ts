@@ -50,7 +50,6 @@ function profileOf(id: string, overrides: Partial<ProviderProfile> = {}): Provid
     authToken: `${id}-token`,
     baseUrl: `https://${id}.example`,
     modelList: [`${id}-model`],
-    modelGroups: [],
     recapModel: '',
     commitMessageModel: '',
     ...overrides,
@@ -97,7 +96,6 @@ describe('ConfigPort adapter mirrors the provider resolution', () => {
       authToken: 'legacy-token',
       baseUrl: 'https://legacy.example',
       modelList: ['legacy-model'],
-      modelGroups: [{ id: 'g', name: 'G', opus: 'legacy-opus' }],
       recapModel: 'legacy-recap',
       commitMessageModel: 'legacy-commit',
     })
@@ -108,7 +106,6 @@ describe('ConfigPort adapter mirrors the provider resolution', () => {
       authToken: 'legacy-token',
       baseUrl: 'https://legacy.example',
       modelList: ['legacy-model'],
-      modelGroups: [{ id: 'g', name: 'G', opus: 'legacy-opus' }],
       recapModel: 'legacy-recap',
       commitMessageModel: 'legacy-commit',
     }

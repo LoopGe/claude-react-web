@@ -57,7 +57,6 @@ const TEST_PROFILE = {
   authToken: 'profile-token',
   baseUrl: 'https://api.example.test',
   modelList: ['test-model'],
-  modelGroups: [],
   recapModel: '',
   commitMessageModel: '',
 }
