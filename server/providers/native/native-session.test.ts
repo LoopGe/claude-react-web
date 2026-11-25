@@ -25,7 +25,8 @@ import { projectNeutralEventToLegacy, serializeEvent, serializeHeader } from './
 import { migrateEventToV3 } from './session-log/migration.js'
 import { neutralEventsOf, neutralFileOccurrences } from './session-log/neutral-read.js'
 import type { NativeSessionEvent } from './vocabulary/session-event.js'
-import type { ContentBlock } from './vocabulary/types.js'
+import type { ContentBlock, TokenUsage } from './vocabulary/types.js'
+import type { SuggestionSnapshot } from './prompt-suggestion.js'
 import { buildCompactAttachmentContent } from '../../compact-attachments.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { projectNativeHistoryToWire } from './wire/wire-projection.js'
@@ -6111,6 +6112,136 @@ describe('NativeSession', () => {
     }
     expect(caught).toBeInstanceOf(NativeSessionStorageError)
     await vi.waitFor(() => expect(closeSpy).toHaveBeenCalled())
+  })
+
+  describe('suggestion snapshot', () => {
+    /** Capturing seam that keeps the RAW request (no structuredClone): the
+     *  snapshot stores the round's wire arrays by reference, and the wire
+     *  projection builds fresh arrays per round, so reference equality is the
+     *  pin that the snapshot holds exactly the last main request's arrays. */
+    function rawCapturingStreamer(scripts: CanonicalEvent[][], captured: CapturedRequest[]) {
+      return async function* (req: CapturedRequest) {
+        captured.push(req)
+        for (const ev of scripts.shift() ?? []) yield ev
+      }
+    }
+
+    function snapshotOf(session: unknown): SuggestionSnapshot | null {
+      return (coreOf(session) as { suggestionSnapshot: SuggestionSnapshot | null }).suggestionSnapshot
+    }
+
+    it('captures the second turn request after two turns (last main request wins)', async () => {
+      const dir = await tempDir('native-suggestion-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const captured: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        rawCapturingStreamer([textTurn('first'), textTurn('second')], captured)
+      const session = provider.createSession({ id: 'sug-two-turns', cwd: dir })
+      const frames: Frame[] = []
+      void (async () => {
+        for await (const f of session.messages) frames.push(f as Frame)
+      })()
+      const before = Date.now()
+      session.enqueueUserMessage(userMsg('one') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+      })
+      session.enqueueUserMessage(userMsg('two') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(2)
+      })
+      const after = Date.now()
+      expect(captured).toHaveLength(2)
+      const snapshot = snapshotOf(session)
+      expect(snapshot).not.toBeNull()
+      expect(snapshot!.model).toBe(captured[1].model)
+      expect(snapshot!.system).toBe(captured[1].system)
+      expect(snapshot!.tools).toBe(captured[1].tools)
+      expect(snapshot!.messages).toBe(captured[1].messages)
+      expect(snapshot!.at).toBeGreaterThanOrEqual(before)
+      expect(snapshot!.at).toBeLessThanOrEqual(after)
+      await session.destroy()
+    })
+
+    it('multi-round turn: the snapshot is the LAST round request, not the first', async () => {
+      const dir = await tempDir('native-suggestion-')
+      await writeFile(join(dir, 'package.json'), '{}', 'utf8')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const captured: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        rawCapturingStreamer([toolTurn('t-sug-1'), textTurn('done')], captured)
+      const session = provider.createSession({
+        id: 'sug-multi-round',
+        cwd: dir,
+        canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+      })
+      const frames: Frame[] = []
+      void (async () => {
+        for await (const f of session.messages) frames.push(f as Frame)
+      })()
+      session.enqueueUserMessage(userMsg('read it') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+      })
+      expect(captured).toHaveLength(2)
+      const snapshot = snapshotOf(session)
+      expect(snapshot).not.toBeNull()
+      expect(snapshot!.model).toBe(captured[1].model)
+      expect(snapshot!.system).toBe(captured[1].system)
+      expect(snapshot!.tools).toBe(captured[1].tools)
+      expect(snapshot!.messages).toBe(captured[1].messages)
+      expect(snapshot!.messages).not.toBe(captured[0].messages)
+      await session.destroy()
+    })
+
+    it('lastRoundUsage holds the LAST round usage, cacheReadTokens passed through', async () => {
+      const dir = await tempDir('native-suggestion-')
+      await writeFile(join(dir, 'package.json'), '{}', 'utf8')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      // Round 1 is a tool round (input 10 / output 5); round 2 reports cache
+      // reads. The field must hold round 2's usage alone — not the turn total.
+      const cacheRound: CanonicalEvent[] = [
+        { kind: 'message_start', usage: { input_tokens: 120, output_tokens: 1, cache_read_input_tokens: 4096 } },
+        { kind: 'block_start', index: 0, block: { type: 'text' } },
+        { kind: 'block_delta', index: 0, delta: { type: 'text', text: 'done' } },
+        { kind: 'block_end', index: 0 },
+        { kind: 'message_end', stopReason: 'end_turn', usage: { output_tokens: 7 } },
+      ]
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        rawCapturingStreamer([toolTurn('t-sug-2'), cacheRound], [])
+      const session = provider.createSession({
+        id: 'sug-usage',
+        cwd: dir,
+        canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+      })
+      const frames: Frame[] = []
+      void (async () => {
+        for await (const f of session.messages) frames.push(f as Frame)
+      })()
+      session.enqueueUserMessage(userMsg('read it') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+      })
+      const usage = (coreOf(session) as { lastRoundUsage: TokenUsage | null }).lastRoundUsage
+      expect(usage).toEqual({ inputTokens: 120, outputTokens: 7, cacheReadTokens: 4096 })
+      await session.destroy()
+    })
+
+    it('promptSuggestions: false reaches the core opts', async () => {
+      const dir = await tempDir('native-suggestion-')
+      const provider = providerWithStreamer([], dir)
+      const session = provider.createSession({ id: 'sug-off', cwd: dir, promptSuggestions: false })
+      expect((coreOf(session) as { opts: { promptSuggestions?: boolean } }).opts.promptSuggestions).toBe(false)
+      await session.destroy()
+    })
+
+    it('promptSuggestions defaults to true through the provider', async () => {
+      const dir = await tempDir('native-suggestion-')
+      const provider = providerWithStreamer([], dir)
+      const session = provider.createSession({ id: 'sug-default', cwd: dir })
+      expect((coreOf(session) as { opts: { promptSuggestions?: boolean } }).opts.promptSuggestions).toBe(true)
+      await session.destroy()
+    })
   })
 
   describe('title generation and account info', () => {

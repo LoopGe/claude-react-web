@@ -94,6 +94,7 @@ import {
   type PdfBudgetReservation,
 } from './pdf-documents.js'
 import { DEFAULT_CONTEXT_WINDOW, type NativeModelContextResolver } from './model-context.js'
+import type { SuggestionSnapshot } from './prompt-suggestion.js'
 import type { FileReadResult } from '../../../shared/read-file.js'
 import type { NativeReadState } from './read-state.js'
 import {
@@ -314,6 +315,10 @@ export interface NativeSessionOptions {
    *  The native loop honors the allow/deny lists; permission aliases/config
    *  remain SDK-only fields and do not affect this in-process tool list. */
   toolProfile?: SessionToolProfile
+  /** Turn-end prompt-suggestion intent (SDK `Options.promptSuggestions`).
+   *  `undefined` = enabled; the provider normalizes the create-body value to
+   *  an explicit boolean (`?? true`). */
+  promptSuggestions?: boolean
   system: string
   /** The prompt a nested (Agent/Task) run gets: the parent system WITHOUT the
    *  shared delegation section, since nested tools exclude both names and a
@@ -468,6 +473,17 @@ export class NativeSession implements NativeSessionCore {
   /** Supplements admitted during the current turn, not yet injected. */
   private supplementQueue: Array<{ uuid: string; text: string }> = []
   private lastUsage: Usage = { input_tokens: 0, output_tokens: 0 }
+  /** The wire shape of the last MAIN-thread API request, captured per round in
+   *  the turn's stream lambda (last round wins). The turn-end suggestion fork
+   *  replays this prefix so the parent's cache breakpoints still hit. Nested
+   *  runners wire their own stream and never capture. References are stored
+   *  as-is: the wire projection builds fresh arrays per round, so the snapshot
+   *  holds that round's arrays unchanged. */
+  private suggestionSnapshot: SuggestionSnapshot | null = null
+  /** The LAST API round's neutral usage — each persisted assistant frame
+   *  overwrites it, so after a turn it holds the last round's reading, not the
+   *  turn total. The suggestion cache-evidence gate reads it. */
+  private lastRoundUsage: TokenUsage | null = null
   /** Per-model totals for the /usage panel. Accumulated from every persisted
    *  assistant frame (one per API round), which keeps the live value identical
    *  to what a restart rebuilds from the log. */
@@ -1187,6 +1203,9 @@ export class NativeSession implements NativeSessionCore {
       return
     }
     if (frame.type !== 'assistant-frame') return
+    // One assistant frame = one API round; keep the LAST round's reading for
+    // the suggestion cache-evidence gate (overwritten every round).
+    this.lastRoundUsage = frame.usage
     const time = Date.now()
     const time0 = this.roundFirstChunkAt ?? time
     this.roundFirstChunkAt = null
@@ -1500,7 +1519,18 @@ export class NativeSession implements NativeSessionCore {
         )
         const res = await runTurn(
           {
-            stream: (req) => this.streamFor(req, { effortLevel: () => turnEffortLevel }),
+            stream: (req) => {
+              // Main-thread rounds only: nested runners call streamFor through
+              // their own deps and never pass here. Last round wins.
+              this.suggestionSnapshot = {
+                at: Date.now(),
+                model: req.model,
+                system: req.system,
+                tools: req.tools,
+                messages: req.messages,
+              }
+              return this.streamFor(req, { effortLevel: () => turnEffortLevel })
+            },
             tools: [...turnTools],
             maxTurns: turnProfile?.maxTurns,
             tasks: this.tasks,

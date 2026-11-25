@@ -290,6 +290,7 @@ export class NativeProvider implements AgentProvider {
         agentStore: this.agentStore,
         skills: sdkOptions?.skills,
         toolProfile: extractToolProfile(sdkOptions),
+        promptSuggestions: opts.promptSuggestions ?? true,
         system,
         subagentSystem,
         canUseTool: opts.canUseTool,
