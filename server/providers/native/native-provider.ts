@@ -240,9 +240,17 @@ export class NativeProvider implements AgentProvider {
     // awaited per turn, so spawn never blocks on a slow server.
     const mcp = new NativeMcpConnections({ transportPort: this.ports.mcpTransport, authFor: this.authFor, registry: this.mcpRegistry })
     mcp.load(opts.mcpServers as Record<string, unknown> | undefined)
-    // Spawn skill policy rides the SDK-shaped create body the manager already
-    // forwards through providerExtras (`Options.skills`).
-    const sdkOptions = opts.providerExtras?.sdkOptions as ({ skills?: string[] | 'all' } & Record<string, unknown>) | undefined
+    // Spawn skill policy and the auto-compact window pin ride the SDK-shaped
+    // create body the manager already forwards through providerExtras
+    // (`Options.skills`, `Options.settings.autoCompactWindow`). The pin is
+    // coerced here at the `unknown` boundary (same rule as the persistence
+    // coerce) and reaches the neutral core as a plain number.
+    const sdkOptions = opts.providerExtras?.sdkOptions as
+      ({ skills?: string[] | 'all'; settings?: { autoCompactWindow?: unknown } } & Record<string, unknown>) | undefined
+    const rawAutoCompactWindow = sdkOptions?.settings?.autoCompactWindow
+    const autoCompactWindow = typeof rawAutoCompactWindow === 'number' && Number.isFinite(rawAutoCompactWindow) && rawAutoCompactWindow > 0
+      ? Math.round(rawAutoCompactWindow)
+      : undefined
     // The constructor can throw on real paths (corrupt/unsupported log, missing
     // fork log). The queued connect has no owner then, so it must be torn down
     // here or it would run forever and leak its children. `closeAll` closes the
@@ -282,6 +290,7 @@ export class NativeProvider implements AgentProvider {
         fastMode: opts.fastMode,
         profile,
         modelContext: this.modelContext,
+        autoCompactWindow,
         ports: this.ports,
         credentials,
         readState,
