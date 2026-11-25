@@ -213,7 +213,6 @@ export const SessionList = memo(function SessionList({
   focusedId,
   defaults,
   serverModels,
-  modelGroups,
   resumingIds,
   unread,
   deletingIds,
@@ -978,7 +977,6 @@ export const SessionList = memo(function SessionList({
           open={showDialog}
           defaults={defaults}
           serverModels={serverModels}
-          modelGroups={modelGroups}
           initialCwd={prefilledCwd}
           initialGroupId={newSessionInitialGroupId ?? activeGroupId ?? undefined}
           groups={groups}

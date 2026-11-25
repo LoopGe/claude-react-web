@@ -7,7 +7,6 @@ function makeApp() {
     list: vi.fn(() => []),
     create: vi.fn(() => ({ id: 's1' })),
     mergeMcpServersAsync: vi.fn(async () => undefined),
-    setModelGroup: vi.fn(async () => ({ id: 's1', model: 'm', modelGroupId: 'g1' })),
   }
   return { app: buildSessionRouter(sm as unknown as SessionManager), sm }
 }
@@ -28,20 +27,14 @@ describe('POST /sessions/:id/model-group (removed)', () => {
   })
 })
 
-describe('POST /sessions create-time modelGroupId', () => {
-  it('passes a valid modelGroupId through to sm.create', async () => {
+describe('POST /sessions create-time modelGroupId (removed)', () => {
+  it('drops a modelGroupId body key — not forwarded to create', async () => {
     const { app, sm } = makeApp()
-    const res = await post(app, '/sessions', { modelGroupId: 'g1' })
+    const res = await post(app, '/sessions', { modelGroupId: 'g1', model: 'm1' })
     expect(res.status).toBe(201)
     const calls = (sm.create as unknown as { mock: { calls: unknown[][] } }).mock.calls
-    const opts = calls[0][0] as { modelGroupId?: unknown }
-    expect(opts.modelGroupId).toBe('g1')
-  })
-
-  it('rejects a non-string modelGroupId with 400 and does not create', async () => {
-    const { app, sm } = makeApp()
-    const res = await post(app, '/sessions', { modelGroupId: 42 })
-    expect(res.status).toBe(400)
-    expect(sm.create).not.toHaveBeenCalled()
+    const opts = calls[0][0] as { modelGroupId?: unknown; model?: unknown }
+    expect(opts.modelGroupId).toBeUndefined()
+    expect(opts.model).toBe('m1')
   })
 })

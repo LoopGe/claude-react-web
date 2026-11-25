@@ -78,7 +78,7 @@ import type { TerminalSnapshot } from '../shared/terminal.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
-import { auxFallbackModel, resolveConfiguredModelId, resolveGroup } from './model-groups.js'
+import { auxFallbackModel, resolveConfiguredModelId } from './model-groups.js'
 import { isSdkForwardedMode } from './permission-modes.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import {
@@ -1912,7 +1912,6 @@ export class SessionManager {
       // Start-as custom agent name (Options.agent), persisted so resume/fork
       // restart the session in the same persona.
       agent: opts.agent,
-      modelGroupId: (opts as { modelGroupId?: string }).modelGroupId,
       profileId: (opts as { profileId?: string }).profileId,
       permissionMode: opts.permissionMode,
       title: opts.title,
@@ -2000,8 +1999,8 @@ export class SessionManager {
      *  bypass its maxGroupSize cap when appending Y. */
     evictingSource?: boolean,
   ): Promise<SessionInfo> {
-    // Validate profileId first so we can use the effective profile for
-    // downstream checks (modelGroupId, default model).
+    // Validate profileId first so we can use the effective profile for the
+    // default model.
     const profileId = (opts as { profileId?: unknown }).profileId
     if (profileId !== undefined) {
       if (typeof profileId !== 'string') {
@@ -2012,18 +2011,6 @@ export class SessionManager {
       }
     }
     const profile = effectiveProfileFor(profileId as string | undefined)
-    // Explicit op: an unknown group at create is a 400, not a silent
-    // fallback (contrast: a group deleted while sessions reference it
-    // self-heals silently on the next respawn, below).
-    const modelGroupId = (opts as { modelGroupId?: unknown }).modelGroupId
-    if (modelGroupId !== undefined) {
-      if (typeof modelGroupId !== 'string') {
-        throw new HttpError(400, 'modelGroupId must be a string')
-      }
-      if (!profile.modelGroups.some((g) => g.id === modelGroupId)) {
-        throw new HttpError(400, `model group ${modelGroupId} not found`)
-      }
-    }
     // Pin a concrete default model for brand-new sessions so we don't lean
     // on the CLI subprocess's built-in default. When the client omits a
     // model, use the first entry of the configured model list
@@ -3605,23 +3592,6 @@ export class SessionManager {
     }
     metaSnapshot.profileId = profileId
 
-    // Model-group intent: carried via opts on create/fork/clear (new ids),
-    // or re-read from the persisted meta on same-id respawn (resume /
-    // respawnFresh). A deleted group self-heals: clear the reference and
-    // collapse to the effective model (the provider's own `find` also
-    // misses and collapses — both sides agree).
-    const modelGroupId = (fullOpts as { modelGroupId?: string }).modelGroupId ?? existingMeta?.modelGroupId
-    if (modelGroupId) {
-      const group = profile.modelGroups.find((g) => g.id === modelGroupId)
-      if (group) {
-        metaSnapshot.model = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList)).main
-        metaSnapshot.modelGroupId = modelGroupId
-      } else {
-        log.warn(`[session ${id}] model group ${modelGroupId} no longer exists — clearing reference`)
-        metaSnapshot.modelGroupId = undefined
-      }
-    }
-
     // Split the resume/discard seed by frame origin (see the Session literal
     // below for why). stampReceivedAt is set-only-if-absent, so frames that
     // already carry a timestamp (the normal case) keep it.
@@ -3655,12 +3625,7 @@ export class SessionManager {
       // calls: an unpinned session keeps running on it even after the user
       // activates another profile (RAM-only — see Session.spawnProfileId).
       spawnProfileId: profile.id,
-      // For group sessions, metaSnapshot.model was set to the resolved group
-      // main by the model-group block above (and metaSnapshot.modelGroupId to
-      // the group id, or cleared by self-heal). For non-group sessions the
-      // snapshot already holds the correctly-resolved model.
       model: metaSnapshot.model,
-      modelGroupId: metaSnapshot.modelGroupId,
       permissionMode: requestedMode,
       handle: undefined as unknown as ProviderSessionHandle,
       canUseTool: undefined,

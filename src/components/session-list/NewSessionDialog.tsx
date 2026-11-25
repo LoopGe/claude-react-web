@@ -10,7 +10,6 @@ import { api } from '../../hooks/useApi'
 import { useRecentCwds, useRecentModels } from '../../hooks/useRecentItems'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import { parseTaskBudgetInput } from '../../../shared/session-info'
-import type { ModelGroupConfig } from '../../types/config'
 import { PERMISSION_MODES, EFFORT_LEVELS } from '../../types'
 import { useExitPresence } from '../../hooks/useExitPresence'
 import { useAgentDefinitions } from '../../hooks/useAgentDefinitions'
@@ -49,10 +48,6 @@ export interface NewSessionDialogProps {
   /** Server-configured model list (from /api/config). Shown first in the
    *  Model FieldPicker menu so the user always has a baseline. */
   serverModels?: string[]
-  /** Model Groups from the same /config snapshot as `serverModels`. Threaded
-   *  from App (not fetched here) so the menu never issues its own /config and
-   *  the two lists cannot drift. */
-  modelGroups?: ModelGroupConfig[]
   /** Pre-select this group in the "Add to group" picker. The sidebar's
    *  `activeGroupId` is threaded through so opening the dialog while a
    *  group is active keeps the user's mental model: "this is the group I
@@ -67,11 +62,7 @@ export interface NewSessionDialogProps {
   firstPartyTools?: Record<string, { enabled: boolean }>
 }
 
-/** Stable empty default — a fresh `[]` per render would defeat modelOptions'
- *  useMemo (new array identity every keystroke). */
-const NO_MODEL_GROUPS: ModelGroupConfig[] = []
-
-export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, modelGroups = NO_MODEL_GROUPS, initialGroupId, maxGroupSize, firstPartyTools }: NewSessionDialogProps) {
+export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, initialGroupId, maxGroupSize, firstPartyTools }: NewSessionDialogProps) {
   // Per-instance prefix for label↔control id linkage. useId keeps the
   // dialog's ids document-unique even if it ever mounts more than once.
   const uid = useId()
@@ -88,9 +79,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // the historical default; `native` runs in-process and ignores plugins.
   const [provider, setProvider] = useState('claude')
   const [model, setModel] = useState<string>(defaults.model ?? '')
-  /** Model Group pin. Mutually exclusive with a concrete `model` — selecting
-   *  one clears the other (ChatPanel's ModelPicker has the same contract). */
-  const [modelGroupId, setModelGroupId] = useState('')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [systemPrompt, setSystemPrompt] = useState('')
   const [title, setTitle] = useState('')
@@ -144,7 +132,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     const pre = p.get('model')
     if (pre && pre.after === model) {
       setModel(pre.before)
-      setModelGroupId('')
     }
     const prePerm = p.get('permissionMode')
     if (prePerm && prePerm.after === permissionMode) {
@@ -162,7 +149,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     if (def.model) {
       agentPrefillsRef.current.set('model', { before: model, after: def.model })
       setModel(def.model)
-      setModelGroupId('')
     }
     if (def.permissionMode) {
       agentPrefillsRef.current.set('permissionMode', {
@@ -229,31 +215,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // The adapter owns the MRU / cap / normalize logic; see useRecentItems.
   const { recents: recentModels, rememberNow: rememberModel, forget: forgetModel } = useRecentModels()
 
-  // Model menu rows: Model Groups first (ChatPanel ModelPicker order), then
-  // "Default" (clears the pin so the server default wins), then server models,
-  // then recents (forgettable), then the current value when it isn't in either
-  // list (agent prefill / drag-in). Group ↔ concrete model are mutually
-  // exclusive: picking one clears the other.
+  // Model menu rows: "Default" (clears the pin so the server default wins),
+  // then server models, then recents (forgettable), then the current value
+  // when it isn't in either list (agent prefill / drag-in).
   const modelOptions: FieldPickerOption[] = useMemo(() => {
-    // Derived (not raw modelGroupId): a group deleted while the dialog is open
-    // must not stay "selected", and Default must light up instead.
-    const activeMg = modelGroups.find((g) => g.id === modelGroupId)
     const rows: FieldPickerOption[] = []
-    modelGroups.forEach((g) => {
-      rows.push({
-        key: `mg:${g.id}`,
-        label: g.name,
-        sub: [g.opus, g.sonnet, g.haiku].filter(Boolean).join(' · '),
-        // Stamp on every row: FieldPicker shows it on the first VISIBLE row
-        // of the section, so a filter that drops row 0 still labels the rest.
-        heading: 'Model Groups',
-        selected: activeMg?.id === g.id,
-        onSelect: () => {
-          setModelGroupId(g.id)
-          setModel('')
-        },
-      })
-    })
     rows.push({
       key: 'default',
       // Sub must NOT be a model id — FieldPicker filters on sub too, and a
@@ -261,11 +227,8 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       // that was meant for that model.
       label: 'Default',
       sub: 'use server default',
-      selected: !activeMg && model === '',
-      onSelect: () => {
-        setModelGroupId('')
-        setModel('')
-      },
+      selected: model === '',
+      onSelect: () => setModel(''),
     })
     const seen = new Set<string>()
     const modelRows: FieldPickerOption[] = []
@@ -276,11 +239,8 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
         key: extra.key ?? `m:${m}`,
         label: m,
         heading: 'Models',
-        selected: !activeMg && model === m,
-        onSelect: () => {
-          setModelGroupId('')
-          setModel(m)
-        },
+        selected: model === m,
+        onSelect: () => setModel(m),
         ...extra,
       })
     }
@@ -293,11 +253,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       })
     }
     if (model && !seen.has(model)) {
-      addModelRow(model, { key: `cur:${model}`, selected: !activeMg })
+      addModelRow(model, { key: `cur:${model}` })
     }
     if (modelRows.length > 0) rows.push(...modelRows)
     return rows
-  }, [modelGroups, modelGroupId, serverModels, recentModels, model, forgetModel])
+  }, [serverModels, recentModels, model, forgetModel])
 
   // Free-text model ids (proxy models the server list doesn't advertise) get
   // their own LAST row while typing — same contract as ModelPicker, so Enter
@@ -313,7 +273,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       label: `Use “${raw}”`,
       sub: 'custom',
       onSelect: () => {
-        setModelGroupId('')
         setModel(raw)
       },
     }
@@ -322,7 +281,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // Derived, not raw state: a group deleted while the dialog is open must not
   // show as selected on the trigger yet still submit. Submit reads this too.
   const activeGroup = groups.find((g) => g.id === groupId)
-  const activeModelGroup = modelGroups.find((g) => g.id === modelGroupId)
 
   const permissionOptions: FieldPickerOption[] = useMemo(
     () =>
@@ -524,10 +482,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       provider,
       cwd: cwd.trim() || undefined,
       isolateWorktree: isolate || undefined,
-      model: activeModelGroup ? undefined : model.trim() || undefined,
-      // Derived (not raw state): a model group deleted while the dialog is
-      // open must not be posted — create() 400s on an unknown group.
-      modelGroupId: activeModelGroup?.id,
+      model: model.trim() || undefined,
       agent: selectedAgent || undefined,
       permissionMode,
       systemPrompt: systemPrompt.trim() || undefined,
@@ -775,15 +730,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                 // Empty selection reads as "Default" (the chosen state), with
                 // the effective model as the muted sub so the user still sees
                 // what will run — not a concrete id that looks selected.
-                label={activeModelGroup?.name ?? (model || 'Default')}
+                label={model || 'Default'}
                 sub={
-                  activeModelGroup
-                    ? [activeModelGroup.opus, activeModelGroup.sonnet, activeModelGroup.haiku]
-                        .filter(Boolean)
-                        .join(' · ') || undefined
-                    : model
-                      ? undefined
-                      : (serverModels?.[0] ?? defaults.model)
+                  model
+                    ? undefined
+                    : (serverModels?.[0] ?? defaults.model)
                 }
                 placeholder={serverModels?.[0] ?? defaults.model ?? 'Default'}
                 menuLabel="Models"
