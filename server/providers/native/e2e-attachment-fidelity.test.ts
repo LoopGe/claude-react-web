@@ -127,8 +127,15 @@ async function makeWritable(path: string): Promise<void> {
 }
 
 function textTurn(text: string): CanonicalEvent[] {
+  return highUsageTurn(text, 10)
+}
+
+/** A text turn with a scriptable prompt-token level: the auto-compact trigger
+ *  compares provider-reported usage against the pin-derived threshold, so a
+ *  forced-compaction test scripts the crossing turn's `input_tokens`. */
+function highUsageTurn(text: string, inputTokens: number): CanonicalEvent[] {
   return [
-    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'message_start', usage: { input_tokens: inputTokens, output_tokens: 1 } },
     { kind: 'block_start', index: 0, block: { type: 'text' } },
     { kind: 'block_delta', index: 0, delta: { type: 'text', text } },
     { kind: 'block_end', index: 0 },
@@ -271,7 +278,6 @@ function liveSession(
   id: string,
 ): {
   history: Frame[]
-  autoCompactWindow?: number
   handle: { history: ModelMessage[]; log: NativeSessionLog }
 } {
   return (
@@ -280,7 +286,6 @@ function liveSession(
         string,
         {
           history: Frame[]
-          autoCompactWindow?: number
           handle: { history: ModelMessage[]; log: NativeSessionLog }
         }
       >
@@ -368,7 +373,11 @@ describe('native attachment fidelity end to end', () => {
     const { cwd, stateDir } = await makeEnv('chain')
     await writeSkill(cwd, 'demo', 'DEMO SKILL BODY\n')
     const first = await makeFixture(stateDir)
-    const id = await createSession(first, cwd)
+    // The pin derives threshold min(floor(0.8 × 66384), 66384 − 16384) = 50000
+    // and the fork below inherits it through SessionMeta: the source's and the
+    // fork's usage-10 turns stay below, only the scripted usage-100000 trigger
+    // turn crosses it.
+    const id = await createSession(first, cwd, { settings: { autoCompactWindow: 66384 } })
     const seen = collect(first.sm, id)
     const text = await postUpload(first, id, 'ATTACHMENT TEXT BODY\nline two\n', 'notes.txt')
     const pdfBytes = Buffer.from('%PDF-1.7\nPDF E2E BODY')
@@ -516,14 +525,14 @@ describe('native attachment fidelity end to end', () => {
     expect(toolResultText(toolResultOf(manualReadRequest, 'read-manual'))).toContain('ATTACHMENT TEXT BODY')
     await waitForDiskMarker(resumed, manual.id, 'MANUAL READ DONE')
 
-    // The fork crosses its auto-compact threshold on the next completed turn.
-    liveSession(resumed.sm, fork.id).autoCompactWindow = 1
+    // The scripted usage-100000 trigger turn crosses the inherited pin's
+    // threshold (50000); the usage-10 read turns before and after stay below.
     let autoInput: unknown
     vi.mocked(callAnthropicMessages).mockImplementationOnce(async (options) => {
       autoInput = structuredClone(options.userContent)
       return 'AUTO ATTACHMENT SUMMARY'
     })
-    resumed.scripts.push(textTurn('AUTO TRIGGER DONE'))
+    resumed.scripts.push(highUsageTurn('AUTO TRIGGER DONE', 100_000))
     await sendAndWait(resumed, fork.id, forkSeen.frames, 'trigger auto compact')
     await vi.waitFor(
       () => {
@@ -539,7 +548,6 @@ describe('native attachment fidelity end to end', () => {
     expect(legacyEventsOf(autoLog).some((event) => event.type === 'session/compact')).toBe(true)
     expect(legacyEventsOf(autoLog).filter((event) => event.type === 'session/attachments')).toHaveLength(0)
 
-    liveSession(resumed.sm, fork.id).autoCompactWindow = Number.MAX_SAFE_INTEGER
     resumed.scripts.push(attachmentReadTurn('read-auto', text.id), textTurn('AUTO READ DONE'))
     await sendAndWait(resumed, fork.id, forkSeen.frames, 'read after auto compact')
     expect(toolResultText(toolResultOf(resumed.requests.at(-1)!, 'read-auto'))).toContain(

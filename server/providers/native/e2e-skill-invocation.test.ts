@@ -676,7 +676,10 @@ describe('native skill invocation recovery end to end', () => {
 
     const autoId = await createSession(fx, cwd, {
       permissionMode: 'bypassPermissions',
-      settings: { autoCompactWindow: 1 },
+      // The provider derives the threshold from the pinned effective window:
+      // min(floor(0.8 × 16385), 16385 − 16384) = 1 — the output-reserve arm
+      // binds, so every scripted usage-10 turn crosses it.
+      settings: { autoCompactWindow: 16385 },
     } as Partial<CreateOptions>)
     const autoSeen = collect(fx.sm, autoId)
     let autoInput: Frame[] = []
