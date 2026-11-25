@@ -252,7 +252,6 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       authTokenMasked: maskToken(liveToken || undefined),
       baseUrl: serverConfig.baseUrl,
       modelList: serverConfig.modelList as string[],
-      modelGroups: serverConfig.modelGroups,
       recapModel: serverConfig.recapModel,
       commitMessageModel: serverConfig.commitMessageModel,
       profiles: serverConfig.profiles.map((p) => ({
@@ -261,7 +260,6 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
         authTokenMasked: maskToken(p.authToken),
         baseUrl: p.baseUrl,
         modelList: p.modelList,
-        modelGroups: p.modelGroups,
         ...(p.modelContextWindows ? { modelContextWindows: { ...p.modelContextWindows } } : {}),
         recapModel: p.recapModel,
         commitMessageModel: p.commitMessageModel,

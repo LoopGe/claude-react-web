@@ -10,7 +10,7 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_DIR_NAME } from './json-file-store.js'
-import { DEFAULT_PROFILE, type ModelGroupConfig } from './config.js'
+import { DEFAULT_PROFILE } from './config.js'
 import { coerceProfileEntries, normalizeModelList, resolveActiveProfile } from './profiles.js'
 import { McpConfigStore, type StoredMcpServer } from './mcp-config.js'
 import { MpStore, type MpEntry } from './mp-store.js'
@@ -29,17 +29,14 @@ export function webStateDir(): string {
  *              不得写入，必须保留桌面版的现状。
  *
  *  刻意**不**用"磁盘上写了这个键"做判据：raw `modelList: ['']`（或全空白条目）
- *  在 coercion 之后会整条回退成 fallback，raw `modelGroups` 的条目也可能全部被丢
- *  成 [] —— 那样的 pair 会让写入侧拿 DEFAULT_PROFILE 的模型列表覆盖用户的真实列表、
- *  或用 [] 清空用户已有的模型分组。"源里确实存在"指的是**可用的值**，不是键的存在。
- *  七个字段一律由**coercion 本身**判定（scalar 是 trim 后非空白检查，
- *  modelList 是 normalizeModelList，modelGroups 直接读 coerceProfileEntries
- *  产物 active.modelGroups 的长度——判据与"要写出去的那个值"是同一个值）。 */
+ *  在 coercion 之后会整条回退成 fallback —— 那样的 pair 会让写入侧拿
+ *  DEFAULT_PROFILE 的模型列表覆盖用户的真实列表。"源里确实存在"指的是**可用的值**，
+ *  不是键的存在。六个字段一律由**coercion 本身**判定（scalar 是 trim 后非空白检查，
+ *  modelList 是 normalizeModelList——判据与"要写出去的那个值"是同一个值）。 */
 export interface PresentFields {
   authToken: boolean
   baseUrl: boolean
   modelList: boolean
-  modelGroups: boolean
   modelContextWindows: boolean
   recapModel: boolean
   commitMessageModel: boolean
@@ -51,7 +48,6 @@ export interface SourceCredentials {
   authToken: string
   baseUrl: string
   modelList: string[]
-  modelGroups: ModelGroupConfig[]
   modelContextWindows: Record<string, number> | undefined
   recapModel: string
   commitMessageModel: string
@@ -86,10 +82,9 @@ export async function readSourceCredentials(dir: string): Promise<SourceCredenti
   // 匹配——coerceProfileEntries 会 trim id、重复 id 取后者，手工匹配会错条目。
   //
   // 但判据是"值活过了 coercion"，不是"键在磁盘上"：modelList 走的是与
-  // coerceProfileEntries 完全相同的 normalizeModelList，modelGroups 直接量
-  // active.modelGroups，所以 present === true ⟹ 返回的值就是源的；=== false
-  // ⟹ 返回值是 fallback / []，写入侧不得落笔（写入侧的 `if (cred.present.X)`
-  // 闸门由此与值一致）。
+  // coerceProfileEntries 完全相同的 normalizeModelList，所以 present === true
+  // ⟹ 返回的值就是源的；=== false ⟹ 返回值是 fallback / []，写入侧不得落笔
+  // （写入侧的 `if (cred.present.X)` 闸门由此与值一致）。
   const hit = entries.find((entry) => entry.profile === active)
   const rawList = Array.isArray(obj.profiles) ? (obj.profiles as unknown[]) : []
   const rawEntry = hit ? (rawList[hit.index] as Record<string, unknown> | undefined) : undefined
@@ -103,7 +98,6 @@ export async function readSourceCredentials(dir: string): Promise<SourceCredenti
     authToken: active.authToken,
     baseUrl: active.baseUrl,
     modelList: [...active.modelList],
-    modelGroups: active.modelGroups.map((g) => ({ ...g })),
     modelContextWindows: modelContextWindows ? { ...modelContextWindows } : undefined,
     recapModel: active.recapModel,
     commitMessageModel: active.commitMessageModel,
@@ -111,13 +105,6 @@ export async function readSourceCredentials(dir: string): Promise<SourceCredenti
       authToken: hasStr(rawEntry?.authToken),
       baseUrl: hasStr(rawEntry?.baseUrl),
       modelList: normalizeModelList(rawEntry?.modelList, []).length > 0,
-      // modelGroups 的判据就是**要写出去的那个值**（active.modelGroups 已经是
-      // coerceProfileEntries 里 coerceModelGroups 的产物）：再对同一个
-      // rawEntry.modelGroups coerce 一次，等于让同一处畸形分组每次读取多打一遍
-      // warn，还可能再漂移一次。`hit` 那一半不能省——entries 为空时 active 就是
-      // DEFAULT_PROFILE，那不是源里的值，present 必须落 false（其余六个字段在
-      // hit 为 undefined 时同理全 false），否则写入侧会拿默认分组覆盖用户的分组。
-      modelGroups: hit !== undefined && active.modelGroups.length > 0,
       modelContextWindows: modelContextWindows !== undefined,
       recapModel: hasStr(rawEntry?.recapModel),
       commitMessageModel: hasStr(rawEntry?.commitMessageModel),
@@ -127,13 +114,13 @@ export async function readSourceCredentials(dir: string): Promise<SourceCredenti
 
 /** 源 active profile 里有没有**任何一个**可写字段（语义边界见 PresentFields）。
  *
- *  七个都为假 ⇒ 源里没有可用 profile：一次 `credentials` 导入写不出任何东西。
+ *  六个都为假 ⇒ 源里没有可用 profile：一次 `credentials` 导入写不出任何东西。
  *  两个调用方共用这一条判据，不允许各写一遍——枚举侧的 `credentials.available`
  *  （客户端据此把那一行压暗 + 禁用）与写入侧的 `imported` 一旦漂移，就会出现
  *  "行上亮着能点、点了却没写"或者反过来的谎报。 */
 export function hasUsableProfileFields(present: PresentFields): boolean {
   return present.authToken || present.baseUrl || present.modelList
-    || present.modelGroups || present.modelContextWindows || present.recapModel || present.commitMessageModel
+    || present.modelContextWindows || present.recapModel || present.commitMessageModel
 }
 
 /** 读文件做一次 JSON 校验：不存在 → 返回（下面的 store 会给出空值）；

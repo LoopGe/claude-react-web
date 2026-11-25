@@ -5,8 +5,8 @@
  * safe-allowlist passes through this classifier. A fast/cheap model
  * evaluates whether the action is safe and returns an allow/block
  * decision: the session's resolved target model (the global
- * `config.autoClassifierModel` when set, else the session's model group haiku
- * tier, else the session's own model). There is no hardcoded fallback model.
+ * `config.autoClassifierModel` when set, else the session's own model).
+ * There is no hardcoded fallback model.
  *
  * Design principles:
  *   - Fail-closed: every error, timeout, or parse failure → fall back
@@ -162,8 +162,7 @@ export async function classifyToolAction(params: {
   /** Endpoint + credential + model for THIS session, from
    *  SessionManager.auxTargetFor('classifier'): the session's own profile
    *  credentials, and `config.autoClassifierModel` (global — it has no
-   *  per-profile field) else the session's model group haiku tier else its own
-   *  model. */
+   *  per-profile field) else its own model. */
   target?: AuxLlmTarget
 }): Promise<ClassifierResult> {
   const { toolName, toolInput, messages, cwd, signal, target } = params

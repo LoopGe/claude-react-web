@@ -85,7 +85,6 @@ beforeEach(async () => {
         authToken: 'attachment-e2e-token',
         baseUrl: 'https://api.anthropic.com',
         modelList: ['test-model'],
-        modelGroups: [],
         recapModel: '',
         commitMessageModel: '',
       },

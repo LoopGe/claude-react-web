@@ -441,10 +441,9 @@ export const ChatPanel = memo(function ChatPanel({
    *  no caller can drop the ownership stamp by accident. */
   const [modelMenu, setModelMenu] = useState<{ x: number; y: number; source: Element | null } | null>(null)
   /** In-flight model switch, as the LABEL to show while it runs (null = none).
-   *  Covers both the model and the model-group switch — they POST to different
-   *  routes but both change the session's model. Kept as a label rather than a
-   *  boolean so the chip's tooltip can name the target; the spinner itself is
-   *  `modelSwitching` below, which waits out the flash-prevention delay. */
+   *  Kept as a label rather than a boolean so the chip's tooltip can name the
+   *  target; the spinner itself is `modelSwitching` below, which waits out the
+   *  flash-prevention delay. */
   const [modelSwitchLabel, setModelSwitchLabel] = useState<string | null>(null)
   const modelSwitching = useDelayedFlag(modelSwitchLabel !== null, MODEL_SWITCH_INDICATOR_DELAY_MS)
   /** Anchor for the permission-mode menu. Non-null = menu visible. A
@@ -576,26 +575,6 @@ export const ChatPanel = memo(function ChatPanel({
       { model: value || undefined },
       { model: session.model },
       `Couldn't change model`,
-      onSessionUpdate,
-      toast.error,
-    ).finally(() => setModelSwitchLabel(null))
-  }
-
-  const commitGroup = (groupId: string) => {
-    setModelMenu(null)
-    if (groupId === (session.modelGroupId ?? '')) return
-    if (modelSwitchLabel !== null) return
-    setModelSwitchLabel(
-      modelOptions.modelGroups.find((g) => g.id === groupId)?.name ?? groupId,
-    )
-    void commitWithRollback(
-      session,
-      `/sessions/${session.id}/model-group`,
-      { groupId },
-      // Restore both the resolved main model AND the group reference on
-      // failure — a group switch changes both on the session.
-      { model: session.model, modelGroupId: session.modelGroupId },
-      `Couldn't change model group`,
       onSessionUpdate,
       toast.error,
     ).finally(() => setModelSwitchLabel(null))
@@ -1204,14 +1183,12 @@ export const ChatPanel = memo(function ChatPanel({
               key="model"
               anchor={modelMenu}
               current={session.model}
-              currentGroupId={session.modelGroupId}
               options={modelOptions}
               // Same in-flight signal as the chip's own `disabled` (not the
               // delayed spinner one): keeping the two in step is what stops the
               // chip from opening a picker whose every row is already disabled.
               disabled={chipsDisabled || modelSwitchLabel !== null}
               onSelect={(model) => commitModel(model)}
-              onSelectGroup={(groupId) => commitGroup(groupId)}
               onClose={() => setModelMenu(null)}
             />
           )}

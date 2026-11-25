@@ -1,6 +1,6 @@
 // Provider-profiles editor tab for the global Settings modal. Each provider
-// profile carries its own credentials + model set + model groups; this tab
-// renders one card per profile and wires mutations through `useProfiles`.
+// profile carries its own credentials + model set; this tab renders one card
+// per profile and wires mutations through `useProfiles`.
 //
 // The authToken field uses the dirty-token pattern: an empty password-style
 // input means "keep the existing token on save". The client only ever holds
@@ -24,7 +24,7 @@ import { dndData } from '../dnd/payload'
 import { DragGhost } from '../dnd/DragGhost'
 import { DragOverlayPortal } from '../dnd/DragOverlayPortal'
 import { SORTABLE_TRANSITION } from '../dnd/motion'
-import type { ModelGroupConfig, ProviderProfile } from '../types/config'
+import type { ProviderProfile } from '../types/config'
 import { randomId } from '../utils/uuid'
 import { IconArrowUp, IconArrowDown, IconChevronDown, IconChevronRight, IconCheck, IconX } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
@@ -42,26 +42,13 @@ interface ProfileTestResult {
   baseUrl?: string
 }
 
-/** Rewrite model-id references in group tier slots (`opus`/`sonnet`/`haiku`).
- *  `to === undefined` clears the slot back to "(inherit main)". Slots holding
- *  any other value — including already-dangling ones — are left alone. */
-function rewriteGroupSlots(groups: ModelGroupConfig[], from: string, to: string | undefined): ModelGroupConfig[] {
-  if (!groups.some((g) => g.opus === from || g.sonnet === from || g.haiku === from)) return groups
-  return groups.map((g) => ({
-    ...g,
-    opus: g.opus === from ? to : g.opus,
-    sonnet: g.sonnet === from ? to : g.sonnet,
-    haiku: g.haiku === from ? to : g.haiku,
-  }))
-}
-
-/** Generic dnd-kit sortable wrapper for the two ordered lists. Renders
+/** Generic dnd-kit sortable wrapper for the ordered model list. Renders
  *  `children` (a render prop so the row markup can wire the grip) inside the
  *  sortable node: live displacement transform + settle transition, and the
  *  dimmed-source treatment while this item's ghost is in the air. */
 function SortableItem({ id, kind, disabled, className, dataAttr, children }: {
   id: string
-  kind: 'profile-model' | 'profile-model-group'
+  kind: 'profile-model'
   disabled: boolean
   className: string
   /** Optional `data-*` FLIP marker for the arrow-button settle (prepareFlip
@@ -305,7 +292,6 @@ function ProfileCard({
   const [modelList, setModelList] = useState<ProfileModelRow[]>(
     () => (profile.modelList ?? []).map((id) => ({ uid: randomId(), id })),
   )
-  const [modelGroups, setModelGroups] = useState<ModelGroupConfig[]>(profile.modelGroups ?? [])
   const [recapModel, setRecapModel] = useState(profile.recapModel ?? '')
   const [commitMessageModel, setCommitMessageModel] = useState(profile.commitMessageModel ?? '')
   const [newModel, setNewModel] = useState('')
@@ -353,7 +339,6 @@ function ProfileCard({
         name: name.trim(),
         baseUrl: baseUrl.trim() || null,
         modelList: modelList.length > 0 ? modelList.map((r) => r.id) : null,
-        modelGroups: modelGroups.length > 0 ? modelGroups : null,
         recapModel: recapModel.trim() || null,
         commitMessageModel: commitMessageModel.trim() || null,
       }
@@ -426,14 +411,11 @@ function ProfileCard({
     if (model === undefined) return
     setRecapModel((prev) => (prev === model ? '' : prev))
     setCommitMessageModel((prev) => (prev === model ? '' : prev))
-    // A tier slot pointing at the removed model would spawn sessions against
-    // a dead id — clear it back to "(inherit main)".
-    setModelGroups((prev) => rewriteGroupSlots(prev, model, undefined))
   }
   /** Commit a row's inline id edit (Enter/blur). A rename is a rename, not
-   *  delete+add: recap/commit and group tier slots pointing at the old id
-   *  follow it. Empty and colliding drafts revert — remove is the × button
-   *  and addModel rejects duplicates the same way. */
+   *  delete+add: recap/commit pointing at the old id follow it. Empty and
+   *  colliding drafts revert — remove is the × button and addModel rejects
+   *  duplicates the same way. */
   const commitModelEdit = (rowUid: string) => {
     const draft = editDraft
     if (!draft || draft.uid !== rowUid) return
@@ -442,22 +424,17 @@ function ProfileCard({
     setEditDraft(null)
     // Precondition: the row still exists — commit is only reachable from a
     // live row's input or the fold effect with that row's pending draft.
-    // The check also keeps rewriteGroupSlots from matching already-cleared
-    // slots (`g.opus === undefined`) if `from` were ever undefined.
     if (oldId === undefined || newId === oldId) return
     if (!newId || modelList.some((r) => r.uid !== rowUid && r.id === newId)) return
     setModelList((prev) => prev.map((r) => (r.uid === rowUid ? { ...r, id: newId } : r)))
     setRecapModel((prev) => (prev === oldId ? newId : prev))
     setCommitMessageModel((prev) => (prev === oldId ? newId : prev))
-    setModelGroups((prev) => rewriteGroupSlots(prev, oldId, newId))
     setDirty(true)
   }
   // FLIP selectors scoped to this profile card so two cards briefly
   // co-mounted during an accordion collapse/expand don't share keys.
   const modelFlip = () =>
     prepareFlip(`[data-profile-card="${CSS.escape(profile.id)}"] [data-profile-model-uid]`, 'data-profile-model-uid')
-  const groupFlip = () =>
-    prepareFlip(`[data-profile-card="${CSS.escape(profile.id)}"] [data-profile-group-id]`, 'data-profile-group-id')
 
   const moveModel = (index: number, direction: -1 | 1) => {
     const target = index + direction
@@ -490,36 +467,7 @@ function ProfileCard({
     if (!expanded && editDraft) commitModelEditRef.current(editDraft.uid)
   }, [expanded, editDraft])
 
-  // — Model-group handlers (adapted from the old ModelGroupsTab) —
-  // Functional setter form, same contract as the model-list handlers above.
-  const addModelGroup = () => {
-    const id = randomId()
-    setModelGroups((prev) => [...prev, { id, name: `Group ${prev.length + 1}`, main: 'opus' }])
-    setDirty(true)
-  }
-  const removeModelGroup = (id: string) => {
-    setModelGroups((prev) => prev.filter((g) => g.id !== id))
-    setDirty(true)
-  }
-  const moveModelGroup = (index: number, direction: -1 | 1) => {
-    const j = index + direction
-    if (j < 0 || j >= modelGroups.length) return
-    const animateMove = groupFlip()
-    setModelGroups((prev) => {
-      if (index >= prev.length || j >= prev.length) return prev
-      const next = [...prev]
-      ;[next[index], next[j]] = [next[j], next[index]]
-      return next
-    })
-    setDirty(true)
-    animateMove()
-  }
-  const updateModelGroup = (id: string, patch: Partial<ModelGroupConfig>) => {
-    setModelGroups((prev) => prev.map((g) => (g.id === id ? { ...g, ...patch } : g)))
-    setDirty(true)
-  }
-
-  // — Drag-reorder for the two ordered lists above.
+  // — Drag-reorder for the ordered model list above.
   // dnd-kit pipeline: siblings displace live under the ghost (desktop-icon
   // feel), the hook snapshots at pickup and diffs at drop so Save stays
   // clean for no-op drops. The grip/rank badge is the only activator — the
@@ -527,38 +475,22 @@ function ProfileCard({
   const isMobile = useIsMobile()
   const dndSensors = useAppDndSensors()
   const { active: activeDrag, handleDragStart, handleDragOver, handleDragEnd, handleDragCancel } =
-    useProfileListDnd({ modelList, setModelList, modelGroups, setModelGroups, setDirty, dirty })
+    useProfileListDnd({ modelList, setModelList, setDirty, dirty })
 
   const canDragModels = !isMobile && modelList.length > 1
-  const canDragGroups = !isMobile && modelGroups.length > 1
 
   /** Ghost clone of the dragged item, rendered inside <DragOverlay>. A
    *  lightweight re-render of the row's identity (rank + id / rank + name)
    *  is enough — the live list already shows the real rows displaced. */
   const renderDragGhost = (): ReactNode => {
-    if (!activeDrag || !('id' in activeDrag)) return null
-    if (activeDrag.kind === 'profile-model') {
-      const idx = modelList.findIndex((r) => r.uid === activeDrag.id)
-      if (idx < 0) return null
-      return (
-        <DragGhost>
-          <div className={`settings-model-row${idx === 0 ? ' default' : ''}`}>
-            <span className="settings-model-rank">{idx === 0 ? 'Default' : idx + 1}</span>
-            <code className="settings-model-id">{modelList[idx].id}</code>
-          </div>
-        </DragGhost>
-      )
-    }
-    const g = modelGroups.find((grp) => grp.id === activeDrag.id)
-    if (!g) return null
-    const idx = modelGroups.indexOf(g)
+    if (!activeDrag || !('id' in activeDrag) || activeDrag.kind !== 'profile-model') return null
+    const idx = modelList.findIndex((r) => r.uid === activeDrag.id)
+    if (idx < 0) return null
     return (
       <DragGhost>
-        <div className="settings-model-group">
-          <div className="settings-model-row">
-            <span className="settings-model-rank">{idx + 1}</span>
-            <code className="settings-model-id">{g.name}</code>
-          </div>
+        <div className={`settings-model-row${idx === 0 ? ' default' : ''}`}>
+          <span className="settings-model-rank">{idx === 0 ? 'Default' : idx + 1}</span>
+          <code className="settings-model-id">{modelList[idx].id}</code>
         </div>
       </DragGhost>
     )
@@ -853,8 +785,7 @@ function ProfileCard({
             <div className="settings-field">
               <label htmlFor={`${uid}-recap-model`}>Recap Model</label>
               <span className="hint">
-                Model used for AI session summaries. (default) uses the session's aux model — the
-                model group's haiku slot, else the session's own model.
+                Model used for AI session summaries. (default) uses the session's own model.
               </span>
               <div className="settings-model-select-wrap">
                 <select
@@ -884,7 +815,7 @@ function ProfileCard({
               <label htmlFor={`${uid}-commit-message-model`}>Commit Message Model</label>
               <span className="hint">
                 Model used for AI-generated commit messages in Git panel. (default) uses the
-                session's aux model (the model group's haiku slot, else the session's model).
+                session's own model.
               </span>
               <div className="settings-model-select-wrap">
                 <select
@@ -906,135 +837,6 @@ function ProfileCard({
             </div>
           </section>
 
-          <section className="settings-profile-section">
-            <h4 className="settings-profile-section-label">Model Groups</h4>
-
-            {/* Model Groups — adapted from ModelGroupsTab */}
-            <div className="settings-field">
-              <span className="hint">
-                Groups map Opus/Sonnet/Haiku slots to concrete models. Drag the rank badge, or use the
-                arrows, to reorder. Sessions can select a group or a single model; empty slots inherit
-                the main slot.
-              </span>
-              <div className="settings-model-list">
-                {modelGroups.length === 0 && (
-                  <div className="settings-model-empty">No groups yet. Add one to bundle tier models.</div>
-                )}
-                <SortableContext items={modelGroups.map((g) => g.id)} strategy={verticalListSortingStrategy}>
-                {modelGroups.map((g, i) => {
-                  const slots: { key: 'opus' | 'sonnet' | 'haiku'; label: string }[] = [
-                    { key: 'opus', label: 'Opus' },
-                    { key: 'sonnet', label: 'Sonnet' },
-                    { key: 'haiku', label: 'Haiku' },
-                  ]
-                  return (
-                    <SortableItem
-                      key={g.id}
-                      id={g.id}
-                      kind="profile-model-group"
-                      disabled={!canDragGroups}
-                      className="settings-model-group"
-                      dataAttr="data-profile-group-id"
-                    >
-                      {({ setActivatorNodeRef, attributes, listeners }) => (
-                        <>
-                      <div className="settings-model-row">
-                        {/* Rank doubles as the drag grip — the rest of the card
-                            is form fields, so making the whole card draggable
-                            would swallow text-selection inside the inputs. */}
-                        <HoverHint label={canDragGroups ? 'Drag to reorder' : 'Group'} side="top">
-                          <span
-                            ref={setActivatorNodeRef}
-                            className={`settings-model-rank${canDragGroups ? ' settings-model-grip' : ''}`}
-                            {...attributes}
-                            {...listeners}
-                          >
-                            {i + 1}
-                          </span>
-                        </HoverHint>
-                        <input
-                          className="input settings-model-input"
-                          value={g.name}
-                          onChange={(e) => updateModelGroup(g.id, { name: e.target.value })}
-                          aria-label="Group name"
-                        />
-                        <div className="settings-model-move" role="group" aria-label="Move group priority">
-                          <HoverHint label="Move up" side="top">
-                            <button
-                              className="btn-icon-sm settings-model-action"
-                              onClick={() => moveModelGroup(i, -1)}
-                              disabled={i === 0}
-                              aria-label="Move up"
-                            >
-                              <IconArrowUp size={12} />
-                            </button>
-                          </HoverHint>
-                          <HoverHint label="Move down" side="top">
-                            <button
-                              className="btn-icon-sm settings-model-action"
-                              onClick={() => moveModelGroup(i, 1)}
-                              disabled={i === modelGroups.length - 1}
-                              aria-label="Move down"
-                            >
-                              <IconArrowDown size={12} />
-                            </button>
-                          </HoverHint>
-                        </div>
-                        <HoverHint label="Remove" side="top">
-                          <button
-                            className="btn-icon-sm settings-model-action danger"
-                            onClick={() => removeModelGroup(g.id)}
-                            aria-label="Remove"
-                          >
-                            <IconX size={12} />
-                          </button>
-                        </HoverHint>
-                      </div>
-                      <div className="settings-model-group-slots">
-                        {slots.map((slot) => (
-                          <div key={slot.key} className="settings-model-group-slot">
-                            <label className="settings-model-group-slot-label" htmlFor={`${uid}-${g.id}-${slot.key}`}>
-                              {slot.label}
-                            </label>
-                            <input
-                              className="input settings-model-input"
-                              id={`${uid}-${g.id}-${slot.key}`}
-                              list={`${uid}-model-list`}
-                              value={g[slot.key] ?? ''}
-                              placeholder="(inherit main)"
-                              onChange={(e) => updateModelGroup(g.id, { [slot.key]: e.target.value || undefined } as Partial<ModelGroupConfig>)}
-                            />
-                          </div>
-                        ))}
-                        <div className="settings-model-group-main">
-                          <label className="settings-model-group-slot-label" htmlFor={`${uid}-${g.id}-main`}>Main</label>
-                          <select
-                            className="input settings-model-select"
-                            id={`${uid}-${g.id}-main`}
-                            value={g.main ?? 'opus'}
-                            onChange={(e) => updateModelGroup(g.id, { main: e.target.value as 'opus' | 'sonnet' | 'haiku' })}
-                          >
-                            <option value="opus">Opus</option>
-                            <option value="sonnet">Sonnet</option>
-                            <option value="haiku">Haiku</option>
-                          </select>
-                        </div>
-                      </div>
-                        </>
-                      )}
-                    </SortableItem>
-                  )
-                })}
-                </SortableContext>
-                <datalist id={`${uid}-model-list`}>
-                  {modelList.map((r) => <option key={r.uid} value={r.id} />)}
-                </datalist>
-                <div className="settings-model-add-row">
-                  <button className="btn btn-xs settings-model-add-btn" onClick={addModelGroup}>Add Group</button>
-                </div>
-              </div>
-            </div>
-          </section>
           </div>
           <DragOverlayPortal>{renderDragGhost()}</DragOverlayPortal>
         </DndContext>

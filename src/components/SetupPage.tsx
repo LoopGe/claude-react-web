@@ -1003,8 +1003,7 @@ export function SetupPage({ onConfigured }: Props) {
                     Recap Model <span style={styles.optional}>(optional)</span>
                   </label>
                   <p className="setup-hint">
-                    Model used for AI session summaries. (default) uses the session's aux model — the model
-                    group's haiku slot, else the session's own model.
+                    Model used for AI session summaries. (default) uses the session's own model.
                   </p>
                   <select
                     className="input"
@@ -1034,8 +1033,8 @@ export function SetupPage({ onConfigured }: Props) {
                     Commit Message Model <span style={styles.optional}>(optional)</span>
                   </label>
                   <p className="setup-hint">
-                    Model used for AI-generated commit messages in the Git panel. (default) uses the session's
-                    aux model — the model group's haiku slot, else the session's own model.
+                    Model used for AI-generated commit messages in the Git panel. (default) uses the
+                    session's own model.
                   </p>
                   <select
                     className="input"

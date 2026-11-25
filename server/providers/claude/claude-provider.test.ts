@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { isAbsolute, resolve } from 'node:path'
 import type { Settings } from '@anthropic-ai/claude-agent-sdk'
 import {
@@ -6,14 +6,33 @@ import {
   envCacheKey,
   mergeTierEnvIntoSettings,
   summarizeSpawn,
+  ClaudeProvider,
 } from './claude-provider.js'
 import type { ProviderProfile } from '../../config.js'
+
+// Minimal SDK stub: capture the options createSession hands to query() so a
+// test can inspect the spawn env. The Proxy answers any handle method with an
+// async no-op and yields a done iterator, so ClaudeSessionHandle constructs
+// without a real subprocess.
+const captured = vi.hoisted(() => ({ options: null as Record<string, unknown> | null }))
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  query: vi.fn(({ options }: { options: Record<string, unknown> }) => {
+    captured.options = options
+    return new Proxy({}, {
+      get(_t, prop) {
+        if (prop === Symbol.asyncIterator) {
+          return () => ({ next: async () => ({ done: true, value: undefined }) })
+        }
+        return vi.fn(async () => {})
+      },
+    })
+  }),
+}))
 
 const PROFILE: ProviderProfile = {
   id: 'p', name: 'P', authToken: 'profile-token',
   baseUrl: 'https://gw.example.com',
-  modelList: ['m/one'], modelGroups: [],
-  recapModel: 'r', commitMessageModel: 'c',
+  modelList: ['m/one'],  recapModel: 'r', commitMessageModel: 'c',
 }
 
 describe('buildProfileEnv', () => {
@@ -186,5 +205,26 @@ describe('envCacheKey', () => {
     const a = envCacheKey({ ...PROFILE, authToken: 't', baseUrl: 'b|c' }, '/d', 0)
     const b = envCacheKey({ ...PROFILE, authToken: 't|b', baseUrl: 'c' }, '/d', 0)
     expect(a).not.toBe(b)
+  })
+})
+
+describe('createSession tier routing (single model)', () => {
+  it('ignores a model group in providerExtras — all four tier aliases collapse to the model', () => {
+    const provider = new ClaudeProvider()
+    const profile: ProviderProfile = {
+      ...PROFILE,
+      modelList: ['gw/main', 'gw/opus'],
+    }
+    provider.createSession({
+      id: 's1', cwd: '/x', model: 'gw/main', profile,
+      providerExtras: { modelGroupId: 'g1' },
+    } as unknown as Parameters<ClaudeProvider['createSession']>[0])
+    const env = captured.options?.env as Record<string, string>
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('gw/main')
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('gw/main')
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('gw/main')
+    expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('gw/main')
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES).toBeUndefined()
+    expect(captured.options?.model).toBe('gw/main')
   })
 })

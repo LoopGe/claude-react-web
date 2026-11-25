@@ -1,5 +1,10 @@
 # Model Groups: real three-tier routing (opus / sonnet / haiku)
 
+> **SUPERSEDED (2026-11-25):** the model-group feature was removed end-to-end.
+> See `.agents/notes/implemented/simplification/2026-11-25-remove-model-groups.md`
+> and `docs/superpowers/plans/2026-11-25-remove-model-groups.md`. This spec is
+> kept for historical context only.
+
 Date: 2026-08-27
 
 ## Problem

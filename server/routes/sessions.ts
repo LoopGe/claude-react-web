@@ -110,7 +110,7 @@ const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
  *  must be added here or it is silently dropped — including the per-session
  *  UI prefs, which must stay on all three carry paths (see AGENTS.md). */
 const CREATE_BODY_FIELDS = new Set([
-  'provider', 'cwd', 'model', 'modelGroupId', 'profileId', 'agent', 'title',
+  'provider', 'cwd', 'model', 'profileId', 'agent', 'title',
   'permissionMode', 'systemPrompt',
   'betas', 'additionalDirectories', 'effort', 'effortLevel', 'thinking',
   'fallbackModel', 'maxTurns', 'maxBudgetUsd', 'taskBudget',
@@ -139,7 +139,7 @@ function narrowCreateBody(body: Record<string, unknown>): { ok: true; value: Rec
     if (CREATE_BODY_FIELDS.has(key)) rest[key] = value
     else dropped.push(key)
   }
-  const stringFields = ['cwd', 'model', 'title', 'modelGroupId', 'profileId', 'provider', 'fallbackModel']
+  const stringFields = ['cwd', 'model', 'title', 'profileId', 'provider', 'fallbackModel']
   for (const name of stringFields) {
     const v = rest[name]
     if (v !== undefined && typeof v !== 'string') {
@@ -898,17 +898,6 @@ export function buildSessionRouter(
   app.post('/sessions/:id/model', async (c) => {
     const body = await safeJson<{ model?: string }>(c.req)
     const info = await sm.setModel(c.req.param('id'), body.model)
-    return c.json({ session: info })
-  })
-
-  // Point the session at a ModelGroup. Unknown groups are a 400 (explicit op
-  // rejects rather than silently falling back).
-  app.post('/sessions/:id/model-group', async (c) => {
-    const body = await safeJson<{ groupId?: string }>(c.req)
-    if (!body.groupId || typeof body.groupId !== 'string') {
-      return c.json({ error: 'groupId is required' }, 400)
-    }
-    const info = await sm.setModelGroup(c.req.param('id'), body.groupId)
     return c.json({ session: info })
   })
 

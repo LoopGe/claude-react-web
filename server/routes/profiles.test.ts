@@ -25,7 +25,7 @@ describe('profiles router', () => {
     const { tmpdir } = await import('node:os')
     const dir = await fs.mkdtemp(join(tmpdir(), 'crw-profiles-routes-'))
     await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
-      profiles: [{ id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['m1'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' }],
+      profiles: [{ id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['m1'], recapModel: 'r', commitMessageModel: 'c' }],
       activeProfileId: 'default',
     }))
     const app = appWith(dir)
@@ -59,7 +59,7 @@ describe('profiles router', () => {
     const { tmpdir } = await import('node:os')
     const dir = await fs.mkdtemp(join(tmpdir(), 'crw-profiles-blank-models-'))
     await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
-      profiles: [{ id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['gw/model-x'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' }],
+      profiles: [{ id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['gw/model-x'], recapModel: 'r', commitMessageModel: 'c' }],
       activeProfileId: 'default',
     }))
     const app = appWith(dir)
@@ -95,8 +95,7 @@ describe('profiles router', () => {
     await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
       profiles: [{
         id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
-        modelList: ['vendor/model-a'], modelGroups: [],
-        recapModel: 'vendor/recap', commitMessageModel: 'vendor/commit',
+        modelList: ['vendor/model-a'],        recapModel: 'vendor/recap', commitMessageModel: 'vendor/commit',
       }],
       activeProfileId: 'default',
     }))
@@ -129,8 +128,7 @@ describe('profiles router', () => {
     await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
       profiles: [{
         id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
-        modelList: ['vendor/model-a'], modelGroups: [],
-        recapModel: 'vendor/inherited', commitMessageModel: 'vendor/inherited',
+        modelList: ['vendor/model-a'],        recapModel: 'vendor/inherited', commitMessageModel: 'vendor/inherited',
       }],
       activeProfileId: 'default',
     }))
@@ -151,7 +149,7 @@ describe('profiles router', () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
-  it('clears model groups when the client sends null, but rejects the two required fields', async () => {
+  it('rejects the required fields when sent blank', async () => {
     const { promises: fs } = await import('node:fs')
     const { join } = await import('node:path')
     const { tmpdir } = await import('node:os')
@@ -160,7 +158,6 @@ describe('profiles router', () => {
       profiles: [{
         id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
         modelList: ['vendor/model-a'],
-        modelGroups: [{ id: 'g1', name: 'Group 1', main: 'opus', opus: 'vendor/model-a' }],
         recapModel: '', commitMessageModel: '',
       }],
       activeProfileId: 'default',
@@ -172,12 +169,6 @@ describe('profiles router', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
-
-    // A profile may legitimately have no model groups — the card sends null
-    // when its list is empty, and that must clear rather than keep.
-    expect((await put({ modelGroups: null })).status).toBe(200)
-    const afterClear = JSON.parse(await fs.readFile(join(dir, 'config.json'), 'utf8'))
-    expect(afterClear.profiles[0].modelGroups).toEqual([])
 
     // The required fields reject an explicit blank instead of silently
     // keeping the old value while the card shows the field cleared.
@@ -205,7 +196,7 @@ describe('profiles router', () => {
     await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
       profiles: [{
         id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
-        modelList: ['vendor/model-a'], modelGroups: [], recapModel: '', commitMessageModel: '',
+        modelList: ['vendor/model-a'], recapModel: '', commitMessageModel: '',
       }],
       activeProfileId: 'default',
     }))
@@ -240,7 +231,7 @@ describe('profiles router', () => {
     await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
       profiles: [{
         id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
-        modelList: ['vendor/a'], modelGroups: [], recapModel: '', commitMessageModel: '',
+        modelList: ['vendor/a'], recapModel: '', commitMessageModel: '',
         modelContextWindows: { 'vendor/a': 1_000_000, 'vendor/b': 128_000 },
       }],
       activeProfileId: 'default',
@@ -270,9 +261,9 @@ describe('profiles router', () => {
     const dir = await fs.mkdtemp(join(tmpdir(), 'crw-profiles-dup-id-'))
     await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
       profiles: [
-        { id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['m1'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
-        { id: 'p_b', name: 'B-first', authToken: 't1', baseUrl: 'https://gw', modelList: ['m1'], modelGroups: [], recapModel: '', commitMessageModel: '' },
-        { id: 'p_b', name: 'B-second', authToken: 't2', baseUrl: 'https://gw', modelList: ['m1'], modelGroups: [], recapModel: '', commitMessageModel: '' },
+        { id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['m1'], recapModel: 'r', commitMessageModel: 'c' },
+        { id: 'p_b', name: 'B-first', authToken: 't1', baseUrl: 'https://gw', modelList: ['m1'], recapModel: '', commitMessageModel: '' },
+        { id: 'p_b', name: 'B-second', authToken: 't2', baseUrl: 'https://gw', modelList: ['m1'], recapModel: '', commitMessageModel: '' },
       ],
       activeProfileId: 'default',
     }))
@@ -297,8 +288,8 @@ describe('profiles router', () => {
     const dir = await fs.mkdtemp(join(tmpdir(), 'crw-profiles-padded-id-'))
     await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
       profiles: [
-        { id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['m1'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
-        { id: ' p_two ', name: 'Second', authToken: 'tok-two', baseUrl: 'https://gw2', modelList: ['m2'], modelGroups: [], recapModel: '', commitMessageModel: '' },
+        { id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['m1'], recapModel: 'r', commitMessageModel: 'c' },
+        { id: ' p_two ', name: 'Second', authToken: 'tok-two', baseUrl: 'https://gw2', modelList: ['m2'], recapModel: '', commitMessageModel: '' },
       ],
       activeProfileId: 'default',
     }))
@@ -334,7 +325,7 @@ describe('profiles router', () => {
     const { tmpdir } = await import('node:os')
     const dir = await fs.mkdtemp(join(tmpdir(), 'crw-profiles-null-body-'))
     await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
-      profiles: [{ id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['m1'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' }],
+      profiles: [{ id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['m1'], recapModel: 'r', commitMessageModel: 'c' }],
       activeProfileId: 'default',
     }))
     const original = await fs.readFile(join(dir, 'config.json'), 'utf8')
@@ -398,15 +389,13 @@ describe('profiles router: POST /profiles template', () => {
 
   const ACTIVE = {
     id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
-    modelList: ['active/model-a'], modelGroups: [],
-    recapModel: 'active-recap', commitMessageModel: 'active-commit',
+    modelList: ['active/model-a'],    recapModel: 'active-recap', commitMessageModel: 'active-commit',
   }
 
   it('copies non-credential fields from the named profile when template is a profile id', async () => {
     const OTHER = {
       id: 'p_other', name: 'Other', authToken: 'sk-other', baseUrl: 'https://other.example',
       modelList: ['other/model-1', 'other/model-2'],
-      modelGroups: [{ id: 'g1', name: 'Group 1', main: 'opus', opus: 'other/model-1' }],
       recapModel: 'other-recap', commitMessageModel: 'other-commit',
     }
     const { app, readDisk, cleanup } = await seed([ACTIVE, OTHER])
@@ -424,7 +413,6 @@ describe('profiles router: POST /profiles template', () => {
       // Everything the template carries except its credentials.
       expect(created?.baseUrl).toBe('https://other.example')
       expect(created?.modelList).toEqual(['other/model-1', 'other/model-2'])
-      expect(created?.modelGroups).toEqual(OTHER.modelGroups)
       expect(created?.recapModel).toBe('other-recap')
       expect(created?.commitMessageModel).toBe('other-commit')
       // The token is NEVER templated — the user must type one.
@@ -477,7 +465,6 @@ describe('profiles router: POST /profiles template', () => {
         'claude-opus-4-20250514',
         'claude-haiku-3-5-20241022',
       ])
-      expect(created?.modelGroups).toEqual([])
       expect(created?.recapModel).toBe('')
       expect(created?.commitMessageModel).toBe('')
       expect(created?.authToken).toBe('')

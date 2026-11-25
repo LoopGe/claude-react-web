@@ -1,13 +1,12 @@
-// Drag-reorder orchestration for one profile card's two ordered lists
-// (Available Models + Model Groups) inside the Profiles settings tab.
+// Drag-reorder orchestration for one profile card's Available Models list
+// inside the Profiles settings tab.
 //
 // Replaces the old HTML5 DnD + drop-hint + FLIP-settle pipeline with dnd-kit:
 // siblings now displace LIVE while the ghost hovers (the desktop-icon feel),
 // so the hook's job reduces to:
-//   - snapshotting both lists + the dirty flag at pickup (for cancel-restore
+//   - snapshotting the list + the dirty flag at pickup (for cancel-restore
 //     + dirty check)
-//   - live `arrayMove` on drag-over, guarded by payload kind (a model hovering
-//     a group card must not reshuffle groups)
+//   - live `arrayMove` on drag-over, guarded by payload kind
 //   - dirty on drop only when the order actually changed (Save stays clean
 //     for no-op drops)
 // The arrow buttons / A→Z sort keep the FLIP helper — they mutate without a
@@ -16,14 +15,11 @@
 import { useCallback, useRef, useState } from 'react'
 import { arrayMove } from '@dnd-kit/sortable'
 import type { DragOverEvent, DragStartEvent } from '@dnd-kit/core'
-import type { ModelGroupConfig } from '../types/config'
 import { dndPayloadOf, type DragPayload } from '../dnd/payload'
 
 export interface ProfileListDndOptions {
   modelList: ProfileModelRow[]
   setModelList: (updater: (prev: ProfileModelRow[]) => ProfileModelRow[]) => void
-  modelGroups: ModelGroupConfig[]
-  setModelGroups: (updater: (prev: ModelGroupConfig[]) => ModelGroupConfig[]) => void
   setDirty: (dirty: boolean) => void
   /** The card's current dirty flag, snapshotted at pickup. Live moves stamp
    *  dirty the moment they apply, so Esc-cancel must restore the PRE-drag
@@ -54,41 +50,37 @@ function restoreOrder<T>(current: T[], snapshot: T[], key: (t: T) => string): T[
   )
 }
 
-/** Order-insensitive content compare: a rename or slot edit counts, a
- *  drag's arrayMove does not. Serializes whole rows/groups so fields added
- *  to either shape later are picked up automatically. */
-function contentChanged(models: ProfileModelRow[], snapModels: ProfileModelRow[], groups: ModelGroupConfig[], snapGroups: ModelGroupConfig[]): boolean {
+/** Order-insensitive content compare: a rename counts, a drag's arrayMove
+ *  does not. Serializes whole rows so fields added to the shape later are
+ *  picked up automatically. */
+function contentChanged(models: ProfileModelRow[], snapModels: ProfileModelRow[]): boolean {
   // uid:id pairs, not the bare id multiset — a cross-rename that swaps two
   // rows' ids keeps the multiset identical but is still a content edit.
   const pairs = (rows: ProfileModelRow[]) => rows.map((r) => `${r.uid}:${r.id}`).sort().join('\n')
-  const groupsFingerprint = (gs: ModelGroupConfig[]) =>
-    JSON.stringify([...gs].sort((a, b) => a.id.localeCompare(b.id)))
-  return pairs(models) !== pairs(snapModels) || groupsFingerprint(groups) !== groupsFingerprint(snapGroups)
+  return pairs(models) !== pairs(snapModels)
 }
 
 export function useProfileListDnd({
   modelList,
   setModelList,
-  modelGroups,
-  setModelGroups,
   setDirty,
   dirty,
 }: ProfileListDndOptions) {
   /** The drag in flight (payload kind + id) — drives the DragOverlay ghost
    *  and the dimmed source card. */
   const [active, setActive] = useState<DragPayload | null>(null)
-  /** Both lists + the dirty flag at pickup. Restore on cancel; the lists are
+  /** The list + the dirty flag at pickup. Restore on cancel; the list is
    *  also what the drop-path's no-op check keys off. */
-  const snapshotRef = useRef<{ models: ProfileModelRow[]; groups: ModelGroupConfig[]; dirty: boolean } | null>(null)
+  const snapshotRef = useRef<{ models: ProfileModelRow[]; dirty: boolean } | null>(null)
 
   const handleDragStart = useCallback(
     (event: DragStartEvent) => {
       const payload = dndPayloadOf(event.active.data.current)
       if (!payload) return
-      snapshotRef.current = { models: modelList, groups: modelGroups, dirty }
+      snapshotRef.current = { models: modelList, dirty }
       setActive(payload)
     },
-    [modelList, modelGroups, dirty],
+    [modelList, dirty],
   )
 
   const handleDragOver = useCallback(
@@ -108,17 +100,9 @@ export function useProfileListDnd({
           setDirty(true)
           return arrayMove(list, from, to)
         })
-      } else if (a.kind === 'profile-model-group') {
-        setModelGroups((list) => {
-          const from = list.findIndex((g) => g.id === a.id)
-          const to = list.findIndex((g) => g.id === o.id)
-          if (from < 0 || to < 0 || from === to) return list
-          setDirty(true)
-          return arrayMove(list, from, to)
-        })
       }
     },
-    [setModelList, setModelGroups, setDirty],
+    [setModelList, setDirty],
   )
 
   const clear = useCallback(() => {
@@ -139,15 +123,14 @@ export function useProfileListDnd({
       // keeps the drag live while focus moves into the row's id input)
       // survives the cancel.
       setModelList((prev) => restoreOrder(prev, snap.models, (r) => r.uid))
-      setModelGroups((prev) => restoreOrder(prev, snap.groups, (g) => g.id))
       // Restore the pre-drag dirty flag: live moves stamped it true on the
       // way, but a cancel means none of them "happened". Content edits made
       // while the drag was live are not the drag's doing and keep the card
       // dirty (as does a card that was dirty before pickup).
-      setDirty(snap.dirty || contentChanged(modelList, snap.models, modelGroups, snap.groups))
+      setDirty(snap.dirty || contentChanged(modelList, snap.models))
     }
     clear()
-  }, [modelList, modelGroups, setModelList, setModelGroups, setDirty, clear])
+  }, [modelList, setModelList, setDirty, clear])
 
   return { active, handleDragStart, handleDragOver, handleDragEnd, handleDragCancel }
 }

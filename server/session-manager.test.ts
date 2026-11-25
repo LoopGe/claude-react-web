@@ -716,47 +716,25 @@ describe('SessionManager', () => {
     expect(envA).not.toBe(envB)
   })
 
-  describe('model groups (group sessions)', () => {
-    const GROUP = {
-      id: 'g_flagship', name: 'Flagship',
-      opus: 'anthropic/claude-opus-4-20250514',
-      sonnet: 'anthropic/claude-sonnet-4-20250514',
-      haiku: 'claude-haiku-3-5-20241022',
-      main: 'opus' as const,
-    }
-
-    afterEach(() => {
-      __setConfigForTest({ modelGroups: [] })
-    })
-
-    it('maps the four tier env vars to the group slots and sets the main model', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
-      const info = await sm.create({ cwd: TEST_CWD, modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
-      const env = mockHandles[0].options.env as Record<string, string>
-      expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-opus-4-20250514')
-      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
-      expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('claude-haiku-3-5-20241022')
-      expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('claude-haiku-3-5-20241022')
-      expect(info.model).toBe('anthropic/claude-opus-4-20250514')
-      expect(info.modelGroupId).toBe('g_flagship')
-      expect(mockHandles[0].options.model).toBe('anthropic/claude-opus-4-20250514')
-    })
-
-    it('resolves the aux target to the group haiku tier, not the main', async () => {
-      // The aux calls (recap / commit message / auto-mode classifier) ask the
-      // manager for their target when the matching config field is empty. For
-      // a group session the model must be the HAIKU slot — the class of model
-      // the CLI itself routes internal queries to — while session.model (and
-      // the info projection) stays the group's main.
-      __setConfigForTest({ modelGroups: [GROUP] })
-      const info = await sm.create({ cwd: TEST_CWD, modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
-      expect(info.model).toBe('anthropic/claude-opus-4-20250514')
-      expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({ model: 'claude-haiku-3-5-20241022' })
+  describe('aux model resolution and single-model routing', () => {
+    it('create ignores a modelGroupId body key and pins the requested model', async () => {
+      const info = await sm.create({ cwd: TEST_CWD, model: 'model-a', modelGroupId: 'g1' } as any)
+      expect(info.model).toBe('model-a')
     })
 
     it('resolves the aux target model to the session model without a group', async () => {
       const info = await sm.create({ cwd: TEST_CWD, model: 'gw/some-model' })
       expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({ model: 'gw/some-model' })
+    })
+
+    it('aux target ignores a legacy modelGroupId — falls back to the session model', async () => {
+      const info = await sm.create({ cwd: TEST_CWD, model: 'gw/main' })
+      // A pre-migration session could still carry a group tag; aux must not
+      // route to the group's haiku slot anymore.
+      const live = (sm as unknown as { sessions: Map<string, { modelGroupId?: string }> }).sessions.get(info.id)!
+      live.modelGroupId = 'g1'
+      expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({ model: 'gw/main' })
+      expect(sm.auxTargetFor(info.id, 'pluginAi')).toMatchObject({ model: 'gw/main' })
     })
 
     it('prefers the profile override, and reads it from the SESSION profile', async () => {
@@ -766,17 +744,15 @@ describe('SessionManager', () => {
       const before = {
         profiles: defaultConfig.profiles,
         activeProfileId: defaultConfig.activeProfileId,
-        modelGroups: defaultConfig.modelGroups,
       }
       const profile = (id: string, recapModel: string): import('./config.js').ProviderProfile => ({
         id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
-        modelList: ['vendor/model'], modelGroups: [], recapModel, commitMessageModel: '',
+        modelList: ['vendor/model'], recapModel, commitMessageModel: '',
       })
       try {
         __setConfigForTest({
           profiles: [profile('A', 'vendor/from-a'), profile('B', 'vendor/from-b')],
           activeProfileId: 'A',
-          modelGroups: [],
         })
         const info = await sm.create({ cwd: TEST_CWD, profileId: 'B', model: 'vendor/model' } as Parameters<SessionManager['create']>[0])
         expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({
@@ -797,34 +773,29 @@ describe('SessionManager', () => {
     })
 
     it('persists the profile pin so a dormant session still resolves its own profile', async () => {
-      // The pin is what identifies WHICH profile's credentials and model
-      // groups apply. It is not derivable from the active profile, so it has
-      // to survive a restart — otherwise a dormant session is resolved against
-      // whatever profile happens to be active, sending its model to the wrong
-      // endpoint.
-      const groupB = { id: 'g_b', name: 'B group', opus: 'vendor/big', haiku: 'vendor/small', main: 'opus' as const }
+      // The pin is what identifies WHICH profile's credentials apply. It is
+      // not derivable from the active profile, so it has to survive a restart
+      // — otherwise a dormant session is resolved against whatever profile
+      // happens to be active, sending its model to the wrong endpoint.
       const before = {
         profiles: defaultConfig.profiles,
         activeProfileId: defaultConfig.activeProfileId,
-        modelGroups: defaultConfig.modelGroups,
       }
-      const profile = (id: string, modelGroups: unknown[]): import('./config.js').ProviderProfile => ({
+      const profile = (id: string): import('./config.js').ProviderProfile => ({
         id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
         modelList: ['vendor/big', 'vendor/small'],
-        modelGroups: modelGroups as import('./config.js').ModelGroupConfig[],
         recapModel: '', commitMessageModel: '',
       })
       try {
         __setConfigForTest({
-          profiles: [profile('A', []), profile('B', [groupB])],
+          profiles: [profile('A'), profile('B')],
           activeProfileId: 'A',
-          modelGroups: [],
         })
         const info = await sm.create({
-          cwd: TEST_CWD, profileId: 'B', modelGroupId: 'g_b',
+          cwd: TEST_CWD, profileId: 'B', model: 'vendor/big',
         } as Parameters<SessionManager['create']>[0])
         expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({
-          model: 'vendor/small', baseUrl: 'https://gw-B', authToken: 'sk-B',
+          model: 'vendor/big', baseUrl: 'https://gw-B', authToken: 'sk-B',
         })
         expect(store.get(info.id)?.profileId).toBe('B')
 
@@ -832,7 +803,7 @@ describe('SessionManager', () => {
         // session is dormant, so only the persisted pin can resolve it.
         const restarted = new SessionManager({ store })
         expect(restarted.auxTargetFor(info.id, 'recap')).toMatchObject({
-          model: 'vendor/small', baseUrl: 'https://gw-B', authToken: 'sk-B',
+          model: 'vendor/big', baseUrl: 'https://gw-B', authToken: 'sk-B',
         })
         void restarted.shutdown()
       } finally {
@@ -840,28 +811,7 @@ describe('SessionManager', () => {
       }
     })
 
-    it('applies the fallback degradation chain on spawn for a group session', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
-      await sm.create({ cwd: TEST_CWD, modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
-      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: ['sonnet', 'haiku'] })
-    })
-
-    it('empty slots fall back to the main model', async () => {
-      __setConfigForTest({
-        modelGroups: [{ id: 'g_sonnet_only', name: 'Sonnet Only', sonnet: 'anthropic/claude-sonnet-4-20250514', main: 'sonnet' }],
-      })
-      await sm.create({ cwd: TEST_CWD, modelGroupId: 'g_sonnet_only' } as Parameters<SessionManager['create']>[0])
-      const env = mockHandles[0].options.env as Record<string, string>
-      expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
-      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
-      expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
-      expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
-    })
-
-    it('single-model sessions still collapse all four aliases to the model', async () => {
-      // Regression guard for the single-model path (the existing tests above
-      // cover it; this one pins it against accidental group leakage).
-      __setConfigForTest({ modelGroups: [GROUP] })
+    it('single-model sessions collapse all four aliases to the model', async () => {
       await sm.create({ cwd: TEST_CWD, model: 'gw/some-model' })
       const env = mockHandles[0].options.env as Record<string, string>
       expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('gw/some-model')
@@ -870,96 +820,12 @@ describe('SessionManager', () => {
       expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('gw/some-model')
     })
 
-    it('create rejects an unknown modelGroupId with 400', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
-      await expect(sm.create({ cwd: TEST_CWD, modelGroupId: 'g_missing' } as Parameters<SessionManager['create']>[0])).rejects.toThrow(/model group g_missing not found/)
-    })
-
-    it('setModelGroup resolves main, switches model live, applies fallback, persists', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
+    it('setModel never applies a fallbackModel flag setting', async () => {
       const info = await sm.create({ cwd: TEST_CWD, model: 'gw/start' })
-      const updated = await sm.setModelGroup(info.id, 'g_flagship')
-      expect(updated.model).toBe('anthropic/claude-opus-4-20250514')
-      expect(updated.modelGroupId).toBe('g_flagship')
-      expect(mockHandles[0].setModel).toHaveBeenCalledWith('anthropic/claude-opus-4-20250514')
-      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: ['sonnet', 'haiku'] })
-      expect(store.get(info.id)?.modelGroupId).toBe('g_flagship')
-    })
-
-    it('setModelGroup clears the prior fallback when switching to a haiku-main group', async () => {
-      const BUDGET = {
-        id: 'g_budget', name: 'Budget',
-        opus: 'anthropic/claude-opus-4-20250514',
-        sonnet: 'anthropic/claude-sonnet-4-20250514',
-        haiku: 'claude-haiku-3-5-20241022',
-        main: 'haiku' as const,
-      }
-      __setConfigForTest({ modelGroups: [GROUP, BUDGET] })
-      const info = await sm.create({ cwd: TEST_CWD, modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
-      mockHandles[0].applyFlagSettings.mockClear()
-      const updated = await sm.setModelGroup(info.id, 'g_budget')
-      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: null })
-      expect(updated.modelGroupId).toBe('g_budget')
-      expect(updated.model).toBe('claude-haiku-3-5-20241022')
-    })
-
-    it('setModelGroup rejects an unknown group with 400', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
-      const info = await sm.create({ cwd: TEST_CWD })
-      await expect(sm.setModelGroup(info.id, 'g_missing')).rejects.toThrow(/model group g_missing not found/)
-    })
-
-    it('setModelGroup retries an unconfirmed switch before applying the fallback chain', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
-      const info = await sm.create({ cwd: TEST_CWD, model: 'gw/start' })
-      mockHandles[0].setModel
-        .mockRejectedValueOnce(
-          new Error('Couldn\'t confirm model "anthropic/claude-opus-4-20250514" with the API. Try again, or run /model to see available models.'),
-        )
-      const updated = await sm.setModelGroup(info.id, 'g_flagship')
-      expect(mockHandles[0].setModel).toHaveBeenCalledTimes(2)
-      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: ['sonnet', 'haiku'] })
-      expect(updated.model).toBe('anthropic/claude-opus-4-20250514')
-      expect(updated.modelGroupId).toBe('g_flagship')
-    })
-
-    it('setModel clears modelGroupId and the fallback chain', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
-      const info = await sm.create({ cwd: TEST_CWD, modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
       mockHandles[0].applyFlagSettings.mockClear()
       const updated = await sm.setModel(info.id, 'gw/other')
-      expect(updated.modelGroupId).toBeUndefined()
+      expect(mockHandles[0].applyFlagSettings).not.toHaveBeenCalledWith({ fallbackModel: null })
       expect(updated.model).toBe('gw/other')
-      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: null })
-    })
-
-    it('respawn with a deleted group self-heals: clears the reference and collapses', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
-      const info = await sm.create({ cwd: TEST_CWD, modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
-      const id = info.id
-      // Unload the session so it goes dormant — self-heal triggers on respawn
-      await sm.unload(id)
-      __setConfigForTest({ modelGroups: [] }) // delete the group
-      const resumed = await sm.resume(id)
-      expect(resumed.modelGroupId).toBeUndefined()
-      // The persisted resolved main is kept; the provider collapses to it.
-      expect(resumed.model).toBe('anthropic/claude-opus-4-20250514')
-      const last = mockHandles[mockHandles.length - 1].options.env as Record<string, string>
-      expect(last.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-opus-4-20250514')
-      expect(last.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('anthropic/claude-opus-4-20250514')
-      expect(last.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('anthropic/claude-opus-4-20250514')
-    })
-
-    it('respawn re-applies the persisted group', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
-      const info = await sm.create({ cwd: TEST_CWD, modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
-      // Unload so resume goes through spawn() and re-applies the group
-      await sm.unload(info.id)
-      const resumed = await sm.resume(info.id)
-      expect(resumed.modelGroupId).toBe('g_flagship')
-      const last = mockHandles[mockHandles.length - 1].options.env as Record<string, string>
-      expect(last.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-opus-4-20250514')
-      expect(last.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('claude-haiku-3-5-20241022')
     })
   })
 
@@ -13240,14 +13106,13 @@ describe('SessionManager', () => {
       const before = {
         profiles: defaultConfig.profiles,
         activeProfileId: defaultConfig.activeProfileId,
-        modelGroups: defaultConfig.modelGroups,
       }
       const profile = (id: string): import('./config.js').ProviderProfile => ({
         id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
-        modelList: ['vendor/model-' + id], modelGroups: [], recapModel: '', commitMessageModel: '',
+        modelList: ['vendor/model-' + id], recapModel: '', commitMessageModel: '',
       })
       try {
-        __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A', modelGroups: [] })
+        __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A' })
         const x = await liveWithTurn({ profileId: 'A', model: 'vendor/model-A' })
         const { gate, calls } = parkFirstCall('buildResumeOpts')
         const handlesBefore = mockHandles.length
@@ -13301,7 +13166,7 @@ describe('SessionManager', () => {
       const before = { profiles: defaultConfig.profiles, activeProfileId: defaultConfig.activeProfileId }
       const profile = (id: string): import('./config.js').ProviderProfile => ({
         id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
-        modelList: ['vendor/model-' + id], modelGroups: [], recapModel: '', commitMessageModel: '',
+        modelList: ['vendor/model-' + id], recapModel: '', commitMessageModel: '',
       })
       try {
         __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A' })
@@ -16737,72 +16602,6 @@ describe('resolveConfiguredModel with a profile modelList', () => {
     // 'claude-opus-4-20250514' is a bare name in the default list that
     // resolves to itself (exact match).
     expect(resolveConfiguredModel('claude-opus-4-20250514')).toBe('claude-opus-4-20250514')
-  })
-})
-
-describe('create() validates modelGroupId against the effective profile', () => {
-  let dir: string
-  let smLocal: SessionManager
-
-  const GROUP_B = {
-    id: 'g_budget', name: 'Budget',
-    sonnet: 'anthropic/claude-sonnet-4-20250514',
-    haiku: 'claude-haiku-3-5-20241022',
-    main: 'sonnet' as const,
-  }
-  const profileA: import('./config.js').ProviderProfile = {
-    id: 'A', name: 'Profile A', authToken: 'tok-a',
-    baseUrl: 'https://api.anthropic.com',
-    modelList: ['anthropic/claude-sonnet-4-20250514'],
-    modelGroups: [], recapModel: '', commitMessageModel: '',
-  }
-  const profileB: import('./config.js').ProviderProfile = {
-    id: 'B', name: 'Profile B', authToken: 'tok-b',
-    baseUrl: 'https://api.anthropic.com',
-    modelList: ['anthropic/claude-sonnet-4-20250514'],
-    modelGroups: [GROUP_B], recapModel: '', commitMessageModel: '',
-  }
-
-  beforeEach(async () => {
-    dir = makeTmpDir()
-    const store = new SessionStore({ stateDir: dir })
-    await store.load()
-    smLocal = new SessionManager({ store })
-  })
-
-  afterEach(async () => {
-    await smLocal.shutdown()
-    rmRf(dir)
-    __setConfigForTest({ profiles: [], activeProfileId: 'default', modelGroups: [] })
-  })
-
-  it('succeeds when profile B has the group but the active profile does not', async () => {
-    __setConfigForTest({
-      profiles: [profileA, profileB],
-      activeProfileId: 'A',
-      modelGroups: [],
-    })
-    const info = await smLocal.create({
-      cwd: TEST_CWD,
-      profileId: 'B',
-      modelGroupId: 'g_budget',
-    } as Parameters<SessionManager['create']>[0])
-    expect(info.modelGroupId).toBe('g_budget')
-    expect(info.model).toBe('anthropic/claude-sonnet-4-20250514')
-    expect(info.profileId).toBe('B')
-  })
-
-  it('rejects a group that belongs to neither profile', async () => {
-    __setConfigForTest({
-      profiles: [profileA, profileB],
-      activeProfileId: 'A',
-      modelGroups: [],
-    })
-    await expect(smLocal.create({
-      cwd: TEST_CWD,
-      profileId: 'B',
-      modelGroupId: 'nonexistent',
-    } as Parameters<SessionManager['create']>[0])).rejects.toThrow('model group nonexistent not found')
   })
 })
 

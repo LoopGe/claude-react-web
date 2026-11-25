@@ -211,8 +211,7 @@ describe('config', () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({
       profiles: [{
         id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
-        modelList: ['vendor/model-a'], modelGroups: [],
-        recapModel: null, commitMessageModel: null,
+        modelList: ['vendor/model-a'],        recapModel: null, commitMessageModel: null,
       }],
       activeProfileId: 'default',
     }))
@@ -228,8 +227,7 @@ describe('config', () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({
       profiles: [{
         id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
-        modelList: ['vendor/model-a'], modelGroups: [],
-        recapModel: 'vendor/cheap', commitMessageModel: 'vendor/cheap',
+        modelList: ['vendor/model-a'],        recapModel: 'vendor/cheap', commitMessageModel: 'vendor/cheap',
       }],
       activeProfileId: 'default',
     }))
@@ -614,7 +612,7 @@ describe('config', () => {
   describe('clearCredentials', () => {
     it('clears authToken, baseUrl, and accessToken from config.json', async () => {
       writeFileSync(join(dir, 'config.json'), JSON.stringify({
-        profiles: [{ id: 'default', name: 'Default', authToken: 'sk-xxx', baseUrl: 'https://custom.example', modelList: ['m1'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' }],
+        profiles: [{ id: 'default', name: 'Default', authToken: 'sk-xxx', baseUrl: 'https://custom.example', modelList: ['m1'], recapModel: 'r', commitMessageModel: 'c' }],
         activeProfileId: 'default',
         accessToken: 'webtok',
       }))
@@ -629,81 +627,27 @@ describe('config', () => {
     })
   })
 
-  describe('modelGroups config', () => {
+  describe('modelGroups config (removed)', () => {
     it('WRITABLE_CONFIG_KEYS includes profiles and activeProfileId', () => {
       expect(WRITABLE_CONFIG_KEYS).toContain('profiles')
       expect(WRITABLE_CONFIG_KEYS).toContain('activeProfileId')
     })
 
-    it('loadConfig parses a valid modelGroups array and drops malformed entries', async () => {
+    it('loadConfig ignores a legacy modelGroups key without wiping the profile', async () => {
       writeFileSync(
         join(dir, 'config.json'),
         JSON.stringify({
           profiles: [{
             id: 'default', name: 'Default', authToken: '', baseUrl: 'https://api.anthropic.com',
             modelList: ['m1'], recapModel: 'r', commitMessageModel: 'c',
-            modelGroups: [
-              { id: 'g_flagship', name: 'Flagship', opus: 'anthropic/claude-opus-4-20250514', main: 'opus' },
-              // malformed: missing name → dropped; missing all slots → dropped; bad main → dropped
-              { id: 'g_bad1', opus: 'op' },
-              { id: 'g_bad2', name: 'NoSlots' },
-              { id: 'g_bad3', name: 'BadMain', opus: 'op', main: 'claude' },
-            ],
+            modelGroups: [{ id: 'g1', name: 'G', opus: 'm1' }],
           }],
           activeProfileId: 'default',
         }),
       )
       await loadConfig(dir)
-      expect(config.modelGroups).toHaveLength(1)
-      expect(config.modelGroups[0].id).toBe('g_flagship')
-      expect(config.modelGroups[0].main).toBe('opus')
-    })
-
-    it('drops the entire group when a tier slot is not a string', async () => {
-      writeFileSync(
-        join(dir, 'config.json'),
-        JSON.stringify({
-          profiles: [{
-            id: 'default', name: 'Default', authToken: '', baseUrl: 'https://api.anthropic.com',
-            modelList: ['m1'], recapModel: 'r', commitMessageModel: 'c',
-            modelGroups: [
-              { id: 'g', name: 'test', opus: 123, sonnet: 'valid-model' },
-            ],
-          }],
-          activeProfileId: 'default',
-        }),
-      )
-      await loadConfig(dir)
-      expect(config.modelGroups).toHaveLength(0)
-    })
-
-    it('duplicate group ids keep the last entry', async () => {
-      writeFileSync(
-        join(dir, 'config.json'),
-        JSON.stringify({
-          profiles: [{
-            id: 'default', name: 'Default', authToken: '', baseUrl: 'https://api.anthropic.com',
-            modelList: ['m1'], recapModel: 'r', commitMessageModel: 'c',
-            modelGroups: [
-              { id: 'g1', name: 'First', opus: 'op' },
-              { id: 'g1', name: 'Second', sonnet: 'sn' },
-            ],
-          }],
-          activeProfileId: 'default',
-        }),
-      )
-      await loadConfig(dir)
-      expect(config.modelGroups).toHaveLength(1)
-      expect(config.modelGroups[0].name).toBe('Second')
-      expect(config.modelGroups[0].opus).toBeUndefined()
-      expect(config.modelGroups[0].sonnet).toBe('sn')
-    })
-
-    it('GET /api/config response shape includes modelGroups', () => {
-      // Shape-level guard: the /config route reads serverConfig.modelGroups.
-      // The route itself is exercised in Task 5; here we only pin the field's
-      // existence on ServerConfig so a later rename can't silently drop it.
-      expect('modelGroups' in config).toBe(true)
+      expect(config.modelList).toEqual(['m1'])
+      expect((config as unknown as Record<string, unknown>).modelGroups).toBeUndefined()
     })
   })
 
@@ -787,7 +731,7 @@ describe('provider-profile migration + derived fields', () => {
 
   it('is idempotent: a second load with profiles present does not re-migrate', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({
-      profiles: [{ id: 'a', name: 'A', authToken: 'tok', baseUrl: 'https://gw', modelList: ['ma'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' }],
+      profiles: [{ id: 'a', name: 'A', authToken: 'tok', baseUrl: 'https://gw', modelList: ['ma'], recapModel: 'r', commitMessageModel: 'c' }],
       activeProfileId: 'a',
     }))
     vi.spyOn(console, 'log').mockImplementation(() => {})
@@ -802,7 +746,7 @@ describe('provider-profile migration + derived fields', () => {
     // /profiles/:id's "cannot delete the active profile" guard matches nothing,
     // so the profile actually in use could be deleted.
     writeFileSync(join(dir, 'config.json'), JSON.stringify({
-      profiles: [{ id: 'a', name: 'A', authToken: 'tok', baseUrl: 'https://gw', modelList: ['ma'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' }],
+      profiles: [{ id: 'a', name: 'A', authToken: 'tok', baseUrl: 'https://gw', modelList: ['ma'], recapModel: 'r', commitMessageModel: 'c' }],
       activeProfileId: 'typo',
     }))
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
@@ -815,8 +759,8 @@ describe('provider-profile migration + derived fields', () => {
   it('derives defaultModel from the active profile modelList[0] and WRITABLE_CONFIG_KEYS no longer lists legacy keys', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({
       profiles: [
-        { id: 'one', name: 'One', authToken: 't1', baseUrl: 'https://gw1', modelList: ['x/one', 'x/two'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
-        { id: 'two', name: 'Two', authToken: 't2', baseUrl: 'https://gw2', modelList: ['y/one'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
+        { id: 'one', name: 'One', authToken: 't1', baseUrl: 'https://gw1', modelList: ['x/one', 'x/two'], recapModel: 'r', commitMessageModel: 'c' },
+        { id: 'two', name: 'Two', authToken: 't2', baseUrl: 'https://gw2', modelList: ['y/one'], recapModel: 'r', commitMessageModel: 'c' },
       ],
       activeProfileId: 'two',
     }))
@@ -832,8 +776,8 @@ describe('provider-profile migration + derived fields', () => {
   it('clearCredentials blanks every profile token and baseUrl', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({
       profiles: [
-        { id: 'a', name: 'A', authToken: 't1', baseUrl: 'https://gw1', modelList: ['ma'], modelGroups: [], modelContextWindows: { ma: 512_000 }, recapModel: 'r', commitMessageModel: 'c' },
-        { id: 'b', name: 'B', authToken: 't2', baseUrl: 'https://gw2', modelList: ['mb'], modelGroups: [], modelContextWindows: { mb: 128_000 }, recapModel: 'r', commitMessageModel: 'c' },
+        { id: 'a', name: 'A', authToken: 't1', baseUrl: 'https://gw1', modelList: ['ma'], modelContextWindows: { ma: 512_000 }, recapModel: 'r', commitMessageModel: 'c' },
+        { id: 'b', name: 'B', authToken: 't2', baseUrl: 'https://gw2', modelList: ['mb'], modelContextWindows: { mb: 128_000 }, recapModel: 'r', commitMessageModel: 'c' },
       ],
       activeProfileId: 'a',
     }))

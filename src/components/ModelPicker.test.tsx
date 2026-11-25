@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render } from '@testing-library/react'
 import { ModelPicker } from './ModelPicker'
 import { expectPortaledToBody } from './portal-test-utils'
 import type { ModelOptions } from '../hooks/useModelOptions'
@@ -14,46 +14,19 @@ function makeProps(overrides: Partial<Parameters<typeof ModelPicker>[0]> = {}) {
     models: [{ id: 'm1' }, { id: 'm2' }],
     recents: [],
     defaultModel: 'm1',
-    modelGroups: [
-      { id: 'g1', name: 'Flagship', opus: 'm1', sonnet: 'm2', main: 'opus' },
-      { id: 'g2', name: 'Budget', haiku: 'm2', main: 'haiku' },
-    ],
   }
   return {
     // `source: null` = no anchor element, i.e. nothing to carry an accent from.
     anchor: { x: 0, y: 0, source: null },
     current: undefined,
-    currentGroupId: undefined,
     options,
     onSelect: vi.fn(),
-    onSelectGroup: vi.fn(),
     onClose: vi.fn(),
     ...overrides,
   }
 }
 
 describe('ModelPicker', () => {
-  it('renders a Model Groups group before Models', () => {
-    render(<ModelPicker {...makeProps()} />)
-    expect(screen.getByText('Model Groups')).toBeTruthy()
-    fireEvent.click(screen.getByText('Flagship'))
-    expect(screen.getByText('Models')).toBeTruthy()
-  })
-
-  it('calls onSelectGroup with the group id', () => {
-    const props = makeProps()
-    render(<ModelPicker {...props} />)
-    fireEvent.click(screen.getByText('Budget'))
-    expect(props.onSelectGroup).toHaveBeenCalledWith('g2')
-  })
-
-  it('marks the active group row', () => {
-    const props = makeProps({ currentGroupId: 'g1' })
-    render(<ModelPicker {...props} />)
-    const item = screen.getByText('Flagship').closest('button')
-    expect(item?.className).toContain('active')
-  })
-
   it('portals to <body> so its viewport anchor is honoured', () => {
     const { container } = render(<ModelPicker {...makeProps()} />)
     expectPortaledToBody(container, '.model-picker')
@@ -115,14 +88,14 @@ describe('ModelPicker', () => {
     const rows = () => Array.from(document.querySelectorAll<HTMLElement>('.model-picker-item'))
     scrollIntoView.mockClear()
 
-    fireEvent.mouseEnter(rows()[2])
-    expect(rows()[2].className).toContain('selected')
+    fireEvent.mouseEnter(rows()[0])
+    expect(rows()[0].className).toContain('selected')
     expect(scrollIntoView).not.toHaveBeenCalled()
 
     fireEvent.keyDown(document.querySelector('.model-picker')!, { key: 'ArrowDown' })
-    expect(rows()[3].className).toContain('selected')
+    expect(rows()[1].className).toContain('selected')
     expect(scrollIntoView).toHaveBeenCalledTimes(1)
-    expect(scrollIntoView.mock.instances[0]).toBe(rows()[3])
+    expect(scrollIntoView.mock.instances[0]).toBe(rows()[1])
   })
 
   it('activates the highlighted row on Enter', () => {
@@ -131,6 +104,6 @@ describe('ModelPicker', () => {
 
     fireEvent.keyDown(document.querySelector('.model-picker')!, { key: 'Enter' })
 
-    expect(props.onSelectGroup).toHaveBeenCalledWith('g1')
+    expect(props.onSelect).toHaveBeenCalledWith('m1')
   })
 })

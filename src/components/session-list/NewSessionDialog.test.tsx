@@ -634,69 +634,20 @@ describe('NewSessionDialog field pickers (model / permission mode / group)', () 
     expect(form.groupId).toBeUndefined()
   })
 
-  it('lists Model Groups from the modelGroups prop and submits modelGroupId', async () => {
+  it('model menu has no Model Groups section and submits the chosen model', async () => {
     const onSubmit = vi.fn()
     render(
       <NewSessionDialog
         {...baseProps}
         onSubmit={onSubmit}
         serverModels={['claude-sonnet-4-20250514', 'claude-opus-4-20250514']}
-        modelGroups={[
-          {
-            id: 'mg1',
-            name: 'Balanced',
-            opus: 'claude-opus-4-20250514',
-            sonnet: 'claude-sonnet-4-20250514',
-          },
-        ]}
       />,
     )
     fireEvent.click(modelTrigger())
-    expect(fieldItems().some((el) => el.textContent?.includes('Balanced'))).toBe(true)
-    expect(document.querySelector('.field-picker-heading')?.textContent).toBe('Model Groups')
-
-    fireEvent.click(fieldItems().find((el) => el.textContent?.includes('Balanced'))!)
-    const form = await clickCreate(onSubmit)
-    expect(form.modelGroupId).toBe('mg1')
-    // A group pin replaces a concrete model — don't send both.
-    expect(form.model).toBeUndefined()
-  })
-
-  it('does not fetch /config for modelGroups — they ride the prop', () => {
-    render(
-      <NewSessionDialog
-        {...baseProps}
-        modelGroups={[{ id: 'mg1', name: 'Balanced', opus: 'claude-opus-4-20250514' }]}
-      />,
-    )
-    const configCalls = (api.get as ReturnType<typeof vi.fn>).mock.calls.filter(
-      ([url]) => url === '/config',
-    )
-    expect(configCalls).toHaveLength(0)
-  })
-
-  it('clears modelGroupId when a concrete model is chosen', async () => {
-    const onSubmit = vi.fn()
-    render(
-      <NewSessionDialog
-        {...baseProps}
-        onSubmit={onSubmit}
-        serverModels={['claude-opus-4-20250514']}
-        modelGroups={[{ id: 'mg1', name: 'Balanced', opus: 'claude-opus-4-20250514' }]}
-      />,
-    )
-    fireEvent.click(modelTrigger())
-    fireEvent.click(fieldItems().find((el) => el.textContent?.includes('Balanced'))!)
-    fireEvent.click(modelTrigger())
-    // Match the model ROW by its label — the Balanced group's slot sub also
-    // contains this model id and would otherwise win `includes`.
-    const modelRow = fieldItems().find(
-      (el) => el.querySelector('.field-picker-item-name')?.textContent === 'claude-opus-4-20250514',
-    )!
-    fireEvent.click(modelRow)
+    expect(document.querySelector('.field-picker-heading')?.textContent).not.toBe('Model Groups')
+    fireEvent.click(fieldItems().find((el) => el.textContent?.includes('claude-opus-4-20250514'))!)
     const form = await clickCreate(onSubmit)
     expect(form.model).toBe('claude-opus-4-20250514')
-    expect(form.modelGroupId).toBeUndefined()
   })
 
   it('renders Agent / Effort / Thinking as field pickers', async () => {
@@ -840,23 +791,6 @@ describe('NewSessionDialog field pickers (model / permission mode / group)', () 
     const form = await clickCreate(onSubmit)
     expect(form.model).toBe('claude-opus-4-20250514')
     expect(form.agent).toBeUndefined()
-  })
-
-  it('drops a stale modelGroupId when the group disappears from the prop', async () => {
-    const onSubmit = vi.fn()
-    const groups = [{ id: 'mg1', name: 'Balanced', opus: 'claude-opus-4-20250514' }]
-    const { rerender } = render(
-      <NewSessionDialog {...baseProps} onSubmit={onSubmit} modelGroups={groups} />,
-    )
-    fireEvent.click(modelTrigger())
-    fireEvent.click(fieldItems().find((el) => el.textContent?.includes('Balanced'))!)
-
-    // Profile deleted the group while the dialog was open: App refetches
-    // /config and threads an empty modelGroups prop down.
-    rerender(<NewSessionDialog {...baseProps} onSubmit={onSubmit} modelGroups={[]} />)
-
-    const form = await clickCreate(onSubmit)
-    expect(form.modelGroupId).toBeUndefined()
   })
 })
 

@@ -189,10 +189,6 @@ export interface SessionInfoBase<PM = string> {
    *  system prompt, tool restrictions and model. Persisted; survives
    *  resume/restart/fork; runtime-switchable via POST /sessions/:id/agent. */
   agent?: string
-  /** Active model group id. When set, the session was created with a
-   *  modelGroupId that resolves to a ModelGroupConfig, and `model` is the
-   *  group's resolved main slot model. */
-  modelGroupId?: string
   /** Provider profile id this session is pinned to. Undefined = follow the
    *  active (global) profile. Persisted so resume/fork/clear keep the pin. */
   profileId?: string

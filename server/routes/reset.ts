@@ -83,7 +83,6 @@ export function buildResetRouter(deps: ResetRouterDeps): Hono {
                 const next = {
                   ...p,
                   modelList: [...DEFAULT_PROFILE.modelList],
-                  modelGroups: [...DEFAULT_PROFILE.modelGroups],
                   recapModel: DEFAULT_PROFILE.recapModel,
                   commitMessageModel: DEFAULT_PROFILE.commitMessageModel,
                 }

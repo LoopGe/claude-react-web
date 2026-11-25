@@ -31,7 +31,6 @@ function profile(id: string, name: string, authToken: string) {
     id, name, authToken,
     baseUrl: 'https://api.anthropic.com',
     modelList: ['anthropic/claude-sonnet-4-20250514'],
-    modelGroups: [],
     recapModel: '',
     commitMessageModel: '',
   }

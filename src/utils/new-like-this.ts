@@ -26,10 +26,6 @@ export function buildNewLikeThisForm(
     // removed with it). Mirrors the server fork rule.
     cwd: source.worktree?.mainRepoPath ?? source.cwd,
     model: source.model,
-    // Deliberately NOT copying `source.modelGroupId`: create() 400s on a
-    // deleted model group while the source session itself self-heals on
-    // respawn. Copying the resolved `model` keeps the copy strictly
-    // no-worse than the source; the user can re-pin a group from ChatPanel.
     // (Session-group membership IS copied below — that path drops a full
     // group instead of failing.)
     // Main-thread persona. A copy that silently drops it would be a different

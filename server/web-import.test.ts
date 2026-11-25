@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { writeFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tempDir, rmRf } from './__test-utils__/index.js'
@@ -57,8 +57,8 @@ describe('readSourceCredentials', () => {
     await expect(readSourceCredentials(dir)).rejects.toThrow(/not a JSON object/)
   })
 
-  /** 一条"源里写了字段、但值活不过 coercion"的 profile。缺少 tier slot 的
-   *  modelGroups 条目正是 coerceModelGroups 会丢掉的那一类。 */
+  /** 一条"源里写了字段、但值活不过 coercion"的 profile：modelList 全是空白条目，
+   *  normalizeModelList 会把它们丢光。 */
   function seedUnusableFields(): void {
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'config.json'), JSON.stringify({
@@ -68,7 +68,6 @@ describe('readSourceCredentials', () => {
         authToken: 'sk-ant-unusable',
         baseUrl: 'https://unusable.example.com',
         modelList: ['', '  '],
-        modelGroups: [{ id: 'g1', name: 'G1' }],
       }],
       activeProfileId: 'default',
     }), 'utf8')
@@ -83,35 +82,6 @@ describe('readSourceCredentials', () => {
     // 值确实是 fallback（不是源的）——这就是 present 必须为 false 的原因。
     expect(cred.modelList).toEqual(DEFAULT_PROFILE.modelList)
     expect(cred.present.modelList).toBe(false)
-  })
-
-  it('reports modelGroups as absent when every entry fails coercion', async () => {
-    seedUnusableFields()
-    const cred = await readSourceCredentials(dir)
-    // 关键：这里的 coerced 值是 []。若 present 为 true，写入侧会用 [] 把桌面版
-    // 已有的 model groups 清空。
-    expect(cred.modelGroups).toEqual([])
-    expect(cred.present.modelGroups).toBe(false)
-  })
-
-  // present.modelGroups 的判据就是要写出去的那个值（coerceProfileEntries 的产物
-  // active.modelGroups）本身的长度——这一条钉住 true 的那一半：判据若被写成恒
-  // false（或只看磁盘上有没有这个键），下面这条会红。
-  it('reports modelGroups as present when the source carries a usable group', async () => {
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({
-      profiles: [{
-        id: 'default',
-        name: 'Grouped',
-        authToken: 'sk-ant-grouped',
-        baseUrl: 'https://grouped.example.com',
-        modelGroups: [{ id: 'g1', name: 'G1', main: 'opus', opus: 'o-1', sonnet: 's-1' }],
-      }],
-      activeProfileId: 'default',
-    }), 'utf8')
-    const cred = await readSourceCredentials(dir)
-    expect(cred.modelGroups).toEqual([{ id: 'g1', name: 'G1', opus: 'o-1', sonnet: 's-1', main: 'opus' }])
-    expect(cred.present.modelGroups).toBe(true)
   })
 
   it('reads model context windows as a present, independent copy', async () => {
@@ -166,21 +136,6 @@ describe('readSourceCredentials', () => {
     expect(hasUsableProfileFields(cred.present)).toBe(false)
   })
 
-  // 畸形分组只该被 coerce 一次。早先 present 那一格对着同一个
-  // rawEntry.modelGroups **又** coerce 了一次，于是每次读取都为同一处畸形多打
-  // 一遍 warn；现在它与 active.modelGroups 是同一个值、同一次 coercion。
-  it('warns about a malformed model group exactly once per read', async () => {
-    seedUnusableFields() // modelGroups: [{ id: 'g1', name: 'G1' }] —— 没有 tier slot
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    try {
-      const cred = await readSourceCredentials(dir)
-      expect(cred.present.modelGroups).toBe(false)
-      const tierWarns = warnSpy.mock.calls.filter((c) => String(c[1]).includes('no tier slots'))
-      expect(tierWarns).toHaveLength(1)
-    } finally {
-      warnSpy.mockRestore()
-    }
-  })
 })
 
 describe('readSourceMcp / readSourceMarketplaces', () => {

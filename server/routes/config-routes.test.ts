@@ -85,7 +85,7 @@ describe('config routes — setup honors --config override', () => {
       JSON.stringify({
         profiles: [{
           id: 'default', name: 'Default', authToken: '', baseUrl: 'https://api.anthropic.com',
-          modelList: ['m'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c',
+          modelList: ['m'], recapModel: 'r', commitMessageModel: 'c',
         }],
         activeProfileId: 'default',
       }),
@@ -121,7 +121,7 @@ describe('config routes — setup honors --config override', () => {
       JSON.stringify({
         profiles: [{
           id: 'default', name: 'Default', authToken: 'sk-x', baseUrl: 'https://gw.example',
-          modelList: ['m'], modelGroups: [], recapModel: 'vendor/stale', commitMessageModel: 'vendor/stale',
+          modelList: ['m'], recapModel: 'vendor/stale', commitMessageModel: 'vendor/stale',
         }],
         activeProfileId: 'default',
       }),
@@ -192,7 +192,7 @@ describe('config routes — full defaults', () => {
     writeFileSync(join(stateDir, 'config.json'), JSON.stringify({
       profiles: [{
         id: 'default', name: 'Default', authToken: 'sk-x', baseUrl: 'https://gw.example',
-        modelList: ['vendor/a'], modelGroups: [], recapModel: '', commitMessageModel: '',
+        modelList: ['vendor/a'], recapModel: '', commitMessageModel: '',
         modelContextWindows: { 'vendor/a': 1_000_000, 'vendor/b': 128_000 },
       }],
       activeProfileId: 'default',
@@ -275,7 +275,7 @@ describe('config routes — non-object inputs must not 500', () => {
     writeFileSync(file, JSON.stringify({
       profiles: [{
         id: 'default', name: 'Default', authToken: '', baseUrl: 'https://api.anthropic.com',
-        modelList: ['m'], modelGroups: [], recapModel: '', commitMessageModel: '',
+        modelList: ['m'], recapModel: '', commitMessageModel: '',
       }],
       activeProfileId: 'default',
       authToken: 12345,

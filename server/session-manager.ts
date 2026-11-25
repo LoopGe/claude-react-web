@@ -78,7 +78,6 @@ import type { TerminalSnapshot } from '../shared/terminal.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
-import { auxFallbackModel, fallbackAliasesFor, resolveConfiguredModelId, resolveGroup } from './model-groups.js'
 import { isSdkForwardedMode } from './permission-modes.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import {
@@ -370,15 +369,7 @@ export function effectiveProfileFor(profileId: string | undefined): ProviderProf
     if (found) return found
     log.warn(`[profile] ${profileId} no longer exists — falling back to active profile`)
   }
-  const active = resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE)
-  // In legacy mode (no profiles configured) the top-level modelGroups carries
-  // the active profile's groups (set by applyParsedConfig / __setConfigForTest).
-  // Inherit them so callers that look at profile.modelGroups always see the
-  // right set regardless of whether profiles are populated.
-  if (active.modelGroups.length === 0 && defaultConfig.modelGroups.length > 0) {
-    return { ...active, modelGroups: defaultConfig.modelGroups }
-  }
-  return active
+  return resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE)
 }
 
 /** Merge result frames from the sidecar back into a disk-read history seed.
@@ -1798,10 +1789,9 @@ export class SessionManager {
       cwd: s.cwd,
       model: s.model,
       agent: s.agent,
-      modelGroupId: s.modelGroupId,
       // The profile pin must survive a restart: resume() re-pins from it
       // (below), and the auxiliary-call resolution (auxTargetFor)
-      // needs it to resolve the session's own model group — without it a
+      // needs it to resolve the session's own model — without it a
       // dormant session is looked up against whichever profile happens to be
       // active.
       profileId: s.profileId,
@@ -1901,7 +1891,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; taskBudget?: { total: number }; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; taskBudget?: { total: number }; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -1912,7 +1902,6 @@ export class SessionManager {
       // Start-as custom agent name (Options.agent), persisted so resume/fork
       // restart the session in the same persona.
       agent: opts.agent,
-      modelGroupId: (opts as { modelGroupId?: string }).modelGroupId,
       profileId: (opts as { profileId?: string }).profileId,
       permissionMode: opts.permissionMode,
       title: opts.title,
@@ -1988,7 +1977,7 @@ export class SessionManager {
    *  For resume, use `resume()` instead — this path always allocates a
    *  fresh UUID and won't wire up SDK `resume`. */
   async create(
-    opts: Options & { provider?: string; modelGroupId?: string },
+    opts: Options & { provider?: string },
     customEnv?: Record<string, string>,
     /** Set by the restart flow: the id of the session Y joins. Threaded
      *  through to spawn() so the `created` broadcast carries `joinGroupOf`,
@@ -2000,8 +1989,8 @@ export class SessionManager {
      *  bypass its maxGroupSize cap when appending Y. */
     evictingSource?: boolean,
   ): Promise<SessionInfo> {
-    // Validate profileId first so we can use the effective profile for
-    // downstream checks (modelGroupId, default model).
+    // Validate profileId first so we can use the effective profile for the
+    // default model.
     const profileId = (opts as { profileId?: unknown }).profileId
     if (profileId !== undefined) {
       if (typeof profileId !== 'string') {
@@ -2012,18 +2001,6 @@ export class SessionManager {
       }
     }
     const profile = effectiveProfileFor(profileId as string | undefined)
-    // Explicit op: an unknown group at create is a 400, not a silent
-    // fallback (contrast: a group deleted while sessions reference it
-    // self-heals silently on the next respawn, below).
-    const modelGroupId = (opts as { modelGroupId?: unknown }).modelGroupId
-    if (modelGroupId !== undefined) {
-      if (typeof modelGroupId !== 'string') {
-        throw new HttpError(400, 'modelGroupId must be a string')
-      }
-      if (!profile.modelGroups.some((g) => g.id === modelGroupId)) {
-        throw new HttpError(400, `model group ${modelGroupId} not found`)
-      }
-    }
     // Pin a concrete default model for brand-new sessions so we don't lean
     // on the CLI subprocess's built-in default. When the client omits a
     // model, use the first entry of the configured model list
@@ -2032,7 +2009,7 @@ export class SessionManager {
     // selected — instead of an undefined that silently resolves to whatever
     // model the `claude` CLI happens to pick. Resume/fork are unaffected:
     // they carry the persisted model forward through their own opts.
-    const withDefault: Options & { provider?: string; modelGroupId?: string } = {
+    const withDefault: Options & { provider?: string } = {
       ...opts,
       provider: opts.provider ?? this.defaultProvider,
       model: opts.model ?? profileDefaultModel(profile),
@@ -2395,7 +2372,6 @@ export class SessionManager {
       // consistent for a resume that did NOT walk the recreate chain too).
       worktree: meta.worktree,
       model: resolvedModel,
-      modelGroupId: meta.modelGroupId,
       // Use the persisted permissionMode if available (sessions we created).
       // For CLI sessions adopted from disk (no permissionMode in meta), fall
       // back to the caller-supplied mode (the user's current panel mode) so
@@ -2516,7 +2492,6 @@ export class SessionManager {
       provider,
       cwd: meta.cwd,
       model: meta.model,
-      modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
       title: meta.title,
       effortLevel: meta.effortLevel,
@@ -2816,7 +2791,6 @@ export class SessionManager {
       // the fork's own create path.
       cwd: meta.worktree?.mainRepoPath ?? meta.cwd,
       model: meta.model,
-      modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
       title,
       // Carry effort + thinking forward so the fork matches the source.
@@ -2834,7 +2808,7 @@ export class SessionManager {
       hooks: meta.hooks,
       enabledPlugins: meta.enabledPlugins,
       cliDebug: meta.cliDebug,
-    }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; cliDebug?: boolean }
+    }) as Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; cliDebug?: boolean }
     forkOpts.resume = id
     forkOpts.forkSession = true
     // Carry the start-as agent forward only while its def still exists and
@@ -3499,7 +3473,7 @@ export class SessionManager {
   /** Shared spawn path for create(), resume(), and fork(). */
   private spawn(
     id: string,
-    opts: Options & { provider?: string; modelGroupId?: string },
+    opts: Options & { provider?: string },
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
@@ -3552,7 +3526,7 @@ export class SessionManager {
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
-    const fullOpts: Options & { provider?: string; modelGroupId?: string } = { ...opts, provider: providerName }
+    const fullOpts: Options & { provider?: string } = { ...opts, provider: providerName }
     if (this.isSessionDeleteTombstoned(id)) {
       // delete() may overtake any slow async path via its op-lock escape
       // hatch. A tombstone covers both resume and turn-less fresh respawns,
@@ -3593,7 +3567,7 @@ export class SessionManager {
 
     // Profile resolution: prefer opts.profileId (create/fork), fall back to
     // persisted meta (resume/respawn). A dangling pin self-heals to the
-    // active profile (mirrors model-group self-heal right below).
+    // active profile.
     const requestedProfileId =
       (fullOpts as { profileId?: string }).profileId ?? existingMeta?.profileId
     let profile = effectiveProfileFor(requestedProfileId)
@@ -3604,23 +3578,6 @@ export class SessionManager {
       profile = effectiveProfileFor(undefined)
     }
     metaSnapshot.profileId = profileId
-
-    // Model-group intent: carried via opts on create/fork/clear (new ids),
-    // or re-read from the persisted meta on same-id respawn (resume /
-    // respawnFresh). A deleted group self-heals: clear the reference and
-    // collapse to the effective model (the provider's own `find` also
-    // misses and collapses — both sides agree).
-    const modelGroupId = (fullOpts as { modelGroupId?: string }).modelGroupId ?? existingMeta?.modelGroupId
-    if (modelGroupId) {
-      const group = profile.modelGroups.find((g) => g.id === modelGroupId)
-      if (group) {
-        metaSnapshot.model = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList)).main
-        metaSnapshot.modelGroupId = modelGroupId
-      } else {
-        log.warn(`[session ${id}] model group ${modelGroupId} no longer exists — clearing reference`)
-        metaSnapshot.modelGroupId = undefined
-      }
-    }
 
     // Split the resume/discard seed by frame origin (see the Session literal
     // below for why). stampReceivedAt is set-only-if-absent, so frames that
@@ -3655,12 +3612,7 @@ export class SessionManager {
       // calls: an unpinned session keeps running on it even after the user
       // activates another profile (RAM-only — see Session.spawnProfileId).
       spawnProfileId: profile.id,
-      // For group sessions, metaSnapshot.model was set to the resolved group
-      // main by the model-group block above (and metaSnapshot.modelGroupId to
-      // the group id, or cleared by self-heal). For non-group sessions the
-      // snapshot already holds the correctly-resolved model.
       model: metaSnapshot.model,
-      modelGroupId: metaSnapshot.modelGroupId,
       permissionMode: requestedMode,
       handle: undefined as unknown as ProviderSessionHandle,
       canUseTool: undefined,
@@ -3962,7 +3914,7 @@ export class SessionManager {
       // provider builds its prompt in-process and has no SDK options, so it
       // gets the texts through this provider-level field.
       systemPromptAppend: nativeSystemPromptAppend((fullOpts as { parentId?: string }).parentId),
-      providerExtras: { sdkOptions, modelGroupId: session.modelGroupId },
+      providerExtras: { sdkOptions },
     })
     session.handle = handle
     this.syncEffectiveSettings(session)
@@ -5692,7 +5644,6 @@ export class SessionManager {
         provider: s.provider,
         cwd: s.cwd,
         model: resetBase ? resetBase.model : s.model,
-        modelGroupId: s.modelGroupId,
         permissionMode: (resetBase ? resetBase.permissionMode : s.permissionMode) as Session['permissionMode'],
         // Plain /clear starts a FRESH conversation, so Y is untitled — the
         // sidebar falls back to the id prefix and the first post-clear message
@@ -5781,7 +5732,6 @@ export class SessionManager {
         provider: settings.provider,
         cwd: settings.cwd,
         model: settings.model,
-        modelGroupId: settings.modelGroupId,
         permissionMode: settings.permissionMode,
         title: settings.title,
         effortLevel: settings.effortLevel,
@@ -5795,7 +5745,7 @@ export class SessionManager {
         // delete-confirm dirty check, worktree cleanup) while running in the
         // inherited worktree dir.
         worktree: settings.worktree,
-      }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; parentId?: string }
+      }) as Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; parentId?: string }
       // Carry the base spawn-time skill policy separately from skillOverride.
       // preserveBaseSkillPolicy below makes even an explicit undefined base win
       // over the spawn projection; the RAM override is re-applied afterward.
@@ -6427,7 +6377,6 @@ export class SessionManager {
   async setModel(id: string, model?: string): Promise<SessionInfo> {
     return this.opLock.run(id, async () => {
       const s = this.requireLive(id)
-      const wasGroup = !!s.modelGroupId
       // Resolve the control method OUTSIDE the retry: a provider without
       // model-switch support must 501 immediately, not after two attempts.
       const pickModel = this.requireHandleMethod<(model?: string) => Promise<void>>(
@@ -6437,20 +6386,8 @@ export class SessionManager {
         'supportsModelSwitch',
       )
       await this.switchModelWithRetry(s, () => pickModel(model))
-      if (wasGroup) {
-        // Switching to a single model fully reverts today's behavior: clear
-        // the group reference AND the fallback degradation chain so no
-        // residual aliases survive the switch.
-        await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-          s,
-          'applyFlagSettings',
-          'fallback model',
-          'supportsModelSwitch',
-        )({ fallbackModel: null })
-      }
       s.model = model
       this.syncEffectiveSettings(s)
-      s.modelGroupId = undefined
       s.lastActivityAt = Date.now()
       // The model changed — recompute its effort capability (keyword-based,
       // so a switch between model classes changes what's available), then
@@ -6470,46 +6407,11 @@ export class SessionManager {
     })
   }
 
-  /** Point a session at a ModelGroup. The main model + fallback chain switch
-   *  immediately (live); the tier env vars (subagent routing) land on the
-   *  next respawn — an SDK runtime limitation, not a bug (spec §7). */
-  async setModelGroup(id: string, groupId: string): Promise<SessionInfo> {
-    return this.opLock.run(id, async () => {
-      const s = this.requireLive(id)
-      const profile = effectiveProfileFor(s.profileId)
-      const group = profile.modelGroups.find((g) => g.id === groupId)
-      if (!group) throw new HttpError(400, `model group ${groupId} not found`)
-      const r = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList))
-      const pickModel = this.requireHandleMethod<(model?: string) => Promise<void>>(
-        s,
-        'setModel',
-        'model switching',
-        'supportsModelSwitch',
-      )
-      await this.switchModelWithRetry(s, () => pickModel(r.main))
-      const fallback = fallbackAliasesFor(group.main ?? 'opus')
-      await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-        s,
-        'applyFlagSettings',
-        'fallback model',
-        'supportsModelSwitch',
-      )({ fallbackModel: fallback.length > 0 ? fallback : null })
-      s.model = r.main
-      s.modelGroupId = groupId
-      s.lastActivityAt = Date.now()
-      s.effortLevels = effortLevelsForModel(s.model)
-      s.thinkingSupported = supportsThinkingForModel(s.model)
-      s.fastModeSupported = supportsFastModeForModel(s.model)
-      this.persist(s)
-      return this.info(s)
-    })
-  }
-
   /** Pin a session to a provider profile. Live-applies the profile's default
-   *  model/group, persists the pin, and (when apply==='now' and the session is
+   *  model, persists the pin, and (when apply==='now' and the session is
    *  idle) restarts the Query so the new credentials take effect immediately.
    *  `deferred` only persists — credentials apply on the next respawn. The
-   *  nested setModel / setModelGroup / restart calls re-enter the op lock. */
+   *  nested setModel / restart calls re-enter the op lock. */
   async setProfile(id: string, profileId: string, apply: 'now' | 'deferred' = 'now'): Promise<SessionInfo> {
     return this.opLock.run(id, async () => {
       const s = this.requireLive(id)
@@ -6518,19 +6420,8 @@ export class SessionManager {
       if (!profile) throw new HttpError(400, `profile ${profileId} not found`)
       s.profileId = profileId
       s.lastActivityAt = Date.now()
-      // Live-apply the profile's default model/group. A group pin only survives
-      // if the new profile still has that group id; otherwise collapse to the
-      // profile's default model (the old group's slots may not exist here).
-      if (s.modelGroupId) {
-        const group = profile.modelGroups.find((g) => g.id === s.modelGroupId)
-        if (group) {
-          await this.setModelGroup(id, s.modelGroupId)
-        } else {
-          await this.setModel(id, profileDefaultModel(profile))
-        }
-      } else {
-        await this.setModel(id, profileDefaultModel(profile))
-      }
+      // Live-apply the profile's default model.
+      await this.setModel(id, profileDefaultModel(profile))
       this.persist(s)
       if (apply === 'now') {
         await this.restart(id)
@@ -11420,9 +11311,7 @@ export class SessionManager {
    *  Model resolution: the profile's per-field override (`recapModel` /
    *  `commitMessageModel`; `autoClassifierModel` is global, not per-profile,
    *  and is therefore applied only to sessions on the active profile), else
-   *  the session's model-group HAIKU tier — the slot the CLI routes its own
-   *  internal queries to — else the session's own model. Works for live and
-   *  dormant sessions alike. See model-groups.auxFallbackModel(). */
+   *  the session's own model. Works for live and dormant sessions alike. */
   auxTargetFor(
     id: string,
     field: 'recap' | 'commitMessage' | 'classifier' | 'pluginAi',
@@ -11436,22 +11325,15 @@ export class SessionManager {
     // does. A dormant session has no subprocess, so its persisted pin decides,
     // else the active profile it would be resumed with.
     const profile = effectiveProfileFor(live ? live.spawnProfileId ?? live.profileId : session.profileId)
-    const group = session.modelGroupId
-      ? profile.modelGroups.find((g) => g.id === session.modelGroupId)
-      : undefined
-    // Shared resolver (model-groups.ts) — the same one the provider uses for
-    // the tier env vars, so both sides resolve a group's slots identically.
-    const fallback = auxFallbackModel(session.model, group, (m) => resolveConfiguredModelId(m, profile.modelList))
+    const fallback = session.model
     // autoClassifierModel is a GLOBAL setting (no profile carries it), so it is
     // only meaningful for a session running on the profile it was written for.
     // Applying it to a session on another provider would hand that provider a
     // model id it does not serve — the exact misroute this resolution exists to
     // prevent.
     // `pluginAi` (an app plugin's `ai.request` scoped to a session) has no
-    // config field of its own, so it takes the tier chain: the model group's
-    // haiku slot when the session has one — a small fast model is the right
-    // class for the short side tasks plugins ask for — else the session's own
-    // model, exactly like the other aux calls.
+    // config field of its own, so it takes the session's own model, exactly
+    // like the other aux calls.
     const override = field === 'recap'
       ? profile.recapModel
       : field === 'commitMessage'
@@ -11848,7 +11730,6 @@ export class SessionManager {
     cwd?: string
     model?: string
     agent?: string
-    modelGroupId?: string
     profileId?: string
     permissionMode?: PermissionMode
     title?: string
@@ -11887,7 +11768,6 @@ export class SessionManager {
       // which persists it, and the sidebar/panel must not show a resumable
       // session as agent-less.
       agent: x.agent,
-      modelGroupId: x.modelGroupId,
       profileId: x.profileId,
       profileName: this.profileNameFor(x.profileId),
       permissionMode: x.permissionMode,
@@ -12351,10 +12231,10 @@ export class SessionManager {
    *    delete            — queueing bounded by deleteLockMaxWaitMs, then runs
    *                        anyway (escape hatch vs a setter wedged on an SDK
    *                        control request that never answers)
-   *    setProfile        — nests setModel / setModelGroup / restart (re-entrant)
+   *    setProfile        — nests setModel / restart (re-entrant)
    *    send, sendContent — attachment resolution + dispatch hold the same lock
    *                        from admission through the lifecycle recheck.
-   *    setModel, setModelGroup, setPermissionMode, setThinking, setPrefs,
+   *    setModel, setPermissionMode, setThinking, setPrefs,
    *    setCliDebug, setFirstPartyTool (setAppTools nests it), setMcpServers,
    *    attachGlobalMcpServer, detachGlobalMcpServer, setSkillOverride
    *    applyFlagSettingAndPersist — the sole persist path of setAgent,
@@ -12556,14 +12436,13 @@ export class SessionManager {
    *  real per-path differences. NOT used by buildResumeOpts below, which
    *  builds a narrower `providerExtras.sdkOptions` payload for a different
    *  sub-system (respawnInPlace calls provider.createSession() directly,
-   *  bypassing spawn() and reading model/modelGroupId/enabledPlugins/etc.
+   *  bypassing spawn() and reading model/enabledPlugins/etc.
    *  straight off the live Session instead of through this Options object). */
   private baseSpawnOptions(source: {
     provider?: string
     cwd?: string
     worktree?: WorktreeInfo
     model?: string
-    modelGroupId?: string
     permissionMode?: PermissionMode
     title?: string
     effortLevel?: EffortLevel
@@ -12574,7 +12453,7 @@ export class SessionManager {
     hooks?: SessionHooksConfig
     enabledPlugins?: string[]
     cliDebug?: boolean
-  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; cliDebug?: boolean; worktree?: WorktreeInfo } {
+  }): Options & { provider?: string; enabledPlugins?: string[]; cliDebug?: boolean; worktree?: WorktreeInfo } {
     return {
       provider: source.provider,
       cwd: source.cwd,
@@ -12584,7 +12463,6 @@ export class SessionManager {
       // merge keeps the persisted value alive there.
       worktree: source.worktree,
       model: source.model,
-      modelGroupId: source.modelGroupId,
       permissionMode: source.permissionMode,
       title: source.title,
       effort: source.effortLevel,

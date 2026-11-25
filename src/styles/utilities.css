@@ -2474,40 +2474,7 @@ button.tool-group-failed-jump:focus-visible {
   font-size: var(--fs-sm);
   text-align: center;
 }
-.settings-model-group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1-5);
-  padding: var(--space-2);
-  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--bg) 82%, var(--bg-elev-2));
-}
-.settings-model-group .settings-model-row {
-  border: 0;
-  background: transparent;
-  padding: 0;
-}
-.settings-model-group-slots {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-  gap: var(--space-1-5);
-  align-items: end;
-}
-.settings-model-group-slot,
-.settings-model-group-main {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.settings-model-group-slot-label {
-  color: var(--fg-muted);
-  font-size: var(--fs-2xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-/* ── Model / model-group drag-reorder ───────────────────────────────
+/* ── Model drag-reorder ─────────────────────────────────────────────
    dnd-kit pipeline: live displacement under the DragOverlay ghost (the
    dimmed source is .dnd-source-dim, see styles/dnd.css), FLIP settle kept
    for the arrow-button / A→Z paths. The rank badge is the sole drag
@@ -2519,24 +2486,15 @@ button.tool-group-failed-jump:focus-visible {
 .settings-model-grip:active {
   cursor: grabbing;
 }
-.settings-model-group {
-  transition:
-    border-color var(--motion-duration-fast) var(--motion-ease-standard),
-    background var(--motion-duration-fast) var(--motion-ease-standard),
-    opacity var(--motion-duration-fast) var(--motion-ease-standard),
-    transform var(--motion-duration-fast) var(--motion-ease-standard),
-    box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
-}
 @media (prefers-reduced-motion: reduce) {
-  .settings-model-row,
-  .settings-model-group { transition: none; }
+  .settings-model-row { transition: none; }
 }
 
 /* ── Provider-profiles editor ───────────────────────────────────────
    Sections inside the expanded profile card give the previously flat field
-   stack a clear hierarchy (Connection / Models / Model Groups). The section
-   label mirrors the micro-label style used by model-group slots so the
-   editor reads as one family. */
+   stack a clear hierarchy (Connection / Models). The section label mirrors
+   the micro-label style used by the model rows so the editor reads as one
+   family. */
 .settings-profile-body {
   display: flex;
   flex-direction: column;

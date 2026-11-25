@@ -7,8 +7,8 @@ vi.mock('./useApi', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), d
 
 const PROFILES = {
   profiles: [
-    { id: 'a', name: 'A', authTokenMasked: '****cdef', baseUrl: 'https://gw1', modelList: ['ma'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c', isActive: true },
-    { id: 'b', name: 'B', authTokenMasked: '****1234', baseUrl: 'https://gw2', modelList: ['mb'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c', isActive: false },
+    { id: 'a', name: 'A', authTokenMasked: '****cdef', baseUrl: 'https://gw1', modelList: ['ma'], recapModel: 'r', commitMessageModel: 'c', isActive: true },
+    { id: 'b', name: 'B', authTokenMasked: '****1234', baseUrl: 'https://gw2', modelList: ['mb'], recapModel: 'r', commitMessageModel: 'c', isActive: false },
   ],
   activeProfileId: 'a',
 }

@@ -120,13 +120,11 @@ describe('modelOptionsStore', () => {
   it('derives the active-profile model snapshot from /config', async () => {
     vi.mocked(api.get).mockResolvedValue({
       models: ['c1', 'c1', 'c2'],
-      modelGroups: [{ id: 'g1', name: 'Flagship', opus: 'c1' }],
     })
     const snap = await fetchModelOptions()
     expect(api.get).toHaveBeenCalledWith('/config')
     expect(snap.models.map((m) => m.id)).toEqual(['c1', 'c2'])
     expect(snap.defaultModel).toBe('c1')
-    expect(snap.modelGroups).toHaveLength(1)
     expect(peekModelOptions()).toEqual(snap)
   })
 

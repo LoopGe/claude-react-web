@@ -63,6 +63,18 @@ describe('SessionStore', () => {
     expect(store2.get('a')?.title).toBe('first')
   })
 
+  it('loads a legacy session carrying modelGroupId, preserving model and dropping the tag', async () => {
+    writeFileSync(join(dir, 'sessions.json'), JSON.stringify([{
+      id: 'legacy', createdAt: 1_700_000_000_000, lastActivityAt: 1_700_000_000_000,
+      model: 'gw/main', modelGroupId: 'g1', messageCount: 0, terminated: false,
+    }]))
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    const meta = store.get('legacy')
+    expect(meta?.model).toBe('gw/main')
+    expect((meta as Record<string, unknown> | undefined)?.modelGroupId).toBeUndefined()
+  })
+
   it('remove() drops the entry from the next flush', async () => {
     const store = new SessionStore({ stateDir: dir })
     await store.load()
