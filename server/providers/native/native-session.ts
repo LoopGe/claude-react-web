@@ -62,7 +62,7 @@ import type { ToolDef } from './tools/types.js'
 import { createAgentTool, type AgentToolDeps } from './subagent.js'
 import { EXPLORE_AGENT_DESCRIPTION, EXPLORE_AGENT_NAME } from './explore.js'
 import { NativeTaskManager } from './task-manager.js'
-import { NativeSkillCatalog, type NativeSkillInvocationView, type NativeSkillView } from './skills.js'
+import { NativeSkillCatalog, LISTING_BUDGET_FRACTION, type NativeSkillInvocationView, type NativeSkillView } from './skills.js'
 import { createSkillTool } from './tools/skill.js'
 import { createTaskOutputTool } from './tools/task-output.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
@@ -2188,6 +2188,12 @@ export class NativeSession implements NativeSessionCore {
           })).contextWindow
         : DEFAULT_CONTEXT_WINDOW
       if (generation !== this.modelGeneration) continue
+      // Refresh the skill-listing cap from the resolved window. The manager
+      // fires this probe after every turn, so a model down-switch shrinks the
+      // cap for the next turn; the default budget holds until the first
+      // resolve. Set BEFORE the composition below so the breakdown prices the
+      // same budgeted section the next request will send.
+      this.skills.setListingBudget(Math.floor(contextWindow * LISTING_BUDGET_FRACTION))
       const usage = this.lastUsage
       // The spawn pin is a policy ceiling clamped under the model window; the
       // ratio policy and output reserve apply to that effective window. The

@@ -16,10 +16,21 @@ import { dirname } from 'node:path'
 import { MAX_SKILL_BYTES } from '../../../shared/skills.js'
 import type { SkillRecord, SkillScope } from '../../../shared/skills.js'
 import { createLogger } from '../../log.js'
+import { estimateText } from './estimate.js'
 import type { NativeSkillPort } from './ports.js'
 import { renderNativeSkillBody } from './skill-render.js'
 
 const log = createLogger('native-skills')
+
+/** The CLI caps the model-facing skill listing at ~1% of the context window.
+ *  The session multiplies its resolved window by this fraction and pushes the
+ *  result through {@link NativeSkillCatalog.setListingBudget}. */
+export const LISTING_BUDGET_FRACTION = 0.01
+
+/** Fallback budget until the first context-window resolve:
+ *  floor(200000 × LISTING_BUDGET_FRACTION). A LOCAL constant — this module is
+ *  neutral core and must not import the model-context/model-discovery side. */
+const DEFAULT_LISTING_BUDGET_TOKENS = 2000
 
 /** The CLI's per-skill listing states (`Settings.skillOverrides` values). */
 export type NativeSkillState = 'on' | 'name-only' | 'user-invocable-only' | 'off'
@@ -71,6 +82,9 @@ export class NativeSkillCatalog {
   private byName = new Map<string, CatalogEntry>()
   private nextGeneration = 0
   private committedGeneration = 0
+  /** Token cap for the model-facing listing, refreshed by the session from
+   *  its resolved context window. The default holds until the first resolve. */
+  private listingBudget = DEFAULT_LISTING_BUDGET_TOKENS
 
   constructor(cwd: string | undefined, skillPort: NativeSkillPort) {
     this.cwd = cwd
@@ -87,6 +101,13 @@ export class NativeSkillCatalog {
    *  Passing `{}` restores the spawn default for every skill. */
   applyOverrides(overrides: Record<string, NativeSkillState>): void {
     this.overrides = { ...overrides }
+  }
+
+  /** Set the token cap for the model-facing listing (the session pushes
+   *  floor(contextWindow × LISTING_BUDGET_FRACTION) after each resolve).
+   *  `section()` stays synchronous and reads this configured value. */
+  setListingBudget(tokens: number): void {
+    this.listingBudget = tokens
   }
 
   /** Re-read both skill roots and cache every valid skill's body. */
@@ -135,6 +156,7 @@ export class NativeSkillCatalog {
     snapshot.overrides = { ...this.overrides }
     snapshot.entries = [...this.entries]
     snapshot.byName = new Map(this.byName)
+    snapshot.listingBudget = this.listingBudget
     return snapshot.view(policy)
   }
 
@@ -187,26 +209,50 @@ export class NativeSkillCatalog {
     return null
   }
 
-  private sectionFor(policy: readonly string[] | 'all' | undefined): string {
-    const lines: string[] = []
+  /** The ONE budgeted listing renderer behind both `sectionFor` and
+   *  `listingFor`, so the prompt section and the per-skill rows can never
+   *  drift — under budget or not. Renders the full lines, then while the
+   *  section exceeds the budget converts the LAST still-described row
+   *  (entries are alphabetical, so this is reverse alphabetical) to its
+   *  name-only line. A skill NAME is never dropped: at the name-only floor
+   *  the section is best-effort over budget. Name-only (default) listings
+   *  carry no descriptions, so the budget is a no-op for them. */
+  private budgetedLines(policy: readonly string[] | 'all' | undefined): Array<{ name: string; source: SkillScope; line: string }> {
+    const rows: Array<{ name: string; source: SkillScope; line: string; described: boolean }> = []
     for (const entry of this.entries) {
       const line = this.lineFor(entry, policy)
-      if (line !== null) lines.push(line)
+      if (line === null) continue
+      rows.push({
+        name: entry.record.name,
+        source: entry.record.scope,
+        line,
+        described: this.stateOf(entry, policy) === 'on',
+      })
     }
-    if (lines.length === 0) return ''
-    return `<available_skills>\n${lines.join('\n')}\n</available_skills>`
+    while (estimateText(sectionTextOf(rows.map((row) => row.line))) > this.listingBudget) {
+      let last = -1
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (rows[i].described) {
+          last = i
+          break
+        }
+      }
+      if (last === -1) break
+      rows[last].line = `- ${rows[last].name}`
+      rows[last].described = false
+    }
+    return rows.map(({ name, source, line }) => ({ name, source, line }))
+  }
+
+  private sectionFor(policy: readonly string[] | 'all' | undefined): string {
+    return sectionTextOf(this.budgetedLines(policy).map((row) => row.line))
   }
 
   private listingFor(policy: readonly string[] | 'all' | undefined): {
     total: number
     listed: Array<{ name: string; source: SkillScope; line: string }>
   } {
-    const listed: Array<{ name: string; source: SkillScope; line: string }> = []
-    for (const entry of this.entries) {
-      const line = this.lineFor(entry, policy)
-      if (line !== null) listed.push({ name: entry.record.name, source: entry.record.scope, line })
-    }
-    return { total: this.entries.length, listed }
+    return { total: this.entries.length, listed: this.budgetedLines(policy) }
   }
 
   private commandsFor(policy: readonly string[] | 'all' | undefined): NativeSkillCommand[] {
@@ -264,6 +310,13 @@ export class NativeSkillCatalog {
     if (entry.record.disableModelInvocation === true && effective !== 'off') return 'user-invocable-only'
     return effective
   }
+}
+
+/** The `<available_skills>` wrapper shared by the budget loop's pricing and
+ *  the rendered section, so the estimate prices exactly what is emitted. */
+function sectionTextOf(lines: readonly string[]): string {
+  if (lines.length === 0) return ''
+  return `<available_skills>\n${lines.join('\n')}\n</available_skills>`
 }
 
 function unknownSkill(name: string): { text: string; isError: true } {

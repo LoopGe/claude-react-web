@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseSkillFrontmatter, type SkillRecord } from '../../../shared/skills.js'
 import { makeNativePorts } from '../native-host-adapters.js'
+import { estimateText } from './estimate.js'
 import { NativeSkillCatalog } from './skills.js'
 
 // Skills are discovered from the CLI's config dir (user scope) and the
@@ -411,6 +412,41 @@ describe('view.listing', () => {
     const view = catalog.view('all')
     const { listed } = view.listing()
     expect(view.section()).toBe(`<available_skills>\n${listed.map(s => s.line).join('\n')}\n</available_skills>`)
+  })
+})
+
+describe('NativeSkillCatalog — listing budget', () => {
+  it('truncates descriptions to fit the budget, keeping every name', async () => {
+    await writeSkill('alpha', { description: 'A'.repeat(400) })
+    await writeSkill('beta', { description: 'B'.repeat(400) })
+    const catalog = await load('all')
+    catalog.setListingBudget(40) // far below two full descriptions
+    const section = catalog.section()
+    expect(section).toContain('- alpha')
+    expect(section).toContain('- beta')
+    expect(estimateText(section)).toBeLessThanOrEqual(40)
+  })
+  it('keeps section and listing consistent under budget', async () => {
+    await writeSkill('alpha', { description: 'A'.repeat(400) })
+    const catalog = await load('all')
+    catalog.setListingBudget(20)
+    const view = catalog.view('all')
+    const { listed } = view.listing()
+    expect(view.section()).toBe(`<available_skills>\n${listed.map(s => s.line).join('\n')}\n</available_skills>`)
+  })
+  it('never drops a name when the name-only floor exceeds the budget', async () => {
+    await writeSkill('alpha', { description: 'A'.repeat(400) })
+    await writeSkill('beta', { description: 'B'.repeat(400) })
+    const catalog = await load('all')
+    catalog.setListingBudget(1)
+    expect(catalog.section()).toContain('- alpha')
+    expect(catalog.section()).toContain('- beta')
+  })
+  it('is a no-op for name-only (default) listings', async () => {
+    await writeSkill('alpha')
+    const catalog = await load(undefined)
+    catalog.setListingBudget(1)
+    expect(catalog.section()).toBe('<available_skills>\n- alpha\n</available_skills>')
   })
 })
 

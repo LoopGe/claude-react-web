@@ -32,7 +32,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { projectNativeHistoryToWire } from './wire/wire-projection.js'
 import { formatSupplementInstruction } from '../steering-format.js'
 import { AGENT_GUIDANCE } from './subagent.js'
-import { NativeSkillCatalog } from './skills.js'
+import { NativeSkillCatalog, LISTING_BUDGET_FRACTION } from './skills.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
 import { TASK_OUTPUT_GUIDANCE } from './tools/task-output.js'
 import { globTool } from './tools/glob.js'
@@ -56,7 +56,7 @@ import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef, ToolOutcome } from './tools/types.js'
 import { UploadStore } from '../../upload-store.js'
 import { aliasPathOf, attachmentRoot } from '../../attachment-paths.js'
-import { estimateText, estimateMessage, estimateToolSchema } from './estimate.js'
+import { estimateText, estimateMessage, estimateToolSchema, ROLE_OVERHEAD } from './estimate.js'
 
 // The retry suppression test drives the real `defaultStream` against a mocked
 // wire layer: the mock invokes `onRetry` and yields a minimal canonical round.
@@ -1031,6 +1031,46 @@ describe('NativeSession', () => {
       expect(usage.skills!.skillFrontmatter).toEqual([
         { name: 'demo', source: 'project', tokens: estimateText('- demo: demo description') },
       ])
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('budgets the skills listing from the resolved context window', async () => {
+    const dir = await tempDir('native-composition-skills-budget-')
+    const description = 'D'.repeat(400)
+    await writeProjectSkill(dir, 'demo', { description })
+    // A 4K window caps the listing at floor(4000 × 0.01) = 40 tokens — far
+    // below the full description line, while the 2000-token default would
+    // keep it. The name-only result therefore proves the resolved-window
+    // refresh ran, not just that section/listing agree.
+    const contextWindow = 4_000
+    const budget = Math.floor(contextWindow * LISTING_BUDGET_FRACTION)
+    expect(estimateText(`- demo: ${description}`)).toBeGreaterThan(budget)
+    const { modelContext } = resolverOf(async () => ({ contextWindow, source: 'endpoint' }))
+    const provider = new NativeProvider({ stateDir: dir, modelContext, ports: makeNativePorts({ stateDir: dir }) })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of pricedTurn('ok', 100_000)) yield ev
+    }
+    const session = provider.createSession({
+      id: 'comp-skills-budget', cwd: dir,
+      providerExtras: { sdkOptions: { skills: 'all' } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      // The probe refreshed the budget before pricing: the listing truncated
+      // to the name-only floor, and the payload prices exactly those lines.
+      expect(usage.skills!.skillFrontmatter).toEqual([
+        { name: 'demo', source: 'project', tokens: estimateText('- demo') },
+      ])
+      const skillsRow = usage.categories!.find((c) => c.name === 'Skills')!
+      expect(usage.skills!.tokenCount).toBe(skillsRow.tokens)
+      expect(skillsRow.tokens).toBe(estimateText('<available_skills>\n- demo\n</available_skills>') + ROLE_OVERHEAD)
+      expect(usage.skills).toMatchObject({ includedSkills: 1, totalSkills: 1 })
     } finally {
       await session.destroy()
     }
