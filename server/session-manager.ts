@@ -1791,7 +1791,7 @@ export class SessionManager {
       agent: s.agent,
       // The profile pin must survive a restart: resume() re-pins from it
       // (below), and the auxiliary-call resolution (auxTargetFor)
-      // needs it to resolve the session's own model group — without it a
+      // needs it to resolve the session's own model — without it a
       // dormant session is looked up against whichever profile happens to be
       // active.
       profileId: s.profileId,
@@ -3567,7 +3567,7 @@ export class SessionManager {
 
     // Profile resolution: prefer opts.profileId (create/fork), fall back to
     // persisted meta (resume/respawn). A dangling pin self-heals to the
-    // active profile (mirrors model-group self-heal right below).
+    // active profile.
     const requestedProfileId =
       (fullOpts as { profileId?: string }).profileId ?? existingMeta?.profileId
     let profile = effectiveProfileFor(requestedProfileId)
@@ -12231,10 +12231,10 @@ export class SessionManager {
    *    delete            — queueing bounded by deleteLockMaxWaitMs, then runs
    *                        anyway (escape hatch vs a setter wedged on an SDK
    *                        control request that never answers)
-   *    setProfile        — nests setModel / setModelGroup / restart (re-entrant)
+   *    setProfile        — nests setModel / restart (re-entrant)
    *    send, sendContent — attachment resolution + dispatch hold the same lock
    *                        from admission through the lifecycle recheck.
-   *    setModel, setModelGroup, setPermissionMode, setThinking, setPrefs,
+   *    setModel, setPermissionMode, setThinking, setPrefs,
    *    setCliDebug, setFirstPartyTool (setAppTools nests it), setMcpServers,
    *    attachGlobalMcpServer, detachGlobalMcpServer, setSkillOverride
    *    applyFlagSettingAndPersist — the sole persist path of setAgent,

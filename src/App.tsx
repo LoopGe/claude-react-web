@@ -2090,7 +2090,7 @@ export function App() {
   const defaultSessionCreating = useRef(false)
   /** Create immediately from the server's defaults, bypassing both the dialog
    *  and its recent-project prefill. Setup and the sidebar's default-session
-   *  action share this path so their cwd/model/group behavior cannot drift. */
+   *  action share this path so their cwd/model/session-group behavior cannot drift. */
   const handleCreateDefaultSession = useCallback(async (opts?: { configSource?: 'force' | 'fresh' | 'server' }) => {
     if (defaultSessionCreating.current) return
     defaultSessionCreating.current = true

@@ -1,6 +1,6 @@
 // Provider-profiles editor tab for the global Settings modal. Each provider
-// profile carries its own credentials + model set + model groups; this tab
-// renders one card per profile and wires mutations through `useProfiles`.
+// profile carries its own credentials + model set; this tab renders one card
+// per profile and wires mutations through `useProfiles`.
 //
 // The authToken field uses the dirty-token pattern: an empty password-style
 // input means "keep the existing token on save". The client only ever holds
@@ -785,8 +785,7 @@ function ProfileCard({
             <div className="settings-field">
               <label htmlFor={`${uid}-recap-model`}>Recap Model</label>
               <span className="hint">
-                Model used for AI session summaries. (default) uses the session's aux model — the
-                model group's haiku slot, else the session's own model.
+                Model used for AI session summaries. (default) uses the session's own model.
               </span>
               <div className="settings-model-select-wrap">
                 <select
@@ -816,7 +815,7 @@ function ProfileCard({
               <label htmlFor={`${uid}-commit-message-model`}>Commit Message Model</label>
               <span className="hint">
                 Model used for AI-generated commit messages in Git panel. (default) uses the
-                session's aux model (the model group's haiku slot, else the session's model).
+                session's own model.
               </span>
               <div className="settings-model-select-wrap">
                 <select

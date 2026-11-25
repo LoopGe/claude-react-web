@@ -441,10 +441,9 @@ export const ChatPanel = memo(function ChatPanel({
    *  no caller can drop the ownership stamp by accident. */
   const [modelMenu, setModelMenu] = useState<{ x: number; y: number; source: Element | null } | null>(null)
   /** In-flight model switch, as the LABEL to show while it runs (null = none).
-   *  Covers both the model and the model-group switch — they POST to different
-   *  routes but both change the session's model. Kept as a label rather than a
-   *  boolean so the chip's tooltip can name the target; the spinner itself is
-   *  `modelSwitching` below, which waits out the flash-prevention delay. */
+   *  Kept as a label rather than a boolean so the chip's tooltip can name the
+   *  target; the spinner itself is `modelSwitching` below, which waits out the
+   *  flash-prevention delay. */
   const [modelSwitchLabel, setModelSwitchLabel] = useState<string | null>(null)
   const modelSwitching = useDelayedFlag(modelSwitchLabel !== null, MODEL_SWITCH_INDICATOR_DELAY_MS)
   /** Anchor for the permission-mode menu. Non-null = menu visible. A

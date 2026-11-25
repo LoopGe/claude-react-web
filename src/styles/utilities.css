@@ -2492,9 +2492,9 @@ button.tool-group-failed-jump:focus-visible {
 
 /* ── Provider-profiles editor ───────────────────────────────────────
    Sections inside the expanded profile card give the previously flat field
-   stack a clear hierarchy (Connection / Models / Model Groups). The section
-   label mirrors the micro-label style used by model-group slots so the
-   editor reads as one family. */
+   stack a clear hierarchy (Connection / Models). The section label mirrors
+   the micro-label style used by the model rows so the editor reads as one
+   family. */
 .settings-profile-body {
   display: flex;
   flex-direction: column;

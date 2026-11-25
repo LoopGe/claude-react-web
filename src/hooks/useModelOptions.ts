@@ -2,7 +2,7 @@
 // dropdown in ChatPanel (and any other consumer that wants the same list).
 //
 // Thin React wrapper over `src/state/modelOptionsStore` — THE shared
-// model/group snapshot. App's New-session dialog, ChatPanel's ModelPicker and
+// model snapshot. App's New-session dialog, ChatPanel's ModelPicker and
 // SettingsPanel all read the same generation: one `/config` (or `/profiles`)
 // fetch feeds everyone, and `crw-profiles-changed` invalidates once.
 //

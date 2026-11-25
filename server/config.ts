@@ -515,7 +515,7 @@ export async function loadConfig(stateDir: string): Promise<void> {
  *  leaving one behind lets a later empty `profiles` resurrect a stale value. */
 export const LEGACY_PROFILE_KEYS = ['authToken', 'baseUrl', 'modelList', 'modelContextWindows', 'recapModel', 'commitMessageModel'] as const
 
-/** Hard-migrate the seven legacy top-level credential/model fields into a
+/** Hard-migrate the six legacy top-level credential/model fields into a
  *  `profiles[0]` + `activeProfileId` on first load. Runs once: when `profiles`
  *  is already present it is a no-op. Never throws — a write failure is logged
  *  and the in-memory migration still proceeds. */

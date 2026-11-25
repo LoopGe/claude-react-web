@@ -191,7 +191,7 @@ const MODEL_TIER_ENV_KEYS = [
  * (`claude-desktop*` / `local-agent` / `CLAUDE_CODE_ENVIRONMENT_KIND=byoc`).
  * An SDK spawn is `sdk-ts`, so a user-wide tier override silently redirects
  * builtin subagents and the auto-mode classifier away from this session's
- * model group.
+ * model.
  *
  * The flag-settings layer (`Options.settings`, sent as `--settings`) is
  * applied after the user layer, so mirroring only these four keys there makes

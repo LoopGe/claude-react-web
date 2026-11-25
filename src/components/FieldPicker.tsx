@@ -92,8 +92,8 @@ export function FieldPicker({
       // active row after every keystroke, so Enter would commit the filter text
       // ("opus") instead of the matched option ("claude-opus-4-…").
       // Suppressed when a real option's label already equals the query — otherwise
-      // typing a Model Group name would offer a spurious `Use "Balanced"` row
-      // alongside the matching group.
+      // typing an option's full label would offer a spurious `Use "…"` row
+      // alongside the matching option.
       const exactLabel = typed && options.some((option) => option.label.toLowerCase() === q)
       const extra = exactLabel ? null : (customOption?.(typed) ?? null)
       return extra ? [...filtered, extra] : filtered

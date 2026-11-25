@@ -288,9 +288,9 @@ ${languageRule}`
 }
 
 async function callAnthropic(transcript: string, language: string | null, target?: AuxLlmTarget): Promise<string> {
-  // The model arrives fully resolved (profile override → model group haiku
-  // tier → session model) together with the credentials of the SESSION's own
-  // profile — see SessionManager.auxTargetFor.
+  // The model arrives fully resolved (profile override → session model)
+  // together with the credentials of the SESSION's own profile — see
+  // SessionManager.auxTargetFor.
   const model = target?.model
   if (!model) throw new Error('No recap model configured and the session has no model')
   const text = await callAnthropicMessages({
