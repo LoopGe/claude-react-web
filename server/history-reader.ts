@@ -173,7 +173,7 @@ const LAST_PROMPT_CACHE_CAP = 512
  *  derivation skips. A user prompt that merely BEGINS with '<' (pasted HTML,
  *  "<label> should be red") must still qualify, so this is deliberately NOT
  *  a broad any-XML-tag rule. */
-const SYNTHETIC_FRAME_PREFIX_RE =
+export const SYNTHETIC_FRAME_PREFIX_RE =
   /^\s*<(command-name|command-message|command-args|bash-input|bash-stdout|bash-stderr|local-command-stdout|local-command-stderr)>/
 
 /** The SDK's interrupt placeholder text ("[Request interrupted by user…]") is
@@ -191,7 +191,7 @@ const INTERRUPT_PLACEHOLDER_RE = /^\s*\[Request interrupted by user[^\]]*\]\s*$/
  *  placeholder text. Handles both string content and the text-block array
  *  shape; any non-text/tool_result block or extra text means it's a real
  *  message and we keep it. */
-function isInterruptPlaceholder(content: unknown): boolean {
+export function isInterruptPlaceholder(content: unknown): boolean {
   if (typeof content === 'string') return INTERRUPT_PLACEHOLDER_RE.test(content)
   if (!Array.isArray(content)) return false
   let sawText = false
@@ -226,7 +226,7 @@ function isInterruptPlaceholder(content: unknown): boolean {
  *  (command expansions etc. — anything starting with an XML tag, mirroring
  *  the SDK's own firstPrompt derivation) are skipped, matching the
  *  renderable-subset rules above. Corrupt rows are skipped. */
-function attachmentNameFallback(content: unknown): string | undefined {
+export function attachmentNameFallback(content: unknown): string | undefined {
   const segments = extractMessageSearchSegments({
     type: 'user',
     parent_tool_use_id: null,
