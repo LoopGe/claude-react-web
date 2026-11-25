@@ -276,6 +276,35 @@ describe('SideChatDrawer (session-synchronizer migration)', () => {
     expect(messages.some((m: { uuid?: string }) => m.uuid === 'server-uuid-1')).toBe(true)
   })
 
+  it('sends clientOperationId matching the optimistic placeholder (queued-bubble dedup)', async () => {
+    const props = makeProps()
+    seedPage(props.session.id, [])
+    const store = getSessionStore(props.session.id)
+    const { container } = render(<SideChatDrawer {...props} />)
+    await act(() => sleep(50))
+    const editor = container.querySelector('[contenteditable="true"]') as HTMLElement
+    await act(() => {
+      editor.textContent = 'hello'
+      editor.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    let capturedKey: string | undefined
+    postMock.mockImplementationOnce(async (_url: string, body: { clientOperationId?: string }) => {
+      // At POST time the placeholder is still keyed by its optimistic id; the
+      // body's clientOperationId must equal it so applyQueuedMessage recognizes
+      // this tab's own queued placeholder (no duplicate bubble).
+      capturedKey = [...store.getState().intent.pendingPlaceholders.keys()][0]
+      expect(body.clientOperationId).toBe(capturedKey)
+      return { ok: true, message: { uuid: 'srv-dedup', receivedAt: 1 } }
+    })
+    const sendBtn = container.querySelector('.side-chat-drawer-actions .btn-primary') as HTMLButtonElement
+    await act(async () => {
+      sendBtn.click()
+      await sleep(50)
+    })
+    expect(capturedKey).toBeDefined()
+    expect(capturedKey!.startsWith('optimistic:')).toBe(true)
+  })
+
   it('rolls back the optimistic message when the POST fails', async () => {
     const props = makeProps()
     seedPage(props.session.id, [])
@@ -336,9 +365,11 @@ describe('SideChatDrawer (session-synchronizer migration)', () => {
 
     // The quoted ref ships LITERAL — the stored body is not spliced into the quote
     // (a bare expandPastedText(input.trim()) would expand it and break opacity).
+    // objectContaining: the body also carries clientOperationId (queued-bubble
+    // dedup); the assertion here is about the quote text staying opaque.
     expect(postMock).toHaveBeenCalledWith(
       `/sessions/${props.session.id}/messages`,
-      { text: '> [Pasted text #1 +15 lines]' },
+      expect.objectContaining({ text: '> [Pasted text #1 +15 lines]' }),
     )
   })
 

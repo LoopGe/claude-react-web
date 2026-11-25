@@ -1,6 +1,7 @@
-import { createInitialSessionState, type ServerMirror, type SessionAction, type SessionSnapshot, type SessionState, type LiveTurnSegment } from './types'
+import { createInitialSessionState, type ServerMirror, type SessionAction, type SessionSnapshot, type SessionState, type LiveTurnSegment, type TranscriptItem, type ClientIntent } from './types'
 import { reduceSessionState } from './reducer'
 import { consumesSubagentRootResult } from './sidechain-index'
+import { mergePlaceholdersChronologically } from './placeholder-placement'
 import type { SdkMessage } from '../types'
 import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from '../constants/toolNames'
 
@@ -36,6 +37,14 @@ export class SessionStore {
    *  thrash a shared single-slot cache against each other. */
   private cachedSubagentsMap: ServerMirror['activeSubagents'] | null = null
   private cachedRunningSubagents: SessionSnapshot['activeSubagents'] = []
+  /** Per-instance placeholder-merge cache, keyed on the three input refs. A
+   *  LIVE_TURN_FLUSH changes only mirror.liveTurn, so the key holds and the
+   *  merged arrays are reused — snapshot.items identity stays stable across
+   *  streaming flushes (MessageList's buildTranscriptRows useMemo skips work). */
+  private cachedMergeItems: ServerMirror['items'] | null = null
+  private cachedMergeMessages: ServerMirror['messages'] | null = null
+  private cachedMergePlaceholders: ClientIntent['pendingPlaceholders'] | null = null
+  private cachedMerged: { items: TranscriptItem[]; messages: SdkMessage[] } | null = null
 
   constructor(sessionId: string) {
     registerStoreForDebug(sessionId, this)
@@ -113,15 +122,11 @@ export class SessionStore {
     const mirror = state.mirror
     const intent = state.intent
     // Render-time merge: optimistic placeholders live in intent (so server
-    // frame handlers can't wipe them) but components see them at the tail
-    // of items/messages, same as pre-refactor. Identity-stable short-circuit
-    // when no placeholders are pending (the common case).
-    const items = intent.pendingPlaceholders.size === 0
-      ? mirror.items
-      : [...mirror.items, ...intent.pendingPlaceholders.values()]
-    const messages = intent.pendingPlaceholders.size === 0
-      ? mirror.messages
-      : [...mirror.messages, ...Array.from(intent.pendingPlaceholders.values()).map((p) => p.msg)]
+    // frame handlers can't wipe them); components see them placed at their
+    // chronological send-time position (placeholder-placement.ts), not the tail
+    // — a mid-turn queued bubble stays pinned while the reply streams. Memoized
+    // on the input refs so streaming flushes reuse the merged arrays.
+    const { items, messages } = this.mergePlaceholders(mirror, intent)
     const win = mirror.window
     return {
       replayReady: mirror.replayReady,
@@ -185,6 +190,35 @@ export class SessionStore {
    *  remains, so the user sees that background work is still in flight after
    *  the parent turn ended. A `pending` subagent is dismissible (via the × in
    *  SubagentOverlay — not from the bar itself, whose pill only drills in). */
+  /** Merge placeholders into items/messages at their send-time position, cached
+   *  on the three input refs. The size-0 common case returns the mirror arrays
+   *  by reference (allocation-free); a LIVE_TURN_FLUSH leaves all three refs
+   *  unchanged, so the merged arrays are reused and snapshot.items identity is
+   *  stable across streaming flushes. */
+  private mergePlaceholders(mirror: ServerMirror, intent: ClientIntent): { items: TranscriptItem[]; messages: SdkMessage[] } {
+    if (intent.pendingPlaceholders.size === 0) {
+      // Drop the cached merge so a materialized transcript copy (and the mirror
+      // array refs it pins) isn't retained after the placeholders clear.
+      this.cachedMerged = null
+      this.cachedMergeItems = null
+      this.cachedMergeMessages = null
+      this.cachedMergePlaceholders = null
+      return { items: mirror.items, messages: mirror.messages }
+    }
+    if (
+      this.cachedMerged &&
+      mirror.items === this.cachedMergeItems &&
+      mirror.messages === this.cachedMergeMessages &&
+      intent.pendingPlaceholders === this.cachedMergePlaceholders
+    ) return this.cachedMerged
+    const merged = mergePlaceholdersChronologically(mirror.items, mirror.messages, intent.pendingPlaceholders)
+    this.cachedMergeItems = mirror.items
+    this.cachedMergeMessages = mirror.messages
+    this.cachedMergePlaceholders = intent.pendingPlaceholders
+    this.cachedMerged = merged
+    return merged
+  }
+
   private getRunningSubagents(map: ServerMirror['activeSubagents']): SessionSnapshot['activeSubagents'] {
     if (map === this.cachedSubagentsMap) return this.cachedRunningSubagents
     this.cachedSubagentsMap = map

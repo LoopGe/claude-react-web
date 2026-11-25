@@ -14,6 +14,7 @@
 // `SessionCommands` is the 5-action optimistic-delivery surface the React
 // layer (useSessionCommands) shares with Chat / SideChatDrawer.
 import type { SdkMessage } from '../types'
+import type { OutgoingContentBlock } from '../utils/message-body'
 import { randomId } from '../utils/uuid'
 import type { SessionStore } from './store'
 
@@ -22,8 +23,13 @@ export interface SessionCommands {
    *  appears immediately, before the server echoes it back. Returns the
    *  pendingId so the caller can roll it back if the POST fails. The
    *  real message from the WS stream will replace this placeholder
-   *  (matched by id, not by content — works for multimodal too). */
-  insertUserMessage(text: string): string
+   *  (matched by id, not by content — works for multimodal too).
+   *
+   *  `content` is the full outgoing payload — a text string, or the multimodal
+   *  block array (text + image refs + files) from `buildOutgoingBody`. Carrying
+   *  the array means the placeholder renders its images/files immediately,
+   *  including through the queued-not-published window before materialization. */
+  insertUserMessage(content: string | OutgoingContentBlock[]): string
   /** Mark an optimistic user message as accepted by the REST send endpoint.
    *  Clears the local "sending" spinner using the server-side uuid; the
    *  later WS echo/replay/result still performs final reconciliation. */
@@ -44,12 +50,12 @@ export interface SessionCommands {
  *  mutation, so this factory introduces no new state path. */
 export function createSessionCommands(store: SessionStore): SessionCommands {
   return {
-    insertUserMessage(text: string): string {
+    insertUserMessage(content: string | OutgoingContentBlock[]): string {
       const pendingId = `optimistic:${randomId()}`
       const message: SdkMessage = {
         type: 'user',
         uuid: pendingId,
-        message: { role: 'user', content: text },
+        message: { role: 'user', content },
       }
       // Clear any prompt suggestion when the user sends a new message
       store.dispatch({ type: 'PROMPT_SUGGESTION', suggestion: null })

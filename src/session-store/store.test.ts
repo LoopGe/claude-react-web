@@ -453,3 +453,57 @@ describe('SessionStore: thinking draft snapshot projection', () => {
     expect(store.getSnapshot().thinkingDraftKey).toBeNull()
   })
 })
+
+describe('SessionStore: queued placeholder chronological placement', () => {
+  const timedAsst = (uuid: string, receivedAt: number): SdkMessage =>
+    ({ ...asstMsg(uuid, uuid), receivedAt }) as SdkMessage
+  const textDelta = (uuid: string, text: string): SdkMessage => ({
+    type: 'stream_event',
+    uuid,
+    parent_tool_use_id: null,
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+  } as unknown as SdkMessage)
+  const seed = (store: SessionStore) => {
+    store.dispatch({
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 1,
+      messages: [
+        { seq: 1, msg: timedAsst('u1', 100) },
+        { seq: 2, msg: timedAsst('u2', 300) },
+        { seq: 3, msg: timedAsst('u3', 400) },
+      ],
+      hasMore: false, tombstones: [],
+    })
+  }
+  const queue = (store: SessionStore, receivedAt: number) =>
+    store.dispatch({ type: 'MESSAGE_QUEUED', uuid: 'q', message: { ...userMsg('q', 'queued'), receivedAt } as SdkMessage })
+
+  it('places a queued placeholder at its send-time position, not the tail', () => {
+    const store = new SessionStore('s-place-pos')
+    seed(store)
+    queue(store, 200) // mid-turn: between u1(100) and u2(300)
+    expect(store.getSnapshot().items.map((i) => i.id)).toEqual(['u1', 'q', 'u2', 'u3'])
+  })
+
+  it('snapshot.items identity is stable across LIVE_TURN_FLUSH (memoized merge)', () => {
+    const store = new SessionStore('s-place-flush')
+    seed(store)
+    queue(store, 200)
+    store.dispatch({ type: 'MESSAGE', message: textDelta('se-1', 'a') })
+    store.dispatch({ type: 'LIVE_TURN_FLUSH' })
+    const items1 = store.getSnapshot().items
+    store.dispatch({ type: 'MESSAGE', message: textDelta('se-2', 'b') })
+    store.dispatch({ type: 'LIVE_TURN_FLUSH' })
+    // Flush changes only liveTurn — the merged items array is reused by reference.
+    expect(store.getSnapshot().items).toBe(items1)
+  })
+
+  it('materialization consumes the placeholder; the real item lands at the seq tail', () => {
+    const store = new SessionStore('s-place-mat')
+    seed(store)
+    queue(store, 200)
+    expect(store.getSnapshot().items.map((i) => i.id)).toEqual(['u1', 'q', 'u2', 'u3'])
+    store.dispatch({ type: 'WINDOW_LIVE', seq: 4, generation: 0, message: { ...userMsg('q', 'queued'), receivedAt: 200 } as SdkMessage })
+    expect(store.getState().intent.pendingPlaceholders.size).toBe(0)
+    expect(store.getSnapshot().items.map((i) => i.id)).toEqual(['u1', 'u2', 'u3', 'q'])
+  })
+})

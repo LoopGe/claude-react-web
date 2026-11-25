@@ -130,7 +130,6 @@ import type { GitStatusResponse } from '../../shared/git-types'
 import type { ScheduledSendBody } from '../../shared/scheduled-send'
 import { buildOutgoingBody } from '../utils/message-body'
 import { intakeComposerFiles } from '../utils/image-intake'
-import { randomId } from '../utils/uuid'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { ClearSessionOptions, SettingsTabName } from '../local-commands'
@@ -1646,12 +1645,17 @@ export const Chat = memo(function Chat({
     // optimistic insert so the placeholder we just inserted can't skew the
     // count.
     const isFirstUserTurn = !messagesRef.current.some(isHumanUserMessage)
-    const pendingId = full.trim() ? insertUserMessage(full) : null
-    // Idempotency key for the POST (spec §8.3): the optimistic placeholder id
-    // when one exists, else a fresh key. A text-less images/files-only send has
-    // no placeholder, but the recovering-409 retry loop below still re-POSTs the
-    // same body — without a key the server would mint a duplicate prompt.
-    const clientOperationId = pendingId ?? `optimistic:${randomId()}`
+    // Build the full outgoing payload BEFORE the optimistic insert so the
+    // placeholder carries the same content (text + image refs + files) the POST
+    // sends — the queued-not-published window then renders images/files
+    // immediately instead of text-only until materialization. Pure; refs are
+    // ready past the pending/failed gates above. Reused for the POST below.
+    const outgoing = buildOutgoingBody(full, pastedImages.images, fileDrafts.ready)
+    const pendingId = insertUserMessage('content' in outgoing ? outgoing.content : outgoing.text)
+    // Idempotency key for the POST (spec §8.3): the optimistic placeholder id.
+    // Every send now inserts a placeholder (a text-less images/files-only send
+    // carries the attachment array), so the key is always the placeholder id.
+    const clientOperationId = pendingId
 
     // POST with a bounded retry for the crash-recovery window: the server
     // 409s sends while a session is `recovering` (the old handle is dead).
@@ -1679,12 +1683,10 @@ export const Chat = memo(function Chat({
     try {
       // clientOperationId (spec §8.3): the server dedups a retried POST (the
       // recovering-409 loop above, or a lost ACK the user re-sends) so it cannot
-      // mint a second prompt. Always sent — see the mint above for the text-less
-      // case. Ack reconciliation still uses pendingId (null for text-less is
-      // fine: the WS echo handles that bubble).
-      const outgoing = buildOutgoingBody(full, pastedImages.images, fileDrafts.ready)
+      // mint a second prompt. `outgoing` was built before the optimistic insert
+      // and is reused here — the placeholder and the POST carry identical content.
       const res: SendMessageResponse = await postMessage({ ...outgoing, clientOperationId })
-      if (pendingId && typeof res.message?.uuid === 'string') {
+      if (typeof res.message?.uuid === 'string') {
         ackUserMessage(pendingId, res.message.uuid, res.message.receivedAt)
       }
       // Record the sent text + images in the input history (images persist to
@@ -1721,8 +1723,9 @@ export const Chat = memo(function Chat({
     } catch (e) {
       setLocalError((e as Error).message)
       // Roll back the optimistic placeholder so the user sees that the
-      // send failed (text stays in the input, transcript stays clean).
-      if (pendingId) rollbackUserMessage(pendingId)
+      // send failed (text stays in the input, transcript stays clean). Every
+      // send inserts a placeholder, so pendingId is always set.
+      rollbackUserMessage(pendingId)
       setPendingTurnSince(null)
     } finally {
       sendingRef.current = false

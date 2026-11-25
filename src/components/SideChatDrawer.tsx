@@ -194,12 +194,18 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     }
     if (!text && pastedImages.images.length === 0) return
     setSending(true)
-    // Optimistic insert — message appears immediately in the transcript.
-    const pendingId = insertUserMessage(text || '(image)')
+    // Optimistic insert — message appears immediately in the transcript, carrying
+    // the full outgoing content (text + image refs) so a queued mid-turn send
+    // renders its images before materialization (no text-only '(image)' stand-in).
+    const outgoing = buildOutgoingBody(text, pastedImages.images)
+    const pendingId = insertUserMessage('content' in outgoing ? outgoing.content : outgoing.text)
     try {
       const res: SendMessageResponse = await api.post<SendMessageResponse>(
         `/sessions/${session.id}/messages`,
-        buildOutgoingBody(text, pastedImages.images),
+        // clientOperationId lets applyQueuedMessage recognize this tab's own
+        // queued placeholder (spec §8.3) — without it a mid-turn send paints a
+        // duplicate queued bubble.
+        { ...outgoing, clientOperationId: pendingId },
       )
       ackUserMessage(pendingId, res.message?.uuid ?? '', res.message?.receivedAt)
       setInput('')

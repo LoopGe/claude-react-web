@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { SessionStore } from './store'
 import { createSessionCommands } from './commands'
 import type { SdkMessage } from '../types'
+import type { OutgoingContentBlock } from '../utils/message-body'
 
 /** An assistant frame carrying a single Agent tool_use block — seeds a
  *  `running` subagent record via getSubagentStarts. */
@@ -84,6 +85,30 @@ describe('createSessionCommands', () => {
     // The acked placeholder survives the unrelated rollback.
     expect(snap.items.some((it) => it.id === 'server-uuid-1')).toBe(true)
     expect(store.getState().intent.pendingPlaceholders.has('server-uuid-1')).toBe(true)
+  })
+
+  it('insertUserMessage carries a multimodal array through insert and ack (queued bubble shows images)', () => {
+    const store = new SessionStore('s-cmds-multimodal')
+    const cmds = createSessionCommands(store)
+    const content: OutgoingContentBlock[] = [
+      { type: 'text', text: 'look' },
+      { type: 'image', attachment: { id: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png', bytes: 10, width: 4, height: 4 } },
+      { type: 'file', attachment: { id: 'f1', name: 'doc.pdf', size: 100 } },
+    ]
+    const pid = cmds.insertUserMessage(content)
+    const ph = store.getSnapshot().items.find((it) => it.id === pid)
+    expect(ph?.sending).toBe(true)
+    const phContent = (ph?.msg as { message?: { content?: unknown } }).message?.content
+    expect(Array.isArray(phContent)).toBe(true)
+    expect((phContent as unknown[]).length).toBe(3)
+
+    // ack re-keys to the server uuid but preserves the full array content.
+    cmds.ackUserMessage(pid, 'srv-mm', 999)
+    const acked = store.getState().intent.pendingPlaceholders.get('srv-mm')
+    const ackedContent = (acked?.msg as { message?: { content?: unknown } }).message?.content
+    expect(Array.isArray(ackedContent)).toBe(true)
+    expect((ackedContent as unknown[]).length).toBe(3)
+    expect(acked?.msg.receivedAt).toBe(999)
   })
 
   it('clearError and dismissSubagent dispatch their existing actions', () => {
