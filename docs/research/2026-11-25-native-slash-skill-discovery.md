@@ -534,8 +534,9 @@ tn({type:"command_permissions", allowedTools, model…})]`，`shouldQuery:!0`—
 
 ### 5.6 插件 skills
 
-- canonical 名 `plugin:skill`（d.ts :2334/:4738；join helper `rP` @ 255629500）；裸名解析对
-  插件命令做后缀匹配（`v4s` @ 253162069：`r.name.endsWith(":"+e)`）；SDK allowlist 接受 `:name` 后缀。
+- canonical 名 `plugin:skill`（d.ts :2334/:4738；join helper `rP` @ **255633637**：
+  ``function rP(e,n){return`${e}:${n}`}``）；裸名解析对插件命令做后缀匹配
+  （`v4s` @ 253162069：`r.name.endsWith(":"+e)`）；SDK allowlist 接受 `:name` 后缀。
 - **"(plugin)" 描述标签**产自 `hUt`（@ 256719000）：无 manifest 插件 → 后缀 ` (plugin)`；
   有 manifest → **leading `(<label>)` 前缀**（`ag(r)` 为 manifest 派生标签，其精确取值与 synced
   标签 `kW` 是 chunk-local import，**[未解]**）；其它非 builtin 来源 → `${n} (${source})`。
@@ -635,6 +636,85 @@ body-templating 函数，但被编织进同一个 getPromptForCommand/GWe 调用
 **结论（一行）**：命名替换**不能**只靠 (body, args) 实现——名字必须由 frontmatter `arguments`
 列表声明（按位绑定到 args token），native 若要 CLI 兼容的命名替换需新增该 frontmatter 字段；
 `$ARGUMENTS`/`$N`/`$ARGUMENTS[N]` 与 fallback 追加则只需 (body, args)。
+
+### 5.8 插件 skills 发现精读（补充提取，2026-11-25）
+
+应插件 skill 发现设计评审要求，对插件 manifest 解析与 skill 加载器逐字开窗精读。
+
+**(1) manifest `skills` 字段：string 或 string[]，条目是"skill 目录或 skill 根"，加载器自动判别。**
+解析在 `fce`（插件记录装配器，@ **259159490** 附近；skills 段 @ **259162900** 附近）：
+
+```js
+let mn=tu(e,"skills");if(wt)ve.skillsPath=mn;
+if(ke.skills){let Ro=Array.isArray(ke.skills)?ke.skills:[ke.skills],Lo=pc(mn),uo=pc(e),
+  Io=(await bx(Ro,e,ke.name,n,"skills","Skill","specified in manifest but",z,Q,!0,y))
+    .filter((mr)=>{let Go=pc(mr);if(Go===Lo)return!1;if(gt===Ff&&Go===uo)return!1;return!0});
+  if(Io.length>0)ve.skillsPaths=Io}
+else if(!wt&&gt!==Ff){let Ro=tu(e,"SKILL.md"),Lo=await qdt(y,Ro);
+  if(Lo==="present"&&…)ve.skillsPaths=[e];…}
+```
+
+- `ke.skills` 接受**单字符串或数组**（`Array.isArray?…:[…]`），每项相对插件根解析（`bx`，
+  带 path-traversal 校验）；等于默认 `skills/` 目录的条目被滤掉（已由 skillsPath 覆盖）。
+- sdk.mjs 的 Zod describe 全文（已复核）："Path to a skill directory, relative to the plugin
+  root ('.' / './' denote the plugin root itself). **Loaded in addition to the skills/ directory**
+  (except: for a marketplace entry whose source resolves to the marketplace root, declaring a
+  specific subdirectory replaces the skills/ scan)."；数组变体 describe "List of skill directory
+  paths…"。marketplace-entry 例外实现 @ **259203232** 附近（`we.skillsPath=dt?…:void 0`）。
+- **每个条目交给同一个加载器 `YXt`，两种形态自动判别**（@ **256339690**）：先试
+  `Q=Rke(e,"SKILL.md"); ke=await vk(L,Q,kze)`——**路径下直接有 SKILL.md → 单个 skill 目录**；
+  否则 readdir 该路径 → **skill 根（子目录各含 SKILL.md）**。所以 CRW fixture 的
+  `skills:['./skills/engineering/tdd','./skills/productivity/handoff']`（每项直接含 SKILL.md）
+  走单目录分支，合法。
+- 兜底：无默认 `skills/` 目录且 manifest 无 skills 时，若 `<pluginRoot>/SKILL.md` 存在，
+  **插件根本身作为单个 skill 目录**（`skillsPaths=[e]`）。
+
+**(2) 默认行为：`<pluginRoot>/skills/` 作为根扫描，一层。** 默认目录存在性 `Qe` 来自
+`["commands","agents","skills","output-styles","themes"]` 的并行 stat（`fce` 内
+`Ie=async(Ro)=>{…wx(tu(e,Ro))…}`，@ 259159100 窗口），`wt=Qe` → `skillsPath=tu(e,"skills")`。
+**skills 不在 "folder-shadowed-by-manifest" 循环里**（该循环只覆盖
+commands/agents/output-styles/themes + workflows，@ 259160300 窗口）——manifest 声明 skills
+**不取消**默认 skills/ 扫描（与 sdk.mjs "in addition to" 一致；commands 等则相反，
+`vt=!ke.commands&&De`）。根扫描形状（YXt 第二分支，@ 256339690 窗口）：
+
+```js
+Se=await L.readdir(e);let we=Se.filter((Ce)=>Ce.isDirectory()||Ce.isSymbolicLink()),…
+…Ie=Rke(e,Ce.name),De=Rke(Ie,"SKILL.md"),…Qe=await vk(L,De,kze)…
+gt=`${n}:${Ce.name.replace(/[^a-zA-Z0-9_-]/g,"-")}`,…
+```
+
+即 **`<root>/<entry>/SKILL.md`，恰好一层，不递归**；子目录缺 SKILL.md 静默跳过；
+manifest.json 的 per-folder off-switch 过滤（`UYe`，日志 "Leaving out N of M skill folders of
+plugin X: switched off in its manifest.json…"）。superpowers 的 `skills/<name>/SKILL.md`
+布局正是此形状。
+
+**(3) canonical 名组成：两种分支不同。** join = `plugin名:skill名`（`rP` @ 255633637；
+加载器内联同形 `` `${n}:${st}` ``，n = manifest `name`）：
+
+- **根扫描分支：目录 basename 唯一来源**——`` gt=`${n}:${Ce.name.replace(/[^a-zA-Z0-9_-]/g,"-")}` ``，
+  **frontmatter.name 被忽略**（@ 256339690 窗口）。
+- **单目录分支：frontmatter.name 优先**（@ 256339690 窗口，逐字）：
+
+```js
+Qe=typeof Ce.name==="string"?Ce.name.trim():"",
+st=((Qe.startsWith(`${n}:`)?Qe.slice(n.length+1):Qe)||RL(e)).replace(/[^a-zA-Z0-9_-]/g,"-"),
+lt=`${n}:${st}`,
+```
+
+即 frontmatter.name（若已带 `plugin:` 前缀则剥掉）?? 目录 basename（`RL(e)` **[推断：basename
+语义由上下文得出，该 chunk 的 RL 定义未逐字节绑定]**），非法字符一律替换为 `-`。
+
+**(4) 一层 + realpath 去重。** 不递归（(2)）。去重在 `Eze`（@ **256343862**）：每个加载结果带
+`realpath`（`VXt`，解析失败则保留但放弃跨插件去重并告警），先对 **user 级 skill realpath 集合**
+（`JXt` @ 257747216）去重——日志 "Skipping plugin skill 'X' — <path> is a user-level skill
+already surfaced by the skills directory loader"；再对**跨插件**同 realpath 去重
+（"Skipping duplicate plugin skill … already loaded as …"）。编排器 `vYo`（@ **256341948**）
+先加载 skillsPath 再逐一加载 skillsPaths，**同一 YXt**。
+
+**结论（一行）**：CRW 应实现的扫描形状 = 默认 `<pluginRoot>/skills/` 作为**一层子目录根**
+（`<name>/SKILL.md`，名 = sanitize(目录 basename)），**加上** manifest `skills`（string|string[]）
+条目作为额外路径、每条自动判别"单 skill 目录（名 = frontmatter.name ?? basename）或子目录根"，
+并按 realpath 对 user/project 与跨插件去重。
 
 ---
 
@@ -750,6 +830,7 @@ CRW 自己的全局/session 策略层（`shared/skills.ts:187-263`）两个 prov
 | CLI fork | `@ 253160140`（$5n）、`@ 256867300`（装配）、`@ 263141900`（引擎）、`@ 263157200`（结果串） |
 | CLI Skill 工具 | `@ 249820584`（名）、`@ 263142719`（schema）、`@ 256945600`（描述）、`@ 263145500`（run）、`@ 263152200`（纠错）、`@ 263158255`（Launching）、`@ 263154700`（权限）、`@ 256942900`（Pnn）、`@ 264704500`（~1% 预算） |
 | CLI 插件缓存 | `@ 250194900`（plugins/cache 布局） |
+| CLI 插件 skills 发现（§5.8） | `@ 259159490` 附近（fce 装配器）、`@ 259162900` 附近（skills 段：skillsPath/skillsPaths）、`@ 259160300` 窗口（shadow 循环不含 skills）、`@ 256339690`（YXt 加载器：单目录/根双分支）、`@ 256341948`（vYo 编排）、`@ 256343862`（Eze realpath 去重）、`@ 257747216`（JXt user 级 realpath 集）、`@ 255633637`（rP join）、`@ 259203232` 附近（marketplace-entry 例外）；sdk.mjs `skills` describe 全文 |
 | DSH picker 双源 | `packages/client/ui-input-trigger/src/types.ts:34`；`packages/client/ui-commands/src/client/service.ts:1-17`；`packages/client/ui-skill/src/client/index.ts:115-149, 167-233, 250-255` |
 | DSH skills/list host | `packages/api/session-controller/src/skill-catalog.ts:36-91`（:78 filter） |
 | DSH registry/发现 | `packages/skill/skill/src/index.ts:24, 129-140, 173-186, 348-357, 393, 442, 466-468, 554-568`；`packages/skill/skill-filesystem/src/index.ts:36-40, 143-147, 252-272, 677-694, 738-766, 812-855, 932-944, 960-970, 1015-1052` |
