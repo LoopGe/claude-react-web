@@ -104,6 +104,7 @@ import { normalizeSuggestion, screenSuggestion } from './prompt-suggestion-filte
 import { projectNativeHistoryToWire } from './wire/wire-projection.js'
 import { metrics } from '../../metrics.js'
 import type { FileReadResult } from '../../../shared/read-file.js'
+import { CANONICAL_SKILL_NAME_SOURCE } from '../../../shared/skills.js'
 import type { NativeReadState } from './read-state.js'
 import {
   DEFAULT_READ_MAX_BYTES,
@@ -203,8 +204,10 @@ export function packAssistantStream(
 }
 
 /** `/name args` — the composer's slash-command shape for a user-invoked skill.
- *  The name grammar mirrors the CLI's skill-name rule. */
-const SKILL_COMMAND_RE = /^\/([A-Za-z0-9][A-Za-z0-9._-]{0,79})(?:\s+([\s\S]*))?$/
+ *  The name grammar is the CLI's canonical skill-name rule (a bare name or a
+ *  single `plugin:`-composed name), compiled from the shared canonical source
+ *  so the slash parser and the name validator never drift. */
+const SKILL_COMMAND_RE = new RegExp('^/(' + CANONICAL_SKILL_NAME_SOURCE + ')(?:\\s+([\\s\\S]*))?$')
 
 /** Resolve one text block against the captured scoped view. A `/name args`
  *  invocation of a skill the user may invoke returns that skill's canonical

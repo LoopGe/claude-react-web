@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CANONICAL_SKILL_NAME,
   matchSearchHit,
   parseOwnerRepo,
   policyToDynamicSkillOverrides,
@@ -192,5 +193,14 @@ describe('projectRootOfSkill', () => {
   it('returns null for user scope and for paths outside a skills root', () => {
     expect(projectRootOfSkill({ scope: 'user', path: '/home/u/.claude/skills/demo/SKILL.md' })).toBeNull()
     expect(projectRootOfSkill({ scope: 'project', path: '/elsewhere/SKILL.md' })).toBeNull()
+  })
+})
+
+describe('CANONICAL_SKILL_NAME', () => {
+  it.each(['demo', 'my.skill', 'a-b_c', 'plugin:skill', 'superpowers:brainstorming'])('accepts %s', (n) => {
+    expect(CANONICAL_SKILL_NAME.test(n)).toBe(true)
+  })
+  it.each(['plugin:', ':skill', 'a::b', 'a:b:c', '-bad', ''])('rejects %s', (n) => {
+    expect(CANONICAL_SKILL_NAME.test(n)).toBe(false)
   })
 })

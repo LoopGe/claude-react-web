@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { parseSkillFrontmatter } from '../../../shared/skills.js'
+import { parseSkillFrontmatter, type SkillRecord } from '../../../shared/skills.js'
 import { makeNativePorts } from '../native-host-adapters.js'
 import { NativeSkillCatalog } from './skills.js'
 
@@ -411,5 +411,44 @@ describe('view.listing', () => {
     const view = catalog.view('all')
     const { listed } = view.listing()
     expect(view.section()).toBe(`<available_skills>\n${listed.map(s => s.line).join('\n')}\n</available_skills>`)
+  })
+})
+
+describe('canonical plugin names', () => {
+  it('catalogs and expands a plugin:skill name that disk discovery cannot produce', async () => {
+    // Forward-compat proof: the catalog and slash grammar must handle a
+    // composed `plugin:skill` key even though disk discovery cannot produce
+    // one — `:` is not a legal Windows directory character. The port is stubbed
+    // with a valid composed-name record; its document sits at the canonical
+    // path (on Windows an NTFS alternate data stream, invisible to readdir).
+    // The on-disk frontmatter keeps the bare name — VALID_SKILL_NAME is the
+    // filesystem validator, so the `plugin:` prefix lives only on the record.
+    const path = join(project, '.claude', 'skills', 'plugin:skill')
+    await writeFile(path, [
+      '---',
+      'name: skill',
+      'description: d',
+      '---',
+      '',
+      'Plugin skill instructions.',
+      '',
+    ].join('\n'), 'utf8')
+    const record: SkillRecord = {
+      scope: 'project',
+      name: 'plugin:skill',
+      description: 'd',
+      path,
+      relativePath: join('.claude', 'skills', 'plugin:skill'),
+      readOnly: false,
+      valid: true,
+      errors: [],
+    }
+    const catalog = new NativeSkillCatalog(project, {
+      listSkills: async () => ({ roots: [], skills: [record] }),
+    })
+    await catalog.reload()
+
+    expect(catalog.commands().map((c) => c.name)).toContain('plugin:skill')
+    expect(catalog.expand('plugin:skill', 'a b')!.body.endsWith('\n\nARGUMENTS: a b')).toBe(true)
   })
 })
