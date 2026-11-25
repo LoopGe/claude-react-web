@@ -875,62 +875,13 @@ describe('SessionManager', () => {
       await expect(sm.create({ cwd: TEST_CWD, modelGroupId: 'g_missing' } as Parameters<SessionManager['create']>[0])).rejects.toThrow(/model group g_missing not found/)
     })
 
-    it('setModelGroup resolves main, switches model live, applies fallback, persists', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
-      const info = await sm.create({ cwd: TEST_CWD, model: 'gw/start' })
-      const updated = await sm.setModelGroup(info.id, 'g_flagship')
-      expect(updated.model).toBe('anthropic/claude-opus-4-20250514')
-      expect(updated.modelGroupId).toBe('g_flagship')
-      expect(mockHandles[0].setModel).toHaveBeenCalledWith('anthropic/claude-opus-4-20250514')
-      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: ['sonnet', 'haiku'] })
-      expect(store.get(info.id)?.modelGroupId).toBe('g_flagship')
-    })
-
-    it('setModelGroup clears the prior fallback when switching to a haiku-main group', async () => {
-      const BUDGET = {
-        id: 'g_budget', name: 'Budget',
-        opus: 'anthropic/claude-opus-4-20250514',
-        sonnet: 'anthropic/claude-sonnet-4-20250514',
-        haiku: 'claude-haiku-3-5-20241022',
-        main: 'haiku' as const,
-      }
-      __setConfigForTest({ modelGroups: [GROUP, BUDGET] })
-      const info = await sm.create({ cwd: TEST_CWD, modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
-      mockHandles[0].applyFlagSettings.mockClear()
-      const updated = await sm.setModelGroup(info.id, 'g_budget')
-      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: null })
-      expect(updated.modelGroupId).toBe('g_budget')
-      expect(updated.model).toBe('claude-haiku-3-5-20241022')
-    })
-
-    it('setModelGroup rejects an unknown group with 400', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
-      const info = await sm.create({ cwd: TEST_CWD })
-      await expect(sm.setModelGroup(info.id, 'g_missing')).rejects.toThrow(/model group g_missing not found/)
-    })
-
-    it('setModelGroup retries an unconfirmed switch before applying the fallback chain', async () => {
-      __setConfigForTest({ modelGroups: [GROUP] })
-      const info = await sm.create({ cwd: TEST_CWD, model: 'gw/start' })
-      mockHandles[0].setModel
-        .mockRejectedValueOnce(
-          new Error('Couldn\'t confirm model "anthropic/claude-opus-4-20250514" with the API. Try again, or run /model to see available models.'),
-        )
-      const updated = await sm.setModelGroup(info.id, 'g_flagship')
-      expect(mockHandles[0].setModel).toHaveBeenCalledTimes(2)
-      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: ['sonnet', 'haiku'] })
-      expect(updated.model).toBe('anthropic/claude-opus-4-20250514')
-      expect(updated.modelGroupId).toBe('g_flagship')
-    })
-
-    it('setModel clears modelGroupId and the fallback chain', async () => {
+    it('setModel never applies a fallbackModel flag setting', async () => {
       __setConfigForTest({ modelGroups: [GROUP] })
       const info = await sm.create({ cwd: TEST_CWD, modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
       mockHandles[0].applyFlagSettings.mockClear()
       const updated = await sm.setModel(info.id, 'gw/other')
-      expect(updated.modelGroupId).toBeUndefined()
+      expect(mockHandles[0].applyFlagSettings).not.toHaveBeenCalledWith({ fallbackModel: null })
       expect(updated.model).toBe('gw/other')
-      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: null })
     })
 
     it('respawn with a deleted group self-heals: clears the reference and collapses', async () => {

@@ -581,26 +581,6 @@ export const ChatPanel = memo(function ChatPanel({
     ).finally(() => setModelSwitchLabel(null))
   }
 
-  const commitGroup = (groupId: string) => {
-    setModelMenu(null)
-    if (groupId === (session.modelGroupId ?? '')) return
-    if (modelSwitchLabel !== null) return
-    setModelSwitchLabel(
-      modelOptions.modelGroups.find((g) => g.id === groupId)?.name ?? groupId,
-    )
-    void commitWithRollback(
-      session,
-      `/sessions/${session.id}/model-group`,
-      { groupId },
-      // Restore both the resolved main model AND the group reference on
-      // failure — a group switch changes both on the session.
-      { model: session.model, modelGroupId: session.modelGroupId },
-      `Couldn't change model group`,
-      onSessionUpdate,
-      toast.error,
-    ).finally(() => setModelSwitchLabel(null))
-  }
-
   const commitPermissionMode = (mode: PermissionMode) => {
     if (mode === (session.permissionMode ?? 'default')) return
     commitWithRollback(
@@ -1204,14 +1184,12 @@ export const ChatPanel = memo(function ChatPanel({
               key="model"
               anchor={modelMenu}
               current={session.model}
-              currentGroupId={session.modelGroupId}
               options={modelOptions}
               // Same in-flight signal as the chip's own `disabled` (not the
               // delayed spinner one): keeping the two in step is what stops the
               // chip from opening a picker whose every row is already disabled.
               disabled={chipsDisabled || modelSwitchLabel !== null}
               onSelect={(model) => commitModel(model)}
-              onSelectGroup={(groupId) => commitGroup(groupId)}
               onClose={() => setModelMenu(null)}
             />
           )}

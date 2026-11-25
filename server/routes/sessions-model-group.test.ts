@@ -20,28 +20,11 @@ function post(app: ReturnType<typeof makeApp>['app'], path: string, body: unknow
   })
 }
 
-describe('POST /sessions/:id/model-group', () => {
-  it('forwards groupId to sm.setModelGroup and wraps the session', async () => {
-    const { app, sm } = makeApp()
+describe('POST /sessions/:id/model-group (removed)', () => {
+  it('is gone — returns 404', async () => {
+    const { app } = makeApp()
     const res = await post(app, '/sessions/s1/model-group', { groupId: 'g1' })
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { session: { modelGroupId: string } }
-    expect(body.session.modelGroupId).toBe('g1')
-    expect(sm.setModelGroup).toHaveBeenCalledWith('s1', 'g1')
-  })
-
-  it('rejects a missing groupId with 400 and does not call the manager', async () => {
-    const { app, sm } = makeApp()
-    const res = await post(app, '/sessions/s1/model-group', {})
-    expect(res.status).toBe(400)
-    expect(sm.setModelGroup).not.toHaveBeenCalled()
-  })
-
-  it('rejects a non-string groupId with 400', async () => {
-    const { app, sm } = makeApp()
-    const res = await post(app, '/sessions/s1/model-group', { groupId: 42 })
-    expect(res.status).toBe(400)
-    expect(sm.setModelGroup).not.toHaveBeenCalled()
+    expect(res.status).toBe(404)
   })
 })
 

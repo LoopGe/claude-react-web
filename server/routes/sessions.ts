@@ -901,17 +901,6 @@ export function buildSessionRouter(
     return c.json({ session: info })
   })
 
-  // Point the session at a ModelGroup. Unknown groups are a 400 (explicit op
-  // rejects rather than silently falling back).
-  app.post('/sessions/:id/model-group', async (c) => {
-    const body = await safeJson<{ groupId?: string }>(c.req)
-    if (!body.groupId || typeof body.groupId !== 'string') {
-      return c.json({ error: 'groupId is required' }, 400)
-    }
-    const info = await sm.setModelGroup(c.req.param('id'), body.groupId)
-    return c.json({ session: info })
-  })
-
   // Pin a session to a provider profile. `apply: 'now'` restarts the Query so
   // new credentials apply immediately; `deferred` applies on the next respawn.
   app.post('/sessions/:id/profile', async (c) => {

@@ -78,7 +78,7 @@ import type { TerminalSnapshot } from '../shared/terminal.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
-import { auxFallbackModel, fallbackAliasesFor, resolveConfiguredModelId, resolveGroup } from './model-groups.js'
+import { auxFallbackModel, resolveConfiguredModelId, resolveGroup } from './model-groups.js'
 import { isSdkForwardedMode } from './permission-modes.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import {
@@ -6427,7 +6427,6 @@ export class SessionManager {
   async setModel(id: string, model?: string): Promise<SessionInfo> {
     return this.opLock.run(id, async () => {
       const s = this.requireLive(id)
-      const wasGroup = !!s.modelGroupId
       // Resolve the control method OUTSIDE the retry: a provider without
       // model-switch support must 501 immediately, not after two attempts.
       const pickModel = this.requireHandleMethod<(model?: string) => Promise<void>>(
@@ -6437,17 +6436,6 @@ export class SessionManager {
         'supportsModelSwitch',
       )
       await this.switchModelWithRetry(s, () => pickModel(model))
-      if (wasGroup) {
-        // Switching to a single model fully reverts today's behavior: clear
-        // the group reference AND the fallback degradation chain so no
-        // residual aliases survive the switch.
-        await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-          s,
-          'applyFlagSettings',
-          'fallback model',
-          'supportsModelSwitch',
-        )({ fallbackModel: null })
-      }
       s.model = model
       this.syncEffectiveSettings(s)
       s.modelGroupId = undefined
@@ -6470,46 +6458,11 @@ export class SessionManager {
     })
   }
 
-  /** Point a session at a ModelGroup. The main model + fallback chain switch
-   *  immediately (live); the tier env vars (subagent routing) land on the
-   *  next respawn — an SDK runtime limitation, not a bug (spec §7). */
-  async setModelGroup(id: string, groupId: string): Promise<SessionInfo> {
-    return this.opLock.run(id, async () => {
-      const s = this.requireLive(id)
-      const profile = effectiveProfileFor(s.profileId)
-      const group = profile.modelGroups.find((g) => g.id === groupId)
-      if (!group) throw new HttpError(400, `model group ${groupId} not found`)
-      const r = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList))
-      const pickModel = this.requireHandleMethod<(model?: string) => Promise<void>>(
-        s,
-        'setModel',
-        'model switching',
-        'supportsModelSwitch',
-      )
-      await this.switchModelWithRetry(s, () => pickModel(r.main))
-      const fallback = fallbackAliasesFor(group.main ?? 'opus')
-      await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-        s,
-        'applyFlagSettings',
-        'fallback model',
-        'supportsModelSwitch',
-      )({ fallbackModel: fallback.length > 0 ? fallback : null })
-      s.model = r.main
-      s.modelGroupId = groupId
-      s.lastActivityAt = Date.now()
-      s.effortLevels = effortLevelsForModel(s.model)
-      s.thinkingSupported = supportsThinkingForModel(s.model)
-      s.fastModeSupported = supportsFastModeForModel(s.model)
-      this.persist(s)
-      return this.info(s)
-    })
-  }
-
   /** Pin a session to a provider profile. Live-applies the profile's default
-   *  model/group, persists the pin, and (when apply==='now' and the session is
+   *  model, persists the pin, and (when apply==='now' and the session is
    *  idle) restarts the Query so the new credentials take effect immediately.
    *  `deferred` only persists — credentials apply on the next respawn. The
-   *  nested setModel / setModelGroup / restart calls re-enter the op lock. */
+   *  nested setModel / restart calls re-enter the op lock. */
   async setProfile(id: string, profileId: string, apply: 'now' | 'deferred' = 'now'): Promise<SessionInfo> {
     return this.opLock.run(id, async () => {
       const s = this.requireLive(id)
@@ -6518,19 +6471,8 @@ export class SessionManager {
       if (!profile) throw new HttpError(400, `profile ${profileId} not found`)
       s.profileId = profileId
       s.lastActivityAt = Date.now()
-      // Live-apply the profile's default model/group. A group pin only survives
-      // if the new profile still has that group id; otherwise collapse to the
-      // profile's default model (the old group's slots may not exist here).
-      if (s.modelGroupId) {
-        const group = profile.modelGroups.find((g) => g.id === s.modelGroupId)
-        if (group) {
-          await this.setModelGroup(id, s.modelGroupId)
-        } else {
-          await this.setModel(id, profileDefaultModel(profile))
-        }
-      } else {
-        await this.setModel(id, profileDefaultModel(profile))
-      }
+      // Live-apply the profile's default model.
+      await this.setModel(id, profileDefaultModel(profile))
       this.persist(s)
       if (apply === 'now') {
         await this.restart(id)
