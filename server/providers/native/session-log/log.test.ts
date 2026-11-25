@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { NativeSessionLog, deleteNativeSessionLog, hasNativeSessionLog, loadNativeSessionLogSync } from './log.js'
+import { NativeSessionLog, deleteNativeSessionLog, hasNativeSessionLog, loadNativeSessionLog, loadNativeSessionLogSync } from './log.js'
 import { brandString } from '../vocabulary/brand.js'
 import { NativeSessionStorageError } from './errors.js'
 import { nativeSessionDir, nativeSessionLogPath, nativeSessionMigrationTempPath } from './paths.js'
@@ -902,6 +902,21 @@ describe('NativeSessionLog v3 (neutral writer)', () => {
     expect(snap.neutralEvents![1]).toEqual({ ...neutralAssistantInput, seq: 1 })
     // T6 read-side shrink: a v3 log exposes no live legacy read view.
     expect(snap.events).toEqual([])
+  })
+
+  it('appends a session/title event with the next seq and reloads it in the neutral baseline', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({
+      stateDir, id: 's1', cwd: '/repo', resume: false,
+      seed: { events: [neutralUser('u1', 0)], inheritedEventCount: 0, isSeeded: false, version: 3 },
+    })
+    const stored = log.append({ type: 'session/title', time: Date.now(), data: { title: 'T' } })
+    expect(stored).toMatchObject({ type: 'session/title', seq: 1, data: { title: 'T' } })
+    await log.flush()
+    const snap = await loadNativeSessionLog(stateDir, 's1')
+    expect(snap!.neutralEvents!.map((e) => e.type)).toEqual(['user/message', 'session/title'])
+    expect(snap!.neutralEvents![1]).toEqual(stored)
+    await log.close()
   })
 
   it('resumes a v3 log and appends more neutral events with contiguous seq', async () => {

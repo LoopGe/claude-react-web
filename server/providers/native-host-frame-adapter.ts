@@ -321,6 +321,7 @@ export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalF
     case 'subagent/descriptor':
     case 'session/attachments':
     case 'session/agent':
+    case 'session/title':
       return null
     default:
       return assertNever(event, 'projectNativeEventToSdk')

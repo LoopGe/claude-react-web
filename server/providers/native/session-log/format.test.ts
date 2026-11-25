@@ -515,6 +515,19 @@ describe('session log format v3 (neutral)', () => {
     expect(parseEventLineV3(flagged, 3, 's1', 'p')).toEqual(flagged)
   })
 
+  it('round-trips a session/title event losslessly', () => {
+    const title: NativeSessionEvent = { type: 'session/title', seq: 0, time: 1000, data: { title: 'My session' } }
+    expect(parseEventLineV3(JSON.parse(serializeEvent(title)), 0, 's1', 'p')).toEqual(title)
+  })
+
+  it('rejects an empty title, unknown data fields, and missing data on session/title', () => {
+    const base = { seq: 0, type: 'session/title', time: 1000, data: { title: 'T' } }
+    expectCorruptV3({ ...base, data: { title: '' } })
+    expectCorruptV3({ ...base, data: { title: 'T', extra: true } })
+    expectCorruptV3({ seq: 0, type: 'session/title', time: 1000 })
+    expectCorruptV3({ ...base, data: {} })
+  })
+
   it('enforces the dt[0]=0 inter-arrival convention and texts/dt alignment', () => {
     const assistant = neutralEvents[1] as Record<string, unknown>
     const data = assistant.data as { stream: unknown[] }

@@ -389,6 +389,8 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
   it('durable session events have no live operational projection (null)', () => {
     const event: NativeSessionEvent = { type: 'session/end-seed', seq: 0, time: 0, data: { inherited: true } }
     expect(projectNativeEventToSdk(event)).toBeNull()
+    const title: NativeSessionEvent = { type: 'session/title', seq: 0, time: 0, data: { title: 'T' } }
+    expect(projectNativeEventToSdk(title)).toBeNull()
   })
 })
 
@@ -468,6 +470,11 @@ describe('projectNativeEventToSdkLine — history read seam (T13)', () => {
     expect(projectNativeEventToSdkLine(compact, SESSION)).toBeNull()
     expect(projectNativeEventToSdkLine(skill, SESSION)).toBeNull()
     expect(projectNativeEventToSdkLine(context, SESSION)).toBeNull()
+  })
+
+  it('returns null for a session/title event (log-only, never a transcript row)', () => {
+    const titleEvent: NativeSessionEvent = { type: 'session/title', seq: 0, time: TIME, data: { title: 'T' } }
+    expect(projectNativeEventToSdkLine(titleEvent, SESSION)).toBeNull()
   })
 
   it('round-trips a migrated legacy message event back to the identical SDK line', () => {

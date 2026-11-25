@@ -126,7 +126,7 @@ const pdfAttachment: NativeFileAttachment = {
 
 /** One fixture per durable key — the 12 neutral counterparts of today's
  *  11-event v1/v2 union (tool results split out of user content into their
- *  own first-class event). */
+ *  own first-class event), plus the log-only session/title. */
 const fixtures: NativeSessionEvent[] = [
   { type: 'user/message', seq: 0, time: 1000, data: userMessage, parentToolUseId: null },
   {
@@ -161,6 +161,7 @@ const fixtures: NativeSessionEvent[] = [
   },
   { type: 'session/attachments', seq: 10, time: 2000, data: { attachments: [handleAttachment, pdfAttachment], timestamp } },
   { type: 'session/agent', seq: 11, time: 2100, data: { name: 'reviewer', definition, base, timestamp } },
+  { type: 'session/title', seq: 12, time: 2200, data: { title: 'My session' } },
 ]
 
 /** Optional-field-free variants: every optional absent, sidechain parents,
@@ -219,6 +220,9 @@ function _narrowingPin(event: NativeSessionEvent): void {
     expectTypeOf(event.data.definition).toEqualTypeOf<NeutralStoredAgentDefinition | undefined>()
     expectTypeOf(event.data.base).toEqualTypeOf<NativeAgentBase>()
   }
+  if (event.type === 'session/title') {
+    expectTypeOf(event.data).toEqualTypeOf<{ title: string }>()
+  }
 }
 
 /** Exhaustive fold — the default arm is a compile-time leak detector: a new
@@ -237,6 +241,7 @@ function eventLabel(event: NativeSessionEvent): string {
     case 'subagent/descriptor': return `descriptor:${event.data.toolUseId}`
     case 'session/attachments': return `attachments:${event.data.attachments.length}`
     case 'session/agent': return `agent:${event.data.name ?? '(none)'}`
+    case 'session/title': return `title:${event.data.title}`
     default: return assertNever(event)
   }
 }
@@ -248,8 +253,8 @@ describe('SessionEvent discrimination', () => {
 
   it('every durable key folds exhaustively at runtime', () => {
     const labels = fixtures.map(eventLabel)
-    expect(labels).toHaveLength(12)
-    expect(new Set(labels.map((l) => l.split(':')[0])).size).toBe(12)
+    expect(labels).toHaveLength(13)
+    expect(new Set(labels.map((l) => l.split(':')[0])).size).toBe(13)
     expect(() => eventLabel({ type: 'bogus' } as unknown as NativeSessionEvent)).toThrow()
   })
 

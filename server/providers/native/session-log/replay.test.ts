@@ -30,6 +30,7 @@ const compact = (seq: number, text: string): NativeSessionEvent => ({ type: 'ses
 const supplement = (seq: number, text: string, uuid = `sp${seq}`): NativeSessionEvent => ({ type: 'session/supplement', seq, time: TIME, data: { uuid, text, timestamp: TS } })
 const skill = (seq: number, body: string, name = 'alpha'): NativeSessionEvent => ({ type: 'session/skill', seq, time: TIME, data: { name, body, timestamp: TS } })
 const turnEnd = (seq: number): NativeSessionEvent => ({ type: 'turn/end', seq, time: 0, data: { reason: 'completed' } })
+const title = (seq: number, text: string): NativeSessionEvent => ({ type: 'session/title', seq, time: TIME, data: { title: text } })
 const agentSelection = (seq: number, name: string | null): NativeSessionEvent => ({
   type: 'session/agent', seq, time: TIME,
   data: {
@@ -100,6 +101,11 @@ describe('neutral replay', () => {
     expect(roles(history)).toEqual(['user', 'assistant', 'tool', 'tool'])
     const messages = (await wire(history)) as Array<{ content: Array<{ tool_use_id?: string }> }>
     expect(messages[2].content.map((b) => b.tool_use_id)).toEqual(['agent-1', 'agent-2'])
+  })
+
+  it('ignores session/title events without changing model history', () => {
+    const events = [user(0, 'go'), assistant(1, [text('reply')]), turnEnd(2)]
+    expect(historyFromEvents([...events, title(3, 'Renamed')])).toEqual(historyFromEvents(events))
   })
 
   it('replays the raw prompt and persisted skill body verbatim without catalog rendering', async () => {

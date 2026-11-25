@@ -5,7 +5,8 @@
 //
 // Scope (design resolution R6): SessionEventMap holds the durable counterparts
 // of TODAY's 11-event v1/v2 union (session-log/format.ts), with tool results
-// split out of user content into their own first-class event (12 keys).
+// split out of user content into their own first-class event (12 keys), plus
+// the log-only session/title.
 // Live-only operational frames (init, api_retry, informational, task_*,
 // result, stream_event) are NOT durable events — they live in ./stream.ts's
 // live-frame union and are never persisted.
@@ -137,6 +138,10 @@ export interface SessionEventMap {
     droppedAgent?: { name: string; unsupportedFields: string[] }
     timestamp: string
   }
+  /** Durable session title (DSH session-title parity): latest-wins, log-only —
+   *  never model history, renderable transcript, or search. Written by manual
+   *  rename and auto-title; forks inherit it in their seed unchanged. */
+  'session/title': { title: string }
 }
 
 /** One durable event envelope. `time` is ms epoch; `seq` is the log position;

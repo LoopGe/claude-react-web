@@ -866,11 +866,12 @@ export type { NativeSessionHeader as NativeSessionHeaderV3 } from '../vocabulary
 
 // ── v3: the neutral durable event language ──────────────────────────────────
 // v3 stores the vocabulary's NativeSessionEvent (envelope: seq/time/data, plus
-// the sidechain parentToolUseId axis and an optional ignorable flag). The 12
-// SessionEventMap keys are the durable counterparts of the v1/v2 union, with
-// tool results split into a first-class `tool/result` event. Live-only frames
-// (init / api_retry / informational / task_* / result / stream_event) are NOT
-// durable and never appear here (design R6).
+// the sidechain parentToolUseId axis and an optional ignorable flag). The
+// SessionEventMap keys are the durable counterparts of the v1/v2 union plus
+// the log-only `session/title`, with tool results split into a first-class
+// `tool/result` event. Live-only frames (init / api_retry / informational /
+// task_* / result / stream_event) are NOT durable and never appear here
+// (design R6).
 
 /** Envelope keys every v3 event may carry. Anything else is corruption. */
 const V3_ENVELOPE_KEYS = new Set(['seq', 'type', 'time', 'data', 'ignorable', 'parentToolUseId'])
@@ -881,8 +882,9 @@ const V3_MESSAGE_TYPES = new Set<keyof SessionEventMap>(['user/message', 'assist
 const V3_EVENT_TYPES = new Set<keyof SessionEventMap>([
   'user/message', 'assistant/message', 'tool/result', 'session/context', 'turn/end',
   'session/end-seed', 'session/compact', 'session/supplement', 'session/skill',
-  'subagent/descriptor', 'session/attachments', 'session/agent',
+  'subagent/descriptor', 'session/attachments', 'session/agent', 'session/title',
 ])
+const V3_TITLE_DATA_KEYS = new Set(['title'])
 
 function requireV3Parent(raw: JsonObject, type: keyof SessionEventMap, sessionId: string, path: string): string | null | undefined {
   const value = raw.parentToolUseId
@@ -1119,6 +1121,9 @@ export function parseEventLineV3(
         },
       } as NativeSessionEvent
     }
+    case 'session/title':
+      requireKnownKeys(data, V3_TITLE_DATA_KEYS, 'session/title data', sessionId, path)
+      return { type, ...envelope, data: { title: requireV3NonEmptyString(data, 'title', type, sessionId, path) } } as NativeSessionEvent
     default:
       return corrupt(sessionId, path, `unknown event type '${String(type)}'`)
   }

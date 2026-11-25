@@ -208,6 +208,25 @@ describe('native history reader', () => {
       'LEGACY EXPANDED USER BODY',
     ])
   })
+  it('keeps session/title out of pages and search entries', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    const push = (e: never) => log.append(e)
+    push({ type: 'session/context', text: 'ctx' } as never)
+    push({ type: 'user', uuid: 'u1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'one' }] } } as never)
+    push({ type: 'session/title', time: Date.parse('2026-11-09T00:00:01.000Z'), data: { title: 'Renamed session' } } as never)
+    push({ type: 'assistant', uuid: 'a1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'two' }] } } as never)
+    await log.flush(); await log.close()
+
+    const page = await readNativeHistoryPage(dir, 's1', transcriptPort, { limit: 10 })
+    expect((page.messages as Array<{ uuid: string }>).map((message) => message.uuid)).toEqual(['u1', 'a1'])
+    expect(pageText(page)).not.toContain('Renamed session')
+    expect(pageText(page)).not.toContain('session/title')
+    const entries = await readNativeHistoryEntries(dir, 's1', transcriptPort)
+    expect(entries.map((entry) => (entry.message as { uuid: string }).uuid)).toEqual(['u1', 'a1'])
+    expect(JSON.stringify(entries)).not.toContain('Renamed session')
+  })
+
   it('floors raw prompts and skill bodies for model replay without changing UI or search flooring', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
     const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
