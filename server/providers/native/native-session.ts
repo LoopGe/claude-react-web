@@ -27,7 +27,7 @@
 import { createPushable, type Pushable } from '../../pushable.js'
 import { createLogger } from '../../log.js'
 import type { ProviderProfile } from '../../../shared/profile.js'
-import { effortLevelsForModel, supportsFastModeForModel } from '../../../shared/model-capability.js'
+import { effortLevelsForModel, supportsFastModeForModel, supportsThinkingForModel } from '../../../shared/model-capability.js'
 import type {
   NativeSessionCore,
   NativeAttachmentOccurrence,
@@ -37,7 +37,7 @@ import type {
   NativePersistenceOutcome,
   NativeDrainMode,
 } from './core-contract.js'
-import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
+import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult, type TurnResult } from './loop.js'
 import { estimateText, estimateMessage, estimateToolSchema, ROLE_OVERHEAD } from './estimate.js'
 import { createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
@@ -46,7 +46,7 @@ import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
 import type { NativeHostPorts } from './ports.js'
-import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel } from './anthropic-stream.js'
+import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel, type StreamRequest } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, type FrameContext } from './vocabulary/frame-context.js'
 import { NativeSessionLog, loadNativeSessionLogSync, type NativeSeed } from './session-log/log.js'
@@ -94,7 +94,15 @@ import {
   type PdfBudgetReservation,
 } from './pdf-documents.js'
 import { DEFAULT_CONTEXT_WINDOW, type NativeModelContextResolver } from './model-context.js'
-import type { SuggestionSnapshot } from './prompt-suggestion.js'
+import {
+  SUGGESTION_MAX_TOKENS,
+  SUGGESTION_PROMPT,
+  suggestionSuppressionReason,
+  type SuggestionSnapshot,
+} from './prompt-suggestion.js'
+import { normalizeSuggestion, screenSuggestion } from './prompt-suggestion-filter.js'
+import { projectNativeHistoryToWire } from './wire/wire-projection.js'
+import { metrics } from '../../metrics.js'
 import type { FileReadResult } from '../../../shared/read-file.js'
 import type { NativeReadState } from './read-state.js'
 import {
@@ -485,6 +493,14 @@ export class NativeSession implements NativeSessionCore {
    *  holds the last round's reading, not the turn total. The suggestion
    *  cache-evidence gate reads it. */
   private lastRoundUsage: TokenUsage | null = null
+  /** Abort controller for the in-flight turn-end suggestion fork. Replaced
+   *  every time a new fork starts; aborted by new input (enqueue), a new turn
+   *  starting (pumpLoop), interrupt, and destroy. Null when no fork is live. */
+  private suggestionAbort: AbortController | null = null
+  /** The in-flight suggestion fork's settlement promise (never rejects — the
+   *  fork owns its failure contract). destroy awaits it under a bounded cap;
+   *  the fork's finally clears it once settled. Null when no fork is live. */
+  private suggestionInFlight: Promise<void> | null = null
   /** Per-model totals for the /usage panel. Accumulated from every persisted
    *  assistant frame (one per API round), which keeps the live value identical
    *  to what a restart rebuilds from the log. */
@@ -1158,6 +1174,150 @@ export class NativeSession implements NativeSessionCore {
     return testStream ? testStream(req) : this.defaultStream(req, opts)
   }
 
+  /** Turn-end prompt-suggestion orchestration (design §5–§7). Runs the
+   *  suppression chain against the just-finished turn; on a pass, spawns ONE
+   *  fire-and-forget fork that replays the captured request snapshot. Never
+   *  blocks or errors the main turn — every outcome is silent bar the frame. */
+  private async maybeSuggestPrompt(turnResult: TurnResult | null): Promise<void> {
+    const reason = suggestionSuppressionReason({
+      enabled: this.opts.promptSuggestions !== false,
+      assistantCount: this.history.filter((m) => m.role === 'assistant').length,
+      turnIsError: turnResult === null || turnResult.isError,
+      permissionMode: this.permissionMode,
+      currentModel: this.model,
+      snapshot: this.suggestionSnapshot,
+      lastRoundUsage: this.lastRoundUsage,
+      now: Date.now(),
+    })
+    if (reason !== null) {
+      // The gate returns only 'cache_cold'; derive the sub-cause for the log
+      // from the inputs it read (design §5 gate 8 cacheColdBy): no usage / zero
+      // reads is missing evidence, a warm-but-old prefix is expiry.
+      const coldBy = reason === 'cache_cold'
+        ? ((this.lastRoundUsage?.cacheReadTokens ?? 0) === 0 ? 'no_evidence' : 'prefix_expired')
+        : undefined
+      log.debug(`[${this.opts.id}] prompt suggestion suppressed: ${reason}${coldBy ? ` (cacheColdBy: ${coldBy})` : ''}`)
+      metrics.count('native_prompt_suggestion_total', { outcome: 'suppressed', reason })
+      return
+    }
+    // At most one suggestion per turn: abort any previous fork before starting.
+    this.suggestionAbort?.abort()
+    if (this.sessionAbort.signal.aborted) return
+    const abort = new AbortController()
+    this.suggestionAbort = abort
+    // runSuggestion owns its failure contract (never rejects), so this
+    // fire-and-forget assignment can never produce an unhandled rejection.
+    this.suggestionInFlight = this.runSuggestion(abort.signal)
+  }
+
+  /** The suggestion fork: project the final assistant message to its wire
+   *  shape, append it + the SUGGESTION MODE prompt after the snapshot prefix
+   *  (breakpoint-free), stream ONE round, and emit at most one normalized +
+   *  screened suggestion. Reads only the snapshot — never live system/tools —
+   *  and never touches history, the v3 log, read-state, or session usage. */
+  private async runSuggestion(signal: AbortSignal): Promise<void> {
+    // The gate proved the snapshot non-null and no await ran since, so this
+    // synchronous read holds exactly the gated snapshot.
+    const snap = this.suggestionSnapshot!
+    try {
+      const last = this.history[this.history.length - 1]
+      if (last === undefined || last.role !== 'assistant') {
+        log.debug(`[${this.opts.id}] prompt suggestion skipped: last history message is not an assistant`)
+        return
+      }
+      const finalWire = await projectNativeHistoryToWire(
+        [last],
+        {
+          attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
+          preparedPdfs: this.preparedPdfs,
+        },
+        signal,
+      )
+      if (signal.aborted) return
+      // Credentials are resolved by runSuggestionFork's production branch only
+      // (the test seam bypasses them, exactly as streamFor bypasses defaultStream).
+      const req: Omit<StreamRequest, 'baseUrl' | 'authToken'> = {
+        model: snap.model,
+        system: snap.system,
+        tools: snap.tools,
+        messages: snap.messages,
+        appendMessages: [...finalWire, { role: 'user', content: [{ type: 'text', text: SUGGESTION_PROMPT }] }],
+        maxTokens: SUGGESTION_MAX_TOKENS,
+        // Same model gate as the main request: a non-thinking model/gateway
+        // must not receive an unexpected thinking field. No effort/fastMode/
+        // temperature/thinkingDisplay — prediction needs none of them.
+        ...(supportsThinkingForModel(snap.model) === true ? { thinking: { type: 'disabled' as const } } : {}),
+        signal,
+      }
+      // Collect text by block index; reasoning/tool deltas are ignored (the
+      // fork never executes tools — single round, text only).
+      const textByIndex = new Map<number, string>()
+      for await (const ev of this.runSuggestionFork(req)) {
+        if (signal.aborted) return
+        if (ev.kind === 'block_start' && ev.block.type === 'text') textByIndex.set(ev.index, '')
+        else if (ev.kind === 'block_delta' && ev.delta.type === 'text' && textByIndex.has(ev.index)) {
+          textByIndex.set(ev.index, textByIndex.get(ev.index)! + ev.delta.text)
+        }
+      }
+      if (signal.aborted) return
+      // First non-null normalized candidate in block order, then the screen.
+      let candidate: string | null = null
+      for (const index of [...textByIndex.keys()].sort((a, b) => a - b)) {
+        candidate = normalizeSuggestion(textByIndex.get(index)!)
+        if (candidate !== null) break
+      }
+      if (candidate === null) {
+        log.debug(`[${this.opts.id}] prompt suggestion suppressed: empty`)
+        metrics.count('native_prompt_suggestion_total', { outcome: 'suppressed', reason: 'empty' })
+        return
+      }
+      const screened = screenSuggestion(candidate)
+      if (!screened.ok) {
+        log.debug(`[${this.opts.id}] prompt suggestion suppressed: ${screened.reason}`)
+        metrics.count('native_prompt_suggestion_total', { outcome: 'suppressed', reason: screened.reason })
+        return
+      }
+      this.output.push({
+        type: 'prompt/suggestion',
+        suggestion: screened.text,
+        sessionId: this.opts.id,
+        uuid: this.ctx.uuid(),
+        parentToolUseId: null,
+      })
+      metrics.count('native_prompt_suggestion_total', { outcome: 'generated' })
+      log.debug(`[${this.opts.id}] prompt suggestion generated (textLen=${screened.text.length})`)
+    } catch (err) {
+      if (signal.aborted) return // aborted → silent
+      log.debug(`[${this.opts.id}] prompt suggestion failed:`, err)
+      metrics.count('native_prompt_suggestion_total', { outcome: 'failed', reason: 'error' })
+    } finally {
+      // Clear only if this fork still owns the slot — a newer turn may have
+      // already replaced it while this one was settling.
+      if (this.suggestionAbort?.signal === signal) {
+        this.suggestionAbort = null
+        this.suggestionInFlight = null
+      }
+    }
+  }
+
+  /** Route the fork through the test seam when present (flattening the
+   *  breakpoint-free tail into messages so the seam sees the full fork
+   *  content); otherwise call the real streamer with a SILENT onRetry — a
+   *  fork's retry frames must never reach the session channel. */
+  private runSuggestionFork(req: Omit<StreamRequest, 'baseUrl' | 'authToken'>): AsyncIterable<CanonicalEvent> {
+    const testStream = this.opts.streamSupplier?.()
+    if (testStream) {
+      return testStream({
+        model: req.model,
+        system: req.system,
+        tools: req.tools,
+        messages: [...req.messages, ...(req.appendMessages ?? [])],
+        signal: req.signal,
+      })
+    }
+    return streamAnthropicMessages({ ...this.opts.credentials(), ...req }, async () => {})
+  }
+
   /** The operational live-frame discriminants (the system/result surface).
    *  Everything else in the loop emission union is a conversation frame. */
   private isOperationalFrame(frame: NativeLoopFrame): frame is OperationalFrame {
@@ -1379,6 +1539,11 @@ export class NativeSession implements NativeSessionCore {
 
   private async pumpLoop(): Promise<void> {
     while (!this._closed && (this.pendingDurableInitial !== null || this.input.length > 0)) {
+      // A new turn supersedes any in-flight suggestion. This covers the drain
+      // path (input queued mid-turn, consumed here without a fresh enqueue) as
+      // well as the ordinary next-message path; enqueue aborts too, but a fork
+      // spawned after that enqueue (during turn/end finalization) is caught here.
+      this.suggestionAbort?.abort()
       const pending = this.pendingDurableInitial ?? { message: this.input.shift() as RequestMessage }
       this.pendingDurableInitial = pending
       const next = pending.message
@@ -1403,6 +1568,9 @@ export class NativeSession implements NativeSessionCore {
       let rawAppended = false
       let pauseForDurableRetry = false
       let pauseEnqueueGeneration = 0
+      // The success-path TurnResult; stays null on the catch path (interrupt /
+      // API error) so the suggestion gate reads it as last_response_error.
+      let turnResult: TurnResult | null = null
       try {
         // Capture every persona-controlled execution field at one boundary.
         // Discovery/flush/MCP awaits below must not let a live control switch
@@ -1568,6 +1736,7 @@ export class NativeSession implements NativeSessionCore {
         this.lastUsage = sdkUsageOf(res.usage)
         endReason = res.isError ? 'error' : 'completed'
         if (!res.isError) endUsage = sdkUsageOf(res.usage)
+        turnResult = res
       } catch (err) {
         // A withdrawn parked head (pendingDurableInitial !== pending) already
         // received its terminal 'failed' outcome from drainQueued (the T7
@@ -1636,6 +1805,10 @@ export class NativeSession implements NativeSessionCore {
       } catch (err) {
         log.warn(`[${this.opts.id}] failed to persist turn/end:`, err)
       }
+      // Turn-end prompt suggestion: fire-and-forget AFTER the terminal result
+      // and turn/end persistence. The gate reads turnResult (null on the catch
+      // path → last_response_error); a spawned fork never blocks the next turn.
+      void this.maybeSuggestPrompt(turnResult)
       // Park even when later input is already queued. Only an enqueue observed
       // after this failure (including during turn/end finalization) releases
       // the pause, exactly once; older queued input cannot drive a retry loop.
@@ -1645,6 +1818,8 @@ export class NativeSession implements NativeSessionCore {
 
   enqueue(message: RequestMessage): void {
     if (this._closed) return
+    // New user input supersedes any in-flight suggestion (CLI onCommand).
+    this.suggestionAbort?.abort()
     // A direct enqueue is exactly what releases a durable-retry pause: the pump
     // loop (re)starts and retries the parked head prompt before this message.
     this.durableRetryPaused = false
@@ -1919,6 +2094,8 @@ export class NativeSession implements NativeSessionCore {
     // terminal 'failed' per entry (releasing the adapter pairing) and the
     // receipt lists the cancelled neutral ids (=== host uuids) for the
     // manager's withdrawal accounting.
+    // An interrupt also discards any in-flight suggestion (CLI contract).
+    this.suggestionAbort?.abort()
     let cancelledQueued: string[] | undefined
     if (opts?.cancelQueued) {
       cancelledQueued = this.drainQueued().map((msg) => msg.id!)
@@ -2294,6 +2471,24 @@ export class NativeSession implements NativeSessionCore {
     this._closed = true
     this.opts.readState.clear()
     this.sessionAbort.abort(new Error('destroyed'))
+    // Turn-end suggestion: abort the in-flight fork, then give it a bounded
+    // window to settle before teardown ends the output stream and closes the
+    // log (CLI cH equivalent, ≤30s). The cap timer is unref'd so a wedged fork
+    // can never keep the process alive; the fork's own catch settles it on abort.
+    this.suggestionAbort?.abort()
+    const suggestionSettle = this.suggestionInFlight
+    if (suggestionSettle) {
+      let timer: NodeJS.Timeout | undefined
+      const cap = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 30_000)
+        timer.unref()
+      })
+      try {
+        await Promise.race([suggestionSettle, cap])
+      } finally {
+        clearTimeout(timer)
+      }
+    }
     // Crash recovery transfers pending input to respawnInPlace; keep its FIFO
     // and leases while the _closed checks above stop the old pump. Every other
     // teardown withdraws that input before releasing its lease.

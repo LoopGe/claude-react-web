@@ -26,7 +26,7 @@ import { migrateEventToV3 } from './session-log/migration.js'
 import { neutralEventsOf, neutralFileOccurrences } from './session-log/neutral-read.js'
 import type { NativeSessionEvent } from './vocabulary/session-event.js'
 import type { ContentBlock, TokenUsage } from './vocabulary/types.js'
-import type { SuggestionSnapshot } from './prompt-suggestion.js'
+import { SUGGESTION_PROMPT, type SuggestionSnapshot } from './prompt-suggestion.js'
 import { buildCompactAttachmentContent } from '../../compact-attachments.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { projectNativeHistoryToWire } from './wire/wire-projection.js'
@@ -120,6 +120,21 @@ function pricedTurn(text: string, inputTokens: number): CanonicalEvent[] {
     { kind: 'block_delta', index: 0, delta: { type: 'text', text } },
     { kind: 'block_end', index: 0 },
     { kind: 'message_end', stopReason: 'end_turn', usage: { output_tokens: 5 } },
+  ]
+}
+
+/** A text turn whose message_start reports caller-chosen prompt size AND cache
+ *  reads, so the suggestion evidence gate (cacheReadTokens > 0) can be driven
+ *  directly. The settled usage is {inputTokens: input, outputTokens: output,
+ *  cacheReadTokens: cacheRead} (output comes from message_end, mirroring the
+ *  real assembler). */
+function cachedTurn(text: string, usage: { input: number; output: number; cacheRead: number }): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: usage.input, output_tokens: 1, cache_read_input_tokens: usage.cacheRead } },
+    { kind: 'block_start', index: 0, block: { type: 'text' } },
+    { kind: 'block_delta', index: 0, delta: { type: 'text', text } },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'end_turn', usage: { output_tokens: usage.output } },
   ]
 }
 
@@ -6282,6 +6297,525 @@ describe('NativeSession', () => {
       const session = provider.createSession({ id: 'sug-default', cwd: dir })
       expect((coreOf(session) as { opts: { promptSuggestions?: boolean } }).opts.promptSuggestions).toBe(true)
       await session.destroy()
+    })
+  })
+
+  describe('prompt suggestion orchestration', () => {
+    const SUGGESTION_MARKER = '[SUGGESTION MODE:'
+
+    /** The fork request is the only one whose (flattened) messages carry the
+     *  SUGGESTION MODE prompt; main requests never do. */
+    function isSuggestionFork(req: { messages: unknown[] }): boolean {
+      return JSON.stringify(req.messages).includes(SUGGESTION_MARKER)
+    }
+
+    /** A script entry is either a fixed canonical round or a factory building
+     *  a live async iterable from the request (for deferred / abort-responsive
+     *  forks that must observe the fork's own signal). */
+    type ScriptEntry = CanonicalEvent[] | ((req: CapturedRequest) => AsyncIterable<CanonicalEvent>)
+
+    /** Capturing seam that routes main vs fork by the SUGGESTION MODE marker.
+     *  The fork arrives with appendMessages already flattened into messages
+     *  (runSuggestionFork's seam projection), so the marker is visible here. */
+    function suggestionSeam(mainScript: ScriptEntry[], forkScript: ScriptEntry[], requests: CapturedRequest[]) {
+      return async function* (req: CapturedRequest) {
+        requests.push(structuredClone(req))
+        const script = (isSuggestionFork(req) ? forkScript : mainScript).shift()
+        if (script === undefined) return
+        if (Array.isArray(script)) { for (const ev of script) yield ev }
+        else { yield* script(req) }
+      }
+    }
+
+    /** A fork that hangs until its signal aborts, then rejects — mirrors the
+     *  real streamer (fetch rejects on abort), so abort settles it promptly. */
+    function abortResponsiveFork(signal: AbortSignal): AsyncIterable<CanonicalEvent> {
+      return (async function* () {
+        await new Promise<never>((_, reject) => {
+          if (signal.aborted) reject(signal.reason)
+          else signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+        yield {} as CanonicalEvent // unreachable: the await above always rejects
+      })()
+    }
+
+    const pumpingOf = (s: unknown): boolean => (coreOf(s) as { pumping: boolean }).pumping
+    const inFlightOf = (s: unknown): Promise<void> | null =>
+      (coreOf(s) as { suggestionInFlight: Promise<void> | null }).suggestionInFlight
+    const historyOf = (s: unknown): Array<{ role: string; content: ContentBlock[] }> =>
+      (coreOf(s) as { history: Array<{ role: string; content: ContentBlock[] }> }).history
+    const lastUsageOf = (s: unknown): unknown => (coreOf(s) as { lastUsage: unknown }).lastUsage
+
+    /** Two warm cached turns — the minimum to clear the first-turn gate
+     *  (assistantCount >= 2) AND the cache-evidence gate (cacheRead > 0). */
+    const warmMain = (): CanonicalEvent[][] => [
+      cachedTurn('回复1', { input: 100, output: 5, cacheRead: 4096 }),
+      cachedTurn('回复2', { input: 120, output: 7, cacheRead: 4096 }),
+    ]
+
+    /** Wait until the pump has exited (the turn-end suggestion decision has
+     *  run) AND any spawned fork has settled. Deterministic for both the
+     *  suppressed (no fork) and fork-ran-but-silent paths. */
+    async function settled(session: unknown): Promise<void> {
+      await vi.waitFor(() => expect(pumpingOf(session)).toBe(false))
+      await vi.waitFor(() => expect(inFlightOf(session)).toBeNull())
+    }
+
+    function collectFrames(session: { messages: AsyncIterable<unknown> }): Frame[] {
+      const frames: Frame[] = []
+      void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+      return frames
+    }
+
+    const suggestionFrames = (frames: Frame[]): Frame[] => frames.filter((f) => f.type === 'prompt_suggestion')
+    const resultFrames = (frames: Frame[]): Frame[] => frames.filter((f) => f.type === 'result')
+
+    it('emits one prompt_suggestion after the second result; the fork replays the snapshot prefix', async () => {
+      const dir = await tempDir('native-sug-happy-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        suggestionSeam(warmMain(), [textTurn('跑测试')], requests)
+      const session = provider.createSession({ id: 'sug-happy', cwd: dir })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+        await vi.waitFor(() => expect(suggestionFrames(frames)).toHaveLength(1))
+        expect(suggestionFrames(frames)[0].suggestion).toBe('跑测试')
+        // The frame lands AFTER the second terminal result.
+        const types = frames.map((f) => f.type)
+        expect(types.indexOf('prompt_suggestion')).toBeGreaterThan(types.lastIndexOf('result'))
+
+        const mainReqs = requests.filter((r) => !isSuggestionFork(r))
+        const forkReqs = requests.filter((r) => isSuggestionFork(r))
+        expect(mainReqs).toHaveLength(2)
+        expect(forkReqs).toHaveLength(1)
+        const fork = forkReqs[0]
+        const main2 = mainReqs[1]
+        // system / tools / model are the snapshot's, verbatim from the parent.
+        expect(fork.system).toBe(main2.system)
+        expect(fork.tools).toEqual(main2.tools)
+        expect(fork.model).toBe(main2.model)
+        // messages = the parent prefix + the final assistant + the suggestion
+        // user message (the opening <system-reminder> context rides the prefix).
+        expect(fork.messages).toHaveLength(main2.messages.length + 2)
+        expect(fork.messages.slice(0, main2.messages.length)).toEqual(main2.messages)
+        const tail = fork.messages.slice(main2.messages.length) as Array<{ role: string; content: Array<{ type: string; text?: string }> }>
+        expect(tail[0]).toEqual({ role: 'assistant', content: [{ type: 'text', text: '回复2' }] })
+        expect(tail[1].role).toBe('user')
+        expect(tail[1].content[0].text).toBe(SUGGESTION_PROMPT)
+        // The appended tail carries no cache breakpoint (skipCacheWrite).
+        expect(JSON.stringify(tail)).not.toContain('cache_control')
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('does not pollute history, the v3 log, or session usage (Review Focus 3)', async () => {
+      const dir = await tempDir('native-sug-pollution-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        suggestionSeam(warmMain(), [textTurn('跑测试')], requests)
+      const session = provider.createSession({ id: 'sug-pollution', cwd: dir })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+        const historyAfterTurn2 = structuredClone(historyOf(session))
+        await vi.waitFor(() => expect(suggestionFrames(frames)).toHaveLength(1))
+        // The fork appended nothing to the model history.
+        expect(historyOf(session)).toEqual(historyAfterTurn2)
+        expect(historyOf(session).filter((m) => m.role === 'assistant')).toHaveLength(2)
+        expect(historyOf(session).at(-1)!.role).toBe('assistant')
+        expect(JSON.stringify(historyOf(session))).not.toContain(SUGGESTION_MARKER)
+        // No suggestion event in the durable v3 log.
+        const events = neutralLogEvents(session)
+        expect(events.some((e) => (e as { type: string }).type.includes('suggestion'))).toBe(false)
+        expect(JSON.stringify(events)).not.toContain(SUGGESTION_MARKER)
+        // lastUsage is the second MAIN round's reading — the fork's usage
+        // (textTurn: input 10 / output 5) never entered session accounting.
+        expect(lastUsageOf(session)).toEqual({ input_tokens: 120, output_tokens: 7, cache_read_input_tokens: 4096 })
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('suppresses when the last round reports no cache reads (evidence gate)', async () => {
+      const dir = await tempDir('native-sug-cold-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream = suggestionSeam(
+        [cachedTurn('回复1', { input: 100, output: 5, cacheRead: 0 }), cachedTurn('回复2', { input: 120, output: 7, cacheRead: 0 })],
+        [textTurn('跑测试')],
+        requests,
+      )
+      const session = provider.createSession({ id: 'sug-cold', cwd: dir })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+        await settled(session)
+        expect(requests).toHaveLength(2) // no fork request
+        expect(suggestionFrames(frames)).toHaveLength(0)
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('a thinking-only fork response yields no frame and no error (Review Focus 1)', async () => {
+      const dir = await tempDir('native-sug-thinking-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      const thinkingOnly: CanonicalEvent[] = [
+        { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+        { kind: 'block_start', index: 0, block: { type: 'thinking' } },
+        { kind: 'block_delta', index: 0, delta: { type: 'thinking', thinking: 'hmm' } },
+        { kind: 'block_end', index: 0 },
+        { kind: 'message_end', stopReason: 'end_turn', usage: { output_tokens: 5 } },
+      ]
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        suggestionSeam(warmMain(), [thinkingOnly], requests)
+      const session = provider.createSession({ id: 'sug-thinking', cwd: dir })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+        await settled(session)
+        expect(suggestionFrames(frames)).toHaveLength(0)
+        expect(resultFrames(frames).filter((f) => f.is_error)).toHaveLength(0)
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('a tool_use-only fork response yields no frame and executes no tool (Review Focus 2)', async () => {
+      const dir = await tempDir('native-sug-tool-')
+      await writeFile(join(dir, 'package.json'), '{}', 'utf8')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      const permissionCalls: unknown[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        suggestionSeam(warmMain(), [toolTurn('fork-tool')], requests)
+      const session = provider.createSession({
+        id: 'sug-tool',
+        cwd: dir,
+        canUseTool: async (...args: unknown[]) => { permissionCalls.push(args); return { behavior: 'deny' } },
+      })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+        await settled(session)
+        expect(suggestionFrames(frames)).toHaveLength(0)
+        // The fork's tool_use was collected as text-only output, never run.
+        expect(permissionCalls).toHaveLength(0)
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('a filtered fork response (谢谢) yields no frame', async () => {
+      const dir = await tempDir('native-sug-filter-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        suggestionSeam(warmMain(), [textTurn('谢谢')], requests)
+      const session = provider.createSession({ id: 'sug-filter', cwd: dir })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+        await settled(session)
+        expect(suggestionFrames(frames)).toHaveLength(0)
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('a second message aborts an in-flight fork; the new turn completes (Review Focus 5)', async () => {
+      const dir = await tempDir('native-sug-abort-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      const forkRelease = deferred<void>()
+      const deferredFork: AsyncIterable<CanonicalEvent> = (async function* () {
+        await forkRelease.promise
+        for (const ev of textTurn('跑测试')) yield ev
+      })()
+      ;(provider as unknown as { _testStream: unknown })._testStream = suggestionSeam(
+        [...warmMain(), cachedTurn('回复3', { input: 130, output: 9, cacheRead: 4096 })],
+        [() => deferredFork],
+        requests,
+      )
+      const session = provider.createSession({ id: 'sug-abort', cwd: dir })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+        // The fork is in flight (deferred, hanging).
+        await vi.waitFor(() => expect(inFlightOf(session)).not.toBeNull())
+        // The new message aborts it; resolving the deferred afterwards must
+        // still produce no frame (the post-consumption abort check).
+        session.enqueueUserMessage(userMsg('第三条') as never)
+        forkRelease.resolve()
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(3))
+        await settled(session)
+        expect(suggestionFrames(frames)).toHaveLength(0)
+        expect(resultFrames(frames)[2].result).toBe('回复3')
+      } finally {
+        forkRelease.resolve()
+        await session.destroy()
+      }
+    })
+
+    it('a pre-queued message aborts the fork at turn start (drain path, Review Focus 5 variant)', async () => {
+      const dir = await tempDir('native-sug-drain-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      const turn2Release = deferred<void>()
+      // Turn 3 reports no cache reads so its OWN suggestion is suppressed —
+      // the only possible frame is turn 2's, which the drain abort must kill.
+      ;(provider as unknown as { _testStream: unknown })._testStream = suggestionSeam(
+        [
+          cachedTurn('回复1', { input: 100, output: 5, cacheRead: 4096 }),
+          () => (async function* () { await turn2Release.promise; for (const ev of cachedTurn('回复2', { input: 120, output: 7, cacheRead: 4096 })) yield ev })(),
+          cachedTurn('回复3', { input: 130, output: 9, cacheRead: 0 }),
+        ],
+        [textTurn('跑测试')],
+        requests,
+      )
+      const session = provider.createSession({ id: 'sug-drain', cwd: dir })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(requests.filter((r) => !isSuggestionFork(r))).toHaveLength(2))
+        // Queue the third message WHILE turn 2 is still running: the drain
+        // path consumes it without a fresh enqueue, so only the pump's
+        // turn-start abort can kill turn 2's fork.
+        session.enqueueUserMessage(userMsg('第三条') as never)
+        turn2Release.resolve()
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(3))
+        await settled(session)
+        expect(suggestionFrames(frames)).toHaveLength(0)
+        // Turn 2's fork was aborted before it ever called the streamer.
+        expect(requests.filter((r) => isSuggestionFork(r))).toHaveLength(0)
+      } finally {
+        turn2Release.resolve()
+        await session.destroy()
+      }
+    })
+
+    it('interrupt aborts an in-flight fork with no frame', async () => {
+      const dir = await tempDir('native-sug-interrupt-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        suggestionSeam(warmMain(), [(req) => abortResponsiveFork(req.signal as AbortSignal)], requests)
+      const session = provider.createSession({ id: 'sug-interrupt', cwd: dir })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+        await vi.waitFor(() => expect(inFlightOf(session)).not.toBeNull())
+        await session.interrupt?.()
+        await vi.waitFor(() => expect(inFlightOf(session)).toBeNull())
+        expect(suggestionFrames(frames)).toHaveLength(0)
+        expect(resultFrames(frames).filter((f) => f.is_error)).toHaveLength(0)
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('destroy aborts and settles an in-flight fork within the cap (Review Focus 4)', async () => {
+      const dir = await tempDir('native-sug-destroy-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        suggestionSeam(warmMain(), [(req) => abortResponsiveFork(req.signal as AbortSignal)], requests)
+      const session = provider.createSession({ id: 'sug-destroy', cwd: dir })
+      const frames = collectFrames(session)
+      session.enqueueUserMessage(userMsg('第一条') as never)
+      await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+      session.enqueueUserMessage(userMsg('第二条') as never)
+      await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+      await vi.waitFor(() => expect(inFlightOf(session)).not.toBeNull())
+      const start = Date.now()
+      await session.destroy()
+      expect(Date.now() - start).toBeLessThan(30_000)
+      expect(suggestionFrames(frames)).toHaveLength(0)
+    })
+
+    it('promptSuggestions: false spawns no fork', async () => {
+      const dir = await tempDir('native-sug-off-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        suggestionSeam(warmMain(), [textTurn('跑测试')], requests)
+      const session = provider.createSession({ id: 'sug-off', cwd: dir, promptSuggestions: false })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+        await settled(session)
+        expect(requests).toHaveLength(2)
+        expect(suggestionFrames(frames)).toHaveLength(0)
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('a model switch during the turn suppresses the fork (model_switched)', async () => {
+      const dir = await tempDir('native-sug-model-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      const turn2Started = deferred<void>()
+      const turn2Release = deferred<void>()
+      ;(provider as unknown as { _testStream: unknown })._testStream = suggestionSeam(
+        [
+          cachedTurn('回复1', { input: 100, output: 5, cacheRead: 4096 }),
+          () => (async function* () { turn2Started.resolve(); await turn2Release.promise; for (const ev of cachedTurn('回复2', { input: 120, output: 7, cacheRead: 4096 })) yield ev })(),
+        ],
+        [textTurn('跑测试')],
+        requests,
+      )
+      const session = provider.createSession({ id: 'sug-model', cwd: dir, model: 'claude-sonnet-4-5' })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await turn2Started.promise
+        // Switch the live model mid-turn: turn 2 keeps its turn-start model
+        // (the snapshot's), so currentModel != snapshot.model at turn end.
+        await session.setModel?.('claude-opus-4-5')
+        turn2Release.resolve()
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+        await settled(session)
+        expect(requests).toHaveLength(2)
+        expect(suggestionFrames(frames)).toHaveLength(0)
+      } finally {
+        turn2Release.resolve()
+        await session.destroy()
+      }
+    })
+
+    it('an over-large uncached tail suppresses the fork (uncached)', async () => {
+      const dir = await tempDir('native-sug-tail-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream = suggestionSeam(
+        [cachedTurn('回复1', { input: 100, output: 5, cacheRead: 4096 }), cachedTurn('回复2', { input: 9000, output: 2000, cacheRead: 4096 })],
+        [textTurn('跑测试')],
+        requests,
+      )
+      const session = provider.createSession({ id: 'sug-tail', cwd: dir })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(2))
+        await settled(session)
+        expect(requests).toHaveLength(2)
+        expect(suggestionFrames(frames)).toHaveLength(0)
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('production fork request: maxTokens 1024, thinking disabled, no effort/fastMode/temperature', async () => {
+      const dir = await tempDir('native-sug-prod-')
+      const origConfig = { ...config }
+      __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+      const forkRequests: Array<Parameters<typeof buildRequestBody>[0]> = []
+      streamAnthropicMessagesMock.mockImplementation(async function* (req: Parameters<typeof buildRequestBody>[0]) {
+        if (JSON.stringify(req.appendMessages ?? []).includes(SUGGESTION_MARKER)) {
+          forkRequests.push(req)
+          for (const ev of textTurn('跑测试')) yield ev
+        } else {
+          for (const ev of cachedTurn('回复', { input: 100, output: 5, cacheRead: 4096 })) yield ev
+        }
+      })
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const session = provider.createSession({ id: 'sug-prod', cwd: dir, model: 'claude-sonnet-4-5' })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(suggestionFrames(frames)).toHaveLength(1))
+        expect(forkRequests).toHaveLength(1)
+        const req = forkRequests[0]
+        expect(req.maxTokens).toBe(1024)
+        expect(req.thinking).toEqual({ type: 'disabled' })
+        expect(req.effort).toBeUndefined()
+        expect(req.fastMode).toBeUndefined()
+        expect(req.thinkingDisplay).toBeUndefined()
+        expect((req as unknown as Record<string, unknown>).temperature).toBeUndefined()
+        // The tail (final assistant + suggestion user) rides appendMessages,
+        // breakpoint-free; the prefix keeps the parent's breakpoints.
+        expect(req.appendMessages).toHaveLength(2)
+        expect(JSON.stringify(req.appendMessages)).not.toContain('cache_control')
+        expect(JSON.stringify(req.appendMessages)).toContain(SUGGESTION_MARKER)
+      } finally {
+        await session.destroy()
+        streamAnthropicMessagesMock.mockReset()
+        streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
+        __setConfigForTest(origConfig)
+      }
+    })
+
+    it('production fork request omits thinking for a non-thinking model', async () => {
+      const dir = await tempDir('native-sug-prod-nonthink-')
+      const origConfig = { ...config }
+      __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+      const forkRequests: Array<Parameters<typeof buildRequestBody>[0]> = []
+      streamAnthropicMessagesMock.mockImplementation(async function* (req: Parameters<typeof buildRequestBody>[0]) {
+        if (JSON.stringify(req.appendMessages ?? []).includes(SUGGESTION_MARKER)) {
+          forkRequests.push(req)
+          for (const ev of textTurn('跑测试')) yield ev
+        } else {
+          for (const ev of cachedTurn('回复', { input: 100, output: 5, cacheRead: 4096 })) yield ev
+        }
+      })
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const session = provider.createSession({ id: 'sug-prod-nonthink', cwd: dir, model: 'deepseek-chat' })
+      const frames = collectFrames(session)
+      try {
+        session.enqueueUserMessage(userMsg('第一条') as never)
+        await vi.waitFor(() => expect(resultFrames(frames)).toHaveLength(1))
+        session.enqueueUserMessage(userMsg('第二条') as never)
+        await vi.waitFor(() => expect(suggestionFrames(frames)).toHaveLength(1))
+        expect(forkRequests).toHaveLength(1)
+        expect(forkRequests[0].thinking).toBeUndefined()
+        expect(forkRequests[0].maxTokens).toBe(1024)
+      } finally {
+        await session.destroy()
+        streamAnthropicMessagesMock.mockReset()
+        streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
+        __setConfigForTest(origConfig)
+      }
     })
   })
 
