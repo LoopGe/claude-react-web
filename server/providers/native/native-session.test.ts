@@ -55,6 +55,7 @@ import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef, ToolOutcome } from './tools/types.js'
 import { UploadStore } from '../../upload-store.js'
 import { aliasPathOf, attachmentRoot } from '../../attachment-paths.js'
+import { estimateText, estimateMessage, estimateToolSchema } from './estimate.js'
 
 // The retry suppression test drives the real `defaultStream` against a mocked
 // wire layer: the mock invokes `onRetry` and yields a minimal canonical round.
@@ -101,6 +102,19 @@ function coreOf(handle: unknown): unknown {
 function textTurn(text: string): CanonicalEvent[] {
   return [
     { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'text' } },
+    { kind: 'block_delta', index: 0, delta: { type: 'text', text } },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'end_turn', usage: { output_tokens: 5 } },
+  ]
+}
+
+/** A text turn whose message_start reports a caller-chosen prompt size, so
+ *  composition tests can anchor the residual against a realistic sample
+ *  (textTurn's fixed input 10 is far below any real prompt estimate). */
+function pricedTurn(text: string, inputTokens: number): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: inputTokens, output_tokens: 1 } },
     { kind: 'block_start', index: 0, block: { type: 'text' } },
     { kind: 'block_delta', index: 0, delta: { type: 'text', text } },
     { kind: 'block_end', index: 0 },
@@ -412,6 +426,14 @@ type NativeContextUsage = {
   maxTokens: number
   model: string
   autoCompactThreshold: number
+  categories?: Array<{ name: string; tokens: number; kind: 'used' | 'free' | 'buffer' | 'deferred' }>
+  skills?: {
+    includedSkills: number
+    totalSkills: number
+    tokenCount: number
+    skillFrontmatter?: Array<{ name: string; source: string; tokens: number }>
+  }
+  mcpTools?: Array<{ name: string; serverName: string; tokens: number; isLoaded?: boolean }>
 }
 
 function resolverOf(resolveRoute: (route: NativeModelRoute) => Promise<NativeModelContext>) {
@@ -669,6 +691,180 @@ describe('NativeSession', () => {
     expect(usage.autoCompactThreshold).toBe(160_000)
     expect(typeof usage.model).toBe('string')
     await session.destroy()
+  })
+
+  it('categories sum to the real totalTokens with a realistic usage sample', async () => {
+    const dir = await tempDir('native-composition-')
+    const provider = providerWithStreamer([pricedTurn('ok', 100_000)], dir)
+    const session = provider.createSession({ id: 'comp-sum', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      const used = usage.categories!.filter((c) => c.kind === 'used')
+      expect(used.reduce((s, c) => s + c.tokens, 0)).toBe(100_000)
+      expect(usage.categories!.map((c) => c.name)).toEqual([
+        'System prompt', 'System tools', 'Messages', 'Autocompact buffer', 'Free space',
+      ])
+      expect(usage.categories!.find((c) => c.kind === 'buffer')!.tokens).toBe(40_000)
+      expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(60_000)
+      const messages = used.find((c) => c.name === 'Messages')!
+      const others = used.filter((c) => c.name !== 'Messages').reduce((s, c) => s + c.tokens, 0)
+      expect(messages.tokens).toBe(100_000 - others)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('renders categories before any turn with no negative rows', async () => {
+    const dir = await tempDir('native-composition-fresh-')
+    const provider = providerWithStreamer([], dir)
+    const session = provider.createSession({ id: 'comp-fresh', cwd: dir })
+    try {
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage.totalTokens).toBe(0)
+      expect(usage.categories!.find((c) => c.name === 'System prompt')!.tokens).toBeGreaterThan(0)
+      // Spawn seeds an environment <system-reminder> user message into
+      // history; with no usage sample the Messages row prices it directly.
+      const core = nativeCoreOf(session as never) as unknown as { history: Array<{ role: string; content: ContentBlock[] }> }
+      const expectedMessages = core.history.reduce((s, m) => s + estimateMessage(m), 0)
+      expect(usage.categories!.find((c) => c.name === 'Messages')!.tokens).toBe(expectedMessages)
+      expect(usage.categories!.every((c) => c.tokens >= 0)).toBe(true)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('clamps Messages at 0 when estimates exceed the sample', async () => {
+    const dir = await tempDir('native-composition-clamp-')
+    const provider = providerWithStreamer([textTurn('x')], dir)
+    const session = provider.createSession({ id: 'comp-clamp', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage.categories!.find((c) => c.name === 'Messages')!.tokens).toBe(0)
+      expect(usage.categories!.every((c) => c.tokens >= 0)).toBe(true)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('omits the buffer row when the threshold is 0', async () => {
+    const dir = await tempDir('native-composition-nobuffer-')
+    const { modelContext } = resolverOf(async () => ({ contextWindow: 16_000, source: 'endpoint' }))
+    const provider = new NativeProvider({ stateDir: dir, modelContext, ports: makeNativePorts({ stateDir: dir }) })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of pricedTurn('ok', 8_000)) yield ev
+    }
+    const session = provider.createSession({ id: 'comp-nobuffer', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage.categories!.some((c) => c.kind === 'buffer')).toBe(false)
+      expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(8_000)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('prices only the persona-effective tools and keeps the sum invariant', async () => {
+    const dir = await tempDir('native-composition-persona-')
+    const definition = agentDefinition({ tools: ['Read', 'Skill'], disallowedTools: ['Bash'] })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([pricedTurn('ok', 100_000)], requests)
+    const session = provider.createSession({ id: 'comp-persona', cwd: dir, agent: 'reviewer' })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('review') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      const wireTools = requests[0].tools as Array<{ name: string; description: string; input_schema: unknown }>
+      const expectedToolTokens = wireTools.reduce((s, t) => s + estimateToolSchema({ name: t.name, description: t.description, schema: t.input_schema }), 0)
+      const toolRows = usage.categories!.filter((c) => c.name === 'System tools' || c.name === 'MCP tools')
+      expect(toolRows.reduce((s, c) => s + c.tokens, 0)).toBe(expectedToolTokens)
+      expect(requests[0].system).toContain('REVIEW-PROMPT')
+      expect(usage.categories!.filter((c) => c.kind === 'used').reduce((s, c) => s + c.tokens, 0)).toBe(100_000)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('reports MCP per-server tokens with bare names and matches the MCP row', async () => {
+    const dir = await tempDir('native-composition-mcp-')
+    const provider = providerWithStreamer([pricedTurn('ok', 100_000)], dir)
+    const session = provider.createSession({
+      id: 'comp-mcp', cwd: dir,
+      mcpServers: { a: { type: 'sdk', instance: echoServer() } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage.mcpTools).toEqual([
+        { name: 'echo', serverName: 'a', tokens: expect.any(Number), isLoaded: true },
+      ])
+      const mcpRow = usage.categories!.find((c) => c.name === 'MCP tools')!
+      expect(mcpRow.tokens).toBe(usage.mcpTools!.reduce((s, t) => s + t.tokens, 0))
+      expect(usage.categories!.filter((c) => c.kind === 'used').reduce((s, c) => s + c.tokens, 0)).toBe(100_000)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('uses the bare tool name when the server name forces a hashed FQN', async () => {
+    const dir = await tempDir('native-composition-fqn-')
+    const provider = providerWithStreamer([pricedTurn('ok', 100_000)], dir)
+    const session = provider.createSession({
+      id: 'comp-fqn', cwd: dir,
+      mcpServers: { '测试服务器': { type: 'sdk', instance: echoServer('测试服务器') } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage.mcpTools![0].name).toBe('echo')
+      expect(usage.mcpTools![0].serverName).toBe('测试服务器')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('reports the skills payload from the same policy-applied listing', async () => {
+    const dir = await tempDir('native-composition-skills-')
+    await writeProjectSkill(dir, 'demo')
+    const provider = providerWithStreamer([pricedTurn('ok', 100_000)], dir)
+    const session = provider.createSession({
+      id: 'comp-skills', cwd: dir,
+      providerExtras: { sdkOptions: { skills: 'all' } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      const skillsRow = usage.categories!.find((c) => c.name === 'Skills')!
+      expect(usage.skills).toMatchObject({ includedSkills: 1, totalSkills: 1, tokenCount: skillsRow.tokens })
+      expect(usage.skills!.skillFrontmatter).toEqual([
+        { name: 'demo', source: 'project', tokens: estimateText('- demo: demo description') },
+      ])
+    } finally {
+      await session.destroy()
+    }
   })
 
   it.each([

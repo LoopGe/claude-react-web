@@ -38,6 +38,7 @@ import type {
   NativeDrainMode,
 } from './core-contract.js'
 import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
+import { estimateText, estimateMessage, estimateToolSchema, ROLE_OVERHEAD } from './estimate.js'
 import { createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
 import { finishReasonOf, type ContentBlock, type TokenUsage, type Usage } from './vocabulary/types.js'
@@ -1946,17 +1947,89 @@ export class NativeSession implements NativeSessionCore {
       if (generation !== this.modelGeneration) continue
       const usage = this.lastUsage
       const outputReservedWindow = contextWindow - DEFAULT_MAX_TOKENS
+      const totalTokens =
+        usage.input_tokens
+        + (usage.cache_read_input_tokens ?? 0)
+        + (usage.cache_creation_input_tokens ?? 0)
+      const autoCompactThreshold = outputReservedWindow > 0
+        ? Math.min(Math.floor(contextWindow * this.opts.ports.config.nativeAutoCompactRatio), outputReservedWindow)
+        : 0
       return {
-        totalTokens:
-          usage.input_tokens
-          + (usage.cache_read_input_tokens ?? 0)
-          + (usage.cache_creation_input_tokens ?? 0),
+        totalTokens,
         maxTokens: contextWindow,
         model,
-        autoCompactThreshold: outputReservedWindow > 0
-          ? Math.min(Math.floor(contextWindow * this.opts.ports.config.nativeAutoCompactRatio), outputReservedWindow)
-          : 0,
+        autoCompactThreshold,
+        ...this.contextComposition(totalTokens, contextWindow, autoCompactThreshold),
       }
+    }
+  }
+
+  /** Heuristic composition of the next request's context, anchored to the
+   *  last real usage sample: the used rows sum to `totalTokens` by
+   *  construction (Messages is the residual), so the split is approximate
+   *  but the total is exact. O(prompt + tools) — never walks history, which
+   *  matters because the manager fires getContextUsage as a post-turn
+   *  reconcile probe. Reads the EFFECTIVE tool list (`this.tools`, already
+   *  persona-filtered by rebuildTools) so a restrictive persona prices only
+   *  the schemas the next request injects. Non-atomic by design (DSH
+   *  precedent): totalTokens describes the last request, the estimates the
+   *  next one; nothing makes decisions from this table. */
+  private contextComposition(
+    totalTokens: number,
+    maxTokens: number,
+    autoCompactThreshold: number,
+  ): {
+    categories: Array<{ name: string; tokens: number; kind: 'used' | 'buffer' | 'free' }>
+    skills?: { includedSkills: number; totalSkills: number; tokenCount: number; skillFrontmatter: Array<{ name: string; source: string; tokens: number }> }
+    mcpTools?: Array<{ name: string; serverName: string; tokens: number; isLoaded: true }>
+  } {
+    const skillView = this.currentSkillView()
+    const skillSection = skillView.section()
+    const persona = this.currentProfile?.instruction
+    const system = persona ? `${this.baseSystem}\n\n${persona}` : this.baseSystem
+    const systemTokens = estimateText(system) + ROLE_OVERHEAD
+    const skillTokens = skillSection ? estimateText(skillSection) + ROLE_OVERHEAD : 0
+    const builtinTools = this.tools.filter((t) => !this.mcpToolServers.has(t.name))
+    const mcpTools = this.tools.filter((t) => this.mcpToolServers.has(t.name))
+    const systemToolsTokens = builtinTools.reduce((s, t) => s + estimateToolSchema(t), 0)
+    // Per-FQN prices computed ONCE, shared by the MCP row and the payload.
+    const mcpPrices = new Map(mcpTools.map((t) => [t.name, estimateToolSchema(t)]))
+    const mcpToolsTokens = [...mcpPrices.values()].reduce((s, n) => s + n, 0)
+    const estimated = systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens
+    const messagesTokens = totalTokens > 0
+      ? Math.max(0, totalTokens - estimated)
+      : this.history.reduce((s, m) => s + estimateMessage(m), 0)
+    const bufferTokens = autoCompactThreshold > 0 ? maxTokens - autoCompactThreshold : 0
+    const freeTokens = Math.max(0, maxTokens - totalTokens - bufferTokens)
+
+    const categories: Array<{ name: string; tokens: number; kind: 'used' | 'buffer' | 'free' }> = [
+      { name: 'System prompt', tokens: systemTokens, kind: 'used' },
+      { name: 'System tools', tokens: systemToolsTokens, kind: 'used' },
+      ...(mcpToolsTokens > 0 ? [{ name: 'MCP tools', tokens: mcpToolsTokens, kind: 'used' as const }] : []),
+      ...(skillTokens > 0 ? [{ name: 'Skills', tokens: skillTokens, kind: 'used' as const }] : []),
+      { name: 'Messages', tokens: messagesTokens, kind: 'used' },
+      ...(bufferTokens > 0 ? [{ name: 'Autocompact buffer', tokens: bufferTokens, kind: 'buffer' as const }] : []),
+      { name: 'Free space', tokens: freeTokens, kind: 'free' },
+    ]
+
+    const listing = skillView.listing()
+    const skills = listing.total > 0
+      ? {
+          includedSkills: listing.listed.length,
+          totalSkills: listing.total,
+          tokenCount: skillTokens,
+          skillFrontmatter: listing.listed.map((s) => ({ name: s.name, source: s.source, tokens: estimateText(s.line) })),
+        }
+      : undefined
+
+    const mcpPayload = (this.mcp?.tools() ?? [])
+      .filter((info) => mcpPrices.has(info.fqn))
+      .map((info) => ({ name: info.name, serverName: info.server, tokens: mcpPrices.get(info.fqn)!, isLoaded: true as const }))
+
+    return {
+      categories,
+      ...(skills ? { skills } : {}),
+      ...(mcpPayload.length > 0 ? { mcpTools: mcpPayload } : {}),
     }
   }
 
