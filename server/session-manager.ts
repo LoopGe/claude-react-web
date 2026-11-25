@@ -2557,8 +2557,8 @@ export class SessionManager {
    *
    *  The owner is whichever provider actually has the transcript on disk,
    *  NOT the host default: a native-default host must still adopt the
-   *  CLI-created sessions the /resume picker surfaces (native implements no
-   *  getSessionInfo). Every provider that reads disk transcripts is probed,
+   *  CLI-created sessions the /resume picker surfaces (native's getSessionInfo
+   *  only sees native logs). Every provider that reads disk transcripts is probed,
    *  default first so an id both providers claim resolves deterministically.
    *
    *  `lastTurnAt` is set to the transcript's `lastModified` (a non-null
