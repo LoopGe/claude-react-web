@@ -733,6 +733,17 @@ describe('SessionManager', () => {
       expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({ model: 'gw/some-model' })
     })
 
+    it('aux target ignores a legacy modelGroupId — falls back to the session model', async () => {
+      __setConfigForTest({ modelGroups: [{ id: 'g1', name: 'G', opus: 'gw/main', haiku: 'gw/haiku', main: 'opus' }] })
+      const info = await sm.create({ cwd: TEST_CWD, model: 'gw/main' })
+      // A pre-migration session could still carry a group tag; aux must not
+      // route to the group's haiku slot anymore.
+      const live = (sm as unknown as { sessions: Map<string, { modelGroupId?: string }> }).sessions.get(info.id)!
+      live.modelGroupId = 'g1'
+      expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({ model: 'gw/main' })
+      expect(sm.auxTargetFor(info.id, 'pluginAi')).toMatchObject({ model: 'gw/main' })
+    })
+
     it('prefers the profile override, and reads it from the SESSION profile', async () => {
       // The override is a per-profile field, so a session pinned to B must
       // use B's — reading the active profile's would apply one profile's model

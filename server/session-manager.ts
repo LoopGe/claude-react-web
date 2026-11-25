@@ -78,7 +78,6 @@ import type { TerminalSnapshot } from '../shared/terminal.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
-import { auxFallbackModel, resolveConfiguredModelId } from './model-groups.js'
 import { isSdkForwardedMode } from './permission-modes.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import {
@@ -11327,9 +11326,7 @@ export class SessionManager {
    *  Model resolution: the profile's per-field override (`recapModel` /
    *  `commitMessageModel`; `autoClassifierModel` is global, not per-profile,
    *  and is therefore applied only to sessions on the active profile), else
-   *  the session's model-group HAIKU tier — the slot the CLI routes its own
-   *  internal queries to — else the session's own model. Works for live and
-   *  dormant sessions alike. See model-groups.auxFallbackModel(). */
+   *  the session's own model. Works for live and dormant sessions alike. */
   auxTargetFor(
     id: string,
     field: 'recap' | 'commitMessage' | 'classifier' | 'pluginAi',
@@ -11343,22 +11340,15 @@ export class SessionManager {
     // does. A dormant session has no subprocess, so its persisted pin decides,
     // else the active profile it would be resumed with.
     const profile = effectiveProfileFor(live ? live.spawnProfileId ?? live.profileId : session.profileId)
-    const group = session.modelGroupId
-      ? profile.modelGroups.find((g) => g.id === session.modelGroupId)
-      : undefined
-    // Shared resolver (model-groups.ts) — the same one the provider uses for
-    // the tier env vars, so both sides resolve a group's slots identically.
-    const fallback = auxFallbackModel(session.model, group, (m) => resolveConfiguredModelId(m, profile.modelList))
+    const fallback = session.model
     // autoClassifierModel is a GLOBAL setting (no profile carries it), so it is
     // only meaningful for a session running on the profile it was written for.
     // Applying it to a session on another provider would hand that provider a
     // model id it does not serve — the exact misroute this resolution exists to
     // prevent.
     // `pluginAi` (an app plugin's `ai.request` scoped to a session) has no
-    // config field of its own, so it takes the tier chain: the model group's
-    // haiku slot when the session has one — a small fast model is the right
-    // class for the short side tasks plugins ask for — else the session's own
-    // model, exactly like the other aux calls.
+    // config field of its own, so it takes the session's own model, exactly
+    // like the other aux calls.
     const override = field === 'recap'
       ? profile.recapModel
       : field === 'commitMessage'
