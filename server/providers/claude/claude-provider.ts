@@ -17,14 +17,11 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { config as defaultConfig, DEFAULT_PROFILE } from '../../config.js'
-import type { ModelGroupConfig, ProviderProfile } from '../../config.js'
+import type { ProviderProfile } from '../../config.js'
 import { profileDefaultModel, resolveActiveProfile } from '../../profiles.js'
 import { isSdkForwardedMode } from '../../permission-modes.js'
 import {
-  capabilitiesForTier,
-  fallbackAliasesFor,
   resolveConfiguredModelId,
-  resolveGroup,
 } from '../../model-groups.js'
 import { readHistoryEntries, readHistorySnapshot, readLastUserPrompt } from '../../history-reader.js'
 import { condensePromptPreview } from '../../../shared/prompt-preview.js'
@@ -147,7 +144,6 @@ export function summarizeSpawn(opts: CreateSessionOptions, sdkOptions: Options):
   return {
     id: opts.id,
     provider: opts.provider,
-    modelGroupId: opts.providerExtras?.modelGroupId,
     sessionId: sdkOptions.sessionId,
     resume: sdkOptions.resume,
     forkSession: sdkOptions.forkSession,
@@ -425,9 +421,7 @@ export class ClaudeProvider implements AgentProvider {
 
   createSession(opts: CreateSessionOptions): ClaudeSessionHandle {
     const sdkOptions = { ...((opts.providerExtras?.sdkOptions as Options | undefined) ?? {}) }
-    const modelGroupId = opts.providerExtras?.modelGroupId as string | undefined
     const profile = opts.profile ?? resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE)
-    const group = modelGroupId ? profile.modelGroups.find((g) => g.id === modelGroupId) : undefined
     if (opts.resume && !sdkOptions.resume) sdkOptions.resume = opts.resume
     if (opts.forkSession !== undefined) sdkOptions.forkSession = opts.forkSession
     if (opts.resumeSessionAt !== undefined) sdkOptions.resumeSessionAt = opts.resumeSessionAt
@@ -508,7 +502,7 @@ export class ClaudeProvider implements AgentProvider {
     }
 
     const requestedMode = (opts.permissionMode ?? sdkOptions.permissionMode) as PermissionMode | undefined
-    this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins, group, profile)
+    this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins, profile)
     sdkOptions.permissionMode = this.sdkForwardMode(requestedMode)
     if (!sdkOptions.resume || sdkOptions.forkSession) {
       sdkOptions.sessionId = opts.id
@@ -655,19 +649,6 @@ export class ClaudeProvider implements AgentProvider {
           : null
         void q.setMaxThinkingTokens(tokens, 'highlights').catch((err) => {
           log.warn(`[${opts.id}] re-applying thinking display 'highlights' on spawn failed:`, err)
-        })
-      }
-    }
-
-    // Fallback degradation chain for group sessions: tier aliases below the
-    // main slot, resolved by the CLI through the tier env vars. Post-spawn
-    // because fallbackModel is a Settings key with no spawn-time Options
-    // equivalent — exactly like fastMode/effortLevel above.
-    if (group) {
-      const fallback = fallbackAliasesFor(group.main ?? 'opus')
-      if (fallback.length > 0) {
-        void q.applyFlagSettings({ fallbackModel: fallback }).catch((err) => {
-          log.warn(`[${opts.id}] applying fallbackModel on spawn failed:`, err)
         })
       }
     }
@@ -928,7 +909,6 @@ export class ClaudeProvider implements AgentProvider {
     opts: Options,
     customEnv?: Record<string, string>,
     enabledPlugins?: string[],
-    group?: ModelGroupConfig,
     profile: ProviderProfile = resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE),
   ): void {
     if (opts.includePartialMessages === undefined) opts.includePartialMessages = true
@@ -939,44 +919,17 @@ export class ClaudeProvider implements AgentProvider {
     if (this.opts.claudeBinary) opts.pathToClaudeCodeExecutable = this.opts.claudeBinary
     else delete opts.pathToClaudeCodeExecutable
     const effectiveModel = opts.model || profileDefaultModel(profile)
-    if (group) {
-      // Real three-tier routing: each slot maps to its own model so the CLI
-      // resolves tier aliases + background-subagent routing independently.
-      // The four tier env vars stay in the per-session opts.env — NEVER in
-      // buildAnthropicEnv()'s shared cache (cross-session contamination).
-      const r = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList))
-      opts.model = r.main
-      opts.env = {
-        ...(opts.env ?? this.buildAnthropicEnv(profile)),
-        ANTHROPIC_DEFAULT_OPUS_MODEL: r.tiers.opus,
-        ANTHROPIC_DEFAULT_SONNET_MODEL: r.tiers.sonnet,
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: r.tiers.haiku,
-        ANTHROPIC_SMALL_FAST_MODEL: r.tiers.haiku,
-      }
-      // Lever B — gateway capability declaration. Only for opaque models on
-      // non-first-party base URLs: recognizable ids let the CLI's built-in
-      // detection decide (more accurate), and first-party hosts need nothing.
-      if (!isFirstPartyAnthropicUrl(profile.baseUrl)) {
-        for (const tier of ['OPUS', 'SONNET', 'HAIKU'] as const) {
-          const slot = tier.toLowerCase() as 'opus' | 'sonnet' | 'haiku'
-          const caps = capabilitiesForTier(slot, r.tiers[slot])
-          if (caps.length > 0) {
-            opts.env[`ANTHROPIC_DEFAULT_${tier}_MODEL_NAME`] = r.tiers[slot]
-            opts.env[`ANTHROPIC_DEFAULT_${tier}_MODEL_DESCRIPTION`] = r.tiers[slot]
-            opts.env[`ANTHROPIC_DEFAULT_${tier}_MODEL_SUPPORTED_CAPABILITIES`] = caps.join(',')
-          }
-        }
-      }
-    } else {
-      // Today's behavior unchanged: collapse all four aliases to the model.
-      opts.model = effectiveModel
-      opts.env = {
-        ...(opts.env ?? this.buildAnthropicEnv(profile)),
-        ANTHROPIC_DEFAULT_OPUS_MODEL: effectiveModel,
-        ANTHROPIC_DEFAULT_SONNET_MODEL: effectiveModel,
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: effectiveModel,
-        ANTHROPIC_SMALL_FAST_MODEL: effectiveModel,
-      }
+    // Collapse all four tier aliases to the session model so the CLI resolves
+    // tier aliases + background-subagent routing to it. The four tier env vars
+    // stay in the per-session opts.env — NEVER in buildAnthropicEnv()'s shared
+    // cache (cross-session contamination).
+    opts.model = effectiveModel
+    opts.env = {
+      ...(opts.env ?? this.buildAnthropicEnv(profile)),
+      ANTHROPIC_DEFAULT_OPUS_MODEL: effectiveModel,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: effectiveModel,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: effectiveModel,
+      ANTHROPIC_SMALL_FAST_MODEL: effectiveModel,
     }
     if (customEnv) opts.env = { ...opts.env, ...filterClientEnv(customEnv) }
     // C1 — a user-wide `~/.claude/settings.json` env overrides the spawn env
