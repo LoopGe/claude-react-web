@@ -1928,7 +1928,7 @@ export class NativeSession implements NativeSessionCore {
    *  (liteContextUsageFromSdkUsage in session-pump.ts): { totalTokens,
    *  maxTokens, model, autoCompactThreshold }. Capacity is resolved for the
    *  captured route and retried when an actual effective-model change lands. */
-  async getContextUsage(): Promise<unknown> {
+  async getContextUsage(opts?: { detail?: 'summary' | 'full' }): Promise<unknown> {
     // Match the pump's mid-turn formula: prompt tokens = input + cache reads
     // + cache writes. Output is not part of the window the next request sends.
     for (;;) {
@@ -1959,7 +1959,10 @@ export class NativeSession implements NativeSessionCore {
         maxTokens: contextWindow,
         model,
         autoCompactThreshold,
-        ...this.contextComposition(totalTokens, contextWindow, autoCompactThreshold),
+        // The manager's reconcile/seed probes pass { detail: 'summary' } and
+        // read only the lite fields + auto-compact facts; skip the breakdown
+        // so a probe never pays for a composition nobody reads.
+        ...(opts?.detail === 'summary' ? {} : this.contextComposition(totalTokens, contextWindow, autoCompactThreshold)),
       }
     }
   }

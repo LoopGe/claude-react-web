@@ -843,6 +843,54 @@ describe('NativeSession', () => {
     }
   })
 
+  it('answers a summary probe without assembling the composition', async () => {
+    const dir = await tempDir('native-composition-summary-')
+    const provider = providerWithStreamer([pricedTurn('ok', 100_000)], dir)
+    const session = provider.createSession({ id: 'comp-summary', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      // The manager's reconcile/seed probes pass { detail: 'summary' } and
+      // read only the lite fields — they must not pay for the breakdown.
+      const summary = (await session.getContextUsage?.({ detail: 'summary' })) as NativeContextUsage
+      expect(summary.totalTokens).toBe(100_000)
+      expect(summary.categories).toBeUndefined()
+      expect(summary.skills).toBeUndefined()
+      expect(summary.mcpTools).toBeUndefined()
+      const full = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(full.categories!.length).toBeGreaterThan(0)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('omits MCP rows and payload when the persona restricts mcpServers to none', async () => {
+    const dir = await tempDir('native-composition-mcp-restrict-')
+    const definition = agentDefinition({ mcpServers: [] })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }), ports: makeNativePorts({ stateDir: dir }) })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of pricedTurn('ok', 100_000)) yield ev
+    }
+    const session = provider.createSession({
+      id: 'comp-mcp-restrict', cwd: dir, agent: 'reviewer',
+      mcpServers: { a: { type: 'sdk', instance: echoServer() } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage.categories!.some((c) => c.name === 'MCP tools')).toBe(false)
+      expect(usage.mcpTools).toBeUndefined()
+      expect(usage.categories!.filter((c) => c.kind === 'used').reduce((s, c) => s + c.tokens, 0)).toBe(100_000)
+    } finally {
+      await session.destroy()
+    }
+  })
+
   it('reports the skills payload from the same policy-applied listing', async () => {
     const dir = await tempDir('native-composition-skills-')
     await writeProjectSkill(dir, 'demo')
