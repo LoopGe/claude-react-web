@@ -1,5 +1,9 @@
 # Model Groups: real three-tier routing (opus / sonnet / haiku) Implementation Plan
 
+> **SUPERSEDED (2026-11-25):** the model-group feature was removed end-to-end.
+> See `docs/superpowers/plans/2026-11-25-remove-model-groups.md`. Kept for
+> historical context only.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let the user compose named Model Groups (Opus/Sonnet/Haiku slots → concrete models) in Global Settings, select a group or a single model per session, and have group sessions get real three-tier env routing, gateway capability declarations, a fallback degradation chain, and subagent tier routing — while single-model sessions keep today's behavior byte-for-byte.
