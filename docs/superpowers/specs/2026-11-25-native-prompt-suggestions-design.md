@@ -114,6 +114,9 @@ wire 投影，LoopDeps.stream 收到的就是 wire 形状，无需进 anthropic-
 fork **只读快照**的 system/tools/messages，不读 live 状态——idle 期 MCP 变更 / skill reload /
 persona 切换重建了 live system/tools 也不影响 fork 的 cache 命中（下一个主请求自然建立新 cache）。
 compact / clear / resume / fork 重置快照；模型切换由身份门抑制。
+**实现裁决（Task 6/7 审查确认）**：显式 reset 由构造满足而非单独代码——每次生成必跟随一次新的主请求捕获
+（runTurn 每轮必调 stream）；错误/中断轮在判定链 #3 先抑制（turnResult=null）；命令轮不触发编排；
+fork/resume 构建全新对象（字段初始 null）；clear 后 assistantCount<2 抑制。无 stale-snapshot 生成路径。
 
 ## 6. 架构落点
 
