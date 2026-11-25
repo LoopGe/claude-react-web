@@ -3782,6 +3782,44 @@ describe('MessageList', () => {
     expect(wrappers[wrappers.length - 1]?.classList.contains('msg-enter')).toBe(true)
   })
 
+  it('a bystander split arrival (no draft) animates BOTH runs', () => {
+    // Without a draft alias the heir is a genuine new arrival — the heir skip
+    // is gated on actually adopting a draft alias, not on the flag alone.
+    const items = (msgs: SdkMessage[]): TranscriptItem[] =>
+      msgs.map((msg, i) => ({
+        id: typeof msg.uuid === 'string' ? msg.uuid : `item-${i}`,
+        msg,
+        plainText: null,
+        isCompactSummary: false,
+        hiddenByDefault: false,
+        receivedAt: typeof msg.receivedAt === 'number' ? msg.receivedAt : undefined,
+      }))
+    const user = makeMsg('user', {
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'text', text: 'q' }] },
+      receivedAt: Date.now(),
+    })
+    const toolBlock = { type: 'tool_use', id: 'e1', name: 'Read', input: {} }
+    const textBlock = { type: 'text', text: 'after' }
+
+    for (const content of [[toolBlock, textBlock], [textBlock, toolBlock]]) {
+      const mixed = makeMsg('assistant', {
+        uuid: 'mx',
+        message: { content },
+        receivedAt: Date.now(),
+      })
+      const { container, rerender } = render(<MessageList items={items([user])} />)
+      rerender(<MessageList items={items([user, mixed])} />)
+      const r0 = container.querySelector('[data-message-id="mx:r0"]')
+      const r1 = container.querySelector('[data-message-id="mx:r1"]')
+      expect(r0).toBeTruthy()
+      expect(r1).toBeTruthy()
+      expect(r0!.classList.contains('msg-enter')).toBe(true)
+      expect(r1!.classList.contains('msg-enter')).toBe(true)
+    }
+  })
+
   it('animates every message in a live tail burst, not just the first MAX_ENTER_BATCH', () => {
     // The old gate capped at `delta <= MAX_ENTER_BATCH`, so a fast live burst of
     // 6+ arrivals animated only the first 4. With prevLen > 0 (incremental tail
@@ -5321,6 +5359,110 @@ describe('diff search highlighting', () => {
   })
 })
 
+describe('split-item search routing', () => {
+  // A mixed assistant message renders as run rows sharing one itemIndex; the
+  // active ordinal must light exactly ONE run (routeSplitItemOrdinal rebases
+  // the whole-message ordinal into the run's local space).
+  const mixed = (content: unknown[]) => toItems([
+    makeMsg('assistant', { uuid: 'mx', message: { content } }),
+  ])
+  const edit = (id: string, old: string, nu: string) => ({
+    type: 'tool_use', id, name: 'Edit', input: { file_path: 'a.ts', old_string: old, new_string: nu },
+  })
+
+  it('a text-run hit activates the text row, not the tool group', () => {
+    const items = mixed([
+      { type: 'text', text: 'foo intro' },
+      edit('e1', 'bar', 'baz'),
+    ])
+    const { container } = render(
+      <MessageList
+        items={items}
+        toolStatus={new Map([['e1', 'success']])}
+        searchQuery="foo"
+        searchActiveMsgIdx={0}
+        searchActiveMatchInItem={0}
+      />,
+    )
+    const active = container.querySelector('mark.search-hl-active')
+    expect(active).toBeTruthy()
+    expect(active?.closest('.tool-group-card')).toBeNull()
+    // The group carries no foo match — it stays folded.
+    expect(container.querySelector('.tool-group-card')?.getAttribute('data-state')).toBe('closed')
+  })
+
+  it('a diff hit activates the tool group with the run-local ordinal', () => {
+    const items = mixed([
+      { type: 'text', text: 'foo intro' },
+      edit('e1', 'foo', 'foobar'),
+    ])
+    // Whole space: text 1 + diff 2. Ordinal 1 = the del line, run-local 0.
+    const { container } = render(
+      <MessageList items={items} searchQuery="foo" searchActiveMsgIdx={0} searchActiveMatchInItem={1} />,
+    )
+    const active = container.querySelector('mark.search-hl-active')
+    expect(active).toBeTruthy()
+    expect(active?.closest('.tool-group-card')).toBeTruthy()
+    expect(active?.textContent).toContain('foo')
+    // Exactly one active mark — the text run's passive foo is NOT active.
+    expect(container.querySelectorAll('mark.search-hl-active').length).toBe(1)
+  })
+
+  it('a consumed-result hit routes into the tool run result body', () => {
+    const items = mixed([
+      { type: 'text', text: 'intro' },
+      edit('e1', 'bar', 'baz'),
+    ])
+    const toolResults = new Map([['e1', { content: 'foo result', isError: false }]])
+    // Own segments carry no foo; ordinal 0 is the result's first match.
+    const { container } = render(
+      <MessageList
+        items={items}
+        toolResults={toolResults}
+        searchQuery="foo"
+        searchActiveMsgIdx={0}
+        searchActiveMatchInItem={0}
+      />,
+    )
+    const active = container.querySelector('mark.search-hl-active')
+    expect(active).toBeTruthy()
+    expect(active?.closest('.tool-group-card')).toBeTruthy()
+    expect(active?.textContent).toContain('foo')
+  })
+
+  it('two groups sharing the split itemIndex: only the owning group activates', () => {
+    const items = mixed([
+      edit('e1', 'foo', 'x'),
+      { type: 'text', text: 'mid' },
+      edit('e2', 'foo', 'y'),
+    ])
+    const { container } = render(
+      <MessageList items={items} searchQuery="foo" searchActiveMsgIdx={0} searchActiveMatchInItem={0} />,
+    )
+    const groups = container.querySelectorAll('.tool-group-card')
+    expect(groups.length).toBe(2)
+    const active = container.querySelector('mark.search-hl-active')
+    expect(active).toBeTruthy()
+    expect(active?.closest('.tool-group-card')).toBe(groups[0])
+    expect(container.querySelectorAll('mark.search-hl-active').length).toBe(1)
+  })
+
+  it('stamps the shared message uuid on every split run (discard/rewind anchors)', () => {
+    const items = mixed([
+      { type: 'text', text: 'intro' },
+      edit('e1', 'bar', 'baz'),
+    ])
+    const { container } = render(<MessageList items={items} />)
+    const r0 = container.querySelector('[data-message-id="item-0:r0"]')
+    const r1 = container.querySelector('[data-message-id="item-0:r1"]')
+    expect(r0).toBeTruthy()
+    expect(r1).toBeTruthy()
+    // Row ids differ; the uuid attribute is the shared anchor key.
+    expect(r0!.getAttribute('data-message-uuid')).toBe('mx')
+    expect(r1!.getAttribute('data-message-uuid')).toBe('mx')
+  })
+})
+
 describe('attachment search highlighting', () => {
   it('renders an attachment-only hit and activates its chip', () => {
     const msg = makeMsg('user', {
@@ -6308,6 +6450,65 @@ describe('in-place draft rows (store-backed)', () => {
     expect(settled).toBe(before)
     expect(container.querySelectorAll('[data-message-id^="draft:"]')).toHaveLength(0)
     expect(container.textContent?.split('partial answer').length - 1).toBe(1)
+  })
+
+  it('tool-first split settle: heir continues the draft (no pop), tool run pops', () => {
+    streamDelta('settled ')
+    flush()
+    const { container, rerender } = renderList()
+    expect(container.querySelector('[data-message-id="draft:1"]')).toBeTruthy()
+    act(() => {
+      dispatch({
+        type: 'MESSAGE',
+        message: {
+          type: 'assistant',
+          uuid: 'mx-tf',
+          parent_tool_use_id: null,
+          receivedAt: Date.now(),
+          message: { role: 'assistant', content: [
+            { type: 'tool_use', id: 'e1', name: 'Read', input: {} },
+            { type: 'text', text: 'settled text' },
+          ] },
+        } as unknown as SdkMessage,
+      })
+      rerender(list())
+    })
+    const heir = container.querySelector('[data-message-id="mx-tf:r1"]')
+    const tool = container.querySelector('[data-message-id="mx-tf:r0"]')
+    expect(heir).toBeTruthy()
+    expect(tool).toBeTruthy()
+    // The heir adopts the draft alias (continuing DOM) — never an entrance pop.
+    expect(heir!.classList.contains('msg-enter')).toBe(false)
+    // The tool run sits below the delta-scan window; the explicit arm pops it.
+    expect(tool!.classList.contains('msg-enter')).toBe(true)
+  })
+
+  it('text-first split settle: heir continues the draft (no pop), tool run pops', () => {
+    streamDelta('settled ')
+    flush()
+    const { container, rerender } = renderList()
+    act(() => {
+      dispatch({
+        type: 'MESSAGE',
+        message: {
+          type: 'assistant',
+          uuid: 'mx-tx',
+          parent_tool_use_id: null,
+          receivedAt: Date.now(),
+          message: { role: 'assistant', content: [
+            { type: 'text', text: 'settled text' },
+            { type: 'tool_use', id: 'e1', name: 'Read', input: {} },
+          ] },
+        } as unknown as SdkMessage,
+      })
+      rerender(list())
+    })
+    const heir = container.querySelector('[data-message-id="mx-tx:r0"]')
+    const tool = container.querySelector('[data-message-id="mx-tx:r1"]')
+    expect(heir).toBeTruthy()
+    expect(tool).toBeTruthy()
+    expect(heir!.classList.contains('msg-enter')).toBe(false)
+    expect(tool!.classList.contains('msg-enter')).toBe(true)
   })
 })
 

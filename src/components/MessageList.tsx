@@ -35,7 +35,8 @@ import { extractUserText, makeResultConsumed, toolResultConsumedKey } from './me
 import { MessageView } from './message-list/MessageView'
 import { userBodyFoldKey } from './message-list/fold-key'
 import { ToolGroupCard } from './message-list/ToolGroupCard'
-import { assistantResultIdxByBlock, rowSearchMatchCount } from './message-list/search-addressing'
+import { assistantResultIdxByBlock, rowSearchMatchCount, routeSplitItemOrdinal } from './message-list/search-addressing'
+import { rowDraftAlias, splitMixedAssistantMessage } from './message-list/message-split'
 import { BottomOverlaySpacer } from './message-list/views/frame-views'
 import {
   advanceRowAnchor,
@@ -383,6 +384,41 @@ function useStableSet(candidate: Set<string>): Set<string> {
   prevRef.current = candidate
   return candidate
   /* eslint-enable react-hooks/refs */
+}
+
+/** Resolve the active search target's split-run route (see the call site).
+ *  Pure and module-level: an INLINE useMemo body with these early returns made
+ *  the react-hooks compiler lint skip the whole component
+ *  (preserve-manual-memoization); extracting the body and memoizing the CALL
+ *  preserves the manual memo. The memo itself is load-bearing — the build runs
+ *  plain @vitejs/plugin-react (no compiler transform), so without it splitRoute
+ *  would be a fresh object every render and defeat the itemToVirtIdx memo. */
+function resolveSplitRoute(
+  items: readonly TranscriptItem[],
+  sami: number | undefined,
+  samii: number | undefined,
+  query: string | undefined,
+  toolResults: ReadonlyMap<string, ToolResultEntry>,
+  rows: readonly TranscriptRow[],
+) {
+  const q = query?.trim()
+  if (sami == null || sami < 0 || !q) return null
+  const item = items[sami]
+  if (!item || item.msg.type !== 'assistant') return null
+  const runs = splitMixedAssistantMessage(item.msg)
+  if (!runs) return null
+  const route = routeSplitItemOrdinal(item.msg, runs, toolResults, samii ?? 0, q)
+  if (!route) return null
+  const targetMsg = runs[route.runIndex]
+  // Join the run to its row by message object identity — the run may render
+  // as a plain row or as a member of a folded group (the group head's msg is
+  // its first member, so a later member joins through the members list).
+  for (const row of rows) {
+    if (row.msg === targetMsg || row.toolGroup?.members.includes(targetMsg)) {
+      return { activeRowId: row.id, localOrdinal: route.localOrdinal, targetMsg }
+    }
+  }
+  return null
 }
 
 export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, panelVisible, showEpoch, sessionId, static: isStatic = false, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
@@ -750,6 +786,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     transcriptRevealKey,
     panelVisible,
     showEpoch,
+    draftRowKeys,
   })
   // Reverse map: full items[] index —Virtuoso (renderableItems) index.
   // Needed because search indices reference the full, unfiltered list.
@@ -767,6 +804,21 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // closes the bar, while the active-index prop has no `searchOpen` gate and
   // stays >= 0 until the emptied query finishes propagating. Keying on both
   // means the seek can never read an empty map in that window.
+  // Split-item search routing: when the active navigation target is a MIXED
+  // assistant message (rendered as several run rows sharing one itemIndex),
+  // resolve the ONE row that owns the ordinal and rebase the ordinal into that
+  // run's local match space. The whole-message ordinal arrives from the server
+  // (message-local, always 0) or resultHitMemberOrdinal (owner-member space);
+  // the per-row walks (blockActiveIdx / memberBlockOrdinals) eat the projected
+  // run message, so they need the run-local coordinate. Single decision point:
+  // itemContent gating, the seek map, and the group activation all read this.
+  // Memoized: the seek map below lists splitRoute as a dep, and the build has
+  // no React Compiler transform to infer it (see resolveSplitRoute's comment).
+  const splitRoute = useMemo(
+    () => resolveSplitRoute(items, searchActiveMsgIdx, searchActiveMatchInItem, searchQuery, toolResults, renderableItems),
+    [items, searchActiveMsgIdx, searchActiveMatchInItem, searchQuery, toolResults, renderableItems],
+  )
+
   // Search state lives in refs so `itemContent` stays identity-stable across
   // query changes. Virtuoso re-renders every row when itemContent's identity
   // changes — which on a search keystroke meant a mass re-render that shifted
@@ -775,8 +827,8 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // virtuosoData (see below); non-matching rows see no data change and skip.
   /* eslint-disable react-hooks/refs -- render-time ref write; documented above:
      itemContent must read the LATEST search state without being recreated. */
-  const searchRef = useRef({ searchQuery, searchActiveMsgIdx, searchActiveMatchInItem })
-  searchRef.current = { searchQuery, searchActiveMsgIdx, searchActiveMatchInItem }
+  const searchRef = useRef({ searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, splitRoute })
+  searchRef.current = { searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, splitRoute }
   /* eslint-enable react-hooks/refs */
   const searchLive = !!searchQuery?.trim() || (searchActiveMsgIdx != null && searchActiveMsgIdx >= 0)
   const itemToVirtIdx = useMemo(() => {
@@ -792,8 +844,14 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         map.set(row.itemIndex, vi)
       }
     }
+    // A split item maps to SEVERAL rows above (last write wins); override with
+    // the routed row so the seek lands on the half that owns the active match.
+    if (splitRoute && searchActiveMsgIdx != null) {
+      const vi = renderableItems.findIndex((row) => row.id === splitRoute.activeRowId)
+      if (vi >= 0) map.set(searchActiveMsgIdx, vi)
+    }
     return map
-  }, [renderableItems, searchLive])
+  }, [renderableItems, searchLive, splitRoute, searchActiveMsgIdx])
 
   // The scroll hook needs to report the visible-top row, and the thing that
   // consumes that report (`emitVisibleTop`, further down) needs `seekToIndex`
@@ -873,7 +931,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         index = anchorRowsRef.current.findIndex((row) => row.optimisticSourceId === anchorId)
       }
       if (index < 0) {
-        index = anchorRowsRef.current.findIndex((row) => row.msg.uuid != null && draftRowKeys?.[row.msg.uuid] === anchorId)
+        index = anchorRowsRef.current.findIndex((row) => rowDraftAlias(row, draftRowKeys) === anchorId)
       }
       if (index < 0) {
         restoreScroller.dataset.crwAnchorMissing = anchorId
@@ -887,18 +945,21 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     return () => restoreScroller.removeEventListener(TRANSCRIPT_ANCHOR_REVEAL_EVENT, reveal)
   }, [restoreScroller, restoreScroll, restoreScrollToIndex, draftRowKeys])
 
-  // Scroll to the active search result when it changes.
-  const prevSearchActiveRef = useRef<number>(-1)
+  // Scroll to the active search result when it changes. The dedupe key includes
+  // the ordinal: navigating between two matches in different runs of the SAME
+  // split message keeps msgIdx constant, and the routed seek target changes.
+  const prevSearchActiveRef = useRef<string>('')
   useEffect(() => {
     if (searchActiveMsgIdx == null || searchActiveMsgIdx < 0) return
-    if (searchActiveMsgIdx === prevSearchActiveRef.current) return
-    prevSearchActiveRef.current = searchActiveMsgIdx
+    const key = `${searchActiveMsgIdx}:${searchActiveMatchInItem ?? 0}`
+    if (key === prevSearchActiveRef.current) return
+    prevSearchActiveRef.current = key
     const virtIdx = itemToVirtIdx.get(searchActiveMsgIdx)
     // A search jump is not a user-message navigation: drop the cursor so a
     // later prev/next re-anchors on whatever the user actually scrolled to.
     navCursorRef.current = null
     if (virtIdx != null) seekToIndex(virtIdx, 'center')
-  }, [searchActiveMsgIdx, itemToVirtIdx, seekToIndex])
+  }, [searchActiveMsgIdx, searchActiveMatchInItem, itemToVirtIdx, seekToIndex])
 
   // Measure the bottom overlay stack (the task cards) and publish its
   // committed height. The stack is ALWAYS mounted, so the observer attaches
@@ -1322,18 +1383,25 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   const itemContent = useCallback((_index: number, item: VirtuosoItem) => {
     // Search state read from a ref (not closure) so this callback stays
     // identity-stable across query changes — see searchRef above.
-    const { searchQuery: sq, searchActiveMsgIdx: sami, searchActiveMatchInItem: samii } = searchRef.current
+    const { searchQuery: sq, searchActiveMsgIdx: sami, searchActiveMatchInItem: samii, splitRoute } = searchRef.current
     // Only pipe `activeMatchInItem` into the message that actually
     // contains the active navigation target. Every other message gets
     // `undefined` so its <mark>s render at the default colour. This
     // is what lets the user visually tell "next match" jumps from one
     // hit to another even within the same message —without per-match
     // resolution we'd be stuck at message granularity.
-    const isActiveItem =
-      sami != null &&
-      (sami >= 0 || sami === -1000) &&
-      item.itemIndex === sami
-    const activeMatchInItem = isActiveItem ? samii : undefined
+    //
+    // Split items: several run rows share the itemIndex, so itemIndex equality
+    // would light ALL of them with the same whole-message ordinal. The route
+    // names the ONE owning row (plain run or folded group) and its run-local
+    // ordinal; every other run of the message stays inactive.
+    const splitActiveRow = splitRoute != null && item.id === splitRoute.activeRowId
+    const isActiveItem = splitRoute
+      ? splitActiveRow
+      : sami != null &&
+        (sami >= 0 || sami === -1000) &&
+        item.itemIndex === sami
+    const activeMatchInItem = isActiveItem ? (splitRoute ? splitRoute.localOrdinal : samii) : undefined
     // One-shot entrance animation for genuinely-new arrivals. The flag is
     // armed in the gate block above. Unlike the previous "delete on first
     // render" approach, we KEEP the flag (and thus the `msg-enter` class)
@@ -1381,17 +1449,27 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       countCachedMessageSearchMatches(item.msg, sq.trim()) > 0
     // Which transcript item holds the active search match, when it landed
     // inside THIS row's tool group. The per-member gating (which member gets
-    // activeMatchInItem) is owned inside ToolGroupCard.
+    // activeMatchInItem) is owned inside ToolGroupCard. Read sami from the ref
+    // (the prop read here was a latent stale closure, masked by the preview's
+    // per-hit remount). Split items: activate the group only when the routed
+    // run is one of ITS members — two groups can share the split itemIndex
+    // ([tool, text, tool]), and itemIndex membership alone would light both.
     const groupMemberIndices = item.toolGroup?.memberItemIndices
-    const activeGroupMemberIdx =
-      searchActiveMsgIdx != null &&
-      searchActiveMsgIdx >= 0 &&
-      groupMemberIndices?.includes(searchActiveMsgIdx)
-        ? searchActiveMsgIdx
+    const activeGroupMemberIdx = splitRoute
+      ? item.toolGroup?.members.includes(splitRoute.targetMsg)
+        ? sami
         : undefined
-    const activeRowIdx =
-      searchActiveMsgIdx != null && (searchActiveMsgIdx >= 0 || searchActiveMsgIdx === -1000) && item.itemIndex === searchActiveMsgIdx
-        ? searchActiveMsgIdx
+      : sami != null &&
+        sami >= 0 &&
+        groupMemberIndices?.includes(sami)
+        ? sami
+        : undefined
+    const activeRowIdx = splitRoute
+      ? splitActiveRow
+        ? sami
+        : undefined
+      : sami != null && (sami >= 0 || sami === -1000) && item.itemIndex === sami
+        ? sami
         : undefined
     // Only forward `searchQuery` to rows that actually carry a match (or
     // whose plainText is unknown). When the query changes, non-matching rows
@@ -1437,8 +1515,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
             activeMemberItemIndex={activeGroupMemberIdx}
             // Ungated here by design: ToolGroupCard gates per member
             // internally (only the member whose itemIndex matches
-            // activeMemberItemIndex forwards it as activeMatchIdx).
-            activeMatchInItem={searchActiveMatchInItem}
+            // activeMemberItemIndex forwards it as activeMatchIdx). The
+            // ordinal is the routed run-local one for split items (the member
+            // is a block-subset projection), the whole-item one otherwise.
+            activeMatchInItem={splitRoute ? splitRoute.localOrdinal : samii}
           />
         ) : (
           <MessageView
@@ -1483,6 +1563,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         className={className}
         style={{ '--reveal-stagger': `${revealStagger}ms` } as CSSProperties}
         data-message-id={item.id}
+        // The message uuid, distinct from the row id: split runs derive their
+        // row id (`uuid:rN`) but share the uuid. The context menu's discard /
+        // rewind anchors key on the uuid (Chat reads this attribute).
+        data-message-uuid={item.msg.uuid}
         data-crw-optimistic-source={item.optimisticSourceId}
         data-enter-id={isEntering ? item.id : undefined}
         ref={isEntering ? enterNodeRef : undefined}
@@ -1535,9 +1619,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     (_index: number, item: VirtuosoItem) => {
       // Alias-first: a settled message born from an in-place draft keeps the
       // draft key (draftRowKeys), so the hand-off updates the same row in
-      // place instead of remounting a fresh one.
-      const alias = item.msg.uuid != null ? draftRowKeys?.[item.msg.uuid] : undefined
-      return alias ?? item.id
+      // place instead of remounting a fresh one. Heir-gated: split runs share
+      // the uuid, so only the unsplit row or the heir run may adopt the alias
+      // (an ungated lookup gives every run the same key — duplicate React keys).
+      return rowDraftAlias(item, draftRowKeys) ?? item.id
     },
     [draftRowKeys],
   )
@@ -1612,10 +1697,14 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   const heightEstimates: number[] = useMemo(
     () =>
       virtuosoData.map((item) => {
-        const cached = lookupRowHeight(item.id)
+        // MeasuredItem records under the heir-gated alias-first id; look up
+        // with the SAME key (a draft-born row records under its draft key, so
+        // a bare item.id lookup misses — pre-existing for unsplit rows, and
+        // split runs must not collide on the shared uuid's alias).
+        const cached = lookupRowHeight(rowDraftAlias(item, draftRowKeys) ?? item.id)
         return cached ?? ROW_HEIGHT_FALLBACK_PX
       }),
-    [virtuosoData],
+    [virtuosoData, draftRowKeys],
   )
 
   const virtuosoComponents = useMemo(() => {

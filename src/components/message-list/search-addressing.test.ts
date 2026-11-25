@@ -3,7 +3,8 @@
 // (see vitest.config.ts); opting out skips that env boot (same as
 // tool-grouping.test.ts).
 import { describe, it, expect } from 'vitest'
-import { rowSearchMatchCount, memberBlockOrdinals, assistantResultIdxByBlock, resultHitMemberOrdinal } from './search-addressing'
+import { rowSearchMatchCount, memberBlockOrdinals, assistantResultIdxByBlock, resultHitMemberOrdinal, routeSplitItemOrdinal } from './search-addressing'
+import { splitMixedAssistantMessage } from './message-split'
 import { countCachedMessageSearchMatches } from '../../session-store/normalize'
 import type { SdkMessage } from '../../types'
 import type { ToolResultEntry } from '../../session-store/types'
@@ -384,5 +385,86 @@ describe('resultHitMemberOrdinal', () => {
     // prefix 2 (Edit diff) + local 1 → member ordinal 3 → result-global 1.
     expect(resultHitMemberOrdinal(editMember, results, resultMsg, 'e1', 1, 'needle')).toBe(3)
     expect(memberBlockOrdinals(editMember, results, 3, 'needle')).toEqual([{ diffIdx: undefined, resultIdx: 1 }])
+  })
+})
+
+describe('routeSplitItemOrdinal', () => {
+  function mixedMsg(uuid: string, content: unknown[]): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid,
+      parent_tool_use_id: null,
+      message: { role: 'assistant', content },
+    } as unknown as SdkMessage
+  }
+  const text = (t: string) => ({ type: 'text', text: t })
+  const thinking = (t: string) => ({ type: 'thinking', thinking: t })
+  const edit = (id: string) => ({
+    type: 'tool_use', id, name: 'Edit',
+    input: { old_string: 'alpha needle', new_string: 'beta needle' },
+  })
+  const write = (id: string, content: string) => ({
+    type: 'tool_use', id, name: 'Write', input: { content },
+  })
+  const read = (id: string) => ({ type: 'tool_use', id, name: 'Read', input: {} })
+
+  it('routes a text match to the non-tool run and a diff match to the tool run', () => {
+    const msg = mixedMsg('m', [text('needle intro'), edit('e1')])
+    const runs = splitMixedAssistantMessage(msg)!
+    // Whole space: text 1 + Edit diff 2.
+    expect(routeSplitItemOrdinal(msg, runs, new Map(), 0, 'needle')).toEqual({ runIndex: 0, localOrdinal: 0 })
+    expect(routeSplitItemOrdinal(msg, runs, new Map(), 1, 'needle')).toEqual({ runIndex: 1, localOrdinal: 0 })
+    expect(routeSplitItemOrdinal(msg, runs, new Map(), 2, 'needle')).toEqual({ runIndex: 1, localOrdinal: 1 })
+  })
+
+  it('routes a consumed-result match past the run own-segment total', () => {
+    const msg = mixedMsg('m', [text('needle intro'), edit('e1')])
+    const runs = splitMixedAssistantMessage(msg)!
+    const results = new Map([['e1', entry('needle result')]])
+    // Whole space: text 1 + diff 2 + result 1. Run 1 space: diff 2 then result.
+    expect(routeSplitItemOrdinal(msg, runs, results, 3, 'needle')).toEqual({ runIndex: 1, localOrdinal: 2 })
+  })
+
+  it('walks the WHOLE-message space (results uniformly after ALL own segments), not a concatenation of run spaces', () => {
+    const msg = mixedMsg('m', [text('needle'), edit('e1'), text('needle')])
+    const runs = splitMixedAssistantMessage(msg)!
+    const results = new Map([['e1', entry('needle')]])
+    // Whole space: text0 1 + diff 2 + text2 1 + result 1.
+    expect(routeSplitItemOrdinal(msg, runs, results, 0, 'needle')).toEqual({ runIndex: 0, localOrdinal: 0 })
+    expect(routeSplitItemOrdinal(msg, runs, results, 1, 'needle')).toEqual({ runIndex: 1, localOrdinal: 0 })
+    expect(routeSplitItemOrdinal(msg, runs, results, 3, 'needle')).toEqual({ runIndex: 2, localOrdinal: 0 })
+    // The result belongs to run 1; its run-local ordinal is run1 own total (2) + 0.
+    // A run-space concatenation would have placed the result at whole ordinal 3.
+    expect(routeSplitItemOrdinal(msg, runs, results, 4, 'needle')).toEqual({ runIndex: 1, localOrdinal: 2 })
+  })
+
+  it('thinking blocks contribute zero matches (ordinal skips to the tool run)', () => {
+    const msg = mixedMsg('m', [thinking('needle needle'), write('w1', 'needle')])
+    const runs = splitMixedAssistantMessage(msg)!
+    expect(routeSplitItemOrdinal(msg, runs, new Map(), 0, 'needle')).toEqual({ runIndex: 1, localOrdinal: 0 })
+  })
+
+  it('accumulates result offsets across several tools within one run', () => {
+    const msg = mixedMsg('m', [text('needle'), edit('e1'), read('r1')])
+    const runs = splitMixedAssistantMessage(msg)!
+    const results = new Map([['e1', entry('needle')], ['r1', entry('needle needle')]])
+    // Whole space: text 1 + e1 diff 2 + r1 diff 0 + e1 result 1 + r1 result 2.
+    // Run 1 space: own 2, then e1 result 1, then r1 result 2.
+    expect(routeSplitItemOrdinal(msg, runs, results, 3, 'needle')).toEqual({ runIndex: 1, localOrdinal: 2 })
+    expect(routeSplitItemOrdinal(msg, runs, results, 4, 'needle')).toEqual({ runIndex: 1, localOrdinal: 3 })
+    expect(routeSplitItemOrdinal(msg, runs, results, 5, 'needle')).toEqual({ runIndex: 1, localOrdinal: 4 })
+  })
+
+  it('returns null past the end of the match space', () => {
+    const msg = mixedMsg('m', [text('needle intro'), edit('e1')])
+    const runs = splitMixedAssistantMessage(msg)!
+    expect(routeSplitItemOrdinal(msg, runs, new Map(), 3, 'needle')).toBeNull()
+    expect(routeSplitItemOrdinal(msg, runs, new Map(), 99, 'needle')).toBeNull()
+  })
+
+  it('returns null when the query matches nothing', () => {
+    const msg = mixedMsg('m', [text('intro'), edit('e1')])
+    const runs = splitMixedAssistantMessage(msg)!
+    expect(routeSplitItemOrdinal(msg, runs, new Map(), 0, 'absent')).toBeNull()
   })
 })

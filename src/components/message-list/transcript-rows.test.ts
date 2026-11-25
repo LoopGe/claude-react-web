@@ -1220,3 +1220,168 @@ describe('buildDraftRows', () => {
     expect(buildDraftRows({ key: 'draft:1', text: '' }, [], null).map((r) => r.id)).toEqual(['draft:1'])
   })
 })
+
+describe('buildTranscriptRows: mixed assistant message split', () => {
+  function mixedAssistant(
+    id: string,
+    content: Array<Record<string, unknown>>,
+    extra: Record<string, unknown> = {},
+  ): TranscriptItem {
+    return {
+      id,
+      msg: {
+        type: 'assistant',
+        uuid: id,
+        parent_tool_use_id: null,
+        message: { role: 'assistant', content },
+        ...extra,
+      } as unknown as SdkMessage,
+      plainText: '',
+      isCompactSummary: false,
+      hiddenByDefault: false,
+    } as TranscriptItem
+  }
+  const text = (t: string) => ({ type: 'text', text: t })
+  const thinking = (t: string) => ({ type: 'thinking', thinking: t })
+  const tool = (id: string, name = 'Read') => ({ type: 'tool_use', id, name, input: {} })
+
+  it('splits [text, tool] into a boundary text row and a folded tool group', () => {
+    const { rows } = buildTranscriptRows({
+      items: [mixedAssistant('m', [text('intro'), tool('t1'), tool('t2')])],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['m:r0', 'm:r1'])
+    expect(rows[0]!.toolGroup).toBeUndefined()
+    expect(rows[0]!.msg.message!.content).toEqual([text('intro')])
+    expect(rows[1]!.toolGroup).toBeDefined()
+    expect(rows[1]!.toolGroup!.members).toHaveLength(1)
+    expect(rows[1]!.toolGroup!.members[0].message!.content).toEqual([tool('t1'), tool('t2')])
+    // Both halves share the original items[] position (search addressing).
+    expect(rows.map((r) => r.itemIndex)).toEqual([0, 0])
+  })
+
+  it('marks the first non-tool run as the draft heir', () => {
+    const { rows } = buildTranscriptRows({
+      items: [mixedAssistant('m', [text('intro'), tool('t1')])],
+      isResultConsumed: never,
+    })
+    expect(rows[0]!.draftHeir).toBe(true)
+    expect(rows[1]!.draftHeir).toBeUndefined()
+  })
+
+  it('marks the heir correctly for tool-first [tool, text]', () => {
+    const { rows } = buildTranscriptRows({
+      items: [mixedAssistant('m', [tool('t1'), text('after')])],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['m:r0', 'm:r1'])
+    expect(rows[0]!.draftHeir).toBeUndefined()
+    expect(rows[1]!.draftHeir).toBe(true)
+  })
+
+  it('keeps thinking with text in one boundary run', () => {
+    const { rows } = buildTranscriptRows({
+      items: [mixedAssistant('m', [thinking('hmm'), text('intro'), tool('t1')])],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['m:r0', 'm:r1'])
+    expect(rows[0]!.msg.message!.content).toEqual([thinking('hmm'), text('intro')])
+    expect(rows[0]!.draftHeir).toBe(true)
+  })
+
+  it('splits interleaved [text, tool, text] into three rows, tool run folded', () => {
+    const { rows } = buildTranscriptRows({
+      items: [mixedAssistant('m', [text('a'), tool('t1'), text('b')])],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['m:r0', 'm:r1', 'm:r2'])
+    expect(rows[1]!.toolGroup).toBeDefined()
+    expect(rows[0]!.toolGroup).toBeUndefined()
+    expect(rows[2]!.toolGroup).toBeUndefined()
+  })
+
+  it('splits [tool, text, tool] into TWO groups sharing the itemIndex', () => {
+    const { rows } = buildTranscriptRows({
+      items: [mixedAssistant('m', [tool('t1'), text('mid'), tool('t2')])],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['m:r0', 'm:r1', 'm:r2'])
+    expect(rows[0]!.toolGroup).toBeDefined()
+    expect(rows[2]!.toolGroup).toBeDefined()
+    expect(rows.map((r) => r.itemIndex)).toEqual([0, 0, 0])
+    expect(rows[0]!.toolGroup!.memberItemIndices).toEqual([0])
+    expect(rows[2]!.toolGroup!.memberItemIndices).toEqual([0])
+  })
+
+  it('drops an empty-text run but keeps the tool run foldable (runIndex positional)', () => {
+    const { rows } = buildTranscriptRows({
+      items: [mixedAssistant('m', [tool('t1'), text('   ')])],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['m:r0'])
+    expect(rows[0]!.toolGroup).toBeDefined()
+  })
+
+  it('leaves pure messages on the original single-row path (bare uuid id)', () => {
+    const { rows } = buildTranscriptRows({
+      items: [toolOnlyAssistant('t', 'Read'), assistant('a', 'plain')],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['t', 'a'])
+    expect(rows[0]!.toolGroup).toBeDefined()
+    expect(rows[0]!.draftHeir).toBeUndefined()
+  })
+
+  it('does not split a compact summary frame', () => {
+    const item = { ...mixedAssistant('m', [text('summary'), tool('t1')]), isCompactSummary: true }
+    const { rows } = buildTranscriptRows({ items: [item], isResultConsumed: never })
+    expect(ids(rows)).toEqual(['m'])
+  })
+
+  it('does not split a special error frame', () => {
+    const { rows } = buildTranscriptRows({
+      items: [mixedAssistant('m', [text('intro'), tool('t1')], { error: 'boom' })],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['m'])
+  })
+
+  it('keeps derived ids and member identity stable across rebuilds', () => {
+    const items = [mixedAssistant('m', [text('intro'), tool('t1')])]
+    const a = buildTranscriptRows({ items, isResultConsumed: never })
+    const b = buildTranscriptRows({ items, isResultConsumed: never })
+    expect(ids(a.rows)).toEqual(ids(b.rows))
+    expect(a.rows[1]!.toolGroup!.members[0]).toBe(b.rows[1]!.toolGroup!.members[0])
+  })
+
+  it('closes the tool group when the same message\'s text run follows (mid-turn fold)', () => {
+    const { rows, nextItemTypeMap } = buildTranscriptRows({
+      items: [mixedAssistant('m', [tool('t1'), text('after')])],
+      isResultConsumed: never,
+    })
+    expect(nextItemTypeMap.get(rows[0]!.id)).toBe('assistant')
+  })
+
+  it('keeps the orphan-result guard satisfied by split assistant runs', () => {
+    const { rows } = buildTranscriptRows({
+      items: [mixedAssistant('m', [text('intro'), tool('t1')]), resultItem('res')],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['m:r0', 'm:r1', 'res'])
+  })
+
+  it('splits sidechain mixed messages under a parent filter too', () => {
+    const child = mixedAssistant('c', [text('intro'), tool('t1')])
+    ;(child.msg as { parent_tool_use_id?: unknown }).parent_tool_use_id = 'agent-1'
+    const { rows } = buildTranscriptRows({
+      items: [child],
+      parentToolUseIdFilter: 'agent-1',
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['c:r0', 'c:r1'])
+    // Sidechain tool rows never fold (isToolGroupEligible parent gate) — both
+    // halves are plain rows, but the split still separates text from tools.
+    expect(rows[0]!.toolGroup).toBeUndefined()
+    expect(rows[1]!.toolGroup).toBeUndefined()
+  })
+})

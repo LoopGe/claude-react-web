@@ -51,6 +51,8 @@ import type { SdkMessage } from '../../types'
 import type { ActiveSubagent, TranscriptItem } from '../../session-store/types'
 import type { DraftState, FrozenDraft, ThinkingDraftState } from '../../session-store/draft-state'
 import { getBlocks, userMessageHasToolResult } from '../../session-store/normalize'
+import { extractMessagePlainText } from '../../search'
+import { isToolRun, splitMixedAssistantMessage } from './message-split'
 import { QUESTION_TOOL_NAME } from '../../utils/question-answers'
 import { MARKER_TOOL_NAMES, PLAN_TOOL_NAMES } from '../../constants/toolNames'
 import { parseUnroutableCompletion } from '../../../shared/user-frames'
@@ -89,6 +91,10 @@ export interface TranscriptRow {
    *  the entrance-animation gate can tell a live arrival (timestamp present)
    *  from disk-restored history (undefined). */
   receivedAt?: number
+  /** Split-run marker (see message-split.ts): the FIRST non-tool run of a mixed
+   *  assistant message — the row that adopts the in-place draft's alias key at
+   *  settle (rowDraftAlias). Undefined on unsplit rows and tool runs. */
+  draftHeir?: boolean
   /** Canonical markdown-stripped text view, carried from TranscriptItem
    *  (the documented search SSOT — session-store/types.ts). Consumed by
    *  itemContent's foldSearchHit predicate so the user-body force-open
@@ -319,6 +325,38 @@ function pushRow(
     }
     if (!hasTurnContent) return
   }
+  // Mixed assistant message → one row per block-kind run (native's combined
+  // frames; claude's split frames return null and keep the single-row path).
+  // The non-tool runs are boundary rows (reply/thinking), the tool runs fold.
+  // Runs share the item's items[] position — search routing rebases the
+  // whole-message ordinal onto the owning run (routeSplitItemOrdinal).
+  const runs = item.msg.type === 'assistant' && !item.isCompactSummary
+    ? splitMixedAssistantMessage(item.msg)
+    : null
+  if (runs) {
+    const heirIndex = runs.findIndex((run) => !isToolRun(run))
+    for (let ri = 0; ri < runs.length; ri++) {
+      const run = runs[ri]
+      // An all-whitespace run paints nothing — drop it here, keeping the run
+      // enumeration (and thus the derived ids / search run indices) positional.
+      if (willRenderEmpty(run, false, isResultConsumed)) continue
+      let runPlainMemo: string | null | undefined
+      out.push({
+        id: `${item.id}:r${ri}`,
+        msg: run,
+        isCompactSummary: false,
+        get plainText(): string | null {
+          if (runPlainMemo === undefined) runPlainMemo = extractMessagePlainText(run)
+          return runPlainMemo
+        },
+        renderableIndex: out.length,
+        itemIndex,
+        draftHeir: ri === heirIndex ? true : undefined,
+        receivedAt: item.receivedAt,
+      })
+    }
+    return
+  }
   out.push({
     id: item.id,
     msg: item.msg,
@@ -415,6 +453,9 @@ export function foldToolGroupRows(rows: readonly TranscriptRow[]): TranscriptRow
       optimisticSourceId: first.optimisticSourceId,
       deliveryStatus: first.deliveryStatus,
       receivedAt: first.receivedAt,
+      // Keep in step with TranscriptRow (a tool-run head is never the heir,
+      // but a field added there and forgotten here is the documented trade-off).
+      draftHeir: first.draftHeir,
       searchTick: first.searchTick,
       get plainText(): string | null {
         return first.plainText

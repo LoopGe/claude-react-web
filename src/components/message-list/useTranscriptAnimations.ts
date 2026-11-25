@@ -90,6 +90,10 @@ export interface UseTranscriptAnimationsOptions {
   panelVisible?: boolean
   /** App-owned show sequence. Undefined keeps standalone false→true semantics. */
   showEpoch?: number
+  /** Draft-row aliases (mirror.draftRowKeys). The entrance gate skips a split
+   *  heir ONLY when it actually adopts a draft alias (the continuing draft DOM);
+   *  a bystander tab's heir is a genuine arrival and animates. */
+  draftRowKeys?: Readonly<Record<string, string>> | null
 }
 
 /** Frozen reveal state: the row ids present in the DOM at the flip (the only
@@ -130,6 +134,7 @@ export function useTranscriptAnimations({
   transcriptRevealKey,
   panelVisible,
   showEpoch,
+  draftRowKeys,
 }: UseTranscriptAnimationsOptions): TranscriptAnimationsApi {
   // --- Row entrance gate --------------------------------------------------
   // Goal: play a one-shot "rise + blur-in" on rows that genuinely just
@@ -208,6 +213,7 @@ export function useTranscriptAnimations({
     if (armed) {
       // eslint-disable-next-line react-hooks/purity -- Date.now() gates animation recency; a stale value at worst skips one animation, never corrupts state.
       const now = Date.now()
+      let heirSkippedAt = -1
       for (let i = prevLen; i < curLen; i++) {
         const row = rows[i]
         if (knownIdsRef.current.has(row.id)) continue
@@ -218,7 +224,30 @@ export function useTranscriptAnimations({
         // the bubble from near-transparent to full opacity — the "sending →
         // acked" flash. The user's own send should render settled immediately.
         if (row.sending) continue
+        // A split heir that ADOPTS a draft alias continues the in-place draft's
+        // DOM (same React key) — not a new arrival; arming it would pop the
+        // draft's continuing body. Gated on the alias actually existing: a
+        // bystander tab (no draft) sees a genuine arrival and animates normally.
+        if (row.draftHeir && row.msg.uuid != null && draftRowKeys?.[row.msg.uuid] != null) {
+          heirSkippedAt = i
+          continue
+        }
         if (typeof row.receivedAt === 'number' && now - row.receivedAt < ENTER_MAX_AGE_MS) {
+          enterIdsRef.current.add(row.id)
+        }
+      }
+      // Tool-first split settle ([draft] → [tool run, heir], delta +1): the
+      // heir lands at the only scanned index and is skipped above, while the
+      // genuine newcomer — the tool run — sits at prevLen-1, below the window.
+      // Arm it explicitly so the new tool card still pops.
+      if (heirSkippedAt === prevLen && prevLen > 0) {
+        const row = rows[prevLen - 1]
+        if (
+          !knownIdsRef.current.has(row.id) &&
+          !row.sending &&
+          typeof row.receivedAt === 'number' &&
+          now - row.receivedAt < ENTER_MAX_AGE_MS
+        ) {
           enterIdsRef.current.add(row.id)
         }
       }

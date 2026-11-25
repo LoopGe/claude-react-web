@@ -31,6 +31,7 @@
 import { memo, useLayoutEffect, useRef } from 'react'
 import type { ItemProps } from 'react-virtuoso'
 import { recordRowHeight } from '../../utils/row-height-cache'
+import { rowDraftAlias } from './message-split'
 
 // Lazily created shared observer: created on first mounted row, so test files
 // that stub ResizeObserver globally can install the stub before any instance
@@ -58,6 +59,7 @@ export interface MeasuredItemRow {
   kind?: 'streaming'
   optimisticSourceId?: string
   msg?: { uuid?: string }
+  draftHeir?: boolean
 }
 
 export interface MeasuredItemProps extends ItemProps<MeasuredItemRow> {
@@ -69,7 +71,10 @@ export interface MeasuredItemProps extends ItemProps<MeasuredItemRow> {
 export const MeasuredItem = memo(function MeasuredItem(props: MeasuredItemProps) {
   const { item, context, ...rest } = props
   const draftRowKeys = context as Record<string, string> | undefined
-  const rowId = (item.msg?.uuid != null ? draftRowKeys?.[item.msg.uuid] : undefined)
+  // Heir-gated alias (rowDraftAlias): split runs share the original uuid, so an
+  // ungated lookup would stamp every run with the one draft key — colliding
+  // height-cache writes and panel-cache anchors.
+  const rowId = rowDraftAlias(item, draftRowKeys)
     ?? (typeof item.id === 'string' ? item.id : null)
   const ref = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {

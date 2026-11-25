@@ -56,7 +56,7 @@ Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
  *  contract matter here; the rest are Virtuoso internals this wrapper must
  *  pass through untouched. */
 function itemProps(
-  item: { id?: string; kind?: 'streaming'; content?: string; msg?: { uuid?: string }; optimisticSourceId?: string },
+  item: { id?: string; kind?: 'streaming'; content?: string; msg?: { uuid?: string }; optimisticSourceId?: string; draftHeir?: boolean },
   children: React.ReactNode = 'row',
 ) {
   return {
@@ -153,6 +153,26 @@ describe('MeasuredItem', () => {
     const el = container.firstElementChild as HTMLElement
     expect(el.dataset.crwRowId).toBe('draft:3')
     expect(el.dataset.crwOptimisticSource).toBe('optimistic:1')
+  })
+
+  it('stamps the draft alias on the heir run of a split message', () => {
+    const props = itemProps({ id: 'm:r0', draftHeir: true, msg: { uuid: 'm' } })
+    props.context = { m: 'draft:3' }
+    const { container } = render(<MeasuredItem {...props} />)
+    expect((container.firstElementChild as HTMLElement).dataset.crwRowId).toBe('draft:3')
+  })
+
+  it('keeps the derived id on a non-heir split run (no alias collision)', () => {
+    fakeOffsetHeight = 90
+    const props = itemProps({ id: 'm:r1', msg: { uuid: 'm' } })
+    props.context = { m: 'draft:3' }
+    const { container } = render(<MeasuredItem {...props} />)
+    const el = container.firstElementChild as HTMLElement
+    expect(el.dataset.crwRowId).toBe('m:r1')
+    fireResize(el)
+    // The height records under the derived id, not the shared draft alias.
+    expect(lookupRowHeight('m:r1')).toBe(90)
+    expect(lookupRowHeight('draft:3')).toBeUndefined()
   })
 
   it('exports a fallback distinct from the old probe default', () => {

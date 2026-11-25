@@ -237,3 +237,73 @@ export function resultHitMemberOrdinal(
   if (local < 0 || local >= ownerCount) return undefined
   return prefix + local
 }
+
+/** Route a WHOLE-message search ordinal onto the run that owns it, rebased into
+ *  that run's local match space — the split-item partner of the walks above.
+ *
+ *  A mixed assistant message renders as several rows (see message-split.ts),
+ *  each carrying a block-subset projection, but the navigation ordinal arrives
+ *  in the WHOLE-message space (server hits are message-local; resultHitMemberOrdinal
+ *  rebases onto the original member). The whole space is own segments in block
+ *  order THEN consumed results in tool_use block order — NOT a concatenation of
+ *  run spaces (a run's results sit after ALL own segments, including later runs'
+ *  text). So this walks the whole space once, attributing each segment to its
+ *  run and accumulating run-local offsets in the run's own space (run own
+ *  segments, then run results), and returns the run index plus the local ordinal
+ *  the existing per-row walks (blockActiveIdx / assistantResultIdxByBlock /
+ *  memberBlockOrdinals) route against the projected message.
+ *
+ *  `runs` MUST be splitMixedAssistantMessage(msg)'s output (the shared
+ *  enumeration — pushRow drops empty runs but never renumbers). Out of range →
+ *  null, mirroring assistantResultIdxByBlock's all-undefined convention: the
+ *  caller lights no active mark rather than misrouting. */
+export function routeSplitItemOrdinal(
+  msg: SdkMessage,
+  runs: readonly SdkMessage[],
+  toolResults: ReadonlyMap<string, ToolResultEntry>,
+  ordinal: number,
+  query: string,
+): { runIndex: number; localOrdinal: number } | null {
+  const blocks = getBlocks(msg)
+  // Block position → run index, from the shared run enumeration.
+  const runOfBlock: number[] = []
+  for (let ri = 0; ri < runs.length; ri++) {
+    for (let k = 0; k < getBlocks(runs[ri]).length; k++) runOfBlock.push(ri)
+  }
+  const runOwnOffset: number[] = runs.map(() => 0)
+  let remaining = ordinal
+  // Pass 1 — own segments, block order (the same views blockActiveIdx uses).
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]
+    const ri = runOfBlock[i]
+    let n = 0
+    if (b.type === 'text' && typeof b.text === 'string') {
+      n = countMatches(extractPlainText(b.text), query)
+    } else if (b.type === 'tool_use') {
+      n = countMatches(extractToolUseDiffText(b.input, b.name), query)
+    }
+    if (remaining < n) return { runIndex: ri, localOrdinal: runOwnOffset[ri] + remaining }
+    remaining -= n
+    runOwnOffset[ri] += n
+  }
+  // Pass 2 — consumed results, tool_use block order. runOwnOffset now holds each
+  // run's own-segment total; the result offset accumulates within the run.
+  const runResultOffset: number[] = runs.map(() => 0)
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]
+    if (b.type !== 'tool_use') continue
+    const ri = runOfBlock[i]
+    const id = extractToolUseId(b)
+    const entry = id ? toolResults.get(id) : undefined
+    if (!entry) continue
+    let n = 0
+    for (const run of toolResultTextRuns(entry.content)) n += countMatches(run, query)
+    if (n === 0) continue
+    if (remaining < n) {
+      return { runIndex: ri, localOrdinal: runOwnOffset[ri] + runResultOffset[ri] + remaining }
+    }
+    remaining -= n
+    runResultOffset[ri] += n
+  }
+  return null
+}

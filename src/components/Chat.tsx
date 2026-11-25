@@ -1214,7 +1214,7 @@ export const Chat = memo(function Chat({
   // Message-area right-click menu. `selection` is captured at open time —
   // clicking a menu item can collapse the live selection, so we snapshot it.
   // `targetId` is the uuid of the message row the user right-clicked (via
-  // `data-message-id`), used by the "discard from here" menu item.
+  // `data-message-uuid`), used by the "discard from here" menu item.
   const [exportMenuPos, setExportMenuPos] = useState<
     { x: number; y: number; selection: string; targetId?: string } | null
   >(null)
@@ -2292,7 +2292,11 @@ export const Chat = memo(function Chat({
             e.preventDefault()
             const selection = window.getSelection()?.toString() ?? ''
             const targetEl = (e.target as HTMLElement).closest('[data-message-id]')
-            const targetId = targetEl?.getAttribute('data-message-id') ?? undefined
+            // The UUID, not the row id: split assistant runs carry derived row
+            // ids (`uuid:rN`) but share the message uuid the discard/rewind
+            // anchors key on. data-message-id stays the row identity for
+            // scroll/anchor/reveal consumers.
+            const targetId = targetEl?.getAttribute('data-message-uuid') ?? undefined
             setExportMenuPos({ x: e.clientX, y: e.clientY, selection, targetId })
             // Refresh rewind anchors so newly-captured snapshots are
             // visible in the context menu without a page reload.
