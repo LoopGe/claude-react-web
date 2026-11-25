@@ -2093,7 +2093,12 @@ export class NativeSession implements NativeSessionCore {
       model: this.opts.profile?.recapModel || this.model,
       system: TITLE_PROMPT,
       userContent: description,
-      maxTokens: 64,
+      // Reasoning models emit a thinking preamble BEFORE the title text; a
+      // 64-token cap was consumed entirely by thinking (thinking-only content,
+      // stop_reason max_tokens → "Empty response"), leaving the session
+      // permanently untitled. 1024 matches the other aux callers — a cap, not
+      // a reservation, so a plain title still costs only its actual tokens.
+      maxTokens: 1024,
       temperature: 0.3,
       caller: 'session-title',
       target: this.opts.credentials(),

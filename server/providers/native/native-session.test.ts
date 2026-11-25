@@ -6155,7 +6155,12 @@ describe('NativeSession', () => {
         expect(requests).toHaveLength(1)
         expect(requests[0]).toMatchObject({
           model: 'recap-model',
-          maxTokens: 64,
+          // Reasoning-headroom budget: a thinking model spends tokens on a
+          // reasoning preamble BEFORE the title text, and a 64-token cap was
+          // consumed entirely by thinking (200 + thinking-only content +
+          // stop_reason max_tokens → "Empty response"), leaving the session
+          // permanently untitled. 1024 matches the other aux callers.
+          maxTokens: 1024,
           temperature: 0.3,
           system:
             'Generate a concise session title in the same language as the request. Return only the title, without quotes, a prefix, or trailing punctuation.',
