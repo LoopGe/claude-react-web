@@ -8618,6 +8618,44 @@ describe('SessionManager', () => {
       await expect(sm.resume('ghost', { allowAdopt: true })).rejects.toMatchObject({ status: 404 })
     })
 
+    it('adopts a disk session under the provider that owns its transcript, not the host default', async () => {
+      // A native-default host must still adopt CLI-created sessions the
+      // /resume picker surfaces: the native provider has no getSessionInfo,
+      // so probing only the default provider 404s a transcript the claude
+      // provider owns on disk.
+      const smNativeDefault = new SessionManager({ store, defaultProvider: 'native', modelSwitchRetryDelayMs: 5 })
+      try {
+        mockGetSessionInfo.mockResolvedValueOnce({
+          sessionId: 'cli-orphan',
+          cwd: dir,
+          lastModified: 1234,
+          createdAt: 1000,
+        })
+
+        const info = await smNativeDefault.resume('cli-orphan', { allowAdopt: true })
+        expect(info.id).toBe('cli-orphan')
+        expect(info.provider).toBe('claude')
+        expect(info.running).toBe(true)
+        // Adopted under the OWNING provider, so later resume/fork/clear stay
+        // on it (provider is pinned in the persisted meta).
+        expect(store.get('cli-orphan')?.provider).toBe('claude')
+        const handle = mockHandles[mockHandles.length - 1]
+        expect(handle.options.resume).toBe('cli-orphan')
+      } finally {
+        await smNativeDefault.shutdown()
+      }
+    })
+
+    it('still 404s an unknown id when no provider owns a disk transcript (native default)', async () => {
+      const smNativeDefault = new SessionManager({ store, defaultProvider: 'native', modelSwitchRetryDelayMs: 5 })
+      try {
+        mockGetSessionInfo.mockResolvedValueOnce(undefined)
+        await expect(smNativeDefault.resume('ghost', { allowAdopt: true })).rejects.toMatchObject({ status: 404 })
+      } finally {
+        await smNativeDefault.shutdown()
+      }
+    })
+
     it('coalesces concurrent resume() calls into a single spawn (no duplicate process)', async () => {
       mockGetSessionInfo.mockResolvedValueOnce({
         sessionId: 'orphan',

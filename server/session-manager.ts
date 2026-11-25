@@ -2205,7 +2205,7 @@ export class SessionManager {
       // Probe the SDK's on-disk metadata and, if it exists, register a
       // SessionMeta so the normal resume path below can run. After this
       // first resume the session is "known" like any other.
-      meta = await this.adoptDiskSession(id, this.defaultProvider)
+      meta = await this.adoptDiskSession(id)
     }
     if (!meta) throw new HttpError(404, `session ${id} not found`)
     // Terminal gate FIRST: a hard-ended session is 410 regardless of the
@@ -2550,53 +2550,66 @@ export class SessionManager {
   }
 
   /** Adopt a session that exists on disk but isn't in our store — i.e. one
-   *  the `claude` CLI created directly. Reads the SDK's transcript metadata
-   *  via `getSessionInfo(id)` (no `dir`, so the SDK scans every project dir,
-   *  matching its own resume-by-id fallback) and synthesises a SessionMeta
-   *  that the normal resume path can consume.
+   *  the `claude` CLI created directly. Reads the transcript metadata via
+   *  the OWNING provider's `getSessionInfo(id)` (no `dir`, so the SDK scans
+   *  every project dir, matching its own resume-by-id fallback) and
+   *  synthesises a SessionMeta that the normal resume path can consume.
+   *
+   *  The owner is whichever provider actually has the transcript on disk,
+   *  NOT the host default: a native-default host must still adopt the
+   *  CLI-created sessions the /resume picker surfaces (native implements no
+   *  getSessionInfo). Every provider that reads disk transcripts is probed,
+   *  default first so an id both providers claim resolves deterministically.
    *
    *  `lastTurnAt` is set to the transcript's `lastModified` (a non-null
    *  value): the file's very existence proves at least one `result` landed,
    *  so the downstream `!meta.lastTurnAt` "no_data" guard must pass. Returns
    *  null when no transcript exists, so the caller falls through to 404. */
-  private async adoptDiskSession(id: string, providerName: string): Promise<SessionMeta | undefined> {
-    let info: ResumableSession | undefined
-    try {
-      info = await this.providers.get(providerName).getSessionInfo?.(id)
-    } catch (err) {
-      log.warn(`[session ${id}] adoptDiskSession(${providerName}): getSessionInfo threw:`, err)
-      return undefined
+  private async adoptDiskSession(id: string): Promise<SessionMeta | undefined> {
+    const rank = (p: AgentProvider) => (p.name === this.defaultProvider ? 0 : 1)
+    const candidates = this.providers.list().sort((a, b) => rank(a) - rank(b))
+    for (const provider of candidates) {
+      if (!provider.getSessionInfo) continue
+      let info: ResumableSession | undefined
+      try {
+        info = await provider.getSessionInfo(id)
+      } catch (err) {
+        log.warn(`[session ${id}] adoptDiskSession(${provider.name}): getSessionInfo threw:`, err)
+        continue
+      }
+      if (!info) continue
+      if (this.isSessionDeleteTombstoned(id)) return undefined
+      const now = Date.now()
+      const meta: SessionMeta = {
+        id,
+        provider: provider.name,
+        createdAt: info.createdAt ?? info.lastModified ?? now,
+        lastActivityAt: info.lastModified ?? now,
+        cwd: info.cwd,
+        // Only a REAL title (on-disk customTitle — a CLI-side /rename) is
+        // carried. Never derive one from firstPrompt/summary: conversation
+        // content is not a name, and a derived title here would ride the resume
+        // spawn as Options.title — the CLI then persists it as custom-title
+        // entries, permanently masking any future CLI aiTitle. Untitled stays
+        // untitled (sidebar falls back to the id prefix).
+        title: info.title,
+        messageCount: 0,
+        terminated: false,
+        // Non-null so the no_data guard passes — the transcript file existing
+        // already proves a completed turn.
+        lastTurnAt: info.lastModified ?? now,
+        // Record the current global set as the adopted session's own selection
+        // so future re-spawns carry THIS list (own-list semantics) instead of
+        // re-widening to whatever is globally enabled at that future time.
+        // An empty store records [] — correct: the host injects nothing, and
+        // the CLI still discovers its own config-side servers independently.
+        mcpServerNames: Object.keys(this.mcpStore?.toSdkConfig() ?? {}),
+      }
+      this.store?.upsert(meta)
+      log.info(`[session ${id}] adopted disk session (provider=${provider.name}, cwd=${info.cwd ?? '<none>'}) for resume`)
+      return meta
     }
-    if (!info || this.isSessionDeleteTombstoned(id)) return undefined
-    const now = Date.now()
-    const meta: SessionMeta = {
-      id,
-      provider: providerName,
-      createdAt: info.createdAt ?? info.lastModified ?? now,
-      lastActivityAt: info.lastModified ?? now,
-      cwd: info.cwd,
-      // Only a REAL title (on-disk customTitle — a CLI-side /rename) is
-      // carried. Never derive one from firstPrompt/summary: conversation
-      // content is not a name, and a derived title here would ride the resume
-      // spawn as Options.title — the CLI then persists it as custom-title
-      // entries, permanently masking any future CLI aiTitle. Untitled stays
-      // untitled (sidebar falls back to the id prefix).
-      title: info.title,
-      messageCount: 0,
-      terminated: false,
-      // Non-null so the no_data guard passes — the transcript file existing
-      // already proves a completed turn.
-      lastTurnAt: info.lastModified ?? now,
-      // Record the current global set as the adopted session's own selection
-      // so future re-spawns carry THIS list (own-list semantics) instead of
-      // re-widening to whatever is globally enabled at that future time.
-      // An empty store records [] — correct: the host injects nothing, and
-      // the CLI still discovers its own config-side servers independently.
-      mcpServerNames: Object.keys(this.mcpStore?.toSdkConfig() ?? {}),
-    }
-    this.store?.upsert(meta)
-    log.info(`[session ${id}] adopted disk session (cwd=${info.cwd ?? '<none>'}) for resume`)
-    return meta
+    return undefined
   }
 
   /** Probe the SDK's on-disk transcript for a session.
@@ -11020,7 +11033,7 @@ export class SessionManager {
             let restored = meta
             if (!restored) {
               try {
-                restored = await this.adoptDiskSession(id, this.defaultProvider) ?? undefined
+                restored = await this.adoptDiskSession(id) ?? undefined
               } catch (adoptErr) {
                 log.warn(`[session ${id}] permanent-delete rollback adopt failed:`, adoptErr)
               }
