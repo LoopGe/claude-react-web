@@ -593,6 +593,17 @@ export class NativeSession implements NativeSessionCore {
     // the first turn: the invariant tools = builtins + Agent + Task + MCP defs
     // must hold for every reader, not just the pump after discovery.
     this.rebuildTools()
+    // MCP discovery is fire-and-forget (`load` enqueues the connect pass), so
+    // the rebuild above ran before it settled and saw no MCP defs. Refresh the
+    // snapshot once discovery lands so pre-turn readers (the context
+    // composition) honor the birth invariant above without waiting for a turn.
+    // Later live mutations rebuild themselves; this closes only the initial
+    // discovery gap. A destroy before settlement no-ops.
+    if (this.mcp) {
+      void this.mcp.whenReady()
+        .then(() => { if (!this._closed) this.rebuildTools() })
+        .catch((err) => log.debug(`[${opts.id}] post-discovery tool refresh failed:`, err))
+    }
   }
 
   private currentSkillView(): ReturnType<NativeSkillCatalog['view']> {
