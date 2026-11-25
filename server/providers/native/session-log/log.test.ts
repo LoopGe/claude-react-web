@@ -1,14 +1,16 @@
 // log.test.ts
 import { readFileSync } from 'node:fs'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { NativeSessionLog, deleteNativeSessionLog, hasNativeSessionLog, loadNativeSessionLog, loadNativeSessionLogSync } from './log.js'
+import { NativeSessionLog, appendSessionTitle, deleteNativeSessionLog, hasNativeSessionLog, loadNativeSessionLog, loadNativeSessionLogSync } from './log.js'
 import { brandString } from '../vocabulary/brand.js'
 import { NativeSessionStorageError } from './errors.js'
 import { nativeSessionDir, nativeSessionLogPath, nativeSessionMigrationTempPath } from './paths.js'
 import { neutralEventsOf } from './neutral-read.js'
+import { projectNeutralEventToLegacy, serializeEvent, serializeHeader } from './format.js'
+import type { NativeLogEvent, NativeSessionHeader } from './format.js'
 
 const fsMigration = vi.hoisted(() => ({
   beforeRename: null as (() => void) | null,
@@ -1007,5 +1009,90 @@ describe('NativeSessionLog v3 (neutral writer)', () => {
     expect(snap.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2])
     expect(snap.neutralEvents!.some((e) => e.type === 'session/agent')).toBe(false)
     await log.close()
+  })
+})
+
+describe('appendSessionTitle', () => {
+  const neutralUserInput = (uuid: string) => ({
+    type: 'user/message' as const, time: 1000, parentToolUseId: null,
+    data: { id: brandString<'MessageId'>(uuid), role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }], source: { kind: 'user' as const } },
+  })
+
+  it('reuses the live writer: a title interleaved between turn appends keeps one contiguous seq chain', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    try {
+      log.append(neutralUserInput('u1'))
+      await log.flush()
+      await appendSessionTitle(stateDir, 's1', 'T')
+      // appendDurable drained the title to disk through the CURRENT writer.
+      expect(loadNativeSessionLogSync(stateDir, 's1')!.neutralEvents!.map((e) => e.seq)).toEqual([0, 1])
+      // The original writer is still current (not superseded): its in-memory
+      // baseline grew by the title, and a later append through it still lands.
+      log.append(neutralUserInput('u2'))
+      await log.flush()
+      expect(log.neutralEvents!.map((e) => e.type)).toEqual(['user/message', 'session/title', 'user/message'])
+      const snap = loadNativeSessionLogSync(stateDir, 's1')!
+      expect(snap.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2])
+      expect(snap.neutralEvents!.map((e) => e.type)).toEqual(['user/message', 'session/title', 'user/message'])
+      expect(snap.neutralEvents![1]).toMatchObject({ type: 'session/title', data: { title: 'T' } })
+    } finally {
+      await log.close()
+    }
+  })
+
+  it('appends to a dormant log through a temporary writer that closes afterwards', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(neutralUserInput('u1'))
+    await log.flush()
+    await log.close()
+    fsMigration.closed.length = 0
+
+    await appendSessionTitle(stateDir, 's1', 'Dormant title')
+    const snap = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(snap.neutralEvents!.map((e) => e.type)).toEqual(['user/message', 'session/title'])
+    expect(snap.neutralEvents![1]).toMatchObject({ seq: 1, data: { title: 'Dormant title' } })
+    // The temporary writer released its file handle and left the registry.
+    expect(fsMigration.closed).toContain(nativeSessionLogPath(stateDir, 's1'))
+    // A second dormant append still works (no stale closed writer left in the map).
+    await appendSessionTitle(stateDir, 's1', 'Second')
+    const after = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(after.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2])
+    expect(after.neutralEvents![2]).toMatchObject({ data: { title: 'Second' } })
+  })
+
+  it('rejects with a missing storage error when no log exists, without creating one', async () => {
+    const stateDir = await fresh()
+    const err = await appendSessionTitle(stateDir, 'absent', 'T').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(NativeSessionStorageError)
+    expect((err as NativeSessionStorageError).kind).toBe('missing')
+    expect(await hasNativeSessionLog(stateDir, 'absent')).toBe(false)
+  })
+
+  it('migrates a dormant v2 log to v3 before appending the title', async () => {
+    const stateDir = await fresh()
+    // Seed a real v2 log directly on disk (the migration.test.ts fixture
+    // pattern), bypassing the writer's eager-at-open migration.
+    const events: NativeLogEvent[] = [
+      { seq: 0, type: 'session/context', text: 'ctx' },
+      { seq: 1, ...userEvent('u1') },
+      { seq: 2, type: 'turn/end', reason: 'completed' },
+    ]
+    const header: NativeSessionHeader = { type: 'session/header', v: 2, id: 's1', cwd: '/repo', createdAt: Date.now(), isSeeded: false, inheritedEventCount: 0 }
+    await mkdir(nativeSessionDir(stateDir, 's1'), { recursive: true })
+    await writeFile(nativeSessionLogPath(stateDir, 's1'), serializeHeader(header) + '\n' + events.map((e) => serializeEvent(e) + '\n').join(''), 'utf8')
+    expect(loadNativeSessionLogSync(stateDir, 's1')!.header.v).toBe(2)
+
+    await appendSessionTitle(stateDir, 's1', 'Legacy title')
+
+    const snap = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(snap.header.v).toBe(3)
+    expect(snap.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2, 3])
+    expect(snap.neutralEvents!.map((e) => e.type)).toEqual(['session/context', 'user/message', 'turn/end', 'session/title'])
+    expect(snap.neutralEvents![3]).toMatchObject({ data: { title: 'Legacy title' } })
+    // The migration is lossless: the legacy projection of the migrated prefix
+    // is identical to the seeded v2 source.
+    expect(snap.neutralEvents!.slice(0, 3).map((e) => projectNeutralEventToLegacy(e, 's1'))).toEqual(events)
   })
 })

@@ -426,4 +426,17 @@ describe('NativeProvider core + adapter composition (T14)', () => {
     expect(JSON.stringify(core.history)).toContain('fork-prompt')
     expect(JSON.stringify(core.history)).toContain('fork-reply')
   })
+
+  it('renameSession appends a durable session/title to a dormant log', async () => {
+    const dir = await tempDir('native-provider-rename-')
+    await writeV2Log(dir, 'rename-dormant', 'prompt', 'reply')
+    const provider = makeProvider(dir)
+
+    await provider.renameSession('rename-dormant', 'T')
+
+    const snap = loadNativeSessionLogSync(dir, 'rename-dormant')!
+    expect(snap.header.v).toBe(3)
+    expect(snap.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4])
+    expect(snap.neutralEvents![4]).toMatchObject({ type: 'session/title', data: { title: 'T' } })
+  })
 })

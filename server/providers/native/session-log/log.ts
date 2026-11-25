@@ -236,6 +236,35 @@ export async function deleteNativeSessionLog(stateDir: string, id: string): Prom
   return existed
 }
 
+/** Append a durable `session/title` event to a session's log, live or dormant.
+ *  The single-writer decision lives here because this module owns `writers`:
+ *  a registry hit is always the current writer (`open` supersedes the previous
+ *  entry), so the title rides its writer-operation queue and the live session
+ *  keeps appending through the same object. With no live writer the log is
+ *  opened temporarily, migrated to v3 first (a neutral title has no legacy
+ *  projection — appending it to an unmigrated v1/v2 log throws), and closed.
+ *  Throws `NativeSessionStorageError('missing')` when no log exists; the caller
+ *  (the manager's rename mirror) treats that as best-effort and keeps its own
+ *  metadata title. */
+export async function appendSessionTitle(stateDir: string, id: string, title: string): Promise<void> {
+  const path = nativeSessionLogPath(stateDir, id)
+  const input = { type: 'session/title' as const, time: Date.now(), data: { title } }
+  const current = writers.get(resolve(path))
+  if (current) {
+    await current.appendDurable(input)
+    return
+  }
+  const snapshot = loadNativeSessionLogSync(stateDir, id)
+  if (!snapshot) throw new NativeSessionStorageError('missing', `no session log at ${path}`, id, path)
+  const log = NativeSessionLog.open({ stateDir, id, cwd: snapshot.header.cwd, resume: true })
+  try {
+    if (log.header.v < NATIVE_SESSION_LOG_V3) await log.migrateToV3()
+    await log.appendDurable(input)
+  } finally {
+    await log.close()
+  }
+}
+
 export class NativeSessionLog {
   readonly header: NativeSessionHeader
   /** The legacy v1/v2 event list — canonical for a v1/v2 writer, EMPTY for a

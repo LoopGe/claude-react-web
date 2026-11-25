@@ -22,7 +22,7 @@ import { AGENT_GUIDANCE } from './subagent.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
 import { TASK_OUTPUT_GUIDANCE } from './tools/task-output.js'
 import { nativeHistoryCache } from './session-log/cache.js'
-import { deleteNativeSessionLog, hasNativeSessionLog } from './session-log/log.js'
+import { appendSessionTitle, deleteNativeSessionLog, hasNativeSessionLog } from './session-log/log.js'
 import { resolveNativeStateDir } from './session-log/paths.js'
 import { readNativeHistoryEntries, readNativeHistoryPage, readNativeHistorySnapshot } from './session-log/reader.js'
 import { readNativeSubagentTranscript } from './subagent-transcripts.js'
@@ -341,5 +341,12 @@ export class NativeProvider implements AgentProvider {
     const deleted = await deleteNativeSessionLog(this.stateDir, id)
     this.attachmentReferences.removeSession(id)
     return deleted
+  }
+
+  /** Mirror a manual rename into the durable log (live or dormant) so the
+   *  title survives a resume. The log helper owns the single-writer decision;
+   *  a missing log throws and the manager's best-effort seam catches it. */
+  async renameSession(sessionId: string, title: string): Promise<void> {
+    await appendSessionTitle(this.stateDir, sessionId, title)
   }
 }
