@@ -8730,6 +8730,8 @@ describe('SessionManager', () => {
       expect(row).toMatchObject({
         id: info.id,
         phase: 'live',
+        // Unknown/older metas default to claude; a fresh create persists it.
+        provider: 'claude',
         running: true,
         terminated: false,
         pendingTurns: 0,
@@ -8745,6 +8747,17 @@ describe('SessionManager', () => {
       expect(row?.phase).toBe('dormant')
       expect(row?.running).toBe(false)
       expect(row?.terminated).toBe(false)
+    })
+    it('reports the persisted provider for a dormant row (native stays native)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+      await sm.unload(info.id)
+      // Simulate a meta written by a native session (or a hand-edited file):
+      // the debug projection must read the store value instead of assuming
+      // the claude default.
+      store.upsert({ ...store.get(info.id)!, provider: 'native' })
+      const row = sm.debugSessions().find((r) => r.id === info.id)
+      expect(row?.phase).toBe('dormant')
+      expect(row?.provider).toBe('native')
     })
 
     it('counts queued inputs via receivedAt-without-consumedAt predicate', async () => {

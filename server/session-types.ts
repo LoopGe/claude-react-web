@@ -56,6 +56,12 @@ export interface DebugSessionSummary {
   phase: 'live' | 'dormant' | 'terminated'
   terminatedReason?: string
   cwd?: string
+  /** Owning provider name from the registry (`claude` = CLI subprocess,
+   *  `native` = in-process loop). Absent on metas persisted before the field
+   *  existed — the server treats those as `claude` (the default). Surfaced
+   *  here so the dev `appdebug` lens can tell the two apart without reading
+   *  the session meta on disk. */
+  provider?: string
   model?: string
   permissionMode?: string
   running: boolean

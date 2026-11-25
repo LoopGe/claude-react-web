@@ -1610,3 +1610,41 @@ describe('SettingsPanel sandbox section by provider', () => {
     expect(screen.queryByRole('heading', { name: 'Session' })).not.toBeNull()
   })
 })
+
+describe('SettingsPanel provider row', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url === '/profiles') return Promise.resolve({ profiles: [] })
+      if (url === '/config') return Promise.resolve({ models: [] })
+      return Promise.resolve({})
+    })
+  })
+
+  /** The read-only Provider row inside the General tab's Session group. */
+  const providerRow = (container: HTMLElement) =>
+    [...container.querySelectorAll('.settings-row')].find(
+      (r) => r.querySelector('.settings-row-title')?.textContent === 'Provider',
+    )
+
+  it('labels a missing provider as the Claude CLI default', async () => {
+    const { container } = renderPanel({ tab: 'general', session: mkSession() })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+    const row = providerRow(container)
+    expect(row, 'Provider row').toBeDefined()
+    expect(row!.querySelector('.settings-readonly-value')?.textContent).toBe('Claude CLI')
+    expect(row!.querySelector('.settings-row-hint')?.textContent).toContain('subprocess')
+  })
+
+  it('labels a native session as the in-process runtime', async () => {
+    const session = { ...mkSession(), provider: 'native' } as SessionInfo
+    const { container } = renderPanel({ tab: 'general', session })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+    const row = providerRow(container)
+    expect(row, 'Provider row').toBeDefined()
+    expect(row!.querySelector('.settings-readonly-value')?.textContent).toBe('Native in-process')
+    expect(row!.querySelector('.settings-row-hint')?.textContent).toContain('no Claude CLI subprocess')
+  })
+})

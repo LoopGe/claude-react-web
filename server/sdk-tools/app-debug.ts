@@ -146,7 +146,7 @@ export function buildDebugTools(host: DebugHost): SdkMcpToolDefinition<any>[] {
     ),
     tool(
       'sessions',
-      'List every session in the server pool (live and hibernated) with lifecycle, pending counters, queued input count, and background tasks, plus process gauges.',
+      'List every session in the server pool (live and hibernated) with lifecycle, provider (claude CLI vs native in-process), pending counters, queued input count, and background tasks, plus process gauges.',
       {},
       async () => guard(async () => json({ sessions: host.debugSessions(), process: processInfo() })),
       { annotations: readOnly },

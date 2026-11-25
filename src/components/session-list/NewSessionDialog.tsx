@@ -28,6 +28,7 @@ import { ONE_M_CONTEXT_BETA } from '../../constants/contextSteps'
 import { NEW_SESSION_AUTO_COMPACT_WINDOW_KEY } from '../../constants/recentKeys'
 import { clamp } from '../../utils/clamp'
 import { groupNameIssue } from '../../utils/group-name'
+import { PROVIDER_LABELS, providerLabel } from '../../utils/provider-display'
 
 /** The form seeds its state (group pre-target, cwd, model, …) on MOUNT and
  *  does not reset on an `open` rising edge. A host that keeps the component
@@ -404,13 +405,13 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const providerOptions: FieldPickerOption[] = [
     {
       key: 'claude',
-      label: 'Claude CLI',
+      label: PROVIDER_LABELS.claude,
       selected: provider === 'claude',
       onSelect: () => setProvider('claude'),
     },
     {
       key: 'native',
-      label: 'Native in-process',
+      label: PROVIDER_LABELS.native,
       selected: provider === 'native',
       onSelect: () => setProvider('native'),
     },
@@ -692,7 +693,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
               <label htmlFor={uid + '-provider'}>Provider</label>
               <FieldPicker
                 id={uid + '-provider'}
-                label={provider === 'native' ? 'Native in-process' : 'Claude CLI'}
+                label={providerLabel(provider)}
                 menuLabel="Providers"
                 searchable={false}
                 options={providerOptions}

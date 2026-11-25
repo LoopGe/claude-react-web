@@ -53,6 +53,7 @@ import { useSkillList } from '../hooks/useSkillList'
 import ToolsTab from './tools/ToolsTab'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
 import { permissionModeShortLabel } from './permission-mode-display'
+import { providerDescription, providerLabel } from '../utils/provider-display'
 
 // MarketplaceTab and McpInstaller are heavy modal-within-modal
 // components opened only on user intent (Browse plugins / Add MCP).
@@ -1152,6 +1153,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           <HoverHint label={session.id} side="top">
             <div className="settings-readonly-value mono">{session.id}</div>
           </HoverHint>
+        </SettingsRow>
+        <SettingsRow stack title="Provider" hint={providerDescription(session.provider)}>
+          <div className="settings-readonly-value">{providerLabel(session.provider)}</div>
         </SettingsRow>
         <SettingsRow stack title="CWD">
           <HoverHint label={session.cwd ?? '—'} side="top">

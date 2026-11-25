@@ -6,6 +6,7 @@
 // One component keeps the wording and order identical everywhere a session is
 // hovered; the surfaces only choose the trigger and placement.
 
+import { providerLabel } from '../../utils/provider-display'
 import { sessionHoverModel } from '../../utils/session-status'
 import { HoverValue } from '../HoverPopover'
 import { permissionModeLabel } from '../permission-mode-display'
@@ -46,6 +47,9 @@ export function SessionHoverContent({
           {` · Ctrl+${slot.index} to ${slot.focused ? 'refocus' : 'focus'}`}
         </div>
       )}
+      <div>
+        Provider: <HoverValue>{providerLabel(session.provider)}</HoverValue>
+      </div>
       <div>
         Permission mode: <HoverValue>{permissionModeLabel(session.permissionMode ?? 'default')}</HoverValue>
       </div>

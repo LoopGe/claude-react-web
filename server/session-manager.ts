@@ -712,6 +712,7 @@ function debugSummaryFromInfo(
     phase: i.terminated ? 'terminated' : i.running ? 'live' : 'dormant',
     terminatedReason: i.terminatedReason,
     cwd: i.cwd,
+    provider: i.provider,
     model: i.model,
     permissionMode: i.permissionMode,
     running: i.running,
