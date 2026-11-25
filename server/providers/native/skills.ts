@@ -42,8 +42,10 @@ interface CatalogEntry {
 
 export interface NativeSkillView {
   section(): string
-  bodyOf(name: string): { text: string; isError?: boolean }
-  expand?(name: string): { name: string; body: string } | null
+  /** The skill body with the invocation's positional arguments substituted;
+   *  omitted args render the unsubstituted canonical body. */
+  bodyOf(name: string, args?: string): { text: string; isError?: boolean }
+  expand?(name: string, args?: string): { name: string; body: string } | null
   commands(): NativeSkillCommand[]
   /** The policy-applied listing behind `section()`: every model-listable
    *  skill with its exact rendered line, plus the catalog's total entry
@@ -55,7 +57,7 @@ export interface NativeSkillView {
  *  listing-only consumers source-compatible while this surface makes `expand`
  *  mandatory for slash turns and every other invocation caller. */
 export type NativeSkillInvocationView = NativeSkillView & {
-  expand(name: string): { name: string; body: string } | null
+  expand(name: string, args?: string): { name: string; body: string } | null
 }
 
 export class NativeSkillCatalog {
@@ -143,8 +145,8 @@ export class NativeSkillCatalog {
     const scopedPolicy = Array.isArray(policy) ? [...policy] : policy
     return {
       section: () => this.sectionFor(scopedPolicy),
-      bodyOf: (name) => this.bodyOfFor(name, scopedPolicy),
-      expand: (name) => this.expandFor(name, scopedPolicy),
+      bodyOf: (name, args) => this.bodyOfFor(name, scopedPolicy, args),
+      expand: (name, args) => this.expandFor(name, scopedPolicy, args),
       commands: () => this.commandsFor(scopedPolicy),
       listing: () => this.listingFor(scopedPolicy),
     }
@@ -160,17 +162,19 @@ export class NativeSkillCatalog {
     return this.view(this.policy).commands()
   }
 
-  /** Body for the model-facing Skill tool. Refused unless the skill is
-   *  model-listable (`disable-model-invocation` is clamped out of that set by
+  /** Body for the model-facing Skill tool, with the invocation's positional
+   *  arguments substituted. Refused unless the skill is model-listable
+   *  (`disable-model-invocation` is clamped out of that set by
    *  {@link stateOf}). */
-  bodyOf(name: string): { text: string; isError?: boolean } {
-    return this.view(this.policy).bodyOf(name)
+  bodyOf(name: string, args = ''): { text: string; isError?: boolean } {
+    return this.view(this.policy).bodyOf(name, args)
   }
 
-  /** Body for a user `/name` turn. Works for every state except `off`, and
-   *  ignores `disable-model-invocation` (that flag governs the model only). */
-  expand(name: string): { name: string; body: string } | null {
-    return this.view(this.policy).expand(name)
+  /** Body for a user `/name args` turn, with the arguments substituted. Works
+   *  for every state except `off`, and ignores `disable-model-invocation`
+   *  (that flag governs the model only). */
+  expand(name: string, args = ''): { name: string; body: string } | null {
+    return this.view(this.policy).expand(name, args)
   }
 
   /** The one listing-line renderer: `sectionFor` and `listingFor` share it
@@ -219,24 +223,24 @@ export class NativeSkillCatalog {
     return out
   }
 
-  private bodyOfFor(name: string, policy: readonly string[] | 'all' | undefined): { text: string; isError?: boolean } {
+  private bodyOfFor(name: string, policy: readonly string[] | 'all' | undefined, args = ''): { text: string; isError?: boolean } {
     const entry = this.byName.get(name)
     if (!entry) return unknownSkill(name)
     const state = this.stateOf(entry, policy)
     if (state !== 'on' && state !== 'name-only') return unknownSkill(name)
-    return { text: this.canonicalBodyOf(entry) }
+    return { text: this.canonicalBodyOf(entry, args) }
   }
 
-  private expandFor(name: string, policy: readonly string[] | 'all' | undefined): { name: string; body: string } | null {
+  private expandFor(name: string, policy: readonly string[] | 'all' | undefined, args = ''): { name: string; body: string } | null {
     const entry = this.byName.get(name)
     if (!entry) return null
     if (this.stateOf(entry, policy) === 'off') return null
     if (entry.record.userInvocable === false) return null
-    return { name: entry.record.name, body: this.canonicalBodyOf(entry) }
+    return { name: entry.record.name, body: this.canonicalBodyOf(entry, args) }
   }
 
-  private canonicalBodyOf(entry: CatalogEntry): string {
-    return renderNativeSkillBody({ directory: dirname(entry.record.path), document: entry.document })
+  private canonicalBodyOf(entry: CatalogEntry, args = ''): string {
+    return renderNativeSkillBody({ directory: dirname(entry.record.path), document: entry.document, args })
   }
 
   private stateOf(entry: CatalogEntry, policy: readonly string[] | 'all' | undefined): NativeSkillState {

@@ -208,8 +208,9 @@ const SKILL_COMMAND_RE = /^\/([A-Za-z0-9][A-Za-z0-9._-]{0,79})(?:\s+([\s\S]*))?$
 
 /** Resolve one text block against the captured scoped view. A `/name args`
  *  invocation of a skill the user may invoke returns that skill's canonical
- *  body exactly once; args stay only in the original input. Anything else (not
- *  a command, an unknown skill, an `off` skill) has no instruction. */
+ *  body with the args substituted exactly once (the raw turn keeps the typed
+ *  text). Anything else (not a command, an unknown skill, an `off` skill) has
+ *  no instruction. */
 function skillInvocationForTurn(
   content: unknown,
   skills: NativeSkillInvocationView,
@@ -228,7 +229,7 @@ function skillInvocationForTurn(
   }
   if (text === undefined) return null
   const match = SKILL_COMMAND_RE.exec(text)
-  return match ? skills.expand(match[1]) : null
+  return match ? skills.expand(match[1], match[2] ?? '') : null
 }
 
 /** Fire-and-forget flush: a persistence failure must never become an
@@ -649,7 +650,7 @@ export class NativeSession implements NativeSessionCore {
 
   private skillToolFor(view: NativeSkillView): ToolDef {
     return createSkillTool({
-      bodyOf: (name: string) => view.bodyOf(name),
+      bodyOf: (name: string, args?: string) => view.bodyOf(name, args),
     } as NativeSkillCatalog)
   }
 

@@ -405,7 +405,7 @@ describe('native attachment fidelity end to end', () => {
     expect(contentBlocks(initialRaw)[3].text).toContain(`Upload id: ${text.id}`)
     expect(first.requests[0].messages.at(-1)).toEqual({
       role: 'user',
-      content: [{ type: 'text', text: canonicalSkillBody(cwd, 'demo', 'DEMO SKILL BODY\n') }],
+      content: [{ type: 'text', text: canonicalSkillBody(cwd, 'demo', 'DEMO SKILL BODY\n') + '\n\nARGUMENTS: retain these args' }],
     })
 
     const liveRaw = userFrameByUuid(liveSession(first.sm, id).history, initial.uuid)

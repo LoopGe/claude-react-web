@@ -1,6 +1,5 @@
 // server/providers/native/tools/skill.ts
 import type { NativeSkillCatalog } from '../skills.js'
-import { renderNativeSkillToolResult } from '../skill-render.js'
 import type { ToolDef } from './types.js'
 
 /** The Skill tool's prompt-section guidance. Exported so the provider's static
@@ -27,11 +26,13 @@ export function createSkillTool(catalog: NativeSkillCatalog): ToolDef<{ skill: s
     async run(input) {
       // `bodyOf` answers the whole selection policy: an unknown name, a
       // disabled skill and a `disable-model-invocation` skill all come back as
-      // an error, so the tool never leaks a body the model may not load.
-      const result = catalog.bodyOf(input.skill)
-      if (result.isError) return result
+      // an error, so the tool never leaks a body the model may not load. The
+      // args substitute into the body itself (the CLI ARGUMENTS contract) —
+      // there is no tool-only suffix.
       const args = typeof input.args === 'string' ? input.args : ''
-      return { text: renderNativeSkillToolResult(result.text, args) }
+      const result = catalog.bodyOf(input.skill, args)
+      if (result.isError) return result
+      return { text: result.text }
     },
   }
 }

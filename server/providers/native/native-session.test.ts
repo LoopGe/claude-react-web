@@ -3415,7 +3415,7 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result' && frame.result === 'allowed')).toBe(true))
       expect(requests[1].messages.slice(-2)).toEqual([
         { role: 'user', content: [{ type: 'text', text: '/other keep this' }] },
-        { role: 'user', content: [{ type: 'text', text: canonicalSkillBody(dir, 'other') }] },
+        { role: 'user', content: [{ type: 'text', text: canonicalSkillBody(dir, 'other') + '\n\nARGUMENTS: keep this' }] },
       ])
     } finally {
       await session.destroy()
@@ -3530,13 +3530,15 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
 
       const v1 = canonicalSkillBody(dir, 'demo', '# demo v1')
-      expect(legacyViewOf(logOf(session)).find((event) => event.type === 'session/skill')).toMatchObject({ body: v1 })
+      const slashV1 = v1 + '\n\nARGUMENTS: do this'
+      expect(legacyViewOf(logOf(session)).find((event) => event.type === 'session/skill')).toMatchObject({ body: slashV1 })
       expect(requests[0].system).toContain('- demo: demo v1')
       expect(requests[0].system).not.toContain('demo v2')
       expect(requests[0].messages.slice(-2)).toEqual([
         { role: 'user', content: [{ type: 'text', text: '/demo do this' }] },
-        { role: 'user', content: [{ type: 'text', text: v1 }] },
+        { role: 'user', content: [{ type: 'text', text: slashV1 }] },
       ])
+      // The Skill call carries no args, so its result is the unsubstituted body.
       const toolResult = (requests[1].messages.at(-1) as { content: Array<{ content: Array<{ text: string }> }> })
         .content[0]
       expect(toolResult.content[0].text).toBe(v1)
@@ -3561,17 +3563,19 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(queued as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
 
-    const expected = canonicalSkillBody(dir, 'demo', '# demo body')
+    const expected = canonicalSkillBody(dir, 'demo', '# demo body') + '\n\nARGUMENTS: do this'
     const raw = { role: 'user', content: [{ type: 'text', text: '/demo do this' }] }
     const instruction = { role: 'user', content: [{ type: 'text', text: expected }] }
     // The model receives the original invocation followed by its canonical
-    // body. Disk stores the same pair as raw user + history-only session/skill.
+    // body with the args substituted (no placeholder here, so they ride the
+    // ARGUMENTS fallback). Disk stores the same pair as raw user + history-only
+    // session/skill.
     expect(requests[0].messages.slice(-2)).toEqual([raw, instruction])
     expect(userTexts(session)).toEqual(['/demo do this'])
     expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'session/skill')).toEqual([
       expect.objectContaining({ type: 'session/skill', name: 'demo', body: expected }),
     ])
-    expect(expected).not.toContain('do this')
+    expect(expected).toContain('\n\nARGUMENTS: do this')
     expect(expected).not.toContain('description: demo description')
 
     // A later file edit and catalog reload cannot rewrite the captured turn.
@@ -3605,7 +3609,7 @@ describe('NativeSession', () => {
       expect(rawContent.content.map((block) => block.type)).toEqual(['text', 'text'])
       expect(rawContent.content[0].text).toContain('Upload id: upload-1')
       expect(rawContent.content[1]).toEqual({ type: 'text', text: '/demo do this' })
-      expect(instruction.content[0].text).toBe(canonicalSkillBody(dir, 'demo', '# demo body'))
+      expect(instruction.content[0].text).toBe(canonicalSkillBody(dir, 'demo', '# demo body') + '\n\nARGUMENTS: do this')
       expect(JSON.stringify(requests[0].messages)).not.toContain('"type":"file"')
       expect(queued.message.content[0]).toMatchObject({ type: 'file' })
       expect(legacyViewOf(logOf(session)).filter((event) => event.type === 'user' || event.type === 'session/skill')).toEqual([
@@ -3630,7 +3634,7 @@ describe('NativeSession', () => {
     session.enqueueUserMessage({ ...userMsg('/demo do this'), uuid: 'skill-anchor' } as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
 
-    const expected = canonicalSkillBody(dir, 'demo', '# demo body')
+    const expected = canonicalSkillBody(dir, 'demo', '# demo body') + '\n\nARGUMENTS: do this'
     const getEntries = () => (coreOf(session) as unknown as {
       getSkillCompactionEntries(): readonly { afterUserUuid: string; body: string }[]
     }).getSkillCompactionEntries()
@@ -3815,8 +3819,8 @@ describe('NativeSession', () => {
       body: '# hidden body',
       frontmatter: { 'disable-model-invocation': 'true' },
     })
-    const demoBody = canonicalSkillBody(dir, 'demo', '# demo body')
-    const hiddenBody = canonicalSkillBody(dir, 'hidden', '# hidden body')
+    const demoBody = canonicalSkillBody(dir, 'demo', '# demo body') + '\n\nARGUMENTS: one'
+    const hiddenBody = canonicalSkillBody(dir, 'hidden', '# hidden body') + '\n\nARGUMENTS: two'
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[]; system: string } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
@@ -3856,7 +3860,7 @@ describe('NativeSession', () => {
   it('preserves every block of an image-bearing `/name` turn and appends the instruction', async () => {
     const dir = await tempDir('native-skill-image-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
-    const body = canonicalSkillBody(dir, 'demo', '# demo body')
+    const body = canonicalSkillBody(dir, 'demo', '# demo body') + '\n\nARGUMENTS: look'
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
@@ -3887,7 +3891,7 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
-  it('does not append multiline `/name` arguments to the expanded body', async () => {
+  it('appends multiline `/name` arguments verbatim through the ARGUMENTS fallback', async () => {
     const dir = await tempDir('native-skill-multiline-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
     const body = canonicalSkillBody(dir, 'demo', '# demo body')
@@ -3902,8 +3906,9 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('/demo line1\nline2') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
 
-    const expected = body
-    expect(expected).not.toContain('line1\nline2')
+    // The raw args text (newlines included) rides the fallback append; the
+    // user-facing turn keeps exactly what was typed.
+    const expected = body + '\n\nARGUMENTS: line1\nline2'
     expect(userTexts(session)).toEqual(['/demo line1\nline2'])
     expect(sentUserContent(requests[0])).toEqual([{ type: 'text', text: expected }])
     await session.destroy()
@@ -3912,7 +3917,7 @@ describe('NativeSession', () => {
   it('normalizes a string-content `/name` turn to blocks in the neutral history and the log', async () => {
     const dir = await tempDir('native-skill-string-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
-    const body = canonicalSkillBody(dir, 'demo', '# demo body')
+    const body = canonicalSkillBody(dir, 'demo', '# demo body') + '\n\nARGUMENTS: from string'
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
@@ -4570,7 +4575,7 @@ describe('NativeSession', () => {
     expect(requests).toEqual([])
     await vi.waitFor(() => expect(internals.pumping).toBe(false))
 
-    const expected = canonicalSkillBody(dir, 'demo', '# demo body')
+    const expected = canonicalSkillBody(dir, 'demo', '# demo body') + '\n\nARGUMENTS: do this'
     expect((coreOf(session) as unknown as {
       getSkillCompactionEntries(): readonly { afterUserUuid: string; body: string }[]
     }).getSkillCompactionEntries()).toEqual([

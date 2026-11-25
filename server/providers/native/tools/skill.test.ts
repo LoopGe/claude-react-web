@@ -83,25 +83,44 @@ describe('createSkillTool', () => {
     })
   })
 
-  it('appends nonempty arguments under the User Request heading', async () => {
+  it('appends nonempty arguments through the CLI ARGUMENTS fallback', async () => {
     await writeSkill('demo', { body: 'Demo instructions.' })
     const tool = await toolFor()
 
     const result = await tool.run({ skill: 'demo', args: 'do the thing' }, toolCtx())
     expect(result.text).toBe(
-      `Base directory for this skill: ${join(project, '.claude', 'skills', 'demo')}\n\nDemo instructions.\n\n\n## User Request\ndo the thing`,
+      `Base directory for this skill: ${join(project, '.claude', 'skills', 'demo')}\n\nDemo instructions.\n\n\nARGUMENTS: do the thing`,
     )
   })
 
-  it.each(['', '  \n\t'])('does not append a request section for blank args %j', async (args) => {
+  it('substitutes $ARGUMENTS placeholders with the tool args', async () => {
+    await writeSkill('demo', { body: 'Run: $ARGUMENTS' })
+    const tool = await toolFor()
+
+    const result = await tool.run({ skill: 'demo', args: 'a b' }, toolCtx())
+    expect(result.text).toBe(
+      `Base directory for this skill: ${join(project, '.claude', 'skills', 'demo')}\n\nRun: a b\n`,
+    )
+  })
+
+  it('does not append for empty args', async () => {
     await writeSkill('demo')
     const tool = await toolFor()
 
-    const result = await tool.run({ skill: 'demo', args }, toolCtx())
+    const result = await tool.run({ skill: 'demo', args: '' }, toolCtx())
     expect(result.text).toBe(
       `Base directory for this skill: ${join(project, '.claude', 'skills', 'demo')}\n\n# demo\n`,
     )
-    expect(result.text).not.toContain('## User Request')
+  })
+
+  it('appends whitespace-only args verbatim (the fallback gates on non-empty, not trimmed)', async () => {
+    await writeSkill('demo')
+    const tool = await toolFor()
+
+    const result = await tool.run({ skill: 'demo', args: '  \n\t' }, toolCtx())
+    expect(result.text).toBe(
+      `Base directory for this skill: ${join(project, '.claude', 'skills', 'demo')}\n\n# demo\n\n\nARGUMENTS:   \n\t`,
+    )
   })
 
   it('errors on an unknown skill without running anything', async () => {

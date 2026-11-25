@@ -339,7 +339,7 @@ describe('native skill invocation recovery end to end', () => {
     const first = await makeFixture(stateDir)
     const id = await createSession(first, cwd)
     const seen = collect(first.sm, id)
-    const body = canonicalBody(cwd, 'demo', demoV1)
+    const body = canonicalBody(cwd, 'demo', demoV1) + '\n\nARGUMENTS: do X'
 
     first.scripts.push(textTurn('SLASH REPLY'))
     await sendAndWait(first, id, seen.frames, '/demo do X')
@@ -348,7 +348,7 @@ describe('native skill invocation recovery end to end', () => {
       userMessage('/demo do X'),
       { role: 'user', content: [{ type: 'text', text: body }] },
     ])
-    expect(JSON.stringify(first.requests[0].messages.slice(-2)).match(/do X/g)).toHaveLength(1)
+    expect(JSON.stringify(first.requests[0].messages.slice(-2)).match(/do X/g)).toHaveLength(2)
     expect(body).not.toContain('name: demo')
 
     const sourceLog = loadNativeSessionLogSync(stateDir, id)!
@@ -365,15 +365,16 @@ describe('native skill invocation recovery end to end', () => {
     expect(await first.sm.searchMessages(body, { sessionId: id })).toHaveLength(0)
 
     // The real broker's dontAsk read-only path allows this Skill call without a
-    // test permission callback. Its result shares the slash body; only the tool
-    // protocol adds the User Request suffix.
+    // test permission callback. Its result is the same canonical body with the
+    // tool's own args substituted through the CLI ARGUMENTS fallback — there is
+    // no tool-only suffix.
     first.scripts.push(
       toolUseTurn('skill-tool-1', 'Skill', { skill: 'demo', args: 'TOOL ARGS' }),
       textTurn('TOOL DONE'),
     )
     await sendAndWait(first, id, seen.frames, 'load demo through the tool')
     expect(toolResultsOf(first.requests[2], 'skill-tool-1')).toEqual([{
-      text: `${body}\n\n## User Request\nTOOL ARGS`,
+      text: canonicalBody(cwd, 'demo', demoV1) + '\n\nARGUMENTS: TOOL ARGS',
       isError: false,
     }])
     expect(userFramesText(first.sm.getHistory(id))).not.toContain(body)
@@ -441,7 +442,7 @@ describe('native skill invocation recovery end to end', () => {
     fx.scripts.push(textTurn('V1 DONE'))
     await sendAndWait(fx, id, seen.frames, '/demo first')
     expect(fx.requests[0].messages.at(-1)).toEqual({
-      role: 'user', content: [{ type: 'text', text: canonicalBody(cwd, 'demo', 'DEMO-V1\n') }],
+      role: 'user', content: [{ type: 'text', text: canonicalBody(cwd, 'demo', 'DEMO-V1\n') + '\n\nARGUMENTS: first' }],
     })
 
     await fx.sm.setAgent(id, 'other-only')
@@ -459,17 +460,17 @@ describe('native skill invocation recovery end to end', () => {
     fx.scripts.push(textTurn('V2 DONE'))
     await sendAndWait(fx, id, seen.frames, '/demo second')
     expect(fx.requests[2].messages.at(-1)).toEqual({
-      role: 'user', content: [{ type: 'text', text: canonicalBody(cwd, 'demo', 'DEMO-V2\n') }],
+      role: 'user', content: [{ type: 'text', text: canonicalBody(cwd, 'demo', 'DEMO-V2\n') + '\n\nARGUMENTS: second' }],
     })
     expect(skillEvents(legacyEventsOf(loadNativeSessionLogSync(stateDir, id))).map((event) => event.body)).toEqual([
-      canonicalBody(cwd, 'demo', 'DEMO-V1\n'),
-      canonicalBody(cwd, 'demo', 'DEMO-V2\n'),
+      canonicalBody(cwd, 'demo', 'DEMO-V1\n') + '\n\nARGUMENTS: first',
+      canonicalBody(cwd, 'demo', 'DEMO-V2\n') + '\n\nARGUMENTS: second',
     ])
 
     fx.scripts.push(textTurn('MODEL OFF SLASH'))
     await sendAndWait(fx, id, seen.frames, '/model-off user allowed')
     expect(fx.requests[3].messages.at(-1)).toEqual({
-      role: 'user', content: [{ type: 'text', text: canonicalBody(cwd, 'model-off', 'MODEL-OFF\n') }],
+      role: 'user', content: [{ type: 'text', text: canonicalBody(cwd, 'model-off', 'MODEL-OFF\n') + '\n\nARGUMENTS: user allowed' }],
     })
     fx.scripts.push(
       toolUseTurn('model-off-tool', 'Skill', { skill: 'model-off' }),
@@ -489,7 +490,7 @@ describe('native skill invocation recovery end to end', () => {
     )
     await sendAndWait(fx, id, seen.frames, 'load model-only through the tool')
     expect(toolResultsOf(fx.requests[8], 'model-only-tool')).toEqual([{
-      text: `${canonicalBody(cwd, 'model-only', 'MODEL-ONLY\n')}\n\n## User Request\nMODEL ARGS`,
+      text: canonicalBody(cwd, 'model-only', 'MODEL-ONLY\n') + '\n\nARGUMENTS: MODEL ARGS',
       isError: false,
     }])
 
@@ -541,7 +542,7 @@ describe('native skill invocation recovery end to end', () => {
     await sendAndWait(fx, id, seen.frames, '/other still works')
     expect(fx.requests[2].messages.slice(-2)).toEqual([
       userMessage('/other still works'),
-      { role: 'user', content: [{ type: 'text', text: canonicalBody(cwd, 'other', 'OTHER\n') }] },
+      { role: 'user', content: [{ type: 'text', text: canonicalBody(cwd, 'other', 'OTHER\n') + '\n\nARGUMENTS: still works' }] },
     ])
     expect(skillEvents(legacyEventsOf(loadNativeSessionLogSync(stateDir, id))).map((event) => event.name)).toEqual(['other'])
     sub.unsubscribe()
@@ -554,7 +555,7 @@ describe('native skill invocation recovery end to end', () => {
     const first = await makeFixture(stateDir)
     const id = await createSession(first, cwd)
     const seen = collect(first.sm, id)
-    const body = canonicalBody(cwd, 'demo', 'DURABLE FAILURE BODY\n')
+    const body = canonicalBody(cwd, 'demo', 'DURABLE FAILURE BODY\n') + '\n\nARGUMENTS: survives failure'
     const flush = vi.spyOn(liveHandle(first.sm, id).log, 'flush')
       .mockRejectedValueOnce(new Error('pre-request flush failed'))
 
@@ -651,7 +652,7 @@ describe('native skill invocation recovery end to end', () => {
     const { cwd, stateDir } = await makeEnv()
     await writeSkill(cwd, 'demo', 'COMPACT SKILL BODY\n')
     const fx = await makeFixture(stateDir)
-    const body = canonicalBody(cwd, 'demo', 'COMPACT SKILL BODY\n')
+    const body = canonicalBody(cwd, 'demo', 'COMPACT SKILL BODY\n') + '\n\nARGUMENTS: compact this'
 
     const manualId = await createSession(fx, cwd, { permissionMode: 'bypassPermissions' })
     const manualSeen = collect(fx.sm, manualId)

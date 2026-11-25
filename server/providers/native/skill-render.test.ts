@@ -1,9 +1,9 @@
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { renderNativeSkillBody, renderNativeSkillToolResult, substituteSkillArguments } from './skill-render.js'
+import { renderNativeSkillBody, substituteSkillArguments } from './skill-render.js'
 
 describe('renderNativeSkillBody', () => {
-  it('renders the absolute skill directory and body without frontmatter', () => {
+  it('substitutes $ARGUMENTS into the body', () => {
     const directory = resolve('project', '.claude', 'skills', 'demo')
     const document = [
       '---',
@@ -18,8 +18,17 @@ describe('renderNativeSkillBody', () => {
       '',
     ].join('\n')
 
-    expect(renderNativeSkillBody({ directory, document })).toBe(
-      `Base directory for this skill: ${directory}\n\n# Demo instructions\n\nKeep $ARGUMENTS verbatim.\n`,
+    expect(renderNativeSkillBody({ directory, document, args: 'do X' })).toBe(
+      `Base directory for this skill: ${directory}\n\n# Demo instructions\n\nKeep do X verbatim.\n`,
+    )
+  })
+
+  it('substitutes positional tokens and appends ARGUMENTS when no $ARGUMENTS matched', () => {
+    const directory = resolve('skill-dir')
+    const document = '---\nname: demo\ndescription: Demo\n---\n\nX $0'
+
+    expect(renderNativeSkillBody({ directory, document, args: 'a b' })).toBe(
+      `Base directory for this skill: ${directory}\n\nX a\n\nARGUMENTS: a b`,
     )
   })
 
@@ -37,18 +46,6 @@ describe('renderNativeSkillBody', () => {
       directory: resolve('skill-dir'),
       document: '# Missing frontmatter',
     })).toThrow(/must start with YAML frontmatter/)
-  })
-})
-
-describe('renderNativeSkillToolResult', () => {
-  it.each(['', '  \n\t'])('adds no request section for blank args %j', (args) => {
-    expect(renderNativeSkillToolResult('canonical body', args)).toBe('canonical body')
-  })
-
-  it('appends nonempty args under the exact User Request heading', () => {
-    expect(renderNativeSkillToolResult('canonical body', 'do the thing')).toBe(
-      'canonical body\n\n## User Request\ndo the thing',
-    )
   })
 })
 

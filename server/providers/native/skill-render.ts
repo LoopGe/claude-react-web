@@ -1,8 +1,10 @@
 import { resolve } from 'node:path'
 import { parseSkillFrontmatter } from '../../../shared/skills.js'
 
-/** Render the stable instruction body shared by `/name` and the Skill tool. */
-export function renderNativeSkillBody(input: { directory: string; document: string }): string {
+/** Render the stable instruction body shared by `/name` and the Skill tool:
+ *  the canonical directory prefix plus the frontmatter-stripped body, with the
+ *  invocation's positional arguments substituted (CLI GWe contract). */
+export function renderNativeSkillBody(input: { directory: string; document: string; args?: string }): string {
   const parsed = parseSkillFrontmatter(input.document)
   if (parsed.body === undefined || parsed.errors.length > 0) {
     throw new Error(`Invalid SKILL.md: ${parsed.errors.join('; ')}`)
@@ -10,12 +12,8 @@ export function renderNativeSkillBody(input: { directory: string; document: stri
   // A single empty line between frontmatter and body is the document's
   // separator; the canonical prefix owns that separator in the rendered form.
   const body = parsed.body.replace(/^\r?\n/, '')
-  return `Base directory for this skill: ${resolve(input.directory)}\n\n${body}`
-}
-
-/** Only the model tool protocol carries arguments; slash expansion does not. */
-export function renderNativeSkillToolResult(body: string, args: string): string {
-  return args.trim() ? `${body}\n\n## User Request\n${args}` : body
+  const canonical = `Base directory for this skill: ${resolve(input.directory)}\n\n${body}`
+  return substituteSkillArguments(canonical, input.args ?? '')
 }
 
 /** CLI GWe's accumulated-size limit: body plus filled arguments, in characters. */

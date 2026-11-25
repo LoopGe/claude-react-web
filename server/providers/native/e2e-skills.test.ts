@@ -275,12 +275,13 @@ describe('native skills end to end through SessionManager', () => {
     ])
 
     // A `/demo args` turn: the MODEL sees the raw invocation followed by the
-    // canonical instruction body...
+    // canonical instruction body with the args substituted (no placeholder in
+    // this body, so they ride the ARGUMENTS fallback)...
     fx.scripts.push(textTurn('expanded'))
     await sendAndWait(fx, id, frames, '/demo do X', 2)
     expect(fx.requests[2].messages.slice(-2)).toEqual([
       { role: 'user', content: [{ type: 'text', text: '/demo do X' }] },
-      { role: 'user', content: [{ type: 'text', text: canonicalDemoBody(project) }] },
+      { role: 'user', content: [{ type: 'text', text: canonicalDemoBody(project) + '\n\nARGUMENTS: do X' }] },
     ])
     // ...while the manager's ring keeps the text the user typed.
     expect(ringUserFrame(fx, id, '/demo do X')).toBeDefined()
@@ -411,7 +412,7 @@ describe('native skills end to end through SessionManager', () => {
     const shape = (ms: unknown[]) => (ms as Array<Record<string, unknown>>).map(({ id: _id, source: _source, ...rest }) => rest)
     expect(shape(modelHistory.slice(1))).toEqual([
       { role: 'user', content: [{ type: 'text', text: '/demo do X' }] },
-      { role: 'user', content: [{ type: 'text', text: canonicalDemoBody(project) }] },
+      { role: 'user', content: [{ type: 'text', text: canonicalDemoBody(project) + '\n\nARGUMENTS: do X' }] },
       { role: 'assistant', content: [{ type: 'text', text: 'expanded' }] },
     ])
   }, 20000)
