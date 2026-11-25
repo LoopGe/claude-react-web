@@ -14,9 +14,10 @@
 //     the caller's env.
 //   • projectNativeEventToSdk — LIVE operational output: the exact system/result
 //     subtypes native emits (init / api_retry / informational / task_started /
-//     task_notification / result). These are live-only frames, NOT durable
-//     SessionEventMap keys (R6). Durable session events return null — their
-//     SDK-line projection is the history-read seam (T13).
+//     task_notification / result) plus the top-level prompt_suggestion message.
+//     These are live-only frames, NOT durable SessionEventMap keys (R6). Durable
+//     session events return null — their SDK-line projection is the history-read
+//     seam (T13).
 //   • projectSdkInputToNative — LIVE input: a host AgentUserMessage → neutral
 //     RequestMessage (file → FileBlock ref, base64 image → LegacyImageBlock, ref
 //     image → ImageRefBlock, text → TextBlock). The neutral uuid is freshly
@@ -38,8 +39,10 @@
 //
 // R6 scope: ONLY native's actual emissions are projected. The ~25 claude-only
 // subtypes (hook_*, plugin_install, memory_recall, elicitation_complete,
-// notification, thinking_tokens, prompt_suggestion, …) are NOT native emissions
-// and have no projection here.
+// notification, thinking_tokens, …) are NOT native emissions and have no
+// projection here. prompt_suggestion IS a native emission: the neutral
+// prompt/suggestion OperationalFrame projects to the SDK prompt_suggestion
+// message (live-only — the pump bypasses the history ring on its type alone).
 
 import { randomUUID } from 'node:crypto'
 import {
@@ -232,11 +235,11 @@ function projectToolResult(message: ToolResultMessage, env: NativeFrameEnvelope)
   } as unknown as AgentMessage
 }
 
-/** Project a neutral operational event to the exact SDK system/result subtype
- *  native emits (R6). Durable SessionEventMap keys return null: their SDK-line
- *  projection is the history-read seam `projectNativeEventToSdkLine` below,
- *  which supplies the host-envelope facts (session_id / uuid) this env-less
- *  function does not have. */
+/** Project a neutral operational event to the exact SDK shape native emits
+ *  (R6): the system/result subtypes and the top-level prompt_suggestion message.
+ *  Durable SessionEventMap keys return null: their SDK-line projection is the
+ *  history-read seam `projectNativeEventToSdkLine` below, which supplies the
+ *  host-envelope facts (session_id / uuid) this env-less function does not have. */
 export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalFrame): AgentMessage | null {
   switch (event.type) {
     case 'init':
@@ -292,6 +295,17 @@ export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalF
         is_error: event.isError,
         ...(event.fastMode !== undefined ? { fast_mode_state: event.fastMode ? 'on' : 'off' } : {}),
       } as unknown as AgentMessage
+    case 'prompt/suggestion':
+      // SDKPromptSuggestionMessage carries only type/suggestion/uuid/session_id
+      // — no subtype, no parent_tool_use_id — so it is built directly, never via
+      // operationalEnvelope. Live-only: the pump keys on the type alone and
+      // bypasses the history ring.
+      return {
+        type: 'prompt_suggestion',
+        suggestion: event.suggestion,
+        uuid: event.uuid,
+        session_id: event.sessionId,
+      } as AgentMessage
     // Durable session events: no live operational projection (history seam owns
     // them). Listed exhaustively so a future SessionEventMap merge forces a
     // deliberate decision via the assertNever below rather than silently null.
@@ -456,6 +470,7 @@ function isOperationalFrame(frame: NativeCoreFrame): frame is OperationalFrame {
     case 'task/started':
     case 'task/notification':
     case 'result':
+    case 'prompt/suggestion':
       return true
     default:
       return false

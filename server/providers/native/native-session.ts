@@ -1146,7 +1146,7 @@ export class NativeSession implements NativeSessionCore {
   private isOperationalFrame(frame: NativeLoopFrame): frame is OperationalFrame {
     if (!('type' in frame)) return false
     switch (frame.type) {
-      case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/notification': case 'result':
+      case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/notification': case 'result': case 'prompt/suggestion':
         return true
       default:
         return false

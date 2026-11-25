@@ -375,6 +375,17 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
     expect(projectNativeEventToSdk(event)).toEqual(golden)
   })
 
+  it('prompt_suggestion: exact SDK shape — no subtype, no parent_tool_use_id', () => {
+    // SDKPromptSuggestionMessage is a top-level message type carrying only
+    // type/suggestion/uuid/session_id — the operationalEnvelope helper (which
+    // adds subtype + parent_tool_use_id) must NOT be used.
+    const event: OperationalFrame = { type: 'prompt/suggestion', sessionId: 's1', uuid: 'u1', parentToolUseId: null, suggestion: '跑测试' }
+    const projected = projectNativeEventToSdk(event) as Record<string, any>
+    expect(projected).toEqual({ type: 'prompt_suggestion', suggestion: '跑测试', uuid: 'u1', session_id: 's1' })
+    expect('subtype' in projected).toBe(false)
+    expect('parent_tool_use_id' in projected).toBe(false)
+  })
+
   it('durable session events have no live operational projection (null)', () => {
     const event: NativeSessionEvent = { type: 'session/end-seed', seq: 0, time: 0, data: { inherited: true } }
     expect(projectNativeEventToSdk(event)).toBeNull()
@@ -780,6 +791,16 @@ describe('wrapNativeCore — messages projects NativeCoreFrame → SDK (identica
     const handle = wrapNativeCore(core, {})
     const [projected] = await collect(handle.messages)
     expect(projected).toEqual(projectNativeEventToSdk(init))
+  })
+
+  it('projects a prompt/suggestion frame on the messages stream (same SDK shape, no parent key)', async () => {
+    const suggestion: OperationalFrame = { type: 'prompt/suggestion', sessionId: 's1', uuid: 'u1', parentToolUseId: null, suggestion: '跑测试' }
+    const { core } = makeFakeCore({ sessionId: 's1', frames: [suggestion] })
+    const handle = wrapNativeCore(core, {})
+    const [projected] = await collect(handle.messages) as Record<string, any>[]
+    expect(projected).toEqual({ type: 'prompt_suggestion', suggestion: '跑测试', uuid: 'u1', session_id: 's1' })
+    expect('subtype' in projected).toBe(false)
+    expect('parent_tool_use_id' in projected).toBe(false)
   })
 
   it('passes a raw stream event through verbatim on the message channel', async () => {
