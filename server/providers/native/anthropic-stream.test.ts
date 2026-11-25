@@ -134,6 +134,66 @@ describe('buildRequestBody', () => {
   })
 })
 
+describe('buildRequestBody appendMessages', () => {
+  // The suggestion fork sends the cached parent prefix plus the turn's final
+  // assistant response and a SUGGESTION MODE user prompt. The appended tail
+  // must never carry a cache breakpoint — a breakpoint there would cache-write
+  // ephemeral suggestion content at 1.25x cost (skipCacheWrite equivalent).
+  const forkTail = () => [
+    { role: 'assistant', content: [{ type: 'text', text: 'done' }, { type: 'tool_use', id: 't1', name: 'Read', input: { file: 'x' } }] },
+    { role: 'user', content: 'SUGGESTION MODE: predict the next prompt' },
+  ]
+
+  it('appends the fork tail after the prefix breakpoint, with no cache_control on it', () => {
+    const messages = [{ role: 'user', content: [{ type: 'text', text: 'do the thing' }] }]
+    const appendMessages = forkTail()
+    const body = buildRequestBody({ ...baseReq, messages, appendMessages }) as {
+      messages: Array<{ role: string; content: unknown }>
+    }
+    expect(body.messages).toHaveLength(3)
+    // The prefix's last message keeps its breakpoint on its last block.
+    const prefixBlocks = body.messages[0].content as Array<Record<string, unknown>>
+    expect(prefixBlocks[prefixBlocks.length - 1].cache_control).toEqual({ type: 'ephemeral' })
+    // The appended messages match the input verbatim.
+    expect(body.messages[1]).toEqual(appendMessages[0])
+    expect(body.messages[2]).toEqual(appendMessages[1])
+    // No cache_control anywhere in the appended tail (any block, any depth).
+    expect(JSON.stringify(body.messages.slice(1))).not.toContain('cache_control')
+    // The caller's arrays are untouched — the loop reuses history across turns.
+    expect(messages).toHaveLength(1)
+    expect(appendMessages).toHaveLength(2)
+    expect((messages[0].content as Array<Record<string, unknown>>)[0]).not.toHaveProperty('cache_control')
+    expect((appendMessages[0].content as Array<Record<string, unknown>>)[0]).not.toHaveProperty('cache_control')
+    expect((appendMessages[0].content as Array<Record<string, unknown>>)[1]).not.toHaveProperty('cache_control')
+  })
+
+  it('makes appendMessages the whole body when the prefix is empty', () => {
+    const appendMessages = forkTail()
+    const body = buildRequestBody({ ...baseReq, messages: [], appendMessages }) as { messages: unknown[] }
+    expect(body.messages).toHaveLength(2)
+    expect(body.messages[0]).toEqual(appendMessages[0])
+    expect(body.messages[1]).toEqual(appendMessages[1])
+    expect(JSON.stringify(body.messages)).not.toContain('cache_control')
+    expect(appendMessages).toHaveLength(2)
+  })
+
+  it('without appendMessages the body matches the current contract (regression)', () => {
+    const messages = [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+    ]
+    const body = buildRequestBody({ ...baseReq, messages }) as {
+      messages: Array<{ role: string; content: unknown }>
+    }
+    expect(body.messages).toHaveLength(2)
+    expect(body.messages[0]).toEqual({ role: 'user', content: 'hi' })
+    const lastBlocks = body.messages[1].content as Array<Record<string, unknown>>
+    expect(lastBlocks[0].cache_control).toEqual({ type: 'ephemeral' })
+    // An empty append list is a no-op — identical to omitting the field.
+    expect(buildRequestBody({ ...baseReq, messages, appendMessages: [] })).toEqual(body)
+  })
+})
+
 describe('buildRequestBody thinking', () => {
   const bodyWithThinking = (
     thinking: RequestThinking,

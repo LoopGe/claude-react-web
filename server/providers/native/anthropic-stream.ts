@@ -35,6 +35,11 @@ export interface StreamRequest {
   system: string
   tools: unknown[]
   messages: unknown[]
+  /** Fork tail appended AFTER the prefix breakpoint logic, verbatim and
+   *  WITHOUT cache_control (skipCacheWrite equivalent): a breakpoint here
+   *  would cache-write ephemeral suggestion content at 1.25x cost. The
+   *  suggestion fork uses it to carry the final assistant response + prompt. */
+  appendMessages?: unknown[]
   maxTokens: number
   thinking?: RequestThinking
   /** The session's display mode, tracked apart from the token config:
@@ -162,6 +167,14 @@ export function buildRequestBody(req: StreamRequest): Record<string, unknown> {
     if (cachedContent !== undefined) {
       body.messages = [...req.messages.slice(0, -1), { ...last, content: cachedContent }]
     }
+  }
+
+  // Append the fork tail to whatever body.messages became above (the cached
+  // prefix version, or req.messages when no breakpoint applied). With an empty
+  // prefix the tail becomes body.messages directly. Never breakpointed, never
+  // mutating the caller's arrays.
+  if (req.appendMessages?.length) {
+    body.messages = [...(body.messages as unknown[]), ...req.appendMessages]
   }
 
   return body
