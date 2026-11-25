@@ -457,6 +457,28 @@ function resolverOf(resolveRoute: (route: NativeModelRoute) => Promise<NativeMod
   return { modelContext: { resolve } as unknown as NativeModelContextResolver, resolve }
 }
 
+/** Shared create→turn→probe→destroy flow for the auto-compact pin cases:
+ *  one priced 100K-token turn seeds lastUsage, then a full getContextUsage
+ *  probe. The pin rides the spawn settings channel the manager re-injects
+ *  on every create/resume/fork. */
+async function pinnedUsage(pin: number | undefined): Promise<NativeContextUsage> {
+  const dir = await tempDir('native-pin-')
+  const provider = providerWithStreamer([pricedTurn('ok', 100_000)], dir)
+  const session = provider.createSession({
+    id: 'pin-usage', cwd: dir,
+    providerExtras: { sdkOptions: { settings: { autoCompactWindow: pin } } },
+  })
+  const frames: Frame[] = []
+  void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+  try {
+    session.enqueueUserMessage(userMsg('hi') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+    return (await session.getContextUsage?.()) as NativeContextUsage
+  } finally {
+    await session.destroy()
+  }
+}
+
 function effectiveSettingsOf(session: unknown) {
   return (coreOf(session) as {
     getEffectiveSettings?: () => {
@@ -786,6 +808,67 @@ describe('NativeSession', () => {
       const usage = (await session.getContextUsage?.()) as NativeContextUsage
       expect(usage.categories!.some((c) => c.kind === 'buffer')).toBe(false)
       expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(8_000)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('derives the threshold from min(window, pin) on a pinned session', async () => {
+    // Default 200K window, pin 150000 → effectiveWindow 150000.
+    const usage = await pinnedUsage(150_000)
+    expect(usage.maxTokens).toBe(200_000) // denominator stays the model window
+    expect(usage.autoCompactThreshold).toBe(120_000) // min(floor(150000×0.8)=120000, 150000−16384=133616)
+  })
+
+  it('leaves an unpinned session byte-identical', async () => {
+    const usage = await pinnedUsage(undefined)
+    expect(usage.maxTokens).toBe(200_000)
+    expect(usage.autoCompactThreshold).toBe(160_000)
+  })
+
+  it('clamps a pin above the model window to a no-op', async () => {
+    const usage = await pinnedUsage(300_000) // ≥ 200K window
+    expect(usage.autoCompactThreshold).toBe(160_000)
+  })
+
+  it('disables compaction and omits the buffer row for a tiny pin', async () => {
+    const usage = await pinnedUsage(16_000) // ≤ DEFAULT_MAX_TOKENS → reserve non-positive
+    expect(usage.autoCompactThreshold).toBe(0)
+    expect(usage.categories!.some((c) => c.kind === 'buffer')).toBe(false)
+    expect(usage.categories!.every((c) => c.tokens >= 0)).toBe(true)
+  })
+
+  it('makes the composition buffer/free rows honest under a pin', async () => {
+    const usage = await pinnedUsage(150_000) // threshold 120000, totalTokens 100000
+    expect(usage.categories!.find((c) => c.kind === 'buffer')!.tokens).toBe(80_000) // 200000 − 120000
+    expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(20_000) // 200000 − 100000 − 80000
+  })
+
+  it('recomputes min(newWindow, pin) on a model down-switch', async () => {
+    const dir = await tempDir('native-pin-downswitch-')
+    let contextWindow = 200_000
+    const { modelContext } = resolverOf(async () => ({ contextWindow, source: 'endpoint' }))
+    const provider = new NativeProvider({ stateDir: dir, modelContext, ports: makeNativePorts({ stateDir: dir }) })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of pricedTurn('ok', 100_000)) yield ev
+    }
+    const session = provider.createSession({
+      id: 'pin-downswitch', cwd: dir,
+      providerExtras: { sdkOptions: { settings: { autoCompactWindow: 150_000 } } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const before = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(before.autoCompactThreshold).toBe(120_000)
+      contextWindow = 100_000
+      await session.setModel?.('model-small')
+      const after = (await session.getContextUsage?.()) as NativeContextUsage
+      // effectiveWindow = min(100000, 150000) = 100000 → min(80000, 83616) = 80000.
+      expect(after.maxTokens).toBe(100_000)
+      expect(after.autoCompactThreshold).toBe(80_000)
     } finally {
       await session.destroy()
     }

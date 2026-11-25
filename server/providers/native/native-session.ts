@@ -297,6 +297,10 @@ export interface NativeSessionOptions {
   /** Shared route-capacity resolver owned by the provider. Direct unit
    * sessions without one retain the 200K fallback. */
   modelContext?: NativeModelContextResolver
+  /** Spawn auto-compact policy window (absolute tokens), read by the host
+   *  adapter from Options.settings. Clamped under the resolved model window
+   *  in getContextUsage; undefined = no pin. */
+  autoCompactWindow?: number
   /** Host-service ports threaded from the provider (stored on opts; the
    *  per-service call sites consume them). Config reads (profile resolution,
    *  fidelity flags, auto-compact ratio, model list) go through ports.config. */
@@ -2180,13 +2184,18 @@ export class NativeSession implements NativeSessionCore {
         : DEFAULT_CONTEXT_WINDOW
       if (generation !== this.modelGeneration) continue
       const usage = this.lastUsage
-      const outputReservedWindow = contextWindow - DEFAULT_MAX_TOKENS
+      // The spawn pin is a policy ceiling clamped under the model window; the
+      // ratio policy and output reserve apply to that effective window. The
+      // bar denominator (maxTokens) stays the resolved model window.
+      const pin = this.opts.autoCompactWindow
+      const effectiveWindow = pin !== undefined && pin > 0 ? Math.min(contextWindow, pin) : contextWindow
+      const outputReservedWindow = effectiveWindow - DEFAULT_MAX_TOKENS
       const totalTokens =
         usage.input_tokens
         + (usage.cache_read_input_tokens ?? 0)
         + (usage.cache_creation_input_tokens ?? 0)
       const autoCompactThreshold = outputReservedWindow > 0
-        ? Math.min(Math.floor(contextWindow * this.opts.ports.config.nativeAutoCompactRatio), outputReservedWindow)
+        ? Math.min(Math.floor(effectiveWindow * this.opts.ports.config.nativeAutoCompactRatio), outputReservedWindow)
         : 0
       return {
         totalTokens,

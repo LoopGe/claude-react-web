@@ -52,9 +52,12 @@ const REPLY = 'persisted-reply-marker'
 const CHILD_PROMPT = 'child-prompt-marker'
 const CHILD_REPLY = 'child-reply-marker'
 
-function textTurn(text: string): CanonicalEvent[] {
+/** A text turn with a scriptable prompt-token level: the auto-compact trigger
+ *  compares provider-reported usage against the pin-derived threshold, so a
+ *  forced-compaction test scripts the crossing turn's `input_tokens`. */
+function highUsageTurn(text: string, inputTokens: number): CanonicalEvent[] {
   return [
-    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'message_start', usage: { input_tokens: inputTokens, output_tokens: 1 } },
     { kind: 'block_start', index: 0, block: { type: 'text' } },
     { kind: 'block_delta', index: 0, delta: { type: 'text', text } },
     { kind: 'block_end', index: 0 },
@@ -87,9 +90,9 @@ afterEach(async () => {
   dirs.length = 0
 })
 
-function armStream(provider: NativeProvider, text: string): void {
+function armStream(provider: NativeProvider, text: string, inputTokens = 10): void {
   provider._testStream = async function* () {
-    for (const ev of textTurn(text)) yield ev
+    for (const ev of highUsageTurn(text, inputTokens)) yield ev
   }
 }
 
@@ -325,9 +328,11 @@ describe('native provider persistence through SessionManager', () => {
       model: 'test-model',
       provider: 'native',
       title: 'auto-compact',
-      // `autoCompactWindow` rides Options.settings (the only spawn channel);
-      // 1 token makes the post-turn usage cross it deterministically.
-      settings: { autoCompactWindow: 1 },
+      // `autoCompactWindow` rides Options.settings (the only spawn channel).
+      // The provider derives the threshold from the pinned effective window:
+      // min(floor(0.8 × 16385), 16385 − 16384) = 1 — the output-reserve arm
+      // binds, so any post-turn usage ≥ 1 crosses it deterministically.
+      settings: { autoCompactWindow: 16385 },
     } as unknown as Parameters<typeof sm.create>[0])
     sessionIds.push({ sm, id: info.id })
     await sendTurn(sm, info.id)
@@ -372,9 +377,14 @@ describe('native provider persistence through SessionManager', () => {
       model: 'test-model',
       provider: 'native',
       title: 'auto-compact-resume',
-      // Same spawn channel as the test above: 1 token crosses the window.
-      settings: { autoCompactWindow: 1 },
+      // Same spawn channel as the test above. The pin derives threshold
+      // min(floor(0.8 × 66384), 66384 − 16384) = 50000: the first turn is
+      // scripted at usage 100000 to cross it, while the resumed post-compact
+      // turn (usage 10) stays below — no re-compaction floors the reply this
+      // test asserts. The pin persists in SessionMeta and re-applies on resume.
+      settings: { autoCompactWindow: 66384 },
     } as unknown as Parameters<typeof first.sm.create>[0])
+    armStream(first.provider, REPLY, 100_000)
     await sendTurn(first.sm, info.id)
     // The pre-compact turn must be durable in the append-only log. The floored
     // page reader below can no longer see it once `session/compact` lands, so
@@ -399,19 +409,11 @@ describe('native provider persistence through SessionManager', () => {
 
     await first.sm.shutdown()
 
-    // `autoCompactWindow: 1` is persisted in SessionMeta and re-applied on
-    // resume, so the post-compact turn below would compact AGAIN (usage 10 ≥ 1)
-    // and floor the very reply this test asserts. Auto-compaction itself is
-    // proven by the test above; this one is about resume, so the window is
-    // raised for the resumed phase (multi-compact continuity is deliberately
-    // out of scope).
     const second = await makeFixture(dir)
     armStream(second.provider, 'post-compact-reply')
     const resumed = await second.sm.resume(info.id)
     expect(resumed.id).toBe(info.id)
     sessionIds.push({ sm: second.sm, id: info.id })
-    ;(liveSession(second.sm, info.id) as unknown as { autoCompactWindow?: number })
-      .autoCompactWindow = Number.MAX_SAFE_INTEGER
 
     const resumedPage = await second.sm.getHistoryPage(info.id, { limit: 10 })
     expect(pageText(resumedPage)).toContain('MOCK SUMMARY')

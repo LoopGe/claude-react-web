@@ -6123,9 +6123,10 @@ export class SessionManager {
    *  pressure may exceed the new model window after a down-switch; it does not
    *  pass through the UI snapshot parser. Every guard is a cheap early return:
    *  config off, provider without the capability, not idle, or a prior trigger
-   *  still in flight. Explicit `autoCompactWindow` wins over the provider
-   *  threshold; only an undefined threshold uses the legacy ratio, while zero
-   *  disables proactive compaction. After the summary await the identity +
+   *  still in flight. The provider is the single writer of the effective
+   *  threshold (pin-aware for native); the manager falls back to the legacy
+   *  ratio only when the provider reports none, and zero disables proactive
+   *  compaction. After the summary await the identity +
    *  phase are re-checked — a user turn can start during the LLM round-trip,
    *  and the provider refuses a compact while a turn is in flight or input is
    *  queued. `autoCompacting` is released in `finally` on every path.
@@ -6169,8 +6170,7 @@ export class SessionManager {
       ? this.getCachedContextUsage(s.id) ?? s.lastContextUsage
       : pressure
     if (!usage) return
-    const threshold = s.autoCompactWindow
-      ?? usage.autoCompactThreshold
+    const threshold = usage.autoCompactThreshold
       ?? Math.floor(usage.maxTokens * defaultConfig.nativeAutoCompactRatio)
     if (threshold <= 0 || usage.totalTokens < threshold) return
     const merged = this.mergedHistoryForCompaction(s)

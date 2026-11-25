@@ -3306,15 +3306,17 @@ describe('SessionManager', () => {
       expect(live.handle.compactInPlace).not.toHaveBeenCalled()
     })
 
-    it('uses an explicit autoCompactWindow before the provider threshold', async () => {
+    it('consumes the provider threshold without a pin prefix', async () => {
       const info = await sm.create({ settings: { autoCompactWindow: 80 } } as unknown as Parameters<typeof sm.create>[0])
       const live = liveSession(info.id)
       live.handle.compactInPlace = vi.fn(async () => {})
+      // Provider reports 100; totalTokens 90 < 100 → no compaction, even though the
+      // spawn pin is 80 (the manager no longer treats the pin as a threshold).
       live.lastContextUsage = cachedUsage({ autoCompactThreshold: 100 })
 
       await callAutoCompact(live)
 
-      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+      expect(live.handle.compactInPlace).not.toHaveBeenCalled()
     })
 
     it('uses the ratio fallback only when the threshold is absent', async () => {
