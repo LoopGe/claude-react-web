@@ -70,8 +70,12 @@ vi.mock('./components/SetupPage', () => ({
 }))
 
 vi.mock('./components/session-list/NewSessionDialog', () => ({
-  NewSessionDialog: ({ onSubmit }: { onSubmit: (form: NewSessionForm) => void }) => (
-    <div role="dialog" aria-label="New session dialog">
+  NewSessionDialog: ({ onSubmit, onCancel, initialGroupId }: {
+    onSubmit: (form: NewSessionForm) => void
+    onCancel: () => void
+    initialGroupId?: string
+  }) => (
+    <div role="dialog" aria-label="New session dialog" data-initial-group-id={initialGroupId ?? ''}>
       <button onClick={() => onSubmit({
         provider: 'claude',
         cwd: '/explicit/project',
@@ -86,6 +90,7 @@ vi.mock('./components/session-list/NewSessionDialog', () => ({
         permissionMode: 'default',
         newGroupName: 'Team',
       })}>Submit new-group session</button>
+      <button onClick={onCancel}>Cancel dialog</button>
     </div>
   ),
 }))
@@ -155,6 +160,31 @@ function renderApp() {
       </PluginRegistryProvider>
     </ToastProvider>,
   )
+}
+
+function emitSnapshot(sessions: SessionInfo[]) {
+  act(() => {
+    for (const listener of h.listeners) listener({ kind: 'sessions-snapshot', sessions })
+  })
+}
+
+/** Seed the ui-state GET mocks with a group layout (shared by the sidebar,
+ *  group-menu, and any future describe that needs groups). */
+function configureGroups(groups: Array<{ id: string; name: string; sessionIds: string[] }>) {
+  const uiState = { groups, sidebarOrder: [], collapsedGroups: {} }
+  h.get.mockImplementation(async (path: string) => {
+    if (path === '/app-plugins') return { plugins: [] }
+    if (path === '/ui-state') return { uiState }
+    if (path === '/snippets') return { snippets: [] }
+    if (path === '/mcp-config') {
+      return { servers: [{ name: 'enabled-server', enabled: true }, { name: 'disabled-server', enabled: false }] }
+    }
+    return {}
+  })
+  h.request.mockImplementation(async (path: string, init?: RequestInit) => {
+    if (path === '/ui-state' && (!init?.method || init.method === 'GET')) return { uiState }
+    return {}
+  })
 }
 
 beforeEach(() => {
@@ -250,12 +280,6 @@ describe('default session creation after setup', () => {
 })
 
 describe('default session creation from the sidebar', () => {
-  function emitSnapshot(sessions: SessionInfo[]) {
-    act(() => {
-      for (const listener of h.listeners) listener({ kind: 'sessions-snapshot', sessions })
-    })
-  }
-
   async function clickDefaultCreate() {
     fireEvent.click(await screen.findByRole('button', { name: '+ New' }))
     fireEvent.click(await screen.findByText('New Session (Default)'))
@@ -266,23 +290,6 @@ describe('default session creation from the sidebar', () => {
       expect(document.querySelector(`[data-session-card-id="${id}"] .session-item`)).not.toBeNull()
     })
     fireEvent.click(document.querySelector(`[data-session-card-id="${id}"] .session-item`)!)
-  }
-
-  function configureGroups(groups: Array<{ id: string; name: string; sessionIds: string[] }>) {
-    const uiState = { groups, sidebarOrder: [], collapsedGroups: {} }
-    h.get.mockImplementation(async (path: string) => {
-      if (path === '/app-plugins') return { plugins: [] }
-      if (path === '/ui-state') return { uiState }
-      if (path === '/snippets') return { snippets: [] }
-      if (path === '/mcp-config') {
-        return { servers: [{ name: 'enabled-server', enabled: true }, { name: 'disabled-server', enabled: false }] }
-      }
-      return {}
-    })
-    h.request.mockImplementation(async (path: string, init?: RequestInit) => {
-      if (path === '/ui-state' && (!init?.method || init.method === 'GET')) return { uiState }
-      return {}
-    })
   }
 
   beforeEach(() => {
@@ -703,13 +710,75 @@ describe('default session creation from the sidebar', () => {
   })
 })
 
-describe('terminal shortcut capability gating', () => {
-  function emitSnapshot(sessions: SessionInfo[]) {
-    act(() => {
-      for (const listener of h.listeners) listener({ kind: 'sessions-snapshot', sessions })
-    })
+describe('new session in group from the group context menu', () => {
+  async function openGroupMenu(groupName: string) {
+    fireEvent.contextMenu(await screen.findByRole('button', { name: `Activate group ${groupName}` }))
   }
 
+  beforeEach(() => {
+    h.config = config(true)
+    h.refreshedConfig = h.config
+  })
+
+  it('opens the dialog pre-targeted at the right-clicked group, not the active one', async () => {
+    configureGroups([
+      { id: 'a', name: 'Alpha', sessionIds: ['a-existing'] },
+      { id: 'b', name: 'Beta', sessionIds: ['b-existing'] },
+    ])
+    renderApp()
+    emitSnapshot([
+      session('a-existing', { provider: 'claude' }),
+      session('b-existing', { provider: 'claude' }),
+    ])
+    fireEvent.click(await screen.findByRole('button', { name: 'Activate group Alpha' }))
+    await screen.findByTestId('chat-panel')
+
+    await openGroupMenu('Beta')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New session in this group…' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'New session dialog' })
+    expect(dialog.getAttribute('data-initial-group-id')).toBe('b')
+  })
+
+  it('clears the menu prefill when the dialog is cancelled', async () => {
+    configureGroups([
+      { id: 'a', name: 'Alpha', sessionIds: ['a-existing'] },
+      { id: 'b', name: 'Beta', sessionIds: ['b-existing'] },
+    ])
+    renderApp()
+    emitSnapshot([
+      session('a-existing', { provider: 'claude' }),
+      session('b-existing', { provider: 'claude' }),
+    ])
+    fireEvent.click(await screen.findByRole('button', { name: 'Activate group Alpha' }))
+    await screen.findByTestId('chat-panel')
+
+    await openGroupMenu('Beta')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New session in this group…' }))
+    await screen.findByRole('dialog', { name: 'New session dialog' })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel dialog' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+    // A plain open falls back to the ACTIVE group (Alpha) — the cancelled
+    // menu pick must not leak into the next dialog.
+    fireEvent.click(screen.getByRole('button', { name: '+ New' }))
+    fireEvent.click(screen.getByText('New session…', { exact: true }))
+    const dialog = await screen.findByRole('dialog', { name: 'New session dialog' })
+    expect(dialog.getAttribute('data-initial-group-id')).toBe('a')
+  })
+
+  it('disables the create row for a full group', async () => {
+    configureGroups([{ id: 'g1', name: 'Team', sessionIds: ['e1', 'e2', 'e3'] }])
+    renderApp()
+    emitSnapshot(['e1', 'e2', 'e3'].map((id) => session(id, { provider: 'claude' })))
+
+    await openGroupMenu('Team')
+    const row = await screen.findByRole('menuitem', { name: 'New session in this group… (full 3/3)' })
+    expect((row as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('terminal shortcut capability gating', () => {
   async function focusSession(id: string) {
     await waitFor(() => {
       expect(document.querySelector(`[data-session-card-id="${id}"] .session-item`)).not.toBeNull()

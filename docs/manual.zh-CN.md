@@ -73,7 +73,7 @@ npm i -g claude-react-web && claude-react-web
 | --- | --- |
 | `+ New session` | 新建会话（`Alt+N`）。**可以直接把文件夹从资源管理器拖到这里**，会自动填好工作目录 |
 | `Filter by title / cwd / id...` | 会话多于 3 个时出现；按标题/目录/ID 过滤 |
-| 分组行 | 每个分组是一个可点的胶囊（如 `Client work 2`），`+ Group` 新建。快捷键 `Alt+1`…`Alt+9` 切换分组，`Alt+Shift+↑/↓` 移动分组 |
+| 分组行 | 每个分组是一个可点的标题（如 `Client work 2`），`+ New → New group…` 新建。快捷键 `Alt+1`…`Alt+9` 切换分组，`Alt+Shift+↑/↓` 移动分组 |
 | 会话卡片 | 标题、工作目录、`模型 · N msgs · N viewers`、状态徽标、休眠 `IconMoon`、删除 `IconX` |
 
 **会话状态徽标**：`working`（正在跑）、`waiting`（回合结束但后台子代理还在跑）、`live`（空闲在线）、`dormant`（已休眠）、`resuming…`、`ended`、`err`。
@@ -124,7 +124,7 @@ npm i -g claude-react-web && claude-react-web
 | `Agent` | 用某个自定义 Agent 当主线程（`None` 表示不用） |
 | `Model` | 模型，可点最近使用的芯片 |
 | `Permission mode` | 见 [第 5 章](#5-权限与安全) |
-| `Group` | 放进哪个分组；满了的分组会标注 ` — will replace oldest` |
+| `Group` | 放进哪个分组；满了的分组会标注 ` — full, will stay ungrouped`（会话仍会创建，但入组会被拒绝并弹提示，不会挤掉旧会话） |
 | `System prompt (optional)` | 系统提示词 |
 
 展开 **`Advanced options`** 还有：`Effort`、`Thinking`（`adaptive`/`enabled`/`disabled` + `Thinking budget (tokens)`）、`Max turns`、`Max budget (USD)`、`Fallback model`、`Additional directories`、`Allowed tools`、`Disallowed tools`、`Tools`、`MCP servers`、`First-party tools`、`Plugins`、`Session MCP overrides (JSON)`、`Environment variables`。
@@ -135,9 +135,9 @@ npm i -g claude-react-web && claude-react-web
 
 ### 2.2 分组
 
-- 点 `+ Group` 输入名字回车即可建组；右键分组胶囊可 `Rename group…` / `Delete group`（**删组不会删会话**）。
+- 点 `+ New → New group…` 输入名字回车即可建组；右键分组标题可用 `New session in this group…`（打开创建对话框并预选该分组；满组时置灰）、`Move up` / `Move down`、`Rename group…` / `Delete group`（**删组不会删会话**）。
 - 会话右键 → `Move to group ▸ <分组名>` 把会话挪进分组。
-- 分组胶囊可拖动排序；折叠状态会被记住。
+- 分组标题可拖动排序；折叠状态会被记住。
 
 ### 2.3 搜索会话内的消息
 

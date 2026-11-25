@@ -7,6 +7,7 @@ const group: SessionGroup = { id: 'g1', name: 'My Group', sessionIds: ['a', 'b']
 function build(overrides?: Partial<Parameters<typeof buildGroupContextMenuItems>[0]>) {
   const calls = {
     moves: [] as Array<[string, 'up' | 'down']>,
+    newSession: null as null | string,
     renamed: null as null | [string, string],
     deleted: null as null | string,
     prompt: null as null | {
@@ -27,7 +28,11 @@ function build(overrides?: Partial<Parameters<typeof buildGroupContextMenuItems>
     group,
     canMoveUp: true,
     canMoveDown: true,
+    maxGroupSize: 10,
     onMove: (id, dir) => calls.moves.push([id, dir]),
+    onNewSession: (id) => {
+      calls.newSession = id
+    },
     onRename: (id, name) => {
       calls.renamed = [id, name]
     },
@@ -48,15 +53,41 @@ function build(overrides?: Partial<Parameters<typeof buildGroupContextMenuItems>
 }
 
 describe('buildGroupContextMenuItems', () => {
-  it('emits the five rows in sidebar order: move pair, separator, rename, delete', () => {
+  it('emits the rows in sidebar order: create, separator, move pair, separator, rename, delete', () => {
     const { items } = build()
     expect(items.map((i) => i.label)).toEqual([
+      'New session in this group…',
+      '',
       'Move up',
       'Move down',
       '',
       'Rename group…',
       'Delete group',
     ])
+  })
+
+  it('clicking New session reports the group id', () => {
+    const { items, calls } = build()
+    items.find((i) => i.label === 'New session in this group…')!.onClick!()
+    expect(calls.newSession).toBe('g1')
+  })
+
+  it('disables New session with a full-count label when the group is at capacity', () => {
+    const { items } = build({
+      group: { id: 'g1', name: 'My Group', sessionIds: ['a', 'b'] },
+      maxGroupSize: 2,
+    })
+    const row = items.find((i) => i.label?.startsWith('New session in this group'))!
+    expect(row.label).toBe('New session in this group… (full 2/2)')
+    // disabled is the render-level guard (ContextMenu skips the onClick of a
+    // disabled button) — same contract as the Move up/down edge rows.
+    expect(row.disabled).toBe(true)
+  })
+
+  it('keeps New session enabled below capacity', () => {
+    const { items } = build({ maxGroupSize: 3 })
+    const row = items.find((i) => i.label === 'New session in this group…')!
+    expect(row.disabled).toBe(false)
   })
 
   it('renders Delete in the danger style', () => {

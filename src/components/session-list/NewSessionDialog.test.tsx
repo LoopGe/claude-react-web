@@ -469,6 +469,31 @@ describe('NewSessionDialog field pickers (model / permission mode / group)', () 
     expect(form.groupId).toBe('g1')
   })
 
+  it('marks a full group honestly — the create refuses, nothing is replaced', async () => {
+    const onSubmit = vi.fn()
+    render(
+      <NewSessionDialog
+        {...baseProps}
+        onSubmit={onSubmit}
+        groups={[{ id: 'g1', name: 'Sprint', sessionIds: ['a', 'b'] }]}
+        maxGroupSize={2}
+      />,
+    )
+    fireEvent.click(groupTrigger())
+    const row = fieldItems().find((el) => el.textContent?.includes('Sprint'))!
+    // handleAddToGroup refuses a full group with a toast (no eviction since
+    // 1304a08b) — the label must not promise a replacement.
+    expect(row.textContent).toContain('2/2 — full, will stay ungrouped')
+    expect(row.textContent).not.toContain('replace oldest')
+
+    // Picking it still submits the group id; App's refuse path leaves the
+    // session ungrouped. The trigger carries the same honest suffix.
+    fireEvent.click(row)
+    expect(groupTrigger().textContent).toContain('full, will stay ungrouped')
+    const form = await clickCreate(onSubmit)
+    expect(form.groupId).toBe('g1')
+  })
+
   it('offers a "Create group …" row for a new name and submits it as newGroupName', async () => {
     const onSubmit = vi.fn()
     render(

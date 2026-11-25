@@ -235,11 +235,13 @@ function MainGridDropZone({ bodyRef, className, style, panelCount, children }: {
  *  into a render-time buildGroupContextMenuItems call trips react-hooks/refs
  *  ("may read its value during render"); JSX props don't (same reason
  *  SessionList's identical menu is clean). */
-function StripGroupMenu({ anchor, group, groups, onMove, onRename, onDelete, dialogs, onClose }: {
+function StripGroupMenu({ anchor, group, groups, maxGroupSize, onMove, onNewSession, onRename, onDelete, dialogs, onClose }: {
   anchor: { x: number; y: number }
   group: SessionGroup
   groups: SessionGroup[]
+  maxGroupSize: number
   onMove: (groupId: string, direction: 'up' | 'down') => void
+  onNewSession: (groupId: string) => void
   onRename: (groupId: string, name: string) => void
   onDelete: (groupId: string) => void
   dialogs: GroupMenuDialogs
@@ -255,7 +257,9 @@ function StripGroupMenu({ anchor, group, groups, onMove, onRename, onDelete, dia
         group,
         canMoveUp: idx > 0,
         canMoveDown: idx >= 0 && idx < groups.length - 1,
+        maxGroupSize,
         onMove,
+        onNewSession,
         onRename,
         onDelete,
         dialogs,
@@ -434,6 +438,12 @@ export function App() {
     toggleShortcutHelp,
   } = useAppOverlays()
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
+  /** Group pre-targeted by the group context menu's "New session in this
+   *  group…" row. Owned here (not in SessionList) because the nav-strip
+   *  surface opens the same dialog; cleared whenever the dialog closes so a
+   *  cancelled pick never leaks into the next open. null = no explicit pick
+   *  (the dialog falls back to the active group). */
+  const [newSessionInitialGroupId, setNewSessionInitialGroupId] = useState<string | null>(null)
   const [resumeDialogOpen, setResumeDialogOpen] = useState(false)
   const [structuredOpen, setStructuredOpen] = useState(false)
   // The last interrupt fired for a session, keyed by session id. Esc is
@@ -939,6 +949,16 @@ export function App() {
    *  fresh inline arrow would re-render them on every unrelated App-state
    *  churn: drawer, palette, modifier hints, …). */
   const openNewSessionDialog = useCallback(() => setNewSessionDialogOpen(true), [])
+  /** Both group-menu surfaces (sidebar header + nav-strip chip) open the one
+   *  dialog pre-targeted at the right-clicked group. */
+  const openNewSessionInGroup = useCallback((groupId: string) => {
+    setNewSessionInitialGroupId(groupId)
+    setNewSessionDialogOpen(true)
+  }, [])
+  const handleNewSessionDialogChange = useCallback((open: boolean) => {
+    setNewSessionDialogOpen(open)
+    if (!open) setNewSessionInitialGroupId(null)
+  }, [])
 
   useEffect(() => {
     const onMenu = window.__CRW_DESKTOP__?.onMenu
@@ -5204,7 +5224,9 @@ export function App() {
           onReorderGroups={handleReorderGroups}
           onMoveGroup={handleMoveGroup}
           newSessionDialogOpen={newSessionDialogOpen}
-          onNewSessionDialogChange={setNewSessionDialogOpen}
+          onNewSessionDialogChange={handleNewSessionDialogChange}
+          newSessionInitialGroupId={newSessionInitialGroupId ?? undefined}
+          onNewSessionInGroup={openNewSessionInGroup}
           groups={groups}
           sidebarSections={sidebarSections}
           collapsedGroups={collapsedGroups}
@@ -5369,7 +5391,9 @@ export function App() {
                 anchor={stripGroupMenu}
                 group={g}
                 groups={groups}
+                maxGroupSize={maxGroupSize}
                 onMove={handleMoveGroup}
+                onNewSession={openNewSessionInGroup}
                 onRename={handleRenameGroup}
                 onDelete={handleDeleteGroup}
                 dialogs={stripDialogs}

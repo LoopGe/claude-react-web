@@ -30,6 +30,11 @@ import { NEW_SESSION_AUTO_COMPACT_WINDOW_KEY } from '../../constants/recentKeys'
 import { clamp } from '../../utils/clamp'
 import { groupNameIssue } from '../../utils/group-name'
 
+/** The form seeds its state (group pre-target, cwd, model, …) on MOUNT and
+ *  does not reset on an `open` rising edge. A host that keeps the component
+ *  mounted across close/reopen (e.g. through an exit animation) MUST remount
+ *  it per open — SessionList does this with a per-open `key` — or a rapid
+ *  reopen leaks the previous open's form state. */
 export interface NewSessionDialogProps {
   open?: boolean
   defaults: { cwd?: string; model?: string }
@@ -89,9 +94,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [systemPrompt, setSystemPrompt] = useState('')
   const [title, setTitle] = useState('')
-  // Seed the group picker with the active group (if any) BUT only when
+  // Seed the group picker with the pre-targeted group (if any) BUT only when
   // it still has capacity — landing the new session into a group that
   // would immediately silently fail is worse than starting on "(none)".
+  // Mount-only is correct: SessionList remounts the dialog on every open
+  // (per-open key), so a reopen never reuses a stale pick.
   const [groupId, setGroupId] = useState<string>(() => {
     if (!initialGroupId) return ''
     const g = groups.find((x) => x.id === initialGroupId)
@@ -363,7 +370,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
         return {
           key: g.id,
           label: g.name,
-          sub: `${g.sessionIds.length}/${maxGroupSize}${full ? ' — will replace oldest' : ''}`,
+          sub: `${g.sessionIds.length}/${maxGroupSize}${full ? ' — full, will stay ungrouped' : ''}`,
           selected: groupId === g.id,
           onSelect: () => {
             setGroupId(g.id)
@@ -809,7 +816,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                     ? 'new group'
                     : activeGroup
                       ? `${activeGroup.sessionIds.length}/${maxGroupSize}${
-                          activeGroup.sessionIds.length >= maxGroupSize ? ' — will replace oldest' : ''
+                          activeGroup.sessionIds.length >= maxGroupSize ? ' — full, will stay ungrouped' : ''
                         }`
                       : undefined
                 }

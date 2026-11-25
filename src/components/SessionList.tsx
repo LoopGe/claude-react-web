@@ -166,6 +166,13 @@ interface Props {
    *  (Alt+N) can open it. Uncontrolled mode falls back to internal state. */
   newSessionDialogOpen?: boolean
   onNewSessionDialogChange?: (open: boolean) => void
+  /** Group pre-targeted by the group menu's "New session in this group…"
+   *  row (App-owned so the nav-strip surface shares it). Overrides the
+   *  active-group fallback in the dialog's group picker. */
+  newSessionInitialGroupId?: string
+  /** Opens the new-session dialog pre-targeted at a group — the group
+   *  context menu's create row. App wires both menu surfaces to one owner. */
+  onNewSessionInGroup?: (groupId: string) => void
   // --- Group management ---
   /** Persisted list of user-created session groups. */
   groups: SessionGroup[]
@@ -236,6 +243,8 @@ export const SessionList = memo(function SessionList({
   onMoveGroup,
   newSessionDialogOpen,
   onNewSessionDialogChange,
+  newSessionInitialGroupId,
+  onNewSessionInGroup,
   activeGroupId,
   maxGroupSize,
   isMobile,
@@ -248,6 +257,24 @@ export const SessionList = memo(function SessionList({
   const setShowDialog = (v: boolean) => {
     if (onNewSessionDialogChange) onNewSessionDialogChange(v)
     else setUncontrolledShow(v)
+  }
+  // A fresh dialog instance per open. useExitPresence keeps the dialog mounted
+  // through its 180ms exit, so a reopen inside that window would otherwise
+  // reuse the previous open's form state (group pick, pending new-group name,
+  // cwd prefill, the submitting latch). Bumping a key on the open rising edge
+  // — during render, before paint — remounts the dialog so every field seeds
+  // from the current props at one decision point.
+  //
+  // React's "adjust state when a prop changes" pattern: the previous value is
+  // STATE, not a ref, so a discarded concurrent render rolls the edge back
+  // with it (a ref write would survive the discard and consume the edge
+  // without committing the key bump). The guarded render-phase setState
+  // converges in one re-render.
+  const [dialogOpenKey, setDialogOpenKey] = useState(0)
+  const [prevDialogShow, setPrevDialogShow] = useState(showDialog)
+  if (showDialog !== prevDialogShow) {
+    setPrevDialogShow(showDialog)
+    if (showDialog) setDialogOpenKey((k) => k + 1)
   }
   /** Which card is currently in inline-rename mode, and the draft text. */
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -947,12 +974,13 @@ export const SessionList = memo(function SessionList({
 
       {newSessionPresence.shouldRender && (
         <NewSessionDialog
+          key={dialogOpenKey}
           open={showDialog}
           defaults={defaults}
           serverModels={serverModels}
           modelGroups={modelGroups}
           initialCwd={prefilledCwd}
-          initialGroupId={activeGroupId ?? undefined}
+          initialGroupId={newSessionInitialGroupId ?? activeGroupId ?? undefined}
           groups={groups}
           maxGroupSize={maxGroupSize}
           firstPartyTools={firstPartyTools}
@@ -984,7 +1012,9 @@ export const SessionList = memo(function SessionList({
               group: g,
               canMoveUp: groupCanMoveUp,
               canMoveDown: groupCanMoveDown,
+              maxGroupSize,
               onMove: (id, dir) => onMoveGroup?.(id, dir),
+              onNewSession: (id) => onNewSessionInGroup?.(id),
               onRename: onRenameGroup,
               onDelete: onDeleteGroup,
               dialogs: { askConfirm, askPrompt },

@@ -73,7 +73,7 @@ Three regions: the **left sidebar** (session list), the **panel area** (up to 3 
 | --- | --- |
 | `+ New session` | New session (`Alt+N`). **You can drag a folder in from your file manager** to prefill the working directory |
 | `Filter by title / cwd / id...` | Appears once you have more than 3 sessions |
-| Group row | Each group is a clickable pill (e.g. `Client work 2`); `+ Group` creates one. `Alt+1`…`Alt+9` activate a group, `Alt+Shift+↑/↓` move the active group |
+| Group row | Each group is a clickable header (e.g. `Client work 2`); `+ New → New group…` creates one. `Alt+1`…`Alt+9` activate a group, `Alt+Shift+↑/↓` move the active group |
 | Session card | Title, working directory, `model · N msgs · N viewers`, status chip, sleep `IconMoon`, delete `IconX` |
 
 **Status chips**: `working` (running), `waiting` (turn ended but a background subagent is still running), `live` (idle, attached), `dormant` (slept), `resuming…`, `ended`, `err`.
@@ -124,7 +124,7 @@ Overlays can be stacked over the panel area: session settings, Git panel, Tasks,
 | `Agent` | Run the main thread as a custom agent (`None` to skip) |
 | `Model` | Model, with recent-model chips |
 | `Permission mode` | See [chapter 5](#5-permissions-and-safety) |
-| `Group` | Which group to join; full groups are marked ` — will replace oldest` |
+| `Group` | Which group to join; full groups are marked ` — full, will stay ungrouped` (the session is still created, but the group join is refused with a toast — nothing is evicted) |
 | `System prompt (optional)` | System prompt |
 
 Expanding **`Advanced options`** adds: `Effort`, `Thinking` (`adaptive`/`enabled`/`disabled` plus `Thinking budget (tokens)`), `Max turns`, `Max budget (USD)`, `Fallback model`, `Additional directories`, `Allowed tools`, `Disallowed tools`, `Tools`, `MCP servers`, `First-party tools`, `Plugins`, `Session MCP overrides (JSON)`, and `Environment variables`.
@@ -135,9 +135,9 @@ The picker is a **directories-only** browser: `Home` / `Server CWD` / `↑ Up` /
 
 ### 2.2 Groups
 
-- Click `+ Group`, type a name, press Enter. Right-click a group pill for `Rename group…` / `Delete group` (**deleting a group never deletes its sessions**).
+- Click `+ New → New group…`, type a name, press Enter. Right-click a group header for `New session in this group…` (opens the create dialog pre-targeted at that group; disabled when the group is full), `Move up` / `Move down`, `Rename group…` / `Delete group` (**deleting a group never deletes its sessions**).
 - Right-click a session → `Move to group ▸ <name>` to move it in.
-- Group pills are drag-reorderable, and collapsed state is remembered.
+- Group headers are drag-reorderable, and collapsed state is remembered.
 
 ### 2.3 Searching inside a session
 
