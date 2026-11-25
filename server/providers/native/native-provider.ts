@@ -8,7 +8,14 @@ import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.
 import { HttpError } from '../../errors.js'
 import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../../../shared/transcript-format.js'
 import type { SessionMeta } from '../../persistence.js'
-import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef } from '../types.js'
+import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef } from '../types.js'
+import type { ResumableSession } from '../../session-types.js'
+import {
+  listNativeResumableRows,
+  readNativeResumableRow,
+  invalidateNativeResumableCache,
+  type NativeResumableRow,
+} from '../native-resumable-listing.js'
 import type { LoopDeps } from './loop.js'
 import type { NativeHostPorts } from './ports.js'
 import { NativeMcpConnections } from './mcp/connections.js'
@@ -336,8 +343,41 @@ export class NativeProvider implements AgentProvider {
     return hasNativeSessionLog(this.stateDir, meta.id)
   }
 
+  /** Disk-session discovery for the /resume picker. Maps the host-side listing
+   *  scan's rows into the manager's ResumableSession shape; the manager's
+   *  provider iteration annotates known/running/terminated and defaults
+   *  `provider`, so those stay false/unset here. The log's durable title maps
+   *  to `title` (NOT customTitle — that slot is the CLI-side /rename channel). */
+  async listResumable(opts?: ListResumableOptions): Promise<ResumableSession[]> {
+    const rows = await listNativeResumableRows(this.stateDir, opts)
+    return rows.map((row) => this.toResumable(row))
+  }
+
+  /** Single-id adoption probe (SessionManager.adoptDiskSession). Missing log →
+   *  undefined; corrupt log → throws (the manager catches per provider). */
+  async getSessionInfo(id: string): Promise<ResumableSession | undefined> {
+    const row = await readNativeResumableRow(this.stateDir, id)
+    return row ? this.toResumable(row) : undefined
+  }
+
+  private toResumable(row: NativeResumableRow): ResumableSession {
+    return {
+      sessionId: row.sessionId,
+      cwd: row.cwd,
+      createdAt: row.createdAt,
+      lastModified: row.lastModified,
+      title: row.title,
+      firstPrompt: row.firstPrompt,
+      lastPrompt: row.lastPrompt,
+      known: false,
+      running: false,
+      terminated: false,
+    }
+  }
+
   async deleteTranscript(id: string): Promise<boolean> {
     nativeHistoryCache.invalidate(id)
+    invalidateNativeResumableCache(id)
     const deleted = await deleteNativeSessionLog(this.stateDir, id)
     this.attachmentReferences.removeSession(id)
     return deleted

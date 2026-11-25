@@ -20,17 +20,18 @@
 //     from the source and a later resume upgrades it (T12 eager-at-open).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { NativeProvider } from './native-provider.js'
 import { NativeSession } from './native-session.js'
 import { makeNativePorts } from '../native-host-adapters.js'
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
-import { loadNativeSessionLogSync } from './session-log/log.js'
+import { loadNativeSessionLogSync, NativeSessionLog, type NativeNeutralEventInput } from './session-log/log.js'
 import { projectNeutralEventToLegacy, serializeEvent, serializeHeader } from './session-log/format.js'
 import type { NativeLogEvent, NativeSessionHeader } from './session-log/format.js'
 import type { NativeSessionEvent } from './vocabulary/session-event.js'
+import { createUserMessage } from './vocabulary/message.js'
 
 // T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
 // the legacy shape from the canonical neutral baseline via the pinned compat
@@ -438,5 +439,153 @@ describe('NativeProvider core + adapter composition (T14)', () => {
     expect(snap.header.v).toBe(3)
     expect(snap.neutralEvents!.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4])
     expect(snap.neutralEvents![4]).toMatchObject({ type: 'session/title', data: { title: 'T' } })
+  })
+})
+
+// --- Task 5: resumable discovery (listResumable / getSessionInfo) ---
+// Fixtures go through the REAL writer (NativeSessionLog) with neutral event
+// inputs, mirroring native-resumable-listing.test.ts, so the provider's row
+// mapping is pinned against actual on-disk serialization rather than a
+// hand-rolled log shape.
+
+function discoveryUser(text: string, time = Date.now()): NativeNeutralEventInput {
+  return {
+    type: 'user/message',
+    time,
+    parentToolUseId: null,
+    data: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
+  }
+}
+
+function discoveryTitle(title: string): NativeNeutralEventInput {
+  return { type: 'session/title', time: Date.now(), data: { title } }
+}
+
+async function writeDiscoveryLog(
+  stateDir: string,
+  id: string,
+  cwd: string,
+  events: NativeNeutralEventInput[],
+): Promise<void> {
+  const log = NativeSessionLog.open({ stateDir, id, cwd, resume: false })
+  for (const event of events) log.append(event)
+  await log.flush()
+  await log.close()
+}
+
+describe('NativeProvider resumable discovery (Task 5)', () => {
+  it('listResumable maps scan rows: log title as title (not customTitle), previews, false flags, no provider', async () => {
+    const dir = await tempDir('native-provider-list-')
+    const provider = makeProvider(dir)
+    await writeDiscoveryLog(dir, 'list-a', '/repo-a', [
+      discoveryUser('first question'),
+      discoveryTitle('Alpha title'),
+      discoveryUser('second question'),
+    ])
+    await writeDiscoveryLog(dir, 'list-b', '/repo-b', [discoveryUser('only question')])
+
+    const rows = await provider.listResumable()
+    expect(rows).toHaveLength(2)
+    const byId = new Map(rows.map((row) => [row.sessionId, row]))
+
+    const a = byId.get('list-a')!
+    expect(a).toBeDefined()
+    expect(a.sessionId).toBe('list-a')
+    expect(a.cwd).toBe('/repo-a')
+    expect(a.createdAt).toBe(loadNativeSessionLogSync(dir, 'list-a')!.header.createdAt)
+    expect(a.lastModified).toBe((await stat(nativeSessionLogPath(dir, 'list-a'))).mtimeMs)
+    expect(a.firstPrompt).toBe('first question')
+    expect(a.lastPrompt).toBe('second question')
+    expect(a.title).toBe('Alpha title')
+    expect(a.customTitle).toBeUndefined()
+    expect(a.known).toBe(false)
+    expect(a.running).toBe(false)
+    expect(a.terminated).toBe(false)
+    expect(a.provider).toBeUndefined()
+
+    const b = byId.get('list-b')!
+    expect(b).toBeDefined()
+    expect(b.cwd).toBe('/repo-b')
+    expect(b.firstPrompt).toBe('only question')
+    expect(b.lastPrompt).toBe('only question')
+    expect(b.title).toBeUndefined()
+    expect(b.customTitle).toBeUndefined()
+    expect(b.known).toBe(false)
+    expect(b.running).toBe(false)
+    expect(b.terminated).toBe(false)
+    expect(b.provider).toBeUndefined()
+  })
+
+  it('listResumable({ dir }) scopes to exact cwd matches', async () => {
+    const dir = await tempDir('native-provider-list-scope-')
+    const provider = makeProvider(dir)
+    await writeDiscoveryLog(dir, 'scope-a', '/repo-a', [discoveryUser('a')])
+    await writeDiscoveryLog(dir, 'scope-b', '/repo-b', [discoveryUser('b')])
+
+    const scoped = await provider.listResumable({ dir: '/repo-a' })
+    expect(scoped.map((row) => row.sessionId)).toEqual(['scope-a'])
+    expect(await provider.listResumable({ dir: '/nowhere' })).toEqual([])
+  })
+
+  it('getSessionInfo returns a mapped row for an existing log', async () => {
+    const dir = await tempDir('native-provider-info-')
+    const provider = makeProvider(dir)
+    await writeDiscoveryLog(dir, 'info-exists', '/repo', [
+      discoveryUser('info prompt'),
+      discoveryTitle('Info title'),
+    ])
+
+    const info = await provider.getSessionInfo('info-exists')
+    expect(info).toBeDefined()
+    expect(info!.sessionId).toBe('info-exists')
+    expect(info!.cwd).toBe('/repo')
+    expect(info!.firstPrompt).toBe('info prompt')
+    expect(info!.lastPrompt).toBe('info prompt')
+    expect(info!.title).toBe('Info title')
+    expect(info!.customTitle).toBeUndefined()
+    expect(info!.known).toBe(false)
+    expect(info!.running).toBe(false)
+    expect(info!.terminated).toBe(false)
+    expect(info!.provider).toBeUndefined()
+  })
+
+  it('getSessionInfo returns undefined for a missing log', async () => {
+    const dir = await tempDir('native-provider-info-missing-')
+    const provider = makeProvider(dir)
+    expect(await provider.getSessionInfo('no-such-session')).toBeUndefined()
+  })
+
+  it('getSessionInfo rejects for a corrupt log', async () => {
+    const dir = await tempDir('native-provider-info-corrupt-')
+    const provider = makeProvider(dir)
+    await mkdir(nativeSessionDir(dir, 'corrupt'), { recursive: true })
+    await writeFile(nativeSessionLogPath(dir, 'corrupt'), 'not a valid header line\n', 'utf8')
+    await expect(provider.getSessionInfo('corrupt')).rejects.toThrow()
+  })
+
+  it('deleteTranscript invalidates the row cache so a re-created log is re-read', async () => {
+    const dir = await tempDir('native-provider-recreate-')
+    const provider = makeProvider(dir)
+    const id = 'recreate'
+    const path = nativeSessionLogPath(dir, id)
+    // Pin both writes to the same mtime and use same-length prompts so the
+    // (size, mtimeMs) stat key collides deterministically: only an explicit
+    // row-cache invalidation in deleteTranscript can force the re-read.
+    const pinned = new Date('2026-11-25T00:00:00.000Z')
+    const fixedTime = 1764000000000
+
+    await writeDiscoveryLog(dir, id, '/repo', [discoveryUser('old prompt', fixedTime)])
+    await utimes(path, pinned, pinned)
+    const sizeBefore = (await stat(path)).size
+    const first = await provider.getSessionInfo(id)
+    expect(first?.firstPrompt).toBe('old prompt') // primes the row cache
+
+    await provider.deleteTranscript(id)
+    await writeDiscoveryLog(dir, id, '/repo', [discoveryUser('new prompt', fixedTime)])
+    await utimes(path, pinned, pinned)
+    expect((await stat(path)).size).toBe(sizeBefore) // same-size premise
+
+    const second = await provider.getSessionInfo(id)
+    expect(second?.firstPrompt).toBe('new prompt')
   })
 })
