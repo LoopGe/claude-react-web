@@ -573,6 +573,14 @@ if(!ke&&r&&n)e=e+`\n\nARGUMENTS: ${w(n)}`;
 - 形态全集：**命名 `$name`**（仅来自 s 列表）、**`$ARGUMENTS[N]`**、**`$N`**、**`$ARGUMENTS`**
   （整个原始 args 串）；另有转义保护 `(?<!\\)\\\$(?=…)` 把 `\$` 哨兵化、末尾还原为字面 `$`。
   没有其它形态。
+- **转义不置 ke、不抑制 fallback 追加**（@ 255663604 窗口逐字）：escape pass 是
+  `e=e.replace(new RegExp(\`(?<!\\\\)\\\\\\$(?=${Q})\`,"g"),qG)`——替换目标是**常量哨兵
+  `qG`**（非回调，无 `ke=!0`），且 `let ke=!1` 声明在该 pass **之后**；lookahead `Q` 含 `\d`，
+  故 `\$0` 同样被保护。哨兵化吃掉了 `$`，后续 `$ARGUMENTS`/`$N` 替换全部失配 → ke 保持 false →
+  args 非空时 fallback 照常追加。精确输出：body `\$ARGUMENTS` + args `x` →
+  `$ARGUMENTS\n\nARGUMENTS: x`；body `\$0` + args `x` → `$0\n\nARGUMENTS: x`
+  （反斜杠被丢弃，末尾 `replaceAll(qG,"$")` 还原字面 `$`）。同理，**越界**的
+  `$ARGUMENTS[N]`/`$N` 提前返回、也不置 ke，不抑制追加。
 - **命名绑定 = 声明名 + 位置绑定**：第 i 个声明名绑定 `z(i)` = args 的第 i 个 token
   （`z=(Se)=>(L??=rxo(n))[Se]`）。**不是**从 args 里解析 `key=value`；名字来自 **frontmatter
   `arguments` 键**：`eEe` 映射 `argumentNames:vme(e.arguments)`（@ **257732100**），
