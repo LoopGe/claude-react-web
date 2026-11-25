@@ -866,6 +866,28 @@ describe('NativeSession', () => {
     }
   })
 
+  it('reflects MCP discovery in the composition before any turn', async () => {
+    const dir = await tempDir('native-composition-discovery-')
+    const provider = providerWithStreamer([], dir)
+    const session = provider.createSession({
+      id: 'comp-discovery', cwd: dir,
+      mcpServers: { a: { type: 'sdk', instance: echoServer() } },
+    })
+    try {
+      // No turn is ever sent: discovery settles in the background and the
+      // tool snapshot must refresh so a pre-turn reader sees the MCP defs.
+      await vi.waitFor(async () => {
+        const usage = (await session.getContextUsage?.()) as NativeContextUsage
+        expect(usage.mcpTools?.length).toBeGreaterThan(0)
+      }, { timeout: 5000 })
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage.categories!.some((c) => c.name === 'MCP tools')).toBe(true)
+      expect(usage.mcpTools![0]).toMatchObject({ name: 'echo', serverName: 'a', isLoaded: true })
+    } finally {
+      await session.destroy()
+    }
+  })
+
   it('omits MCP rows and payload when the persona restricts mcpServers to none', async () => {
     const dir = await tempDir('native-composition-mcp-restrict-')
     const definition = agentDefinition({ mcpServers: [] })
