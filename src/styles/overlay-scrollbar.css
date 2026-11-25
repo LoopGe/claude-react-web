@@ -30,6 +30,9 @@
   bottom: 0;
   width: var(--size-6px);
 }
+/* bottom:0 is only the pre-sync default: syncTrackBox pins top to the
+   scroller's own bottom edge (bottom:auto) so a scroller with trailing
+   siblings doesn't float the thumb below itself — see overlay-scrollbar.ts. */
 .os-track-horizontal {
   left: 0;
   right: 0;

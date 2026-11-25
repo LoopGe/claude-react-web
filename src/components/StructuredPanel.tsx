@@ -10,6 +10,8 @@ import { useCopy } from '../hooks/useCopy'
 import { useStructuredRun } from '../hooks/useStructuredRun'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 import { IconX } from './icons/ToolIcons'
 import type { StructuredPermissionMode, StructuredRunRequest, StructuredRunResult } from '../../shared/structured'
 import { formatError } from '../utils/format-error'
@@ -67,6 +69,15 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
   const bodyContentRef = useRef<HTMLDivElement>(null)
   const resultRef = useRef<HTMLDivElement>(null)
   const resultContentRef = useRef<HTMLDivElement>(null)
+  // Same overlay scrollbar every other dialog uses; without it the form body
+  // (advanced options open) and the result section show the native 10px
+  // scrollbar instead of the project's floating thumb. The result JSON pre is
+  // its own two-axis scroller (max-height 320px, white-space: pre).
+  const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const bodyRefMerged = useMergedRef(bodyRef, setBodyOs)
+  const setResultOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const resultRefMerged = useMergedRef(resultRef, setResultOs)
+  const setJsonOs = useOverlayScrollbar({ orientation: 'both', autoHide: 'leave' })
   const measureBodyHeight = useCallback(() => {
     const box = bodyRef.current
     const content = bodyContentRef.current
@@ -148,7 +159,7 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
         </button>
       </div>
 
-      <div className="modal-section structured-body" ref={bodyRef}>
+      <div className="modal-section structured-body" ref={bodyRefMerged}>
         <div className="structured-body-content" ref={bodyContentRef}>
         <label className="field-label">Prompt</label>
         <textarea
@@ -214,7 +225,7 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
       </div>
 
       {(result || error || running) && (
-        <div className="modal-section structured-result" ref={resultRef}>
+        <div className="modal-section structured-result" ref={resultRefMerged}>
           <div className="structured-result-content" ref={resultContentRef}>
           {error && <div className="field-error">{error}</div>}
           {result && !result.ok && (
@@ -228,7 +239,7 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
                   {copied ? 'Copied' : 'Copy'}
                 </button>
               </div>
-              <pre className="code-block structured-json">{result.structuredOutput !== undefined ? formatJson(result.structuredOutput) : result.rawText ?? '(no output)'}</pre>
+              <pre className="code-block structured-json" ref={setJsonOs}>{result.structuredOutput !== undefined ? formatJson(result.structuredOutput) : result.rawText ?? '(no output)'}</pre>
               <div className="hint structured-meta">
                 {typeof result.numTurns === 'number' && `turns: ${result.numTurns}`}
                 {typeof result.totalCostUsd === 'number' && ` · cost: $${result.totalCostUsd.toFixed(4)}`}

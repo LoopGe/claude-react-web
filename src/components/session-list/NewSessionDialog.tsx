@@ -16,6 +16,8 @@ import { useExitPresence } from '../../hooks/useExitPresence'
 import { useAgentDefinitions } from '../../hooks/useAgentDefinitions'
 import { useAutoHeightTransition } from '../../hooks/useAutoHeightTransition'
 import { measureCappedContentHeight } from '../../utils/capped-height-measure'
+import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../../utils/mergedRef'
 import { Overlay } from '../Overlay'
 
 // McpInstaller is only opened when the user clicks "Add MCP" from inside
@@ -640,6 +642,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // children), so they never enter the cap's chrome sum.
   const bodyRef = useRef<HTMLDivElement>(null)
   const bodyContentRef = useRef<HTMLDivElement>(null)
+  // Same overlay scrollbar every other dialog uses; without it the expanded
+  // Advanced-options body shows the native 10px scrollbar instead of the
+  // project's floating thumb.
+  const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const bodyRefMerged = useMergedRef(bodyRef, setBodyOs)
   const measureBodyHeight = useCallback(() => {
     const body = bodyRef.current
     const content = bodyContentRef.current
@@ -675,7 +682,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
             </button>
           </div>
 
-          <div className="modal-section" ref={bodyRef}>
+          <div className="modal-section" ref={bodyRefMerged}>
             <div className="new-session-content" ref={bodyContentRef}>
             <div className="settings-field">
               <label htmlFor={uid + '-project'}>Project</label>

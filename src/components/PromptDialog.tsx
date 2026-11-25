@@ -7,6 +7,7 @@
 
 import { useRef, useState } from 'react'
 import { Overlay } from './Overlay'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 
 interface Props {
   title: string
@@ -33,6 +34,12 @@ export function PromptDialog({
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [value, setValue] = useState(defaultValue)
+  // Same overlay scrollbar every other dialog uses; without it the body shows
+  // the native 10px scrollbar when the panel-scoped card cap binds (a long
+  // message in a short panel). Both axes: the message has no overflow-wrap, so
+  // a long unbreakable path/URL can overflow horizontally — hiding the native
+  // bar must not remove that axis's only mouse affordance.
+  const setBodyOs = useOverlayScrollbar({ orientation: 'both', autoHide: 'leave' })
   // Open/close motion is driven by motion.div + AnimatePresence (the caller
   // gates mount on the prompt state). Mirrors the old overlay-backdrop/panel
   // keyframes via useOverlayMotion (Overlay's motion mode); reduced motion
@@ -57,7 +64,7 @@ export function PromptDialog({
       <div className="modal-header">
         <h3>{title}</h3>
       </div>
-      <div className="modal-section">
+      <div className="modal-section" ref={setBodyOs}>
         <div className="confirm-dialog-message">{message}</div>
         <input
           ref={inputRef}

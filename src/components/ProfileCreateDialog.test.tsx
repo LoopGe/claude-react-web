@@ -265,3 +265,21 @@ describe('ProfileCreateDialog height animation', () => {
     expect(body.style.height).toBe('100px')
   })
 })
+
+describe('ProfileCreateDialog overlay scrollbar', () => {
+  it('attaches the project overlay scrollbar to the template-options scroller', () => {
+    render(<ProfileCreateDialog {...baseProps()} />)
+    const list = document.querySelector<HTMLElement>('.profile-create-options')!
+    expect(list.hasAttribute('data-os-native-hidden')).toBe(true)
+    expect(document.querySelector('.profile-create-card .os-track')).toBeTruthy()
+  })
+
+  it('attaches the project overlay scrollbar to the outer modal-section too', () => {
+    render(<ProfileCreateDialog {...baseProps()} />)
+    // The content wrapper is a non-scrolling flex item: its min-content floor
+    // cannot shrink, so on a short viewport the card cap squeezes the outer
+    // section into overflow — it needs the unified thumb as well.
+    const section = document.querySelector<HTMLElement>('.modal-section')!
+    expect(section.hasAttribute('data-os-native-hidden')).toBe(true)
+  })
+})

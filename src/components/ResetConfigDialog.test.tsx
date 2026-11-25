@@ -77,3 +77,12 @@ describe('ResetConfigDialog', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 })
+
+describe('ResetConfigDialog overlay scrollbar', () => {
+  it('attaches the project overlay scrollbar to the reset-config-body scroller', () => {
+    render(<ResetConfigDialog open onClose={() => {}} />)
+    const body = document.querySelector<HTMLElement>('.reset-config-body')!
+    expect(body.hasAttribute('data-os-native-hidden')).toBe(true)
+    expect(document.querySelector('.modal-reset-config .os-track')).toBeTruthy()
+  })
+})

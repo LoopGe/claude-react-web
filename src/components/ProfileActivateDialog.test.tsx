@@ -94,3 +94,30 @@ describe('ProfileActivateDialog', () => {
     expect(props.onConfirm).toHaveBeenCalledWith([])
   })
 })
+
+describe('ProfileActivateDialog overlay scrollbar', () => {
+  it('attaches the project overlay scrollbar to the session-list scroller', () => {
+    render(<ProfileActivateDialog {...baseProps()} />)
+    const list = document.querySelector<HTMLElement>('.profile-activate-sessions')!
+    expect(list.hasAttribute('data-os-native-hidden')).toBe(true)
+    expect(document.querySelector('.profile-activate-card .os-track')).toBeTruthy()
+  })
+
+  it('attaches the project overlay scrollbar to the outer modal-section too', () => {
+    render(<ProfileActivateDialog {...baseProps()} />)
+    // Same contract as the other dialogs: the outer section is a scroll body
+    // and carries the unified thumb wherever the card cap lets it overflow.
+    const section = document.querySelector<HTMLElement>('.modal-section')!
+    expect(section.hasAttribute('data-os-native-hidden')).toBe(true)
+  })
+
+  it('parents the session-list track to a non-scrolling wrapper, not the scrolling section', () => {
+    render(<ProfileActivateDialog {...baseProps()} />)
+    const list = document.querySelector<HTMLElement>('.profile-activate-sessions')!
+    // An abspos track inside a scroller scrolls with the content and
+    // double-subtracts scrollTop; its parent must be a non-scrolling wrapper
+    // (same shape as ProfileCreateDialog's .modal-section-content).
+    expect(list.parentElement!.classList.contains('modal-section')).toBe(false)
+    expect(list.parentElement!.querySelector(':scope > .os-track')).toBeTruthy()
+  })
+})

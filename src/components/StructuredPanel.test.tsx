@@ -82,3 +82,29 @@ describe('StructuredPanel height animation', () => {
     expect(result.style.height).toBe('40px')
   })
 })
+
+describe('StructuredPanel overlay scrollbar', () => {
+  it('attaches the project overlay scrollbar to the form body scroller', () => {
+    setup()
+    const body = document.querySelector<HTMLElement>('.structured-body')!
+    expect(body.hasAttribute('data-os-native-hidden')).toBe(true)
+    expect(document.querySelector('.structured-panel .os-track')).toBeTruthy()
+  })
+
+  it('attaches the project overlay scrollbar to the result section scroller', () => {
+    runState.running = true
+    setup()
+    const result = document.querySelector<HTMLElement>('.structured-result')!
+    expect(result.hasAttribute('data-os-native-hidden')).toBe(true)
+  })
+
+  it('attaches both-axis overlay scrollbars to the result JSON pre', () => {
+    runState.result = { ok: true, structuredOutput: { answer: 42 } }
+    setup()
+    const pre = document.querySelector<HTMLElement>('.structured-json')!
+    expect(pre.hasAttribute('data-os-native-hidden')).toBe(true)
+    // orientation 'both' → a vertical AND a horizontal track beside the pre
+    // (its parent is the content wrapper, which holds no other scroller).
+    expect(pre.parentElement!.querySelectorAll('.os-track').length).toBe(2)
+  })
+})

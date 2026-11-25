@@ -51,3 +51,12 @@ describe('FullDiffViewer', () => {
     await screen.findByText(/boom/)
   })
 })
+
+describe('FullDiffViewer overlay scrollbar', () => {
+  it('attaches the project overlay scrollbar to the file-viewer-body scroller', () => {
+    render(<FullDiffViewer open onClose={vi.fn()} name="big.diff" fetchText={() => Promise.resolve('diff')} />)
+    const body = document.querySelector<HTMLElement>('.file-viewer-body')!
+    expect(body.hasAttribute('data-os-native-hidden')).toBe(true)
+    expect(document.querySelector('.file-viewer .os-track')).toBeTruthy()
+  })
+})

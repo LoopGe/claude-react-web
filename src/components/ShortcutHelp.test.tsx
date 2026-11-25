@@ -86,3 +86,12 @@ describe('ShortcutHelp height animation', () => {
     expect(body.style.height).toBe('100px')
   })
 })
+
+describe('ShortcutHelp overlay scrollbar', () => {
+  it('attaches the project overlay scrollbar to the modal-section scroll body', () => {
+    setup()
+    const body = document.querySelector<HTMLElement>('.modal-section')!
+    expect(body.hasAttribute('data-os-native-hidden')).toBe(true)
+    expect(document.querySelector('.modal .os-track')).toBeTruthy()
+  })
+})

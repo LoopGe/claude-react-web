@@ -15,6 +15,8 @@ import { api } from '../../hooks/useApi'
 import { useAgentDefinitions } from '../../hooks/useAgentDefinitions'
 import { useAutoHeightTransition } from '../../hooks/useAutoHeightTransition'
 import { measureCappedContentHeight } from '../../utils/capped-height-measure'
+import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../../utils/mergedRef'
 import { formatError } from '../../utils/format-error'
 
 interface Props {
@@ -45,6 +47,10 @@ export function RunAsAgentControl({ sessionId, onClose }: Props) {
   // the key also drives the tween.
   const bodyRef = useRef<HTMLDivElement>(null)
   const bodyContentRef = useRef<HTMLDivElement>(null)
+  // Same overlay scrollbar every other dialog uses; without it the body shows
+  // the native 10px scrollbar when the card cap binds on a short viewport.
+  const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const bodyRefMerged = useMergedRef(bodyRef, setBodyOs)
   const measureBodyHeight = useCallback(() => {
     const body = bodyRef.current
     const content = bodyContentRef.current
@@ -92,7 +98,7 @@ export function RunAsAgentControl({ sessionId, onClose }: Props) {
       <div className="modal-header">
         <h3>Run as agent</h3>
       </div>
-      <div className="modal-section" ref={bodyRef}>
+      <div className="modal-section" ref={bodyRefMerged}>
         <div className="modal-section-content" ref={bodyContentRef}>
         <div className="runasagent-field">
           <label className="runasagent-label" htmlFor="runasagent-agent">Agent</label>

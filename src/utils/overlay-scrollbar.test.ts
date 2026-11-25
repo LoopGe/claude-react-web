@@ -353,4 +353,63 @@ describe('attachOverlayScrollbar', () => {
     await flushFrame()
     expect(track.style.top).toBe('21px') // frozen at the destroy-time sample
   })
+
+  it('pins the horizontal track to the scroller bottom edge, not the parent bottom (non-last-child scroller)', () => {
+    const parent = document.createElement('div')
+    const el = document.createElement('div')
+    const trailing = document.createElement('div')
+    parent.appendChild(el)
+    // A trailing sibling makes the parent's bottom edge differ from el's —
+    // the CSS bottom:0 pin alone would float the track below the scroller
+    // (StructuredPanel's JSON pre sits above the result meta row).
+    parent.appendChild(trailing)
+    parent.getBoundingClientRect = () => dragRect(0, 0, 300, 200)
+    el.getBoundingClientRect = () => dragRect(0, 0, 300, 150)
+    Object.defineProperty(parent, 'clientTop', { value: 0 })
+    Object.defineProperty(parent, 'clientLeft', { value: 0 })
+    Object.defineProperty(el, 'clientTop', { value: 0 })
+    Object.defineProperty(el, 'clientLeft', { value: 0 })
+    Object.defineProperty(el, 'clientWidth', { value: 300 })
+    Object.defineProperty(el, 'clientHeight', { value: 150 })
+    Object.defineProperty(el, 'scrollWidth', { value: 600 })
+    Object.defineProperty(el, 'scrollHeight', { value: 150 })
+    Object.defineProperty(el, 'scrollLeft', { value: 0, writable: true })
+
+    const controller = attachOverlayScrollbar(el, { orientation: 'horizontal', autoHide: 'never' })
+    const track = parent.querySelector<HTMLElement>('.os-track-horizontal')!
+    // happy-dom does no layout: stub the CSS-driven 6px thickness the sync reads.
+    Object.defineProperty(track, 'offsetHeight', { value: 6 })
+    controller.update()
+    // el's bottom (150) minus the track thickness (6) — NOT the parent's (200).
+    expect(track.style.top).toBe('144px')
+    expect(track.style.bottom).toBe('auto')
+    controller.destroy()
+  })
+
+  it('aligns the horizontal track to the padding-box bottom under asymmetric vertical borders', () => {
+    const parent = document.createElement('div')
+    const el = document.createElement('div')
+    parent.appendChild(el)
+    parent.getBoundingClientRect = () => dragRect(0, 0, 300, 200)
+    // border-box 150 tall; top border 2 + padding-box 140 → bottom border 8.
+    // The padding-box bottom is 142, NOT er.bottom(150) - clientTop(2) = 148.
+    el.getBoundingClientRect = () => dragRect(0, 0, 300, 150)
+    Object.defineProperty(parent, 'clientTop', { value: 0 })
+    Object.defineProperty(parent, 'clientLeft', { value: 0 })
+    Object.defineProperty(el, 'clientTop', { value: 2 })
+    Object.defineProperty(el, 'clientLeft', { value: 0 })
+    Object.defineProperty(el, 'clientWidth', { value: 300 })
+    Object.defineProperty(el, 'clientHeight', { value: 140 })
+    Object.defineProperty(el, 'scrollWidth', { value: 600 })
+    Object.defineProperty(el, 'scrollHeight', { value: 140 })
+    Object.defineProperty(el, 'scrollLeft', { value: 0, writable: true })
+
+    const controller = attachOverlayScrollbar(el, { orientation: 'horizontal', autoHide: 'never' })
+    const track = parent.querySelector<HTMLElement>('.os-track-horizontal')!
+    Object.defineProperty(track, 'offsetHeight', { value: 6 })
+    controller.update()
+    // padding-box bottom = top(0) + clientTop(2) + clientHeight(140) = 142; minus 6 = 136.
+    expect(track.style.top).toBe('136px')
+    controller.destroy()
+  })
 })

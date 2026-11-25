@@ -18,6 +18,7 @@
 
 import { useState } from 'react'
 import { Overlay } from './Overlay'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import type { SessionInfo } from '../types'
 
 interface Props {
@@ -45,6 +46,13 @@ export function ProfileActivateDialog({ profileName, sessions, busy = false, onC
     })
   }
 
+  // The capped (260px) session list is the dialog's primary scroller — same
+  // overlay scrollbar every other dialog uses, instead of the native 10px bar.
+  const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
+  // The outer section carries the unified thumb as well, matching every other
+  // dialog scroll body wherever the card cap lets it overflow.
+  const setSectionOs = useOverlayScrollbar({ autoHide: 'leave' })
+
   return (
     <Overlay
       variant="modal"
@@ -59,31 +67,38 @@ export function ProfileActivateDialog({ profileName, sessions, busy = false, onC
       <div className="modal-header">
         <h3>Switch profile to “{profileName}”</h3>
       </div>
-      <div className="modal-section">
+      <div className="modal-section" ref={setSectionOs}>
         <p className="confirm-dialog-message">
           {sessions.length === 0
             ? 'No live sessions follow the global profile, so switching now applies only to new sessions.'
             : 'Select live sessions to restart into the new profile. Selecting none only switches the default for new sessions.'}
         </p>
         {sessions.length > 0 && (
-          <ul className="profile-activate-sessions">
-            {sessions.map((s) => (
-              <li key={s.id}>
-                <label className="profile-activate-session">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(s.id)}
-                    onChange={() => toggle(s.id)}
-                    disabled={busy}
-                  />
-                  <span className="profile-activate-session-meta">
-                    <span className="profile-activate-session-title truncate">{s.title || s.id}</span>
-                    {s.model ? <span className="profile-activate-session-model">{s.model}</span> : null}
-                  </span>
-                </label>
-              </li>
-            ))}
-          </ul>
+          // Non-scrolling positioning wrapper for the list's overlay track.
+          // The track must NOT be parented to the scrolling .modal-section: an
+          // abspos child of a scroller scrolls with the content and
+          // double-subtracts scrollTop, misplacing the thumb. Same shape as
+          // ProfileCreateDialog's .modal-section-content wrapper.
+          <div>
+            <ul className="profile-activate-sessions" ref={setListOs}>
+              {sessions.map((s) => (
+                <li key={s.id}>
+                  <label className="profile-activate-session">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(s.id)}
+                      onChange={() => toggle(s.id)}
+                      disabled={busy}
+                    />
+                    <span className="profile-activate-session-meta">
+                      <span className="profile-activate-session-title truncate">{s.title || s.id}</span>
+                      {s.model ? <span className="profile-activate-session-model">{s.model}</span> : null}
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
       <div className="modal-footer">

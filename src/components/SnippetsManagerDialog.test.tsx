@@ -80,3 +80,11 @@ describe('SnippetsManagerDialog height animation', () => {
     expect(list().style.height).toBe('')
   })
 })
+
+describe('SnippetsManagerDialog overlay scrollbar', () => {
+  it('attaches the project overlay scrollbar to the snippets list scroller', () => {
+    render(<SnippetsManagerDialog api={fakeApi(SNIPPETS)} onClose={vi.fn()} />)
+    expect(list().hasAttribute('data-os-native-hidden')).toBe(true)
+    expect(document.querySelector('.perm-card .os-track')).toBeTruthy()
+  })
+})

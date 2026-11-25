@@ -111,3 +111,12 @@ describe('RunAsAgentControl height animation', () => {
     expect(body.style.height).toBe('100px')
   })
 })
+
+describe('RunAsAgentControl overlay scrollbar', () => {
+  it('attaches the project overlay scrollbar to the modal-section scroll body', () => {
+    render(<RunAsAgentControl sessionId="s1" onClose={() => {}} />)
+    const body = document.querySelector<HTMLElement>('.modal-section')!
+    expect(body.hasAttribute('data-os-native-hidden')).toBe(true)
+    expect(document.querySelector('.modal .os-track')).toBeTruthy()
+  })
+})

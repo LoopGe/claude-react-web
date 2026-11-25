@@ -92,3 +92,16 @@ describe('ConfirmDialog', () => {
     })
   })
 })
+
+describe('ConfirmDialog overlay scrollbar', () => {
+  it('attaches the project overlay scrollbar to the modal-section scroll body', () => {
+    const { container } = render(<ConfirmDialog {...baseProps()} />)
+    const section = container.querySelector('.modal-section') as HTMLElement | null
+    expect(section).toBeTruthy()
+    expect(section!.hasAttribute('data-os-native-hidden')).toBe(true)
+    // Both axes: the message can overflow horizontally (a long unbreakable
+    // path/URL, no overflow-wrap), so hiding the native bar requires a
+    // horizontal thumb too — not vertical-only.
+    expect(container.querySelectorAll('.perm-card .os-track').length).toBe(2)
+  })
+})

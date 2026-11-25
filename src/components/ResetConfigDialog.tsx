@@ -4,6 +4,7 @@ import { useResetConfig } from '../hooks/useResetConfig'
 import { IconX } from './icons/ToolIcons'
 import { SERVER_RESET_ITEMS, DANGER_ITEMS, type ServerResetItem, type BrowserDataItem } from '../../shared/reset'
 import { Overlay } from './Overlay'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 
 const BROWSER_CHILDREN: BrowserDataItem[] = ['input-history', 'drafts', 'appearance']
 const SERVER_LABELS: Record<ServerResetItem, string> = {
@@ -35,6 +36,10 @@ export function ResetConfigDialog({ open, onClose }: Props) {
   const [browser, setBrowser] = useState<Set<BrowserDataItem>>(new Set())
   const [confirmGate, setConfirmGate] = useState(false)
   const [confirmText, setConfirmText] = useState('')
+
+  // Same overlay scrollbar every other dialog uses; without it the body shows
+  // the native 10px scrollbar when the card cap binds on a short viewport.
+  const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
 
   // Reset state when dialog closes, synchronously before first paint so the
   // user never sees stale content from a previous invocation.
@@ -111,7 +116,7 @@ export function ResetConfigDialog({ open, onClose }: Props) {
           <h3>Clear configuration &amp; data</h3>
           <button className="btn btn-icon-sm" onClick={onClose} disabled={clearing} aria-label="Close"><IconX size={14} /></button>
         </div>
-        <div className="modal-section reset-config-body">
+        <div className="modal-section reset-config-body" ref={setBodyOs}>
           <div className="reset-group">
             <div className="reset-group-label">Configuration &amp; data</div>
             {normalServer.map(renderServer)}

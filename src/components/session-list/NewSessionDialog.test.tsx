@@ -1174,3 +1174,26 @@ describe('NewSessionDialog height animation', () => {
     expect(body().style.height).toBe('')
   })
 })
+
+describe('NewSessionDialog overlay scrollbar', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+  })
+
+  it('attaches the project overlay scrollbar to the modal-section scroll body (hides the native one)', () => {
+    const { baseElement } = render(<NewSessionDialog {...baseProps} />)
+    const section = baseElement.querySelector('.modal-section') as HTMLElement | null
+    expect(section).toBeTruthy()
+    // Same contract as PermissionDialog: the unified overlay thumb replaces
+    // the native 10px bar on the dialog's scroll body — the Advanced-options
+    // expansion is what makes it overflow the .modal cap.
+    expect(section!.hasAttribute('data-os-native-hidden')).toBe(true)
+    const card = baseElement.querySelector('.modal')
+    expect(card?.querySelector('.os-track')).toBeTruthy()
+  })
+})

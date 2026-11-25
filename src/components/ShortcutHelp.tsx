@@ -9,6 +9,8 @@ import type { SlashCommand } from '../types'
 import { formatCombo } from '../utils/format-combo'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 import { Overlay } from './Overlay'
 
 type Tab = 'commands' | 'shortcuts'
@@ -39,6 +41,10 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
   // also drives the tween on tab swaps and late command/shortcut changes.
   const bodyRef = useRef<HTMLDivElement>(null)
   const bodyContentRef = useRef<HTMLDivElement>(null)
+  // Same overlay scrollbar every other dialog uses; without it a long
+  // command/shortcut table shows the native 10px scrollbar.
+  const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const bodyRefMerged = useMergedRef(bodyRef, setBodyOs)
   const measureBodyHeight = useCallback(() => {
     const body = bodyRef.current
     const content = bodyContentRef.current
@@ -74,7 +80,7 @@ export function ShortcutHelp({ open, onClose, shortcuts, commands = [] }: Props)
           </div>
         )}
 
-        <div className="modal-section" ref={bodyRef}>
+        <div className="modal-section" ref={bodyRefMerged}>
           <div className="modal-section-content" ref={bodyContentRef}>
           {showCommands && tab === 'commands' && (
             <table className="shortcut-table">

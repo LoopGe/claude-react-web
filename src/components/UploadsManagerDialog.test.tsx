@@ -202,3 +202,12 @@ describe('UploadsManagerDialog height animation', () => {
     expect(body().classList.contains('auto-height-animating')).toBe(false)
   })
 })
+
+describe('UploadsManagerDialog overlay scrollbar', () => {
+  it('attaches the project overlay scrollbar to the uploads-body scroller', () => {
+    render(<UploadsManagerDialog open onClose={() => {}} />)
+    const body = document.querySelector<HTMLElement>('.uploads-body')!
+    expect(body.hasAttribute('data-os-native-hidden')).toBe(true)
+    expect(document.querySelector('.uploads-manager-card .os-track')).toBeTruthy()
+  })
+})

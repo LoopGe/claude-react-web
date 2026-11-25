@@ -21,6 +21,8 @@ import { Overlay } from './Overlay'
 import { HoverHint } from './HoverHint'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 
 interface Props {
   open?: boolean
@@ -113,6 +115,10 @@ export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
   // so a footer swap that changes the ceiling (card capped) tweens the list too.
   const listRef = useRef<HTMLDivElement>(null)
   const listContentRef = useRef<HTMLDivElement>(null)
+  // Same overlay scrollbar every other dialog uses; without it a long snippet
+  // list shows the native 10px scrollbar instead of the project's floating thumb.
+  const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const listRefMerged = useMergedRef(listRef, setListOs)
   const measureListHeight = useCallback(() => {
     const list = listRef.current
     const content = listContentRef.current
@@ -146,7 +152,7 @@ export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
         <h3>Composer snippets</h3>
       </div>
 
-      <div className="modal-section snippets-manager-list" ref={listRef}>
+      <div className="modal-section snippets-manager-list" ref={listRefMerged}>
         <div className="snippets-manager-list-content" ref={listContentRef}>
         {api.snippets.length === 0 ? (
           <div className="snippets-manager-empty">

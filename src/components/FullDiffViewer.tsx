@@ -14,6 +14,8 @@ import { Overlay } from './Overlay'
 import { IconX } from './icons/ToolIcons'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 
 /** How much of the fetched body is painted per step. 256 KB of text lays out
  *  comfortably; more than one step's worth is available via "Show more". */
@@ -35,6 +37,11 @@ export function FullDiffViewer({ open, onClose, name, fetchText }: Props) {
   const [shown, setShown] = useState(FULL_DIFF_CHUNK_CHARS)
   const bodyRef = useRef<HTMLDivElement>(null)
   const bodyContentRef = useRef<HTMLDivElement>(null)
+  // Same overlay scrollbar every other dialog uses; without it a long diff
+  // shows the native 10px scrollbar. Vertical only — the pre wraps
+  // (white-space: pre-wrap), so it never overflows horizontally.
+  const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const bodyRefMerged = useMergedRef(bodyRef, setBodyOs)
   // fetchText identity is caller-owned; keep the latest in a ref so a
   // re-render can't re-trigger the fetch (or fire a stale one). Synced in
   // an effect, never during render (react-hooks/refs).
@@ -106,7 +113,7 @@ export function FullDiffViewer({ open, onClose, name, fetchText }: Props) {
         <h3 className="file-viewer-title" title={name}>{name}</h3>
         <button className="btn btn-icon-sm" onClick={onClose} aria-label="Close"><IconX /></button>
       </div>
-      <div className="modal-section file-viewer-body" ref={bodyRef}>
+      <div className="modal-section file-viewer-body" ref={bodyRefMerged}>
         <div className="file-viewer-body-content" ref={bodyContentRef} role="presentation">
           {error && <div className="field-error">{error}</div>}
           {!error && text === null && <div className="hint">Loading full diff…</div>}

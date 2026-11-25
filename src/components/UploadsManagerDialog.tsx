@@ -21,6 +21,8 @@ import { useUploads } from '../hooks/useUploads'
 import { useUploadQueue, startUploads, dismissItem, consumeCompletion, type BatchCompletion } from '../hooks/useUploadQueue'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 import { formatBytes, formatRelativeTime } from '../utils/format'
 import type { UploadListItem } from '../../shared/uploads'
 import {
@@ -162,6 +164,10 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
   // modal rebases cleanly on close rather than tweening to a poisoned target.
   const bodyRef = useRef<HTMLDivElement>(null)
   const bodyContentRef = useRef<HTMLDivElement>(null)
+  // Same overlay scrollbar every other dialog uses; without it a long upload
+  // list shows the native 10px scrollbar instead of the project's floating thumb.
+  const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const bodyRefMerged = useMergedRef(bodyRef, setBodyOs)
   const nestedOverlayOpen = deleteTarget !== null || cleanMissingOpen || previewTarget !== null
   const measureBodyHeight = useCallback(() => {
     if (nestedOverlayOpen) return null
@@ -263,7 +269,7 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
       {/* Persistent animated body: wraps the whole conditional region (progress,
           loading/error, toolbar, list) so the loading→list swap tweens. The
           content wrapper is content-sized; the body is the scroll container. */}
-      <div className="uploads-body" ref={bodyRef}>
+      <div className="uploads-body" ref={bodyRefMerged}>
       <div className="uploads-body-content" ref={bodyContentRef}>
       {/* ── In-flight upload progress ─────────────────────────────── */}
       {items.length > 0 && (

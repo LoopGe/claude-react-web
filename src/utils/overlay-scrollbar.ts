@@ -147,6 +147,15 @@ export function attachOverlayScrollbar(
   const syncTrackBox = () => {
     const er = el.getBoundingClientRect()
     const pr = parent.getBoundingClientRect()
+    // Read the horizontal track's CSS thickness HERE, alongside the rect reads
+    // and before any style write below: a read after the writes would force a
+    // second synchronous reflow per update on the scroll/streaming hot path.
+    // INVARIANT: update() runs the axis pass (which owns os-track-hidden) before
+    // calling this, so the track's display state — and thus offsetHeight — is
+    // current. A hidden track reads 0, but its position is moot until the axis
+    // pass reveals it again on the next update. syncTrackBox is private; update()
+    // is its sole caller, so the ordering is controlled, not an external contract.
+    const hThickness = horizontal ? horizontal.track.offsetHeight : 0
     if (vertical) {
       vertical.track.style.top = `${er.top - pr.top - parent.clientTop + el.clientTop}px`
       vertical.track.style.height = `${el.clientHeight}px`
@@ -154,6 +163,17 @@ export function attachOverlayScrollbar(
     if (horizontal) {
       horizontal.track.style.left = `${er.left - pr.left - parent.clientLeft + el.clientLeft}px`
       horizontal.track.style.width = `${el.clientWidth}px`
+      // Pin the cross axis to el's padding-box bottom rather than trusting CSS
+      // bottom:0 — that only coincides with el when el is the parent's LAST
+      // child. A scroller with trailing siblings (StructuredPanel's JSON pre
+      // above the result meta row) would float the thumb below el, over
+      // content it does not belong to. The padding-box bottom is derived as
+      // er.top + clientTop + clientHeight (top border + padding-box height),
+      // exact under asymmetric vertical borders and equal to the vertical
+      // track's bottom edge — NOT er.bottom - clientTop, which assumes the
+      // bottom border equals the top.
+      horizontal.track.style.top = `${er.top + el.clientTop + el.clientHeight - pr.top - parent.clientTop - hThickness}px`
+      horizontal.track.style.bottom = 'auto'
     }
   }
 
@@ -194,9 +214,11 @@ export function attachOverlayScrollbar(
 
   const update = () => {
     if (destroyed) return
-    syncTrackBox()
+    // Axis pass first: it owns the track's display state (os-track-hidden),
+    // which syncTrackBox's horizontal thickness read (offsetHeight) depends on.
     updateAxis(vertical, 'vertical')
     updateAxis(horizontal, 'horizontal')
+    syncTrackBox()
   }
 
   // Coalesce event-driven updates (scroll, ResizeObserver, MutationObserver)

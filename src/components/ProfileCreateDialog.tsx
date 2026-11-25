@@ -15,6 +15,8 @@ import { Overlay } from './Overlay'
 import { StatusBadge } from './StatusBadge'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { measureCappedContentHeight } from '../utils/capped-height-measure'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 import type { ProviderProfile } from '../types/config'
 import { isReservedProfileTemplateId } from '../../shared/profile-templates'
 import { cx } from '../utils/cx'
@@ -51,12 +53,21 @@ export function ProfileCreateDialog({ profiles, busy = false, error, onConfirm, 
     ? picked
     : activeTemplate ?? 'blank'
 
+  // The capped (260px) options list is the dialog's primary scroller — same
+  // overlay scrollbar every other dialog uses, instead of the native 10px bar.
+  const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
+
   // The body grows when the profiles list lands after open or the error row
   // mounts; tween its height instead of jumping. The measure caps at the card
   // ceiling (pin-independent). The observer watches the content-sized wrapper;
   // the key also drives the tween.
   const bodyRef = useRef<HTMLDivElement>(null)
   const bodyContentRef = useRef<HTMLDivElement>(null)
+  // The outer section is a scroll body too: the content wrapper is a
+  // non-scrolling flex item whose min-content floor cannot shrink, so a short
+  // viewport squeezes the section into overflow past the inner list's cap.
+  const setSectionOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const bodyRefMerged = useMergedRef(bodyRef, setSectionOs)
   const measureBodyHeight = useCallback(() => {
     const body = bodyRef.current
     const content = bodyContentRef.current
@@ -81,13 +92,13 @@ export function ProfileCreateDialog({ profiles, busy = false, error, onConfirm, 
       <div className="modal-header">
         <h3>Add profile</h3>
       </div>
-      <div className="modal-section" ref={bodyRef}>
+      <div className="modal-section" ref={bodyRefMerged}>
         <div className="modal-section-content" ref={bodyContentRef}>
         <p className="confirm-dialog-message">
           Choose what the new profile starts from. The auth token is never copied — enter it after creating.
         </p>
         {error && <div className="settings-card-error">{error}</div>}
-        <ul className="profile-create-options">
+        <ul className="profile-create-options" ref={setListOs}>
           <li>
             <label className={cx('profile-create-option', selected === 'blank' && 'selected')}>
               <input
