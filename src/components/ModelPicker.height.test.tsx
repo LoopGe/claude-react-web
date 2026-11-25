@@ -16,7 +16,6 @@ const options: ModelOptions = {
   models: [{ id: 'm1' }, { id: 'm2' }],
   recents: [],
   defaultModel: 'm1',
-  modelGroups: [],
 }
 
 beforeEach(() => {

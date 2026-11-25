@@ -242,7 +242,7 @@ describe('floating surface hover policy', () => {
             <ModelPicker
               anchor={{ x: 0, y: 0, source: null }}
               current={undefined}
-              options={{ models: [{ id: 'm1' }], recents: [], defaultModel: 'm1', modelGroups: [] }}
+              options={{ models: [{ id: 'm1' }], recents: [], defaultModel: 'm1' }}
               onSelect={() => {}}
               onClose={() => setPickerOpen(false)}
             />

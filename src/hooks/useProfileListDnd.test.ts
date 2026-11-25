@@ -3,13 +3,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { dndData } from '../dnd/payload'
 import { useProfileListDnd, type ProfileModelRow } from './useProfileListDnd'
 import type { DragStartEvent, DragOverEvent } from '@dnd-kit/core'
-import type { ModelGroupConfig } from '../types/config'
-
-const groups: ModelGroupConfig[] = [
-  { id: 'g1', name: 'Group 1', main: 'opus' },
-  { id: 'g2', name: 'Group 2', main: 'sonnet' },
-  { id: 'g3', name: 'Group 3', main: 'haiku' },
-]
 
 /** Rows where uid === id: the drag events below address models by that
  *  shared string, which the hook resolves against `uid`. */
@@ -28,15 +21,11 @@ function overEvent(activeKind: string, activeId: string, overKind: string | null
   } as unknown as DragOverEvent
 }
 
-function setup(modelList = rows('ma', 'mb', 'mc'), modelGroups = groups, initialDirty = false) {
+function setup(modelList = rows('ma', 'mb', 'mc'), initialDirty = false) {
   let models = modelList
-  let groupsState = modelGroups
   let dirty = initialDirty
   const setModelList = vi.fn((updater: (prev: ProfileModelRow[]) => ProfileModelRow[]) => {
     models = updater(models)
-  })
-  const setModelGroups = vi.fn((updater: (prev: ModelGroupConfig[]) => ModelGroupConfig[]) => {
-    groupsState = updater(groupsState)
   })
   const setDirty = vi.fn((d: boolean) => {
     dirty = d
@@ -45,8 +34,6 @@ function setup(modelList = rows('ma', 'mb', 'mc'), modelGroups = groups, initial
     useProfileListDnd({
       modelList: models,
       setModelList,
-      modelGroups: groupsState,
-      setModelGroups,
       setDirty,
       dirty,
     }),
@@ -56,19 +43,15 @@ function setup(modelList = rows('ma', 'mb', 'mc'), modelGroups = groups, initial
     h.rerender({
       modelList: models,
       setModelList,
-      modelGroups: groupsState,
-      setModelGroups,
       setDirty,
       dirty,
     })
   return {
     get,
     setModelList,
-    setModelGroups,
     setDirty,
     sync,
     modelsRef: () => models.map((r) => r.id),
-    groupsRef: () => groupsState,
     dirtyRef: () => dirty,
   }
 }
@@ -88,21 +71,12 @@ describe('useProfileListDnd', () => {
     expect(modelsRef()).toEqual(['mb', 'mc', 'ma'])
   })
 
-  it('ignores model drags hovering a foreign kind (group card)', () => {
-    const { get, modelsRef, groupsRef, sync } = setup()
+  it('ignores model drags hovering a foreign kind', () => {
+    const { get, modelsRef, sync } = setup()
     act(() => get().handleDragStart(startEvent('profile-model', 'ma')))
-    act(() => get().handleDragOver(overEvent('profile-model', 'ma', 'profile-model-group', 'g2')))
+    act(() => get().handleDragOver(overEvent('profile-model', 'ma', 'sidebar-card', 's1')))
     sync()
     expect(modelsRef()).toEqual(['ma', 'mb', 'mc'])
-    expect(groupsRef()).toEqual(groups)
-  })
-
-  it('live-reorders group cards while dragging over another group', () => {
-    const { get, groupsRef, sync } = setup()
-    act(() => get().handleDragStart(startEvent('profile-model-group', 'g1')))
-    act(() => get().handleDragOver(overEvent('profile-model-group', 'g1', 'profile-model-group', 'g3')))
-    sync()
-    expect(groupsRef().map((g) => g.id)).toEqual(['g2', 'g3', 'g1'])
   })
 
   it('drag end with a changed order marks dirty; unchanged does not', () => {
@@ -144,7 +118,7 @@ describe('useProfileListDnd', () => {
   })
 
   it('drag cancel keeps dirty when the card was already dirty before pickup', () => {
-    const { get, dirtyRef, sync } = setup(rows('ma', 'mb', 'mc'), groups, true)
+    const { get, dirtyRef, sync } = setup(rows('ma', 'mb', 'mc'), true)
     act(() => get().handleDragStart(startEvent('profile-model', 'ma')))
     act(() => get().handleDragOver(overEvent('profile-model', 'ma', 'profile-model', 'mc')))
     sync()

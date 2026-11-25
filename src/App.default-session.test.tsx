@@ -127,7 +127,6 @@ function config(configured: boolean, cwd = '/fresh/default', model = 'fresh-mode
     configured,
     defaults: { cwd, model },
     models: [model],
-    modelGroups: [],
   } as ConfigResponse
 }
 

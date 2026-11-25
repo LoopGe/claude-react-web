@@ -163,21 +163,10 @@ export interface ProviderProfile {
   authTokenMasked?: string
   baseUrl: string
   modelList: string[]
-  modelGroups: ModelGroupConfig[]
   modelContextWindows?: Record<string, number>
   recapModel: string
   commitMessageModel: string
   isActive: boolean
-}
-
-/** Client-side mirror of the server's ModelGroupConfig (server/config.ts). */
-export interface ModelGroupConfig {
-  id: string
-  name: string
-  opus?: string
-  sonnet?: string
-  haiku?: string
-  main?: 'opus' | 'sonnet' | 'haiku'
 }
 
 export interface Defaults {
@@ -194,7 +183,6 @@ export interface ConfigResponse extends Partial<GlobalPrefs> {
   configured?: boolean
   defaults: Defaults
   models?: string[]
-  modelGroups?: ModelGroupConfig[]
   maxGroupPanels?: number
   maxUploadBytes?: number
   /** Internal cap on the total size of pasted images in one message (bytes).
@@ -217,7 +205,6 @@ export interface FullServerConfig extends GlobalPrefs {
   authTokenMasked?: string
   baseUrl: string
   modelList: string[]
-  modelGroups?: ModelGroupConfig[]
   recapModel: string
   commitMessageModel: string
   maxUploadBytes: number

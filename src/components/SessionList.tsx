@@ -12,7 +12,6 @@ import { isWaiting } from '../utils/session-status'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '../types'
-import type { ModelGroupConfig } from '../types/config'
 import { NewSessionDialog } from './session-list/NewSessionDialog'
 import { SessionContextMenu } from './session-list/SessionContextMenu'
 import { buildGroupContextMenuItems } from './session-list/groupMenuItems'
@@ -99,8 +98,6 @@ interface Props {
   /** Server-configured model list (from /api/config). Shown first in the
    *  new-session dialog's Model picker so the user always has a baseline. */
   serverModels?: string[]
-  /** Model Groups from the same /config snapshot as `serverModels`. */
-  modelGroups?: ModelGroupConfig[]
   /** Ids currently being resumed — item is disabled while the POST is in flight. */
   resumingIds?: Set<string>
   /** Map of sessionId → true when the session has a newer lastTurnAt than

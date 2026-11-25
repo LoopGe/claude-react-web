@@ -132,7 +132,7 @@ import {
   LAST_SEEN_TURN_KEY,
   clampMaxOpen,
 } from './constants/storageKeys'
-import type { Defaults, ConfigResponse, ModelGroupConfig, GlobalPrefs, DisplayPresetPrefs } from './types/config'
+import type { Defaults, ConfigResponse, GlobalPrefs, DisplayPresetPrefs } from './types/config'
 import { DEFAULT_GLOBAL_PREFS, globalPrefsFromConfig, sameGlobalPrefs } from './types/config'
 import { onProfilesChanged } from './utils/profiles-events'
 import { fetchConfig, markConfigStale, patchConfigCache, peekConfig, subscribeModelOptions } from './state/modelOptionsStore'
@@ -349,9 +349,6 @@ export function App() {
   )
   const [defaults, setDefaults] = useState<Defaults>({})
   const [serverModels, setServerModels] = useState<string[]>([])
-  /** Model Groups from the same /config snapshot as `serverModels` — threaded
-   *  to the New session dialog so it never issues its own /config. */
-  const [modelGroups, setModelGroups] = useState<ModelGroupConfig[]>([])
   /** Global UI-pref defaults (server-backed, config.json). Sessions without
    *  an explicit per-session override inherit these. Refreshed live whenever
    *  the global settings modal saves (handleGlobalSettingsSaved →
@@ -670,10 +667,9 @@ export function App() {
     setIsConfigured(r.configured !== false)
     if (r.configured === false) return
     setDefaults(r.defaults)
-    // `?? []` on BOTH: an omitted models/modelGroups field must clear, not
-    // leave the previous profile's list next to a wiped sibling.
+    // `?? []`: an omitted models field must clear, not leave the previous
+    // profile's list next to a wiped sibling.
     setServerModels(r.models ?? [])
-    setModelGroups(r.modelGroups ?? [])
     if (r.maxGroupPanels != null) setServerMaxOpen(r.maxGroupPanels)
     if (r.maxUploadBytes != null) setMaxUploadBytes(r.maxUploadBytes)
     if (r.maxPastedImageBytes != null) setMaxPastedImageBytes(r.maxPastedImageBytes)
@@ -4979,15 +4975,15 @@ export function App() {
     applyConfigResponse(r)
   }, [applyConfigResponse])
 
-  // Profile mutations change modelList / modelGroups on the active profile.
-  // Refresh the App-level /config snapshot so `serverModels` and `modelGroups`
-  // stay the same generation (previously only useModelOptions refetched, so
-  // the New session dialog's model list and group list could disagree).
+  // Profile mutations change modelList on the active profile. Refresh the
+  // App-level /config snapshot so `serverModels` stays the same generation
+  // (previously only useModelOptions refetched, so the New session dialog's
+  // model list and the picker's could disagree).
   useEffect(
     () =>
       onProfilesChanged(() => {
-        // Surface failures — a silent void would leave serverModels/modelGroups
-        // stale after a profile mutation with no signal (same policy as
+        // Surface failures — a silent void would leave serverModels stale
+        // after a profile mutation with no signal (same policy as
         // handleGlobalSettingsSaved below).
         refreshConfigResponse().catch((err) => {
           console.error('Post-profile-change /config refresh failed:', err)
@@ -5204,7 +5200,6 @@ export function App() {
           focusedId={focusedId}
           defaults={defaults}
           serverModels={serverModels}
-          modelGroups={modelGroups}
           resumingIds={resuming}
           unread={unread}
           deletingIds={deletingSessionIds}

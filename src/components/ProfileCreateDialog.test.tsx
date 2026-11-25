@@ -22,7 +22,6 @@ function profile(id: string, overrides: Partial<ProviderProfile> = {}): Provider
     authTokenMasked: undefined,
     baseUrl: 'https://api.anthropic.com',
     modelList: ['m1'],
-    modelGroups: [],
     recapModel: '',
     commitMessageModel: '',
     isActive: false,

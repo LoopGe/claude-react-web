@@ -1,11 +1,11 @@
-// Shared model / model-group snapshot for the whole app.
+// Shared model snapshot for the whole app.
 //
 // Before this store, two independent fetchers kept two generations of the
-// same data: App's `/config` pull fed `serverModels` + `modelGroups` (New
-// session dialog) while `useModelOptions` pulled `/config` or `/profiles`
-// again for ChatPanel's ModelPicker and SettingsPanel. A profile mutation
-// refreshed one and not the other, so the dialog's model list and the
-// picker's group list could disagree.
+// same data: App's `/config` pull fed `serverModels` (New session dialog)
+// while `useModelOptions` pulled `/config` or `/profiles` again for
+// ChatPanel's ModelPicker and SettingsPanel. A profile mutation refreshed
+// one and not the other, so the dialog's model list and the picker's could
+// disagree.
 //
 // Now there is ONE snapshot per fetch key:
 //   - `''` (or undefined) → the active profile, from GET /config
@@ -26,7 +26,7 @@
 // unmount must not cancel it for the others.
 
 import { api } from '../hooks/useApi'
-import type { ConfigResponse, ModelGroupConfig } from '../types/config'
+import type { ConfigResponse } from '../types/config'
 import { onProfilesChanged } from '../utils/profiles-events'
 
 export interface ModelOption {
@@ -37,10 +37,9 @@ export interface ModelOption {
 export interface ModelOptionsSnapshot {
   models: ModelOption[]
   defaultModel?: string
-  modelGroups: ModelGroupConfig[]
 }
 
-const EMPTY_SNAPSHOT: ModelOptionsSnapshot = { models: [], modelGroups: [] }
+const EMPTY_SNAPSHOT: ModelOptionsSnapshot = { models: [] }
 
 type Listener = () => void
 const listeners = new Set<Listener>()
@@ -98,7 +97,6 @@ function entryFor(key: string): Entry<ModelOptionsSnapshot> {
 
 function snapshotFromModelList(
   modelList: string[] | undefined,
-  modelGroups: ModelGroupConfig[] | undefined,
 ): ModelOptionsSnapshot {
   const ids = modelList ?? []
   const seen = new Set<string>()
@@ -111,7 +109,7 @@ function snapshotFromModelList(
   }
   // The server's default is the first configured model — the same value
   // create() pins (config.defaultModel === modelList[0]).
-  return { models, defaultModel: ids[0], modelGroups: modelGroups ?? [] }
+  return { models, defaultModel: ids[0] }
 }
 
 /** Last successfully-fetched raw /config body, if any. */
@@ -176,7 +174,7 @@ export function fetchConfig(opts?: { force?: boolean }): Promise<ConfigResponse>
       // one) must not revert the value the client already persisted.
       configEntry.data = { ...r, ...localConfigPatch }
       const active = entryFor('')
-      active.data = snapshotFromModelList(r.models, r.modelGroups)
+      active.data = snapshotFromModelList(r.models)
       notify()
       return r
     })
@@ -226,7 +224,7 @@ export async function fetchModelOptions(
   const p = (async (): Promise<ModelOptionsSnapshot> => {
     try {
       const r = await api.get<{
-        profiles?: { id: string; modelList?: string[]; modelGroups?: ModelGroupConfig[] }[]
+        profiles?: { id: string; modelList?: string[] }[]
       }>('/profiles')
       if (gen !== generation) {
         // Stale: don't return the pre-invalidate body (and don't let
@@ -235,7 +233,7 @@ export async function fetchModelOptions(
       }
       const profile = r.profiles?.find((x) => x.id === key)
       if (profile) {
-        entry.data = snapshotFromModelList(profile.modelList, profile.modelGroups)
+        entry.data = snapshotFromModelList(profile.modelList)
         notify()
         return entry.data
       }
@@ -275,9 +273,9 @@ export function resetModelOptionsStoreForTest(): void {
   listeners.clear()
 }
 
-// Profile mutations rewrite modelList / modelGroups. Invalidate before any
-// consumer's own `crw-profiles-changed` handler refetches, so they all join
-// one fresh generation instead of racing a stale cache.
+// Profile mutations rewrite modelList. Invalidate before any consumer's own
+// `crw-profiles-changed` handler refetches, so they all join one fresh
+// generation instead of racing a stale cache.
 onProfilesChanged(() => {
   invalidateModelOptions()
 })

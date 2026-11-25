@@ -22,8 +22,8 @@ afterEach(() => cleanup())
 
 function profiles(existing: ProviderProfile[] = []): ProviderProfile[] {
   return [
-    { id: 'a', name: 'A', isActive: true, baseUrl: '', modelList: [], modelGroups: [], recapModel: '', commitMessageModel: '' },
-    { id: 'b', name: 'B', isActive: false, baseUrl: '', modelList: [], modelGroups: [], recapModel: '', commitMessageModel: '' },
+    { id: 'a', name: 'A', isActive: true, baseUrl: '', modelList: [], recapModel: '', commitMessageModel: '' },
+    { id: 'b', name: 'B', isActive: false, baseUrl: '', modelList: [], recapModel: '', commitMessageModel: '' },
     ...existing,
   ]
 }

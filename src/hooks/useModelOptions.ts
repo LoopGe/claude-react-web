@@ -39,7 +39,6 @@ import {
   type ModelOption,
   type ModelOptionsSnapshot,
 } from '../state/modelOptionsStore'
-import type { ModelGroupConfig } from '../types/config'
 
 export type { ModelOption } from '../state/modelOptionsStore'
 
@@ -53,8 +52,6 @@ export interface ModelOptions {
    *  model. Used by the picker to mark the default as selected for a
    *  session whose model is still empty. Undefined until /config resolves. */
   defaultModel?: string
-  /** The user's configured ModelGroups (config.modelGroups), in order. */
-  modelGroups: ModelGroupConfig[]
 }
 
 export function useModelOptions(_sessionId: string, enabled: boolean, profileId?: string): ModelOptions {
@@ -111,7 +108,6 @@ export function useModelOptions(_sessionId: string, enabled: boolean, profileId?
     peekModelOptions(profileId) ?? (last && last.profileId === profileId ? last.snap : null)
   const models = snap?.models ?? []
   const defaultModel = snap?.defaultModel
-  const modelGroups = snap?.modelGroups ?? []
 
   // Recents come from the shared MRU adapter so a write in the New Session
   // dialog (rememberNow) or an external deletion (removeLocalStorageKey
@@ -119,5 +115,5 @@ export function useModelOptions(_sessionId: string, enabled: boolean, profileId?
   // The adapter owns normalization, cap enforcement, and same-tab sync.
   const { recents } = useRecentModels()
 
-  return { models, recents, defaultModel, modelGroups }
+  return { models, recents, defaultModel }
 }

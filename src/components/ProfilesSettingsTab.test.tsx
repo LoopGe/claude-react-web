@@ -32,7 +32,6 @@ const profiles: ProviderProfile[] = [
     authTokenMasked: '****cdef',
     baseUrl: 'https://gw1',
     modelList: ['ma'],
-    modelGroups: [],
     recapModel: 'r',
     commitMessageModel: 'c',
   },
@@ -43,7 +42,6 @@ const profiles: ProviderProfile[] = [
     authTokenMasked: undefined,
     baseUrl: 'https://gw2',
     modelList: ['mb'],
-    modelGroups: [],
     recapModel: 'r',
     commitMessageModel: 'c',
   },
@@ -104,10 +102,6 @@ describe('ProfilesSettingsTab', () => {
         authTokenMasked: '****cdef',
         baseUrl: '',
         modelList: ['ma', 'mb', 'mc'],
-        modelGroups: [
-          { id: 'g1', name: 'Group 1', main: 'opus' },
-          { id: 'g2', name: 'Group 2', main: 'sonnet' },
-        ],
         recapModel: '',
         commitMessageModel: '',
       },
@@ -127,18 +121,13 @@ describe('ProfilesSettingsTab', () => {
       return update
     }
 
-    /** Give the sortable rows/cards real geometry — jsdom reports every rect
+    /** Give the sortable rows real geometry — jsdom reports every rect
      *  as 0×0, which would collapse dnd-kit's closestCenter collision
-     *  detection. Rows stack at 40px; group cards sit below at 200px+. */
+     *  detection. Rows stack at 40px. */
     function primeRects(container: HTMLElement) {
-      // Scope to the Available-Models list (the first .settings-model-list):
-      // group cards contain their own .settings-model-row header.
       const list = container.querySelector<HTMLElement>('.settings-model-list')!
       list.querySelectorAll<HTMLElement>(':scope > .settings-model-row').forEach((el, i) => {
         el.getBoundingClientRect = () => rect(0, i * 40, 300, 38)
-      })
-      container.querySelectorAll<HTMLElement>('.settings-model-group').forEach((el, i) => {
-        el.getBoundingClientRect = () => rect(0, 200 + i * 60, 300, 58)
       })
     }
 
@@ -176,8 +165,7 @@ describe('ProfilesSettingsTab', () => {
       return [...list.querySelectorAll<HTMLInputElement>(':scope > .settings-model-row > input[aria-label^="Model ID"]')].map((el) => el.value)
     }
 
-    /** Grip (rank badge) of each row in the Available-Models list, excluding
-     *  the group cards' header rows. */
+    /** Grip (rank badge) of each row in the Available-Models list. */
     const modelGrips = (container: HTMLElement) =>
       [...container.querySelectorAll<HTMLElement>('.settings-model-list > .settings-model-row > .settings-model-rank')]
 
@@ -207,22 +195,6 @@ describe('ProfilesSettingsTab', () => {
           expect.objectContaining({ modelList: ['ma', 'mb', 'mc'] }),
         )
       })
-    })
-
-    it('reorders model groups via the rank grip', async () => {
-      mockMulti()
-      const { container } = render(<ProfilesSettingsTab />)
-      primeRects(container)
-      const grips = [...container.querySelectorAll<HTMLElement>('.settings-model-group > .settings-model-row > .settings-model-rank')]
-      expect(grips).toHaveLength(2)
-      // Drag group 1's grip onto group 2's card → Group 2, Group 1. The drop
-      // point is g2's centre: dnd-kit caches the ACTIVE node's rect at mount
-      // (0×0 in jsdom — the stubs land after mount), so collision resolution
-      // keys off the drop coordinates against the freshly-measured droppables.
-      await dragGripTo(grips[0], 300)
-      const names = [...container.querySelectorAll<HTMLInputElement>('.settings-model-group input[aria-label="Group name"]')]
-        .map((el) => el.value)
-      expect(names).toEqual(['Group 2', 'Group 1'])
     })
 
     it('marks the list dirty so Save flushes the new order', async () => {
@@ -260,7 +232,6 @@ describe('ProfilesSettingsTab', () => {
       authTokenMasked: undefined,
       baseUrl: '',
       modelList: [],
-      modelGroups: [],
       recapModel: '',
       commitMessageModel: '',
     }
@@ -539,7 +510,6 @@ describe('ProfilesSettingsTab', () => {
         authTokenMasked: '****cdef',
         baseUrl: 'https://gw1',
         modelList: ['vendor/listed'],
-        modelGroups: [],
         // Stored, but NOT in this profile's model list (e.g. carried over
         // from another subscription).
         recapModel: 'vendor/unlisted',
@@ -583,8 +553,8 @@ describe('ProfilesSettingsTab', () => {
   })
 
   describe('inline model-id editing', () => {
-    /** Three models; recap/commit and the group's tier slots point at some of
-     *  them so rename/remove reference-following is observable. */
+    /** Three models; recap/commit point at some of them so rename/remove
+     *  reference-following is observable. */
     const editable: ProviderProfile[] = [
       {
         id: 'a',
@@ -593,7 +563,6 @@ describe('ProfilesSettingsTab', () => {
         authTokenMasked: '****cdef',
         baseUrl: 'https://gw1',
         modelList: ['ma', 'mb', 'mc'],
-        modelGroups: [{ id: 'g1', name: 'Group 1', main: 'opus', opus: 'mc', sonnet: 'ma', haiku: 'other' }],
         recapModel: 'ma',
         commitMessageModel: 'mb',
       },
@@ -614,8 +583,7 @@ describe('ProfilesSettingsTab', () => {
     }
 
     /** Row inputs of the Available-Models list, in order. The add-row's
-     *  "New model ID" input and the group card's slot inputs are excluded by
-     *  the accessible name. */
+     *  "New model ID" input is excluded by the accessible name. */
     const rowInputs = (container: HTMLElement) =>
       [...container.querySelectorAll<HTMLInputElement>('.settings-model-list > .settings-model-row input[aria-label^="Model ID"]')]
 
@@ -700,23 +668,6 @@ describe('ProfilesSettingsTab', () => {
       })
     })
 
-    it('rewrites model-group tier slots pointing at the renamed id, leaving other slots alone', async () => {
-      const update = mockEditable()
-      const { container } = render(<ProfilesSettingsTab />)
-      // g1 slots: opus='mc', sonnet='ma', haiku='other'.
-      fireEvent.change(rowInputs(container)[2], { target: { value: 'mc-new' } })
-      fireEvent.keyDown(rowInputs(container)[2], { key: 'Enter' })
-      expect((screen.getByLabelText('Opus') as HTMLInputElement).value).toBe('mc-new')
-      expect((screen.getByLabelText('Sonnet') as HTMLInputElement).value).toBe('ma')
-      expect((screen.getByLabelText('Haiku') as HTMLInputElement).value).toBe('other')
-      saveAll()
-      await vi.waitFor(() => {
-        expect(update).toHaveBeenCalledWith('a', expect.objectContaining({
-          modelGroups: [expect.objectContaining({ opus: 'mc-new', sonnet: 'ma', haiku: 'other' })],
-        }))
-      })
-    })
-
     it('keeps the default slot and row order when the first row is renamed', () => {
       mockEditable()
       const { container } = render(<ProfilesSettingsTab />)
@@ -792,7 +743,7 @@ describe('ProfilesSettingsTab', () => {
       vi.mocked(useProfiles.useProfiles).mockReturnValue({
         profiles: [
           ...editable,
-          { ...editable[0], id: 'b', name: 'B', isActive: false, modelList: ['mb-only'], modelGroups: [], recapModel: '', commitMessageModel: '' },
+          { ...editable[0], id: 'b', name: 'B', isActive: false, modelList: ['mb-only'], recapModel: '', commitMessageModel: '' },
         ],
         activeProfileId: 'a',
         refresh: vi.fn(),
@@ -850,34 +801,15 @@ describe('ProfilesSettingsTab', () => {
       })
     })
 
-    it('blur-commit rewrites recap/commit/group references like Enter does', async () => {
+    it('blur-commit flushes the renamed id like Enter does', async () => {
       const update = mockEditable()
       const { container } = render(<ProfilesSettingsTab />)
       fireEvent.change(rowInputs(container)[2], { target: { value: 'mc-new' } })
       fireEvent.blur(rowInputs(container)[2])
-      expect((screen.getByLabelText('Opus') as HTMLInputElement).value).toBe('mc-new')
       saveAll()
       await vi.waitFor(() => {
         expect(update).toHaveBeenCalledWith('a', expect.objectContaining({
           modelList: ['ma', 'mb', 'mc-new'],
-          modelGroups: [expect.objectContaining({ opus: 'mc-new' })],
-        }))
-      })
-    })
-
-    it('clears model-group tier slots when their model row is removed', async () => {
-      const update = mockEditable()
-      const { container } = render(<ProfilesSettingsTab />)
-      // g1.opus === 'mc'; remove the 'mc' row.
-      const rows = container.querySelectorAll('.settings-model-list > .settings-model-row')
-      fireEvent.click(rows[2].querySelector('button[aria-label="Remove"]')!)
-      expect(rowInputs(container).map((el) => el.value)).toEqual(['ma', 'mb'])
-      expect((screen.getByLabelText('Opus') as HTMLInputElement).value).toBe('')
-      saveAll()
-      await vi.waitFor(() => {
-        expect(update).toHaveBeenCalledWith('a', expect.objectContaining({
-          modelList: ['ma', 'mb'],
-          modelGroups: [expect.objectContaining({ sonnet: 'ma', haiku: 'other' })],
         }))
       })
     })

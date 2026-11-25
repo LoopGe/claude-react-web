@@ -32,10 +32,6 @@ export type DragPayload =
    *  id string, which is mutable via inline edit and must not double as
    *  identity. Accepted only by other model rows in the same list. */
   | { kind: 'profile-model'; id: string }
-  /** A model-group card dragged inside Global Settings → Profiles →
-   *  Model Groups. `id` is `ModelGroupConfig.id`. Accepted only by other
-   *  group cards in the same profile. */
-  | { kind: 'profile-model-group'; id: string }
   /** The main panel grid as a whole is a drop zone — dropping a sidebar card
    *  there opens the session. */
   | { kind: 'main-grid' }
@@ -45,7 +41,6 @@ const VALID_KINDS = new Set<DragPayload['kind']>([
   'main-panel',
   'group-card',
   'profile-model',
-  'profile-model-group',
   'main-grid',
 ])
 

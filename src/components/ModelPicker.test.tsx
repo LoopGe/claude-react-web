@@ -14,10 +14,6 @@ function makeProps(overrides: Partial<Parameters<typeof ModelPicker>[0]> = {}) {
     models: [{ id: 'm1' }, { id: 'm2' }],
     recents: [],
     defaultModel: 'm1',
-    modelGroups: [
-      { id: 'g1', name: 'Flagship', opus: 'm1', sonnet: 'm2', main: 'opus' },
-      { id: 'g2', name: 'Budget', haiku: 'm2', main: 'haiku' },
-    ],
   }
   return {
     // `source: null` = no anchor element, i.e. nothing to carry an accent from.

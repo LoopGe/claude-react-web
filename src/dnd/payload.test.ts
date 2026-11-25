@@ -14,7 +14,6 @@ describe('dndData / dndPayloadOf', () => {
       { kind: 'main-panel', id: 's2' },
       { kind: 'group-card', id: 'g1' },
       { kind: 'profile-model', id: 'm1' },
-      { kind: 'profile-model-group', id: 'g2' },
       { kind: 'main-grid' },
     ]
     for (const p of payloads) {
