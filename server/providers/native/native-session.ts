@@ -1252,11 +1252,12 @@ export class NativeSession implements NativeSessionCore {
         // must not receive an unexpected thinking field. No effort/fastMode/
         // temperature/thinkingDisplay — prediction needs none of them.
         // Known limitation (design §11): always-on-thinking Anthropic models
-        // (e.g. Opus 5.5 / Sonnet 5.5 / Fable 5) 400 on thinking:disabled at
-        // every effort level, yet the keyword classifier returns true for
-        // them — the fork silently skips there (contained by the silent-
-        // failure contract). A thinking-mode-aware gate is a scheduled
-        // follow-up.
+        // whose ids match the classifier (e.g. Opus 5.5 / Sonnet 5.5) 400 on
+        // thinking:disabled at every effort level, yet the keyword classifier
+        // (opus/sonnet substring) returns true for them — the fork silently
+        // skips there (contained by the silent-failure contract). Fable ids do
+        // NOT match the classifier, so they take the omitted-field path instead.
+        // A thinking-mode-aware gate is a scheduled follow-up.
         ...(supportsThinkingForModel(snap.model) === true ? { thinking: { type: 'disabled' as const } } : {}),
         signal,
       }

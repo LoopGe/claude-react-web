@@ -226,10 +226,11 @@ CreateSessionOptions 进 NativeSession opts，`?? true` 默认与 claude-provide
 - **Anthropic 直连的尾部成本**：最终 assistant 回复对 fork 是 uncached 输入（父请求未缓存它），
   每次建议全价读这段尾部——这正是 10K 尾部门约束的对象（CLI 同形）；fork 不打新断点，尾部
   不会被写入 cache（skipCacheWrite 等价）。
-- **常开思考模型（Anthropic 直连，已知局限）**：当前 always-on-thinking 的 Anthropic 模型
-  （如 Opus 5.5 / Sonnet 5.5 / Fable 5）在任意 effort 档位下对 `thinking:{type:'disabled'}`
-  一律返回 400；关键词分类器 `supportsThinkingForModel` 对这些 ID 返回 true，于是 fork 照发
-  disabled，在此类模型的 Anthropic 直连上静默失败（无建议）。由静默失败合同（§7）兜底：
+- **常开思考模型（Anthropic 直连，已知局限）**：当前 always-on-thinking 且 ID 命中关键词分类器
+  （opus/sonnet 子串）的 Anthropic 模型（如 Opus 5.5 / Sonnet 5.5）在任意 effort 档位下对
+  `thinking:{type:'disabled'}` 一律返回 400；分类器对这些 ID 返回 true，于是 fork 照发
+  disabled，在此类模型的 Anthropic 直连上静默失败（无建议）。Fable 系 ID 不命中分类器，走省略
+  字段路径（不受此 400 影响）。由静默失败合同（§7）兜底：
   无成本失控、不影响主 turn；主力 Mify 网关场景不受影响（非 Claude ID → 分类器返回 false →
   省略 thinking 字段）。thinking-mode-aware 的门控已排期为后续跟进（触及 shared 模型能力
   分类与用户已拍板的 thinking 决策，需单独设计，不在本修复波次内改动）。
