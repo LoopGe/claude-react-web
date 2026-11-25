@@ -20,9 +20,6 @@ import { config as defaultConfig, DEFAULT_PROFILE } from '../../config.js'
 import type { ProviderProfile } from '../../config.js'
 import { profileDefaultModel, resolveActiveProfile } from '../../profiles.js'
 import { isSdkForwardedMode } from '../../permission-modes.js'
-import {
-  resolveConfiguredModelId,
-} from '../../model-groups.js'
 import { readHistoryEntries, readHistorySnapshot, readLastUserPrompt } from '../../history-reader.js'
 import { condensePromptPreview } from '../../../shared/prompt-preview.js'
 import { stripHandles } from '../../../shared/attachment-handle.js'
@@ -284,15 +281,6 @@ export function envCacheKey(profile: ProviderProfile, configDir: string, maxOutp
   // empty string, and a plain separator cannot survive a field that contains
   // it. authToken/baseUrl come from user-authored config.json.
   return JSON.stringify([profile.authToken, profile.baseUrl ?? null, configDir, maxOutputTokens])
-}
-
-/** Same short-name -> configured-model resolution the manager uses for the
- *  main model, wired to the provider's view of the configured list. */
-function resolveConfiguredModel(
-  model: string | undefined,
-  modelList: readonly string[],
-): string | undefined {
-  return resolveConfiguredModelId(model, modelList)
 }
 
 export interface ClaudeProviderOptions {
