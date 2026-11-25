@@ -232,6 +232,10 @@ describe('screenSuggestion (q) — rule order, first hit wins', () => {
     kill('助かりました', 'evaluative')
     kill('谢谢你', 'evaluative')
     kill('感謝します', 'evaluative')
+    kill('感谢', 'evaluative') // simplified thank-you
+    kill('謝謝', 'evaluative') // traditional thank-you
+    kill('感谢你的帮助', 'evaluative') // starts-with
+    kill('謝謝你的帮助', 'evaluative')
     kill('고마워', 'evaluative')
     kill('良さそう', 'evaluative')
     kill('よさそう', 'evaluative')
@@ -270,6 +274,12 @@ describe('screenSuggestion (q) — rule order, first hit wins', () => {
     kill('我会跑测试', 'claude_voice')
     kill('我将提交', 'claude_voice')
     kill('让我跑测试', 'claude_voice')
+    // Curly apostrophe (U+2019) is the same voice prefix.
+    kill('I’ll run the tests', 'claude_voice')
+    kill('I’ve fixed it', 'claude_voice')
+    kill('I’m running tests', 'claude_voice')
+    kill('Here’s the plan', 'claude_voice')
+    kill('that’s fine', 'claude_voice')
     // Exempt: other subjects are user voice.
     ok('let them run the tests')
   })

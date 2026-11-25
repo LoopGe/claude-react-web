@@ -89,16 +89,18 @@ const CJK_SENTENCE_RE = /[。！？]\s*[\p{L}\p{N}]/u
 const FORMATTING_RE = /[\r\n*]/
 
 /** Evaluative lead-ins. English phrases need a trailing word boundary so
- *  e.g. "greatly improve the tests" is not killed by "great". */
+ *  e.g. "greatly improve the tests" is not killed by "great". The Chinese
+ *  thank-you covers simplified and traditional (谢谢/謝謝/感谢/感謝). */
 const EVALUATIVE_RE =
   /^(?:thanks|thank you|looks good|sounds good|that works|that worked|that's all|nice|great|perfect|makes sense|awesome|excellent)\b/i
 const EVALUATIVE_CJK_RE =
-  /^(?:ありがとう(?:ございます|ました)?|助かりました|谢谢[你您]?|感謝|감사합니다|고마워|良さそう|よさそう|いいですね|看起来不错|太好了|完美|좋네요)/u
+  /^(?:ありがとう(?:ございます|ました)?|助かりました|谢谢[你您]?|謝謝|感谢|感謝|감사합니다|고마워|良さそう|よさそう|いいですね|看起来不错|太好了|完美|좋네요)/u
 
-/** Assistant-voice lead-ins. 让我 carries a (?!们) lookahead so the
- *  user-voice 让我们 ("let us") survives. */
+/** Assistant-voice lead-ins. Apostrophes accept straight ' and curly ’
+ *  (U+2019). 让我 carries a (?!们) lookahead so the user-voice 让我们
+ *  ("let us") survives. */
 const CLAUDE_VOICE_RE =
-  /^(?:let me\b|i'll\b|i've\b|i'm\b|i can\b|i would\b|i think\b|i notice\b|here's\b|here is\b|here are\b|that's\b|this is\b|this will\b|you can\b|you should\b|you could\b|sure,|of course\b|certainly\b|让我(?!们)|我来|我会|我将)/i
+  /^(?:let me\b|i['’]ll\b|i['’]ve\b|i['’]m\b|i can\b|i would\b|i think\b|i notice\b|here['’]s\b|here is\b|here are\b|that['’]s\b|this is\b|this will\b|you can\b|you should\b|you could\b|sure,|of course\b|certainly\b|让我(?!们)|我来|我会|我将)/i
 
 function cjkCharCount(s: string): number {
   return (s.match(CJK_CHAR_RE) ?? []).length
