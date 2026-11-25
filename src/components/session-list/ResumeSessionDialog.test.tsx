@@ -146,6 +146,27 @@ describe('ResumeSessionDialog', () => {
     expect(branch.style.flexShrink).toBe('0')
   })
 
+  // Unknown rows come from two providers: native (direct API) sessions and
+  // CLI-created ones. The badge names the provider; known rows carry none.
+  it('badges unknown rows by provider and leaves known rows unbadged', async () => {
+    const base = { lastModified: 1_700_000_000_000, running: false, terminated: false }
+    vi.mocked(api.get).mockResolvedValue({
+      sessions: [
+        { ...base, sessionId: 'native-unknown', title: 'Native unknown', known: false, provider: 'native' },
+        { ...base, sessionId: 'claude-unknown', title: 'Claude unknown', known: false, provider: 'claude' },
+        { ...base, sessionId: 'known', title: 'Known', known: true, provider: 'native' },
+      ],
+    })
+    setup()
+    await waitFor(() => expect(rows()).toHaveLength(3))
+
+    const badgesOf = (row: HTMLButtonElement) =>
+      Array.from(row.querySelectorAll('.resume-badge')).map((el) => el.textContent)
+    expect(badgesOf(rows()[0])).toEqual(['native'])
+    expect(badgesOf(rows()[1])).toEqual(['CLI'])
+    expect(badgesOf(rows()[2])).toEqual([])
+  })
+
   it('resumes the highlighted session on Enter', async () => {
     spyOnScrollIntoView()
     const onResume = vi.fn()

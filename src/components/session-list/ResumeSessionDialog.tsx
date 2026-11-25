@@ -260,7 +260,9 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
                     {s.running && <span className="resume-badge resume-badge-running">running</span>}
                     {s.terminated && !s.canRetryResume && <span className="resume-badge">ended</span>}
                     {s.terminated && s.canRetryResume && <span className="resume-badge">retry</span>}
-                    {!s.known && !s.terminated && <span className="resume-badge">CLI</span>}
+                    {!s.known && !s.terminated && (
+                      <span className="resume-badge">{s.provider === 'native' ? 'native' : 'CLI'}</span>
+                    )}
                   </span>
                   {/* First / last user prompt previews (display-only). The
                       server condenses both sides and already suppresses
