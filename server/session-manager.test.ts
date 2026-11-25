@@ -8546,6 +8546,44 @@ describe('SessionManager', () => {
       mockListSessions.mockRejectedValueOnce(new Error('disk gone'))
       expect(await sm.listResumable()).toEqual([])
     })
+
+    it('lists native and claude sessions together, each annotated with its own provider', async () => {
+      // A live native session (its log header is written synchronously at
+      // create) plus a scripted claude listSessions row: the picker must span
+      // both providers without cross-annotation (spec Acceptance 1).
+      const requests = captureNativeRequests(sm)
+      const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      await sm.send(native.id, 'native question')
+      await waitFor(() => requests.length === 1)
+
+      const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+      mockListSessions.mockResolvedValueOnce([
+        { sessionId: claude.id, summary: 'Claude live', cwd: TEST_CWD, lastModified: 900 },
+        { sessionId: 'cli-only', firstPrompt: 'CLI hello', cwd: TEST_CWD, lastModified: 800 },
+      ])
+
+      const list = await sm.listResumable()
+
+      const nativeRow = list.find((s) => s.sessionId === native.id)
+      expect(nativeRow).toBeDefined()
+      expect(nativeRow!.provider).toBe('native')
+      expect(nativeRow!.known).toBe(true)
+      expect(nativeRow!.running).toBe(true)
+
+      const claudeRow = list.find((s) => s.sessionId === claude.id)
+      expect(claudeRow).toBeDefined()
+      expect(claudeRow!.provider).toBe('claude')
+      expect(claudeRow!.known).toBe(true)
+
+      const cliRow = list.find((s) => s.sessionId === 'cli-only')
+      expect(cliRow).toBeDefined()
+      expect(cliRow!.provider).toBe('claude')
+      expect(cliRow!.known).toBe(false)
+
+      // No cross-annotation: the ONLY native-badged row is the native session,
+      // and no claude row carries the native id.
+      expect(list.filter((s) => s.provider === 'native').map((s) => s.sessionId)).toEqual([native.id])
+    })
   })
 
   describe('resume() adopts unknown disk sessions', () => {

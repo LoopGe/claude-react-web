@@ -70,6 +70,7 @@ type Frame = Record<string, any>
 interface Fixture {
   provider: NativeProvider
   sm: SessionManager
+  store: SessionStore
 }
 
 const managers: SessionManager[] = []
@@ -105,7 +106,7 @@ async function makeFixture(dir: string): Promise<Fixture> {
   registry.register(provider)
   const sm = new SessionManager({ store, providers: registry })
   managers.push(sm)
-  return { provider, sm }
+  return { provider, sm, store }
 }
 
 /** Create a native session, run one scripted turn, and wait for the result. */
@@ -146,6 +147,26 @@ async function waitForPersistedTurn(
 
 function pageText(page: { messages: unknown[] }): string {
   return JSON.stringify(page.messages)
+}
+
+/** Wait until a durable `session/title` event with the given text is readable
+ *  from the native log. The rename mirror is fire-and-forget (trackTitleWrite),
+ *  so a test that forks/deletes right after a rename must gate on the durable
+ *  event, not just the resolved rename() call. Reads the canonical neutral
+ *  baseline directly: `session/title` is v3-only and has NO legacy projection
+ *  (projectNeutralEventToLegacy throws on it), so legacyEventsOf cannot be used
+ *  on a log that carries a title. */
+async function waitForTitleEvent(dir: string, id: string, title: string): Promise<void> {
+  await vi.waitFor(() => {
+    const log = loadNativeSessionLogSync(dir, id)
+    expect(log?.neutralEvents?.some((e) => e.type === 'session/title' && e.data.title === title)).toBe(true)
+  }, { timeout: 5000 })
+}
+
+/** The durable `session/title` texts in file order (latest-wins folds the last). */
+function titleEventsOf(dir: string, id: string): string[] {
+  const log = loadNativeSessionLogSync(dir, id)
+  return (log?.neutralEvents ?? []).flatMap((e) => (e.type === 'session/title' ? [e.data.title] : []))
 }
 
 /** Narrow read of the manager's live session map (private by design). */
@@ -441,4 +462,196 @@ describe('native provider persistence through SessionManager', () => {
     expect(pageText(afterPage)).not.toContain(PROMPT)
     expect(pageText(afterPage)).not.toContain(REPLY)
   }, 30000)
+})
+
+// Acceptance proof for native resumable discovery (spec Acceptance 1–3, 2a, 6),
+// driven through the REAL SessionManager paths the HTTP routes use:
+// sm.listResumable / sm.rename / sm.autoGenerateTitle / sm.delete /
+// sm.resume(id, { allowAdopt }). The provider methods (Tasks 2/3/5) are exercised
+// end-to-end here, not stubbed — only the auxiliary LLM port is stubbed so the
+// auto-title path never touches the network.
+describe('native resumable discovery through SessionManager', () => {
+  it('picker parity: a live native session lists known/running with the native provider badge', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-picker-'))
+    dirs.push(dir)
+
+    const { provider, sm } = await makeFixture(dir)
+    const id = await createAndSend(sm, dir)
+    sessionIds.push({ sm, id })
+    await waitForPersistedTurn(provider, id)
+
+    const row = (await sm.listResumable()).find((s) => s.sessionId === id)
+    expect(row).toBeDefined()
+    // The row badges the native provider, not CLI (Acceptance 1; the unknown
+    // known:false case is pinned by the rename-recovery test below).
+    expect(row!.provider).toBe('native')
+    expect(row!.known).toBe(true)
+    expect(row!.running).toBe(true)
+    expect(row!.terminated).toBe(false)
+    // The app-known title annotates the row (createAndSend names it 'e2e').
+    expect(row!.title).toBe('e2e')
+    // Preview facts come from the listing scan, not the app metadata.
+    expect(row!.firstPrompt).toBe(PROMPT)
+    expect(row!.lastPrompt).toBe(PROMPT)
+
+    // dir-scoped vs all-projects: the row's header.cwd is the session cwd.
+    expect((await sm.listResumable({ dir })).some((s) => s.sessionId === id)).toBe(true)
+    expect((await sm.listResumable({ dir: join(dir, 'elsewhere') })).some((s) => s.sessionId === id)).toBe(false)
+  }, 20000)
+
+  it('manual rename survives an ordinary delete and is recovered by allowAdopt resume', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-rename-recover-'))
+    dirs.push(dir)
+
+    const { provider, sm, store } = await makeFixture(dir)
+    const id = await createAndSend(sm, dir)
+    sessionIds.push({ sm, id })
+    await waitForPersistedTurn(provider, id)
+
+    await sm.rename(id, 'Renamed')
+    // The rename mirror is fire-and-forget; gate on the durable log event so
+    // the delete below cannot race ahead of the title write (Acceptance 2).
+    await waitForTitleEvent(dir, id, 'Renamed')
+
+    // Ordinary delete removes the store entry but KEEPS the native log.
+    await sm.delete(id)
+    expect(store.get(id)).toBeUndefined()
+    expect(await hasNativeSessionLog(dir, id)).toBe(true)
+
+    // The picker row now comes purely from the listing scan: unknown, but
+    // carrying the renamed title read from the log.
+    const row = (await sm.listResumable()).find((s) => s.sessionId === id)
+    expect(row).toBeDefined()
+    expect(row!.known).toBe(false)
+    expect(row!.running).toBe(false)
+    expect(row!.provider).toBe('native')
+    expect(row!.title).toBe('Renamed')
+
+    // Explicit adoption recovers the session under the native provider with
+    // the title restored into the store.
+    const resumed = await sm.resume(id, { allowAdopt: true })
+    expect(resumed.id).toBe(id)
+    expect(resumed.running).toBe(true)
+    expect(resumed.title).toBe('Renamed')
+    expect(store.get(id)?.provider).toBe('native')
+    expect(store.get(id)?.title).toBe('Renamed')
+  }, 20000)
+
+  it('auto-title survives an ordinary delete and is recovered by allowAdopt resume', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-autotitle-recover-'))
+    dirs.push(dir)
+
+    const { provider, sm, store } = await makeFixture(dir)
+    // UNTITLED create: autoGenerateTitle no-ops once a title is set, so the
+    // recovery path must be driven from a session the user never named.
+    const info = await sm.create({ cwd: dir, model: 'test-model', provider: 'native' })
+    sessionIds.push({ sm, id: info.id })
+    await sendTurn(sm, info.id)
+    await waitForPersistedTurn(provider, info.id)
+    expect(info.title).toBeUndefined()
+
+    // Stub the auxiliary LLM port — makeNativePorts wires a REAL caller, and
+    // the manager trims the resolved string. No network is touched.
+    const aux = vi.spyOn(provider.ports.auxLlm, 'call').mockResolvedValue('Auto Title')
+    try {
+      const titled = await sm.autoGenerateTitle(info.id, 'describe the session')
+      expect(titled.title).toBe('Auto Title')
+      // generateTitle appends the durable title event BEFORE returning
+      // (claude persist:true parity), so it is already on disk here.
+      expect(titleEventsOf(dir, info.id)).toEqual(['Auto Title'])
+
+      await sm.delete(info.id)
+      expect(store.get(info.id)).toBeUndefined()
+
+      const row = (await sm.listResumable()).find((s) => s.sessionId === info.id)
+      expect(row).toBeDefined()
+      expect(row!.known).toBe(false)
+      expect(row!.title).toBe('Auto Title')
+
+      const resumed = await sm.resume(info.id, { allowAdopt: true })
+      expect(resumed.running).toBe(true)
+      expect(resumed.title).toBe('Auto Title')
+      expect(store.get(info.id)?.provider).toBe('native')
+      expect(store.get(info.id)?.title).toBe('Auto Title')
+    } finally {
+      aux.mockRestore()
+    }
+  }, 20000)
+
+  it('permanent delete removes the picker row and the native log', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-perm-delete-'))
+    dirs.push(dir)
+
+    const { provider, sm } = await makeFixture(dir)
+    const id = await createAndSend(sm, dir)
+    await waitForPersistedTurn(provider, id)
+    expect(await hasNativeSessionLog(dir, id)).toBe(true)
+
+    await sm.delete(id, { deleteTranscript: true })
+    expect(await hasNativeSessionLog(dir, id)).toBe(false)
+    expect((await sm.listResumable()).some((s) => s.sessionId === id)).toBe(false)
+  }, 20000)
+
+  it('a deleted native log is adoptable only with explicit allowAdopt (automatic-path guard)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-adopt-guard-'))
+    dirs.push(dir)
+
+    const { provider, sm, store } = await makeFixture(dir)
+    const id = await createAndSend(sm, dir)
+    sessionIds.push({ sm, id })
+    await waitForPersistedTurn(provider, id)
+
+    // Ordinary delete IS the store-entry-loss path (Acceptance 3): the log
+    // survives, the index entry is gone.
+    await sm.delete(id)
+    expect(store.get(id)).toBeUndefined()
+    expect(await hasNativeSessionLog(dir, id)).toBe(true)
+
+    // An automatic resume (WS subscribe auto-resume) must NOT resurrect the
+    // deleted session from its surviving log.
+    await expect(sm.resume(id)).rejects.toMatchObject({ status: 404 })
+    expect(store.get(id)).toBeUndefined()
+
+    // Explicit picker adoption recovers it under the native provider.
+    const resumed = await sm.resume(id, { allowAdopt: true })
+    expect(resumed.id).toBe(id)
+    expect(resumed.running).toBe(true)
+    expect(store.get(id)?.provider).toBe('native')
+  }, 20000)
+
+  it('fork inherits the seed title, fork rename is latest-wins, clear leaves the source title', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-fork-clear-title-'))
+    dirs.push(dir)
+
+    const { provider, sm } = await makeFixture(dir)
+    const sourceId = await createAndSend(sm, dir)
+    sessionIds.push({ sm, id: sourceId })
+    await waitForPersistedTurn(provider, sourceId)
+
+    await sm.rename(sourceId, 'Source Title')
+    await waitForTitleEvent(dir, sourceId, 'Source Title')
+
+    // Fork: the child's log seed copies the source's session/title event.
+    const child = await sm.fork(sourceId)
+    sessionIds.push({ sm, id: child.id })
+    expect(child.id).not.toBe(sourceId)
+    expect(titleEventsOf(dir, child.id)).toContain('Source Title')
+
+    // Rename the fork: a LATER title event appends; latest-wins folds to it.
+    await sm.rename(child.id, 'Fork Title')
+    await waitForTitleEvent(dir, child.id, 'Fork Title')
+    expect(titleEventsOf(dir, child.id)).toEqual(['Source Title', 'Fork Title'])
+    // Read the RAW provider row (no manager live/meta annotation) so the
+    // assertion isolates the scan's latest-wins, not the app-known title.
+    const forkRow = (await provider.listResumable()).find((s) => s.sessionId === child.id)
+    expect(forkRow?.title).toBe('Fork Title')
+
+    // Clear: a fresh id with NO title event; the source log keeps its title.
+    const cleared = await sm.clear(sourceId)
+    sessionIds.push({ sm, id: cleared.id })
+    expect(cleared.id).not.toBe(sourceId)
+    expect(cleared.title).toBeUndefined()
+    expect(titleEventsOf(dir, cleared.id)).toEqual([])
+    expect(titleEventsOf(dir, sourceId)).toContain('Source Title')
+  }, 20000)
 })
