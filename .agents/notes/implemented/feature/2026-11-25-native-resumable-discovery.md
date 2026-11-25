@@ -236,3 +236,7 @@ delete + `allowAdopt`, permanent delete removing row and log, and the
 automatic-path adoption guard. Vocabulary, format, log, and host-adapter tests
 pin the event's non-renderability, the single-writer append path, the
 no-overwrite guard in both race orderings, and fork/clear title semantics.
+The injection-class verification (spec builder note) found native has no
+user-role XML injection producers; compact seeds carry `isCompactSummary`
+and task notifications are operational frames, so the shared preview
+eligibility predicates cover every native injection class without extension.

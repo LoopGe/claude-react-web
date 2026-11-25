@@ -245,7 +245,20 @@ describe('title', () => {
   })
 })
 
-describe('legacy v2', () => {
+describe('legacy v1/v2', () => {
+  it('enumerates a v1 log with previews via migration (no title)', async () => {
+    const stateDir = await freshStateDir()
+    const id = randomUUID()
+    await writeFixture(stateDir, id, '/legacy-repo', [userEvent('legacy first'), userEvent('legacy last')], 1)
+    expect(loadNativeSessionLogSync(stateDir, id)!.header.v).toBe(1)
+    const rows = await listNativeResumableRows(stateDir)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].cwd).toBe('/legacy-repo')
+    expect(rows[0].firstPrompt).toBe('legacy first')
+    expect(rows[0].lastPrompt).toBe('legacy last')
+    expect(rows[0].title).toBeUndefined()
+  })
+
   it('enumerates a v2 log with previews via migration (no title)', async () => {
     const stateDir = await freshStateDir()
     const id = randomUUID()

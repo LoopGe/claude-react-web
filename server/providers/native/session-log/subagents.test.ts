@@ -446,4 +446,22 @@ describe('native subagent catalog', () => {
       timestamp: '2026-11-12T00:02:00.000Z',
     })
   })
+
+  it('ignores session/title events — they never enter the catalog (build or extend)', () => {
+    // session/title is log-only (DSH parity): the fold's type-switch skips it,
+    // so a rename interleaved with — or appended after — the subagent evidence
+    // leaves the catalog byte-identical to one built without any title event.
+    const title = (seq: number): NativeSessionEvent => ({
+      type: 'session/title',
+      seq,
+      time: Date.parse('2026-11-12T00:04:00.000Z'),
+      data: { title: 'renamed session' },
+    })
+    const baseline = buildNativeSubagentCatalog([origin(0, 'a'), sidechain(1, 'a')], SID)
+    const withTitles = buildNativeSubagentCatalog([origin(0, 'a'), title(1), sidechain(2, 'a'), title(3)], SID)
+    expect(withTitles.entries).toEqual(baseline.entries)
+    expect(withTitles.entries.map((entry) => entry.agentId)).toEqual(['a'])
+    const extended = extendNativeSubagentCatalog(withTitles, [title(4)])
+    expect(extended.entries).toEqual(baseline.entries)
+  })
 })

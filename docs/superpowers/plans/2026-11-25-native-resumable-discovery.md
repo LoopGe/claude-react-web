@@ -48,7 +48,7 @@ Inputs/conditions the spec implies but no happy-path test exercises — each get
 - Consumes: existing `SessionEventMap`, `parseEventLineV3(raw, expectedSeq, sessionId, path)`, `requireV3NonEmptyString`, writer `append(input: NativeEventInput | NativeNeutralEventInput)`.
 - Produces: event key `'session/title'` with payload `{ title: string }` (non-empty), envelope `{ type, seq, time, data }` — usable by Tasks 2–5 as `{ type: 'session/title', time: number, data: { title: string } }` append input.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `format.test.ts`: `parseEventLineV3` accepts a `session/title` line (round-trips `data.title`); rejects empty-string title; rejects unknown data field (`{ title, extra }`); rejects missing `data`.
 `log.test.ts`: `writer.append({ type: 'session/title', time: Date.now(), data: { title: 'T' } })` returns a neutral event with the next seq; after `flush()` + `loadNativeSessionLog`, the snapshot's neutral events contain it.
@@ -56,12 +56,12 @@ Inputs/conditions the spec implies but no happy-path test exercises — each get
 `reader.test.ts`: `readNativeHistoryPage` over a log containing a `session/title` event returns no row for it.
 `native-host-frame-adapter.test.ts`: `projectNativeEventToSdkLine(titleEvent, sessionId)` returns `null`.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run server/providers/native/session-log/format.test.ts server/providers/native/session-log/log.test.ts server/providers/native/session-log/replay.test.ts server/providers/native/session-log/reader.test.ts server/providers/native-host-frame-adapter.test.ts`
 Expected: FAIL — `unknown event type 'session/title'` from the validator; append/reader/adapter tests fail on the same missing key.
 
-- [ ] **Step 3: Implement the event**
+- [x] **Step 3: Implement the event**
 
 `session-event.ts`: add to `SessionEventMap` (operational block, after `'session/agent'`):
 ```ts
@@ -77,11 +77,11 @@ case 'session/title':
 ```
 No migration code: legacy logs simply lack the event. No `ignorable` flag (plain operational event, same as `session/context`).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: the Step 2 command. Expected: PASS. Also run `npx vitest run server/providers/native/vocabulary/neutrality.test.ts server/providers/native/host-free.test.ts` — Expected: PASS (no new imports).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/providers/native/vocabulary/session-event.ts server/providers/native/session-log/format.ts server/providers/native/session-log/format.test.ts server/providers/native/session-log/log.test.ts server/providers/native/session-log/replay.test.ts server/providers/native/session-log/reader.test.ts server/providers/native-host-frame-adapter.test.ts
@@ -104,7 +104,7 @@ git commit -m "feat(native): durable session/title log event"
   - `export async function appendSessionTitle(stateDir: string, id: string, title: string): Promise<void>` (log.ts) — throws `NativeSessionStorageError('missing', …)` when no log exists.
   - `NativeProvider.renameSession(sessionId: string, title: string): Promise<void>` — satisfies `AgentProvider.renameSession` (`types.ts:463`); the manager's existing `persistTitleToTranscript` seam calls it on every manual rename (live + dormant).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `log.test.ts`:
 - *live writer reuse*: open a writer, `appendSessionTitle`, then append a turn event through the ORIGINAL writer object — seq contiguous (Review Focus 2: interleave a title between two turn appends and assert the full seq chain + all events durable after flush).
@@ -114,12 +114,12 @@ git commit -m "feat(native): durable session/title log event"
 
 `native-provider.test.ts`: `provider.renameSession(id, 'T')` on a dormant log fixture appends the event (delegation pin).
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run server/providers/native/session-log/log.test.ts server/providers/native/native-provider.test.ts`
 Expected: FAIL — `appendSessionTitle is not a function` / `provider.renameSession is not a function`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `log.ts` — the helper owns the single-writer decision (it lives in the module that owns `writers`):
 ```ts
@@ -146,11 +146,11 @@ async renameSession(sessionId: string, title: string): Promise<void> {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: the Step 2 command. Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/providers/native/session-log/log.ts server/providers/native/session-log/log.test.ts server/providers/native/native-provider.ts server/providers/native/native-provider.test.ts
@@ -170,7 +170,7 @@ git commit -m "feat(native): renameSession persists titles through the single lo
 - Consumes: Task 1's event; `this.log.appendDurable`; `neutralEventsOf(this.log)` (`session-log/neutral-read.ts`).
 - Produces: `generateTitle(description): Promise<unknown>` — UNCHANGED return contract (the manager trims/persists the resolved value); the log append is a side effect before return.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `native-session.test.ts` (stub `ports.auxLlm.call` to resolve a title string):
 - auto-title appends one `session/title` event with the trimmed text.
@@ -180,12 +180,12 @@ git commit -m "feat(native): renameSession persists titles through the single lo
 
 `e2e-tools.test.ts`: extend the existing auto-title test — after `sm.autoGenerateTitle`, the on-disk log contains the `session/title` event.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run server/providers/native/native-session.test.ts server/providers/native/e2e-tools.test.ts`
 Expected: FAIL — no title event in the log after `generateTitle`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `generateTitle`, after the aux call resolves (`raw`), before returning:
 ```ts
@@ -197,11 +197,11 @@ return raw
 ```
 The trim mirrors the manager's own normalization (`session-manager.ts:7928`). The scan is per-call (auto-title runs once per session) — no cached state. A failed append propagates: the manager's `timeSdkControl` surfaces it and leaves the session untitled (existing thrown-`generateTitle` behavior). The manager's store-level double no-overwrite guard (`:7911`, `:7922`) is untouched.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: the Step 2 command. Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/providers/native/native-session.ts server/providers/native/native-session.test.ts server/providers/native/e2e-tools.test.ts
@@ -225,7 +225,7 @@ git commit -m "feat(native): persist auto-generated titles to the log (claude pe
   - `export function readNativeResumableRow(stateDir: string, id: string): Promise<NativeResumableRow | undefined>` — missing → `undefined`; corrupt → THROW (adoption catches per provider).
   - `export function invalidateNativeResumableCache(id: string): void`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `resumable-listing.test.ts` (write fixture logs through the REAL writer — this pins the prefilter against actual serialization; test file lives at `server/providers/native-resumable-listing.test.ts`):
 - enumeration: two session dirs → two rows with header `cwd`/`createdAt` + stat `lastModified`; junk skipped — a plain file, a non-id dir name (`../evil` style / `not a uuid`), an empty dir (Review Focus 5).
@@ -240,12 +240,12 @@ git commit -m "feat(native): persist auto-generated titles to the log (claude pe
 - large log: ~2 MB fixture (many assistant events, few user/title) → correct row; scan streams (Review Focus 4 — asserted by correctness + the streaming implementation, no whole-file parse).
 - invalidate: `invalidateNativeResumableCache(id)` forces a fresh read.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run server/providers/native-resumable-listing.test.ts`
 Expected: FAIL — module does not exist.
 
-- [ ] **Step 3: Implement the scan**
+- [x] **Step 3: Implement the scan**
 
 Algorithm (the one part the signatures don't determine):
 ```
@@ -275,11 +275,11 @@ readNativeResumableRow: same scan, missing → undefined, corrupt → throw
 ```
 Logger: `createLogger('native-resumable')`. No durable persistence.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: the Step 2 command. Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/history-reader.ts server/providers/native-resumable-listing.ts server/providers/native-resumable-listing.test.ts
@@ -298,7 +298,7 @@ git commit -m "feat(native): selective listing scan with stat-keyed row cache"
 - Consumes: Task 4's `listNativeResumableRows` / `readNativeResumableRow` / `invalidateNativeResumableCache` from `../native-resumable-listing.js` (module lives OUTSIDE native/); `ResumableSession` (`server/session-types.ts:244`).
 - Produces: `NativeProvider.listResumable(opts?: { dir?: string }): Promise<ResumableSession[]>` and `NativeProvider.getSessionInfo(id: string): Promise<ResumableSession | undefined>` — the manager's `listResumable` iteration and `adoptDiskSession` probe pick them up with ZERO manager code.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `native-provider.test.ts`:
 - `listResumable()` over two fixture logs → rows mapped: `sessionId/cwd/createdAt/lastModified/firstPrompt/lastPrompt`, log title as **`title`** (assert `customTitle` is undefined), `known/running/terminated` all `false`, `provider` unset.
@@ -306,12 +306,12 @@ git commit -m "feat(native): selective listing scan with stat-keyed row cache"
 - `getSessionInfo(id)`: existing log → row; missing → `undefined`; corrupt → rejects.
 - `deleteTranscript(id)` invalidates the row cache (delete, re-create a log with the same id, `getSessionInfo` sees the NEW content).
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run server/providers/native/native-provider.test.ts`
 Expected: FAIL — `provider.listResumable is not a function`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 async listResumable(opts?: ListResumableOptions): Promise<ResumableSession[]> {
@@ -330,11 +330,11 @@ private toResumable(row: NativeResumableRow): ResumableSession {
 ```
 In `deleteTranscript`: add `invalidateNativeResumableCache(id)` beside `nativeHistoryCache.invalidate(id)`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: the Step 2 command. Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/providers/native/native-provider.ts server/providers/native/native-provider.test.ts
@@ -353,7 +353,7 @@ git commit -m "feat(native): listResumable and getSessionInfo for picker discove
 - Consumes: Tasks 2/3/5 through the REAL `SessionManager` paths (`sm.listResumable`, `sm.rename`, `sm.autoGenerateTitle`, `sm.delete`, `sm.resume(id, { allowAdopt: true })`). No production code in this task.
 - Produces: the acceptance proof (spec Acceptance 1–3, 2a).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `e2e-persistence.test.ts`:
 - *picker parity*: `createAndSend` → `sm.listResumable()` contains the id, `known: true`, `provider: 'native'`.
@@ -366,20 +366,20 @@ git commit -m "feat(native): listResumable and getSessionInfo for picker discove
 `session-manager.test.ts` (`listResumable` describe):
 - *mixed providers*: a live native session (`sm.create({ provider: 'native', … })`) + `mockListSessions` claude row → `sm.listResumable()` returns both, each with its own `provider`, no cross-annotation.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run server/providers/native/e2e-persistence.test.ts server/session-manager.test.ts -t "resumable"`
 Expected: the new e2e tests FAIL (native rows absent from `listResumable` before Task 5 — if Tasks 1–5 are complete they may pass immediately; in that case verify each assertion is load-bearing by temporarily reverting the relevant provider method and watching it fail, then restore). The mixed-provider test fails on the missing native row.
 
-- [ ] **Step 3: No production code — fix any test-harness issues only**
+- [x] **Step 3: No production code — fix any test-harness issues only**
 
 If a test fails for a harness reason (fixture timing, aux-port stub shape), fix the test. If it fails for a production reason, STOP and fix the owning task's code with a unit test first.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: the Step 2 command, then `npx vitest run server/providers/native/e2e-persistence.test.ts server/session-manager.test.ts` (full files). Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/providers/native/e2e-persistence.test.ts server/session-manager.test.ts
@@ -398,16 +398,16 @@ git commit -m "test(native): picker parity and delete-recovery e2e through Sessi
 - Consumes: `ResumableSession.provider` (client `src/types.ts:62` shape; the manager always sets it on picker rows).
 - Produces: unknown-row badge text — `native` for native rows, `CLI` for claude rows (unchanged wording).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `ResumeSessionDialog.test.tsx` (existing file, follow its api-mock pattern): mock `GET /sessions/resumable` with two unknown rows (`known: false`, `terminated: false`), `provider: 'native'` and `provider: 'claude'` → the native row renders badge text `native`, the claude row renders `CLI`; a known row renders neither.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run src/components/session-list/ResumeSessionDialog.test.tsx`
 Expected: FAIL — native row shows `CLI`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Replace the badge line:
 ```tsx
@@ -416,11 +416,11 @@ Replace the badge line:
 )}
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: the Step 2 command. Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/components/session-list/ResumeSessionDialog.tsx src/components/session-list/ResumeSessionDialog.test.tsx
@@ -439,22 +439,22 @@ git commit -m "feat(client): provider-aware badge for unknown resumable rows"
 - Consumes: the shipped Tasks 1–7.
 - Produces: the decision record + green verification gates.
 
-- [ ] **Step 1: Write the agent note**
+- [x] **Step 1: Write the agent note**
 
 Format per `.agents/notes/README.md` (`# Agent Note: …` / `Status: implemented` / `## Problem` …). Record: the recoverable-delete contract; `session/title` DSH-parity semantics (latest-wins, log-only, fork inheritance, no clear mirroring); auto-title provider-side persist with the log-level no-overwrite guard; selective scan + in-memory row cache; rejected alternatives (sidecar, full-parse cache enumeration, DSH projection machinery — with the revisit trigger) and the D1–D5 calls. Cross-link the spec and the provider-seam neutralization note with relative Markdown links.
 
-- [ ] **Step 2: Run the verification gates**
+- [x] **Step 2: Run the verification gates**
 
 Run: `npm run verify:agent-notes && npm run typecheck && npm run lint`
 Expected: all PASS (lint: 0 errors; pre-existing src warnings unchanged).
 Run: `npm run test` (full suite, no pipe that swallows the exit code)
 Expected: PASS. Any failure: attribute it (this diff vs concurrent worktree edits vs load flake), re-run the failing file isolated, and report by name — do not claim green on a red run.
 
-- [ ] **Step 3: Code review**
+- [x] **Step 3: Code review**
 
 Run the `code-review` skill on the full diff (commit range from before Task 1). Verify each finding against the code; fix confirmed issues with a failing test first; re-review non-trivial fixes.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add .agents/notes/implemented/feature/2026-11-25-native-resumable-discovery.md CLAUDE.md

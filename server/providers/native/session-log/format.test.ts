@@ -546,6 +546,8 @@ describe('session log format v3 (neutral)', () => {
     expect(eventRequiresV3(noStream)).toBe(false)
     const toolError = { ...neutralEvents[2], data: { ...(neutralEvents[2] as { data: object }).data, error: { name: 'E', code: 'C' } } } as unknown as NativeSessionEvent
     expect(eventRequiresV3(toolError)).toBe(true)
+    const title: NativeSessionEvent = { type: 'session/title', seq: 0, time: 1000, data: { title: 'T' } }
+    expect(eventRequiresV3(title)).toBe(true) // log-only title has no legacy projection
   })
 
   it('projects a neutral assistant event to the legacy assistant shape', () => {

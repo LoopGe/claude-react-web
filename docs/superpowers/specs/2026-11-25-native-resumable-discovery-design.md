@@ -1,7 +1,7 @@
 # Native resumable discovery — design
 
 Date: 2026-11-25
-Status: proposed
+Status: implemented
 
 ## Problem
 

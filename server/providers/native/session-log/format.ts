@@ -1131,15 +1131,17 @@ export function parseEventLineV3(
 
 /** True when a neutral event carries facts only v3 can store losslessly (packed
  *  assistant stream records, a structured tool error / opaque meta, the
- *  inherited end-seed marker, or an ignorable flag). The v1/v2 compat projection
- *  drops these; T12's eager-at-open migrateToV3 uses this detector to upgrade a
- *  log before such an event is appended. */
+ *  inherited end-seed marker, an ignorable flag, or the log-only session/title).
+ *  The v1/v2 compat projection drops the lossy facts and has no legacy shape for
+ *  session/title (it throws); T12's eager-at-open migrateToV3 uses this detector
+ *  to upgrade a log before such an event is appended. */
 export function eventRequiresV3(event: NativeSessionEvent): boolean {
   if (event.ignorable === true) return true
   switch (event.type) {
     case 'assistant/message': return event.data.stream.length > 0 || event.data.interrupted === true
     case 'tool/result': return event.data.error !== undefined || event.data.meta !== undefined
     case 'session/end-seed': return event.data.inherited === true
+    case 'session/title': return true
     default: return false
   }
 }
