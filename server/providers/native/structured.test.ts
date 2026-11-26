@@ -56,7 +56,7 @@ describe('attachStructuredRuntime', () => {
   })
 })
 
-describe('validateStructuredArgs (bounded, fail-closed)', () => {
+describe('bounded schema support: attach-time scan + value validation', () => {
   it('accepts a conforming nested object with array, enum and boolean fields', () => {
     const s = {
       type: 'object',
@@ -99,20 +99,67 @@ describe('validateStructuredArgs (bounded, fail-closed)', () => {
     expect(validateStructuredArgs(schema, []).length).toBeGreaterThan(0)
     expect(validateStructuredArgs(schema, 'text').length).toBeGreaterThan(0)
   })
-  it('fails closed on unsupported schema constructs instead of silently accepting', () => {
-    // Each value would pass the supported subset; only the unsupported
-    // construct can reject it, so a silently-ignoring validator fails here.
-    const cases: Array<[Record<string, unknown>, unknown]> = [
-      [{ type: 'object', properties: { x: { anyOf: [{ type: 'string' }] } } }, { x: 'anything' }],
-      [{ type: 'object', properties: { x: { $ref: '#/definitions/x' } } }, { x: 'anything' }],
-      [{ type: 'object', properties: { x: { type: 'integer' } } }, { x: 1 }],
-      [{ type: 'object', properties: { x: { type: 'string', minLength: 1 } } }, { x: 'anything' }],
-      [{ type: 'object', properties: { x: { type: ['string', 'null'] } } }, { x: 'anything' }],
-      [{ type: 'object', properties: { x: { type: 'array', items: [{ type: 'string' }] } } }, { x: ['a'] }],
+  it('throws at attach time on unsupported schema constructs (caller error, not model-retryable)', () => {
+    // An unsupported schema can never be satisfied by corrected arguments, so
+    // it must surface loudly to the caller/wiring, never as a retry instruction.
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ type: 'object', properties: { x: { anyOf: [{ type: 'string' }] } } }, /anyOf/],
+      [{ type: 'object', properties: { x: { $ref: '#/definitions/x' } } }, /\$ref/],
+      [{ type: 'object', properties: { x: { type: 'string', minLength: 1 } } }, /minLength/],
+      [{ type: 'object', properties: { x: { type: ['string', 'null'] } } }, /unsupported type/],
+      [{ type: 'object', additionalProperties: { type: 'string' } }, /additionalProperties/],
     ]
-    for (const [s, value] of cases) {
-      expect(validateStructuredArgs(s, value).length, JSON.stringify(s)).toBeGreaterThan(0)
+    for (const [s, message] of cases) {
+      expect(() => attachStructuredRuntime(s), JSON.stringify(s)).toThrow(message)
     }
+  })
+  it('shape-checks items at attach regardless of value: unsupported items with an empty array still throws', () => {
+    for (const items of [[{ type: 'string' }], true, 42]) {
+      const s = { type: 'object', properties: { x: { type: 'array', items } } }
+      expect(() => attachStructuredRuntime(s), JSON.stringify(items)).toThrow()
+    }
+  })
+  it('accepts a valid integer field and rejects a non-integer retryably', async () => {
+    const s = { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'] }
+    const a = attachStructuredRuntime(s)
+    const good = await a.tool.run({ count: 3 }, ctx)
+    expect(good.isError).toBeFalsy()
+    expect(a.captured()).toEqual({ value: { count: 3 } })
+    const b = attachStructuredRuntime(s)
+    const bad = await b.tool.run({ count: 1.5 }, ctx)
+    expect(bad.isError).toBe(true)
+    expect(b.captured()).toBeUndefined()
+    expect(b.isClosed()).toBe(false)
+    expect(validateStructuredArgs(s, { count: 1.5 }).length).toBeGreaterThan(0)
+  })
+  it('accepts the null type for null values only', () => {
+    const s = { type: 'object', properties: { x: { type: 'null' } }, required: ['x'] }
+    expect(validateStructuredArgs(s, { x: null })).toEqual([])
+    expect(validateStructuredArgs(s, { x: 0 }).length).toBeGreaterThan(0)
+    expect(validateStructuredArgs(s, { x: 'null' }).length).toBeGreaterThan(0)
+  })
+  it('additionalProperties:false rejects unknown keys retryably and accepts known-only', async () => {
+    const s = {
+      type: 'object',
+      properties: { result: { type: 'string' } },
+      required: ['result'],
+      additionalProperties: false,
+    }
+    const a = attachStructuredRuntime(s)
+    const bad = await a.tool.run({ result: 'ok', extra: 1 }, ctx)
+    expect(bad.isError).toBe(true)
+    expect(a.captured()).toBeUndefined()
+    expect(a.isClosed()).toBe(false)
+    const good = await a.tool.run({ result: 'ok' }, ctx)
+    expect(good.isError).toBeFalsy()
+    expect(a.captured()).toEqual({ value: { result: 'ok' } })
+  })
+  it('additionalProperties:false with no properties rejects every key; true is inert', () => {
+    const closed = { type: 'object', additionalProperties: false }
+    expect(validateStructuredArgs(closed, {})).toEqual([])
+    expect(validateStructuredArgs(closed, { anything: 1 }).length).toBeGreaterThan(0)
+    const open = { type: 'object', properties: { result: { type: 'string' } }, additionalProperties: true }
+    expect(validateStructuredArgs(open, { result: 'ok', extra: 1 })).toEqual([])
   })
   it('ignores pure annotation keywords (description / title)', () => {
     const s = {
