@@ -377,6 +377,8 @@ export class ClaudeProvider implements AgentProvider {
     // 不创建 + enqueueSupplement 恒 false 实现（spec §5.5）。
     supportsSteering: true,
     supportsSandbox: true,
+    supportsHooks: true,
+    supportsMemory: true,
     tasksSurviveRestart: true,
     interleavedSubagentHistory: false,
     hostDrivenAutoCompact: false,

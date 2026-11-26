@@ -93,6 +93,8 @@ const FAKE_CAPS: ProviderCapabilities = {
   // 'fake' provider is not 'native': claude-equivalent values preserve the
   // pre-capability behavior (every native special-case was false for it).
   supportsSandbox: true,
+  supportsHooks: true,
+  supportsMemory: true,
   tasksSurviveRestart: true,
   interleavedSubagentHistory: false,
   hostDrivenAutoCompact: false,

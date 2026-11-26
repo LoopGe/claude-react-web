@@ -7271,10 +7271,14 @@ describe('NativeSession', () => {
       }
     })
 
-    it('accountInfo resolves undefined', async () => {
+    it('accountInfo resolves undefined and the capability is false (no displayable account)', async () => {
       const dir = await tempDir('native-account-')
       const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
-      expect(provider.capabilities.supportsAccountInfo).toBe(true)
+      // API-key auth has no subscription account: the handle method exists
+      // and resolves undefined, but the capability is false so the manager's
+      // account route 501s and the UI locks the section instead of rendering
+      // empty rows.
+      expect(provider.capabilities.supportsAccountInfo).toBe(false)
       const session = provider.createSession({ id: 'account-1', cwd: dir })
       try {
         await expect(session.accountInfo?.()).resolves.toBeUndefined()

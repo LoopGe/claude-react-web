@@ -658,6 +658,26 @@ describe('SessionManager', () => {
     expect(sm.list().find((session) => session.id === native.id)?.taskControlSupported).toBe(true)
   })
 
+  it('projects locked-feature booleans false for native, true for claude (live and dormant)', async () => {
+    const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+    const keys = ['pluginsSupported', 'hooksSupported', 'memorySupported', 'sandboxSupported', 'accountInfoSupported'] as const
+    for (const k of keys) {
+      expect(claude[k]).toBe(true)
+      expect(native[k]).toBe(false)
+    }
+    // Dormant projection (infoFromMeta) re-derives the same booleans from the
+    // provider registry — no live handle is involved.
+    await sm.unload(native.id)
+    await sm.unload(claude.id)
+    const dormantNative = sm.list().find((session) => session.id === native.id)
+    const dormantClaude = sm.list().find((session) => session.id === claude.id)
+    for (const k of keys) {
+      expect(dormantNative?.[k]).toBe(false)
+      expect(dormantClaude?.[k]).toBe(true)
+    }
+  })
+
   it('create() defaults betas to the 1M-context flag when none is supplied', async () => {
     const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
     // The SDK subprocess must be spawned with the 1M beta, exactly like the

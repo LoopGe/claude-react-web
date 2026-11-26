@@ -11800,6 +11800,7 @@ export class SessionManager {
     firstPartyRevision?: string
     slept?: boolean
   }) {
+    const caps = this.capsOf(x.provider ?? 'claude')
     return {
       id: x.id,
       provider: x.provider,
@@ -11821,7 +11822,14 @@ export class SessionManager {
       effortLevel: x.effortLevel,
       thinking: x.thinking,
       taskBudget: x.taskBudget,
-      taskControlSupported: this.capsOf(x.provider ?? 'claude').supportsTaskControl,
+      taskControlSupported: caps.supportsTaskControl,
+      // Locked-feature gating projection: capability-derived booleans the UI
+      // reads to show-but-disable surfaces the provider cannot honor.
+      pluginsSupported: caps.supportsPlugins,
+      hooksSupported: caps.supportsHooks,
+      memorySupported: caps.supportsMemory,
+      sandboxSupported: caps.supportsSandbox,
+      accountInfoSupported: caps.supportsAccountInfo,
       // Host property (the cached node-pty probe), not a provider one — the
       // same value for every session, live or dormant.
       terminalSupported: terminalCapability().supported,

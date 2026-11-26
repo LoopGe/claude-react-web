@@ -131,7 +131,11 @@ export class NativeProvider implements AgentProvider {
     supportsAgents: true,
     supportsContextUsage: true,
     supportsUsage: true,
-    supportsAccountInfo: true,
+    // API-key auth has no subscription account to report (accountInfo()
+    // resolves undefined), so the capability reflects display reality: the
+    // account route 501s and the UI locks the section with a note instead of
+    // rendering empty rows.
+    supportsAccountInfo: false,
     supportsSessionTitle: true,
     supportsTaskControl: true,
     supportsStructuredOutput: true,
@@ -139,6 +143,8 @@ export class NativeProvider implements AgentProvider {
     supportsSubagentTranscripts: true,
     supportsSteering: true,
     supportsSandbox: false,
+    supportsHooks: false,
+    supportsMemory: false,
     tasksSurviveRestart: false,
     interleavedSubagentHistory: true,
     hostDrivenAutoCompact: true,
