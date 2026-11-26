@@ -29,6 +29,29 @@ import type { CanonicalEvent } from '../canonical.js'
 import type { SessionHooksConfig } from '../../../../shared/hooks.js'
 import type { Frame } from '../../native-frames.js'
 
+// A hook into the materializer's append IO so a test can land an event on the
+// live array mid-write (the live-array race) or simulate a torn append. Every
+// other fs/promises function stays the real implementation.
+const appendHook = vi.hoisted(() => ({
+  during: null as null | (() => void),
+  torn: false,
+}))
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('node:fs/promises')
+  return {
+    ...actual,
+    appendFile: (async (path: string, data: string) => {
+      appendHook.during?.()
+      if (appendHook.torn) {
+        // A partial write that corrupts the trailing line, then fails.
+        await actual.appendFile(path, '{"torn":')
+        throw new Error('disk full')
+      }
+      return actual.appendFile(path, data)
+    }) as typeof actual.appendFile,
+  }
+})
+
 const TS = '2026-11-26T00:00:00.000Z'
 const TIME = Date.parse(TS)
 const msgId = (id: string) => brandString<'MessageId'>(id)
@@ -71,6 +94,8 @@ beforeEach(async () => {
   process.env.CLAUDE_CONFIG_DIR = skillsConfigDir
 })
 afterEach(async () => {
+  appendHook.during = null
+  appendHook.torn = false
   if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
   else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
   await rm(skillsConfigDir, { recursive: true, force: true })
@@ -187,6 +212,46 @@ describe('TranscriptMaterializer — CLI-JSONL projection artifact', () => {
     expect(lines).toHaveLength(2)
     expect(lines[0].type).toBe('user')
     expect(lines[1].type).toBe('assistant')
+  })
+
+  it('does not drop events appended to the live array while a write is in flight', async () => {
+    const dir = await tempDir('tx-race-')
+    const mat = materializer(dir, 's1')
+    const events: NativeSessionEvent[] = [user(0, 'first')]
+    await mat.materialize(events) // full rebuild, count = 1
+    events.push(assistant(1, [text('second')]))
+    // A third event lands on the LIVE array during the append IO. The end index
+    // was captured before the await, so it must NOT be counted as written.
+    appendHook.during = () => { events.push(assistant(2, [text('third')])) }
+    await mat.materialize(events)
+    appendHook.during = null
+    // The next dispatch appends the in-flight event instead of dropping it.
+    await mat.materialize(events)
+    const lines = await readLines(transcriptArtifactPath(dir, 's1'))
+    expect(lines).toHaveLength(3)
+    expect(JSON.stringify(lines)).toContain('second')
+    expect(JSON.stringify(lines)).toContain('third')
+  })
+
+  it('rebuilds atomically after a torn append (no corrupt trailing line)', async () => {
+    const dir = await tempDir('tx-torn-')
+    const mat = materializer(dir, 's1')
+    const events: NativeSessionEvent[] = [user(0, 'first')]
+    await mat.materialize(events)
+    events.push(assistant(1, [text('second')]))
+    // The append writes a partial corrupt line then fails.
+    appendHook.torn = true
+    await expect(mat.materialize(events)).rejects.toThrow('disk full')
+    appendHook.torn = false
+    // The next call must take the atomic rebuild path, not append after the
+    // corrupt line — the artifact parses cleanly to the full current log.
+    await mat.materialize(events)
+    const raw = await readFile(transcriptArtifactPath(dir, 's1'), 'utf8')
+    expect(raw).not.toContain('torn')
+    const lines = await readLines(transcriptArtifactPath(dir, 's1'))
+    expect(lines).toHaveLength(2)
+    expect(JSON.stringify(lines)).toContain('first')
+    expect(JSON.stringify(lines)).toContain('second')
   })
 })
 
@@ -446,10 +511,13 @@ describe('SubagentStop transcript projection (RS §3 agent_transcript_path)', ()
     expect(inputs[0].transcript_path).toBe(transcriptArtifactPath(dir, 'tx'))
     const agentPath = sidechainTranscriptArtifactPath(dir, 'tx', AGENT_TOOL_ID)
     expect(inputs[0].agent_transcript_path).toBe(agentPath)
-    // The sidechain artifact holds the subagent's own conversation.
+    // The sidechain artifact holds ONLY the subagent's own conversation: every
+    // line is attributed to the spawning tool_use id at dispatch time (a full-log
+    // slice would also carry the main-thread lines whose parent is null).
     const sideLines = await readLines(agentPath)
+    expect(sideLines.length).toBeGreaterThan(0)
     expect(JSON.stringify(sideLines)).toContain('nested-report')
-    expect(JSON.stringify(sideLines)).not.toContain('parent-done')
+    for (const line of sideLines) expect(line.parent_tool_use_id).toBe(AGENT_TOOL_ID)
     // The prompt evaluator received the NESTED transcript (not the main one).
     const promptReq = reqs.find((r) => r.tools.length === 0 && r.outputFormat !== undefined)
     expect(promptReq).toBeDefined()

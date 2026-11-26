@@ -77,29 +77,45 @@ export class TranscriptMaterializer {
   }
 
   private async write(events: readonly NativeSessionEvent[]): Promise<string> {
+    // Snapshot the end index + boundary ONCE, before any await: `events` is the
+    // log's LIVE mutable array (neutral-read returns it by reference), so an
+    // event appended during the IO below must not advance `count` past what was
+    // actually projected — that would permanently drop the in-flight events.
+    const end = events.length
+    const boundary = end > 0 ? events[end - 1] : null
     const prefixIntact = this.count === 0 || events[this.count - 1] === this.boundary
-    if (this.initialized && events.length === this.count && prefixIntact) return this.opts.path
-    if (this.initialized && events.length > this.count && prefixIntact) {
-      const suffix = this.projectSlice(events, this.count)
-      if (suffix !== '') await appendFile(this.opts.path, suffix)
+    if (this.initialized && end === this.count && prefixIntact) return this.opts.path
+    if (this.initialized && end > this.count && prefixIntact) {
+      const suffix = this.projectSlice(events, this.count, end)
+      if (suffix !== '') {
+        try {
+          await appendFile(this.opts.path, suffix)
+        } catch (err) {
+          // A torn append leaves a corrupt trailing line; invalidate so the next
+          // call takes the atomic rebuild path instead of appending after it.
+          this.initialized = false
+          throw err
+        }
+      }
     } else {
-      // First materialize, shrink, or boundary mismatch → full atomic rebuild.
-      const body = this.projectSlice(events, 0)
+      // First materialize, shrink, boundary mismatch, or post-torn rebuild →
+      // full atomic rebuild.
+      const body = this.projectSlice(events, 0, end)
       await mkdir(dirname(this.opts.path), { recursive: true })
       const tmp = `${this.opts.path}.tmp`
       await writeFile(tmp, body)
       await rename(tmp, this.opts.path)
     }
     this.initialized = true
-    this.count = events.length
-    this.boundary = events.length > 0 ? events[events.length - 1] : null
+    this.count = end
+    this.boundary = boundary
     return this.opts.path
   }
 
-  /** JSONL for events[from..]; non-message events project to null and drop. */
-  private projectSlice(events: readonly NativeSessionEvent[], from: number): string {
+  /** JSONL for events[from..to); non-message events project to null and drop. */
+  private projectSlice(events: readonly NativeSessionEvent[], from: number, to: number): string {
     let out = ''
-    for (let i = from; i < events.length; i++) {
+    for (let i = from; i < to; i++) {
       const line = this.opts.project(events[i], this.opts.sessionId)
       if (line !== null) out += JSON.stringify(line) + '\n'
     }
