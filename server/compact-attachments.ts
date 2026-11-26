@@ -2,6 +2,9 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { TextDecoder } from 'node:util'
 import { AttachmentObjectStore, AttachmentStoreError } from './attachment-object-store.js'
 import { resolveAuthorizedAttachment } from './attachment-access.js'
+import { isResolvedImageBlock, resolveImageBlocks } from './attachment-resolver.js'
+import { isImageRefBlock, type ImageRefBlock } from '../shared/image-attachment.js'
+import type { ProviderContentBlock } from './agent-message.js'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
 import type { UploadStore } from './upload-store.js'
@@ -335,6 +338,36 @@ async function pdfBlock(
   return { block: document, native: true }
 }
 
+/** Hydrate image ref blocks to verified base64 before assembly, reusing the
+ * send path's single verification point (resolveImageBlocks). Legacy base64
+ * blocks pass through untouched; a message with no refs skips the store read.
+ * Each resolved occurrence is projected to the API image shape (source only) —
+ * the server-only attachment/path fields never reach the Messages API, matching
+ * projectImageBlocksForSdk. Fail-closed: a missing/corrupt/mismatched ref rejects
+ * the whole compact. Only the projected clones are rewritten, never the rings. */
+async function hydrateCompactImageRefs(
+  projected: readonly ProjectableBlock[][],
+  opts: CompactAttachmentOptions,
+): Promise<void> {
+  const images: ProjectableImage[] = []
+  for (const blocks of projected) {
+    for (const block of blocks) {
+      if (block.kind === 'image') images.push(block)
+    }
+  }
+  if (!images.some((image) => isImageRefBlock(image.block))) return
+  const resolved = await resolveImageBlocks(
+    images.map((image) => image.block as ProviderContentBlock | ImageRefBlock),
+    { stateDir: opts.stateDir, signal: opts.signal ?? new AbortController().signal },
+  )
+  for (const [index, image] of images.entries()) {
+    const block = resolved[index]
+    image.block = isResolvedImageBlock(block)
+      ? { type: 'image', source: { ...block.source } }
+      : block
+  }
+}
+
 /** Build the attachment/image half of one compact request. Ordinary transcript
  * text stays in recap's existing budget; these blocks retain merged order.
  * Canonical history and the public rings are never mutated. */
@@ -344,6 +377,7 @@ export async function buildCompactAttachmentContent(
   opts: CompactAttachmentOptions,
 ): Promise<CompactAttachmentContent> {
   const projected = projectableMessages(messages, occurrences)
+  await hydrateCompactImageRefs(projected, opts)
   const textSelections = selectTextWindows(projected)
   const content: unknown[] = []
   let hasAttachments = false
