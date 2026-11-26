@@ -11,7 +11,7 @@
 // seams; the engine returns the merged decision facts.
 import { randomUUID } from 'node:crypto'
 import { createLogger } from '../../../log.js'
-import { isPlainObject } from '../../../../shared/type-guards.js'
+import { isPlainObject, isStringArray } from '../../../../shared/type-guards.js'
 import type {
   CommandHookConfig,
   HookConfig,
@@ -72,7 +72,10 @@ const commandExecutor: HookExecutor = (hook, input, ctx) =>
 /** RS §3 exit-2 stderr audience: the tool events + Stop/SubagentStop feed the
  *  block message to the model; every other event surfaces it to the user only.
  *  Whether exit-2 actually BLOCKS a given event (SessionStart/PostCompact/
- *  PermissionRequest/PermissionDenied/StopFailure do not) is the seam's call. */
+ *  PermissionRequest/PermissionDenied/StopFailure do not) is the seam's call.
+ *  TaskCreated/TaskCompleted/TeammateIdle also feed stderr to the model in the
+ *  CLI, but they are layer-2 (no native trigger seam, never dispatched here —
+ *  RS §9.3), so their omission from this set is deliberate, not an oversight. */
 const MODEL_TARGET_EVENTS = new Set<HookEvent>([
   'PreToolUse',
   'PostToolUse',
@@ -81,9 +84,18 @@ const MODEL_TARGET_EVENTS = new Set<HookEvent>([
   'SubagentStop',
 ])
 
-/** Events whose exit-0 plain stdout feeds model context / compact instructions
- *  (RS §2.2 / §3 / §13.3). The seam interprets the resulting context per event. */
-const CONTEXT_STDOUT_EVENTS = new Set<HookEvent>(['UserPromptSubmit', 'SessionStart', 'PreCompact'])
+/** Events that carry hookSpecificOutput.additionalContext (RS §3). Accumulated
+ *  across hooks; a payload for any other event is not a context channel. */
+const ADDITIONAL_CONTEXT_EVENTS = new Set<HookEvent>([
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'UserPromptSubmit',
+  'SessionStart',
+  'Stop',
+  'SubagentStart',
+  'SubagentStop',
+])
 
 function blockTarget(event: HookEvent): 'model' | 'user' {
   return MODEL_TARGET_EVENTS.has(event) ? 'model' : 'user'
@@ -133,32 +145,59 @@ function blockMessage(result: HookExecResult): string {
   return result.decision?.reason ?? result.stderr
 }
 
-interface Candidate {
-  decision: HookDecision
-  rank: number
+/** Primary-action precedence for the cross-hook merge (block dominates). */
+const ACTION_RANK: Record<HookDecision['action'], number> = {
+  block: 5,
+  deny: 4,
+  allow: 3,
+  ask: 2,
+  defer: 1,
+  continue: 0,
 }
 
-/** Extract one result's dominant decision fact. Precedence ranks:
- *  block(4) > deny(3) > allow(2) > context(1) > continue(0). Block overrides any
- *  allow/approve (RS §2.3, T3 note). hookSpecificOutput is read loosely here —
- *  per-event validation (hookEventName match, event applicability) is the seam's. */
-function candidateOf(result: HookExecResult, event: HookEvent): Candidate | null {
-  if (isBlocking(result)) {
-    return { decision: { behavior: 'block', reason: blockMessage(result), target: blockTarget(event) }, rank: 4 }
-  }
+/** The hookSpecificOutput is honored only when its hookEventName matches the
+ *  dispatch event — the CLI's discriminated-union schema rejects a mismatched
+ *  payload, so a PostToolUse-shaped hso must not leak through a PreToolUse
+ *  dispatch. A mismatch drops the hso facts but NOT a valid top-level decision.
+ *  This validation lives in the engine: it is the only place holding both the
+ *  event and the raw hso. */
+function validHso(result: HookExecResult, event: HookEvent): Record<string, unknown> | undefined {
   const hso = result.decision?.hookSpecificOutput
-  const permDecision = typeof hso?.permissionDecision === 'string' ? hso.permissionDecision : undefined
-  // PermissionRequest carries a `{behavior:allow|deny,…}` decision object.
-  const prDecision = isPlainObject(hso?.decision) ? hso.decision : undefined
+  if (!hso) return undefined
+  if (hso.hookEventName !== event) {
+    log.debug(`hook hookSpecificOutput.hookEventName ${JSON.stringify(hso.hookEventName)} != event ${JSON.stringify(event)}; payload rejected`)
+    return undefined
+  }
+  return hso
+}
+
+interface ActionCandidate {
+  action: HookDecision['action']
+  block?: { reason: string; target: 'model' | 'user' }
+  permission?: NonNullable<HookDecision['permission']>
+}
+
+/** One result's dominant primary action. Block overrides any allow/approve
+ *  (RS §2.3, T3 note). Per-event applicability: permissionDecision is read only
+ *  on PreToolUse, the PermissionRequest decision object only on PermissionRequest.
+ *  `hso` is the already-event-validated hookSpecificOutput (or undefined). */
+function actionCandidateOf(
+  result: HookExecResult,
+  hso: Record<string, unknown> | undefined,
+  event: HookEvent,
+): ActionCandidate | null {
+  if (isBlocking(result)) {
+    return { action: 'block', block: { reason: blockMessage(result), target: blockTarget(event) } }
+  }
+  const permDecision = event === 'PreToolUse' && typeof hso?.permissionDecision === 'string' ? hso.permissionDecision : undefined
+  const permReason = event === 'PreToolUse' && typeof hso?.permissionDecisionReason === 'string' ? hso.permissionDecisionReason : undefined
+  const prDecision = event === 'PermissionRequest' && isPlainObject(hso?.decision) ? hso.decision : undefined
   const prBehavior = typeof prDecision?.behavior === 'string' ? prDecision.behavior : undefined
 
   if (permDecision === 'deny' || prBehavior === 'deny') {
-    const message =
-      (typeof hso?.permissionDecisionReason === 'string' ? hso.permissionDecisionReason : undefined) ??
-      (typeof prDecision?.message === 'string' ? prDecision.message : undefined) ??
-      'denied by hook'
+    const message = permReason ?? (typeof prDecision?.message === 'string' ? prDecision.message : undefined) ?? 'denied by hook'
     const interrupt = prDecision?.interrupt === true
-    return { decision: interrupt ? { behavior: 'deny', message, interrupt: true } : { behavior: 'deny', message }, rank: 3 }
+    return { action: 'deny', permission: { behavior: 'deny', message, ...(interrupt ? { interrupt: true } : {}) } }
   }
 
   if (permDecision === 'allow' || prBehavior === 'allow' || result.decision?.decision === 'approve') {
@@ -167,36 +206,114 @@ function candidateOf(result: HookExecResult, event: HookEvent): Candidate | null
       : isPlainObject(prDecision?.updatedInput)
         ? prDecision.updatedInput
         : undefined
-    return { decision: updatedInput ? { behavior: 'allow', updatedInput } : { behavior: 'allow' }, rank: 2 }
+    const updatedPermissions = Array.isArray(prDecision?.updatedPermissions) ? prDecision.updatedPermissions : undefined
+    const permission: NonNullable<HookDecision['permission']> = { behavior: 'allow' }
+    if (updatedInput) permission.updatedInput = updatedInput
+    if (permReason) permission.reason = permReason
+    if (updatedPermissions) permission.updatedPermissions = updatedPermissions
+    return { action: 'allow', permission }
   }
 
-  const additionalContext = typeof hso?.additionalContext === 'string' ? hso.additionalContext : undefined
-  if (additionalContext) {
-    return { decision: { behavior: 'context', text: additionalContext }, rank: 1 }
+  if (permDecision === 'ask') {
+    return { action: 'ask', permission: { behavior: 'ask', ...(permReason ? { reason: permReason } : {}) } }
   }
-  // Exit-0 plain stdout (no parsed decision) feeds context on the context events.
-  if (CONTEXT_STDOUT_EVENTS.has(event) && result.outcome === 'success' && !result.decision && result.stdout.trim()) {
-    return { decision: { behavior: 'context', text: result.stdout }, rank: 1 }
+  if (permDecision === 'defer') {
+    return { action: 'defer', permission: { behavior: 'defer' } }
   }
   return null
 }
 
+/** Per-event hso side fields (RS §3). additionalContext and the PostToolUse
+ *  rewrites are folded in mergeDecisions (they accumulate / need cross-hook
+ *  state); these are the remaining single-value per-event facts. */
+function foldEventFields(merged: HookDecision, hso: Record<string, unknown>, event: HookEvent): void {
+  switch (event) {
+    case 'UserPromptSubmit':
+      if (typeof hso.sessionTitle === 'string') merged.sessionTitle = hso.sessionTitle
+      if (hso.suppressOriginalPrompt === true) merged.suppressOriginalPrompt = true
+      break
+    case 'SessionStart':
+      if (typeof hso.sessionTitle === 'string') merged.sessionTitle = hso.sessionTitle
+      if (typeof hso.initialUserMessage === 'string') merged.initialUserMessage = hso.initialUserMessage
+      if (isStringArray(hso.watchPaths)) merged.watchPaths = hso.watchPaths
+      if (hso.reloadSkills === true) merged.reloadSkills = true
+      break
+    case 'PermissionDenied':
+      if (hso.retry === true) merged.retry = true
+      break
+    default:
+      break
+  }
+}
+
 /** Merge results in COLLECTION order (deterministic regardless of completion
- *  order); the highest-rank fact wins, first-in-order breaks ties. A single
- *  HookDecision variant is returned — collecting side facts (additionalContext
- *  alongside an allow/block, rewrites, continue:false) needs a richer seam
- *  contract and is deferred to the dispatch seams. */
+ *  order). The highest-rank primary action wins (first-in-order breaks ties);
+ *  ALL side facts are carried — additionalContext always accumulates, rewrites
+ *  are last-write-wins, and the per-event scalar fields are folded. The seams
+ *  apply the per-event ACTION semantics to the returned multi-fact decision. */
 function mergeDecisions(event: HookEvent, results: readonly HookExecResult[]): HookDecision {
-  let best: HookDecision = { behavior: 'continue' }
-  let bestRank = 0
+  const merged: HookDecision = { action: 'continue', additionalContext: [] }
+  let actionRank = 0
+  // Whether merged.classifierContext is tied to the current last rewrite: a
+  // tied assertion is dropped when a later hook's rewrite supersedes it; an
+  // assertion returned without a rewrite survives (SDK PostToolUse contract).
+  let classifierTied = false
   for (const result of results) {
-    const candidate = candidateOf(result, event)
-    if (candidate && candidate.rank > bestRank) {
-      best = candidate.decision
-      bestRank = candidate.rank
+    const decision = result.decision
+    // Top-level scalar fields (event-agnostic), last-write-wins in collection order.
+    if (decision?.continue !== undefined) merged.continue = decision.continue
+    if (decision?.stopReason !== undefined) merged.stopReason = decision.stopReason
+    if (decision?.suppressOutput !== undefined) merged.suppressOutput = decision.suppressOutput
+    if (decision?.systemMessage !== undefined) merged.systemMessage = decision.systemMessage
+
+    const hso = validHso(result, event)
+    if (hso) {
+      if (typeof hso.additionalContext === 'string' && ADDITIONAL_CONTEXT_EVENTS.has(event)) {
+        merged.additionalContext.push(hso.additionalContext)
+      }
+      foldEventFields(merged, hso, event)
+      if (event === 'PostToolUse') {
+        const hasRewrite = typeof hso.updatedToolOutput === 'string' || typeof hso.updatedMCPToolOutput === 'string'
+        if (hasRewrite) {
+          if (classifierTied) {
+            delete merged.classifierContext
+            classifierTied = false
+          }
+          if (typeof hso.updatedToolOutput === 'string') merged.updatedToolOutput = hso.updatedToolOutput
+          if (typeof hso.updatedMCPToolOutput === 'string') merged.updatedMCPToolOutput = hso.updatedMCPToolOutput
+        }
+        if (typeof hso.classifierContext === 'string') {
+          merged.classifierContext = hso.classifierContext
+          classifierTied = hasRewrite
+        }
+      }
+    }
+
+    const candidate = actionCandidateOf(result, hso, event)
+    if (candidate && ACTION_RANK[candidate.action] > actionRank) {
+      actionRank = ACTION_RANK[candidate.action]
+      merged.action = candidate.action
+      if (candidate.action === 'block') {
+        merged.block = candidate.block
+        delete merged.permission
+      } else {
+        merged.permission = candidate.permission
+        delete merged.block
+      }
+    }
+
+    // Exit-0 plain stdout (no parsed decision) feeds compact instructions on
+    // PreCompact (RS §13.3) and model context on UserPromptSubmit/SessionStart
+    // (RS §2.2).
+    if (result.outcome === 'success' && !decision && result.stdout.trim()) {
+      if (event === 'PreCompact') {
+        merged.customInstructions = merged.customInstructions ? `${merged.customInstructions}\n${result.stdout}` : result.stdout
+      } else if (event === 'UserPromptSubmit' || event === 'SessionStart') {
+        merged.additionalContext.push(result.stdout)
+      }
     }
   }
-  return best
+  return merged
 }
 
 export class HookEngine {
@@ -219,7 +336,7 @@ export class HookEngine {
       // matches(m, undefined)===true encodes "no-target event ignores matcher".
       if (matches(group.matcher, target)) matched.push(...group.hooks)
     }
-    if (matched.length === 0) return { behavior: 'continue' }
+    if (matched.length === 0) return { action: 'continue', additionalContext: [] }
 
     const results: HookExecResult[] = new Array(matched.length)
     const parallel: number[] = []

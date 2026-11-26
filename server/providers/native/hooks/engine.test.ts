@@ -54,18 +54,23 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
   }
 }
 
+/** A success result carrying a hookSpecificOutput payload. */
+function withHso(hookSpecificOutput: Record<string, unknown>): HookExecResult {
+  return { outcome: 'success', exitCode: 0, stdout: '', stderr: '', decision: { hookSpecificOutput } }
+}
+
 describe('HookEngine.dispatch — collection + matching', () => {
   it('returns continue when no sources contribute hooks', async () => {
     const { executor, calls } = fixedExecutor(SUCCESS)
     const engine = engineWith({ command: executor }, [])
-    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ behavior: 'continue' })
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ action: 'continue', additionalContext: [] })
     expect(calls).toHaveLength(0)
   })
 
   it('returns continue when the matcher does not match the tool', async () => {
     const { executor, calls } = fixedExecutor(SUCCESS)
     const engine = engineWith({ command: executor }, [{ matcher: 'Edit', hooks: [command('guard.sh')] }])
-    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ behavior: 'continue' })
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ action: 'continue', additionalContext: [] })
     expect(calls).toHaveLength(0)
   })
 
@@ -117,15 +122,15 @@ describe('HookEngine.dispatch — collection + matching', () => {
   })
 })
 
-describe('HookEngine.dispatch — decision merge', () => {
-  it('exit-2 block becomes a block decision (stderr is the reason, model target for PreToolUse)', async () => {
+describe('HookEngine.dispatch — primary action merge', () => {
+  it('exit-2 block becomes a block action (stderr is the reason, model target for PreToolUse)', async () => {
     const blocked: HookExecResult = { outcome: 'blocked', exitCode: 2, stdout: '', stderr: 'do not run' }
     const { executor } = fixedExecutor(blocked)
     const engine = engineWith({ command: executor }, [{ matcher: 'Bash', hooks: [command('guard.sh')] }])
     expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
-      behavior: 'block',
-      reason: 'do not run',
-      target: 'model',
+      action: 'block',
+      block: { reason: 'do not run', target: 'model' },
+      additionalContext: [],
     })
   })
 
@@ -140,9 +145,9 @@ describe('HookEngine.dispatch — decision merge', () => {
     const { executor } = fixedExecutor(result)
     const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
     expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
-      behavior: 'block',
-      reason: 'halt now',
-      target: 'model',
+      action: 'block',
+      block: { reason: 'halt now', target: 'model' },
+      additionalContext: [],
     })
   })
 
@@ -157,7 +162,8 @@ describe('HookEngine.dispatch — decision merge', () => {
     const { executor } = fixedExecutor(result)
     const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
     const decision = await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())
-    expect(decision.behavior).toBe('block')
+    expect(decision.action).toBe('block')
+    expect(decision.permission).toBeUndefined()
   })
 
   it('exit-2 overrides a top-level decision:"approve"', async () => {
@@ -171,143 +177,368 @@ describe('HookEngine.dispatch — decision merge', () => {
     const { executor } = fixedExecutor(result)
     const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
     const decision = await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())
-    expect(decision.behavior).toBe('block')
+    expect(decision.action).toBe('block')
   })
 
   it('a block from a later hook overrides an allow from an earlier hook', async () => {
-    const allow: HookExecResult = {
-      outcome: 'success',
-      exitCode: 0,
-      stdout: '',
-      stderr: '',
-      decision: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } },
-    }
+    const allow = withHso({ hookEventName: 'PreToolUse', permissionDecision: 'allow' })
     const blocked: HookExecResult = { outcome: 'blocked', exitCode: 2, stdout: '', stderr: 'veto' }
     const engine = new HookEngine({
       sources: () => [sourceOf([{ hooks: [command('allow.sh'), command('block.sh')] }])],
       emit: () => {},
-      executors: {
-        command: async (hook) => ((hook as CommandHookConfig).command === 'allow.sh' ? allow : blocked),
-      },
+      executors: { command: async (hook) => ((hook as CommandHookConfig).command === 'allow.sh' ? allow : blocked) },
       cwd: '/tmp/project',
       sessionId: 'session-1',
     })
-    const decision = await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())
-    expect(decision).toEqual({ behavior: 'block', reason: 'veto', target: 'model' })
-  })
-
-  it('permissionDecision:"allow" with updatedInput becomes an allow decision', async () => {
-    const result: HookExecResult = {
-      outcome: 'success',
-      exitCode: 0,
-      stdout: '',
-      stderr: '',
-      decision: {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'allow',
-          updatedInput: { command: 'ls -la' },
-        },
-      },
-    }
-    const { executor } = fixedExecutor(result)
-    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
     expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
-      behavior: 'allow',
-      updatedInput: { command: 'ls -la' },
+      action: 'block',
+      block: { reason: 'veto', target: 'model' },
+      additionalContext: [],
     })
   })
 
-  it('permissionDecision:"deny" becomes a deny decision with the reason', async () => {
-    const result: HookExecResult = {
-      outcome: 'success',
-      exitCode: 0,
-      stdout: '',
-      stderr: '',
-      decision: {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason: 'not permitted',
-        },
-      },
-    }
+  it('permissionDecision:"allow" with updatedInput becomes an allow action', async () => {
+    const result = withHso({ hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { command: 'ls -la' } })
     const { executor } = fixedExecutor(result)
     const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
     expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
-      behavior: 'deny',
-      message: 'not permitted',
+      action: 'allow',
+      permission: { behavior: 'allow', updatedInput: { command: 'ls -la' } },
+      additionalContext: [],
+    })
+  })
+
+  it('permissionDecision:"deny" becomes a deny action with the reason', async () => {
+    const result = withHso({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'not permitted' })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'deny',
+      permission: { behavior: 'deny', message: 'not permitted' },
+      additionalContext: [],
     })
   })
 
   it('a deny overrides an allow from another hook', async () => {
-    const allow: HookExecResult = {
-      outcome: 'success',
-      exitCode: 0,
-      stdout: '',
-      stderr: '',
-      decision: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } },
-    }
-    const deny: HookExecResult = {
-      outcome: 'success',
-      exitCode: 0,
-      stdout: '',
-      stderr: '',
-      decision: {
-        hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'no' },
-      },
-    }
+    const allow = withHso({ hookEventName: 'PreToolUse', permissionDecision: 'allow' })
+    const deny = withHso({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'no' })
     const engine = new HookEngine({
       sources: () => [sourceOf([{ hooks: [command('allow.sh'), command('deny.sh')] }])],
       emit: () => {},
-      executors: {
-        command: async (hook) => ((hook as CommandHookConfig).command === 'allow.sh' ? allow : deny),
-      },
+      executors: { command: async (hook) => ((hook as CommandHookConfig).command === 'allow.sh' ? allow : deny) },
       cwd: '/tmp/project',
       sessionId: 'session-1',
     })
     expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
-      behavior: 'deny',
-      message: 'no',
+      action: 'deny',
+      permission: { behavior: 'deny', message: 'no' },
+      additionalContext: [],
     })
   })
 
-  it('additionalContext becomes a context decision', async () => {
-    const result: HookExecResult = {
-      outcome: 'success',
-      exitCode: 0,
-      stdout: '',
-      stderr: '',
-      decision: { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'remember this' } },
-    }
+  it('permissionDecision:"ask" becomes an ask action', async () => {
+    const result = withHso({ hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: 'confirm please' })
     const { executor } = fixedExecutor(result)
-    const engine = engineWith({ command: executor }, [{ hooks: [command('ctx.sh')] }])
-    expect(await engine.dispatch('PostToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
-      behavior: 'context',
-      text: 'remember this',
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'ask',
+      permission: { behavior: 'ask', reason: 'confirm please' },
+      additionalContext: [],
+    })
+  })
+
+  it('permissionDecision:"defer" becomes a defer action', async () => {
+    const result = withHso({ hookEventName: 'PreToolUse', permissionDecision: 'defer' })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'defer',
+      permission: { behavior: 'defer' },
+      additionalContext: [],
+    })
+  })
+
+  it('PermissionRequest decision allow carries updatedInput + updatedPermissions', async () => {
+    const result = withHso({
+      hookEventName: 'PermissionRequest',
+      decision: { behavior: 'allow', updatedInput: { command: 'ls' }, updatedPermissions: [{ type: 'allow', toolName: 'Bash' }] },
+    })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PermissionRequest', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'allow',
+      permission: { behavior: 'allow', updatedInput: { command: 'ls' }, updatedPermissions: [{ type: 'allow', toolName: 'Bash' }] },
+      additionalContext: [],
+    })
+  })
+
+  it('PermissionRequest decision deny carries message + interrupt', async () => {
+    const result = withHso({ hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'nope', interrupt: true } })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PermissionRequest', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'deny',
+      permission: { behavior: 'deny', message: 'nope', interrupt: true },
+      additionalContext: [],
     })
   })
 
   it('all-success with no decision returns continue', async () => {
     const { executor } = fixedExecutor(SUCCESS)
     const engine = engineWith({ command: executor }, [{ hooks: [command('a.sh'), command('b.sh')] }])
-    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ behavior: 'continue' })
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ action: 'continue', additionalContext: [] })
   })
 
   it('a non-blocking hook error does not block (continue)', async () => {
     const errored: HookExecResult = { outcome: 'error', exitCode: 1, stdout: '', stderr: 'boom' }
     const { executor } = fixedExecutor(errored)
     const engine = engineWith({ command: executor }, [{ hooks: [command('bad.sh')] }])
-    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ behavior: 'continue' })
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ action: 'continue', additionalContext: [] })
   })
 
   it('a hook type with no registered executor is a non-blocking error, not a crash', async () => {
     const { executor } = fixedExecutor(SUCCESS)
-    // Only command is registered; the http hook has no executor.
     const engine = engineWith({ command: executor }, [
       { hooks: [{ type: 'http', url: 'https://example.com/hook' }, command('ok.sh')] },
     ])
-    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ behavior: 'continue' })
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ action: 'continue', additionalContext: [] })
+  })
+})
+
+describe('HookEngine.dispatch — side facts (multi-fact contract)', () => {
+  it('a lone PostToolUse updatedToolOutput hook carries the rewrite (not continue-only)', async () => {
+    const result = withHso({ hookEventName: 'PostToolUse', updatedToolOutput: 'rewritten output' })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('rewrite.sh')] }])
+    expect(await engine.dispatch('PostToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'continue',
+      additionalContext: [],
+      updatedToolOutput: 'rewritten output',
+    })
+  })
+
+  it('two PostToolUse rewrite hooks → last-write-wins in collection order', async () => {
+    const first = withHso({ hookEventName: 'PostToolUse', updatedToolOutput: 'first' })
+    const second = withHso({ hookEventName: 'PostToolUse', updatedToolOutput: 'second' })
+    const engine = new HookEngine({
+      sources: () => [sourceOf([{ hooks: [command('a.sh'), command('b.sh')] }])],
+      emit: () => {},
+      executors: { command: async (hook) => ((hook as CommandHookConfig).command === 'a.sh' ? first : second) },
+      cwd: '/tmp/project',
+      sessionId: 'session-1',
+    })
+    const decision = await engine.dispatch('PostToolUse', { tool_name: 'Bash' }, ctx())
+    expect(decision.updatedToolOutput).toBe('second')
+  })
+
+  it('a lone Stop continue:false hook carries continue:false + stopReason', async () => {
+    const result: HookExecResult = {
+      outcome: 'success',
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      decision: { continue: false, stopReason: 'all done' },
+    }
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('stop.sh')] }])
+    expect(await engine.dispatch('Stop', {}, ctx())).toEqual({
+      action: 'continue',
+      additionalContext: [],
+      continue: false,
+      stopReason: 'all done',
+    })
+  })
+
+  it('additionalContext survives alongside an allow', async () => {
+    const result = withHso({ hookEventName: 'PreToolUse', permissionDecision: 'allow', additionalContext: 'remember this' })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'allow',
+      permission: { behavior: 'allow' },
+      additionalContext: ['remember this'],
+    })
+  })
+
+  it('additionalContext survives alongside a deny', async () => {
+    const result = withHso({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'no', additionalContext: 'ctx' })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'deny',
+      permission: { behavior: 'deny', message: 'no' },
+      additionalContext: ['ctx'],
+    })
+  })
+
+  it('additionalContext survives alongside a block', async () => {
+    const result: HookExecResult = {
+      outcome: 'blocked',
+      exitCode: 2,
+      stdout: '',
+      stderr: 'veto',
+      decision: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'ctx' } },
+    }
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'block',
+      block: { reason: 'veto', target: 'model' },
+      additionalContext: ['ctx'],
+    })
+  })
+
+  it('additionalContext accumulates across multiple hooks', async () => {
+    const a = withHso({ hookEventName: 'PostToolUse', additionalContext: 'from a' })
+    const b = withHso({ hookEventName: 'PostToolUse', additionalContext: 'from b' })
+    const engine = new HookEngine({
+      sources: () => [sourceOf([{ hooks: [command('a.sh'), command('b.sh')] }])],
+      emit: () => {},
+      executors: { command: async (hook) => ((hook as CommandHookConfig).command === 'a.sh' ? a : b) },
+      cwd: '/tmp/project',
+      sessionId: 'session-1',
+    })
+    const decision = await engine.dispatch('PostToolUse', { tool_name: 'Bash' }, ctx())
+    expect(decision.additionalContext).toEqual(['from a', 'from b'])
+  })
+
+  it('UserPromptSubmit sessionTitle + suppressOriginalPrompt are carried', async () => {
+    const result = withHso({ hookEventName: 'UserPromptSubmit', sessionTitle: 'My title', suppressOriginalPrompt: true })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('ups.sh')] }])
+    expect(await engine.dispatch('UserPromptSubmit', { prompt: 'hi' }, ctx())).toEqual({
+      action: 'continue',
+      additionalContext: [],
+      sessionTitle: 'My title',
+      suppressOriginalPrompt: true,
+    })
+  })
+
+  it('SessionStart initialUserMessage / watchPaths / reloadSkills are carried', async () => {
+    const result = withHso({
+      hookEventName: 'SessionStart',
+      initialUserMessage: 'hello',
+      watchPaths: ['/tmp/a'],
+      reloadSkills: true,
+    })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('ss.sh')] }])
+    expect(await engine.dispatch('SessionStart', { source: 'startup' }, ctx())).toEqual({
+      action: 'continue',
+      additionalContext: [],
+      initialUserMessage: 'hello',
+      watchPaths: ['/tmp/a'],
+      reloadSkills: true,
+    })
+  })
+
+  it('PermissionDenied retry is carried', async () => {
+    const result = withHso({ hookEventName: 'PermissionDenied', retry: true })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('pd.sh')] }])
+    expect(await engine.dispatch('PermissionDenied', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'continue',
+      additionalContext: [],
+      retry: true,
+    })
+  })
+
+  it('PreCompact exit-0 plain stdout becomes customInstructions', async () => {
+    const result: HookExecResult = { outcome: 'success', exitCode: 0, stdout: 'focus on the API', stderr: '' }
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('pc.sh')] }])
+    expect(await engine.dispatch('PreCompact', { trigger: 'auto' }, ctx())).toEqual({
+      action: 'continue',
+      additionalContext: [],
+      customInstructions: 'focus on the API',
+    })
+  })
+
+  it('UserPromptSubmit exit-0 plain stdout accumulates into additionalContext', async () => {
+    const result: HookExecResult = { outcome: 'success', exitCode: 0, stdout: 'extra context', stderr: '' }
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('ups.sh')] }])
+    expect(await engine.dispatch('UserPromptSubmit', { prompt: 'hi' }, ctx())).toEqual({
+      action: 'continue',
+      additionalContext: ['extra context'],
+    })
+  })
+
+  it('suppressOutput + systemMessage top-level fields are carried', async () => {
+    const result: HookExecResult = {
+      outcome: 'success',
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      decision: { suppressOutput: true, systemMessage: 'heads up' },
+    }
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'continue',
+      additionalContext: [],
+      suppressOutput: true,
+      systemMessage: 'heads up',
+    })
+  })
+})
+
+describe('HookEngine.dispatch — hookEventName validation + per-event applicability', () => {
+  it('a mismatched hookEventName payload is rejected, not leaked (PostToolUse hso on PreToolUse)', async () => {
+    const result = withHso({ hookEventName: 'PostToolUse', updatedToolOutput: 'should not leak' })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ action: 'continue', additionalContext: [] })
+  })
+
+  it('a mismatched hookEventName permissionDecision does not leak across events', async () => {
+    // PreToolUse-shaped permissionDecision presented on a PostToolUse dispatch.
+    const result = withHso({ hookEventName: 'PreToolUse', permissionDecision: 'allow' })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PostToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ action: 'continue', additionalContext: [] })
+  })
+
+  it('a matching hookEventName payload is accepted', async () => {
+    const result = withHso({ hookEventName: 'PostToolUse', additionalContext: 'ok' })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PostToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'continue',
+      additionalContext: ['ok'],
+    })
+  })
+
+  it('permissionDecision is ignored on an event that does not carry it (Stop)', async () => {
+    // Even with a matching Stop hookEventName, permissionDecision is not a Stop field.
+    const result = withHso({ hookEventName: 'Stop', permissionDecision: 'allow' })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('stop.sh')] }])
+    expect(await engine.dispatch('Stop', {}, ctx())).toEqual({ action: 'continue', additionalContext: [] })
+  })
+
+  it('updatedToolOutput is ignored on a non-PostToolUse event even if present', async () => {
+    const result = withHso({ hookEventName: 'PreToolUse', updatedToolOutput: 'nope' })
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({ action: 'continue', additionalContext: [] })
+  })
+
+  it('a mismatched hookEventName does not discard a valid top-level block decision', async () => {
+    const result: HookExecResult = {
+      outcome: 'success',
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      decision: { decision: 'block', reason: 'still blocks', hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: 'leak' } },
+    }
+    const { executor } = fixedExecutor(result)
+    const engine = engineWith({ command: executor }, [{ hooks: [command('guard.sh')] }])
+    expect(await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())).toEqual({
+      action: 'block',
+      block: { reason: 'still blocks', target: 'model' },
+      additionalContext: [],
+    })
   })
 })
 
@@ -338,7 +569,7 @@ describe('HookEngine.dispatch — concurrency (RS §4.9)', () => {
     await waitFor(() => calls === 13)
     expect(maxActive).toBe(12) // still capped after the 13th starts
     for (const release of releases.slice(1)) release()
-    expect(await pending).toEqual({ behavior: 'continue' })
+    expect(await pending).toEqual({ action: 'continue', additionalContext: [] })
     expect(calls).toBe(13)
   })
 
@@ -368,7 +599,7 @@ describe('HookEngine.dispatch — concurrency (RS §4.9)', () => {
     releases[0]()
     await waitFor(() => calls === 2)
     releases[1]()
-    expect(await pending).toEqual({ behavior: 'continue' })
+    expect(await pending).toEqual({ action: 'continue', additionalContext: [] })
     expect(maxActive).toBe(1)
   })
 
