@@ -28,6 +28,16 @@ export function mcpToolDefs(conns: NativeMcpConnections): ToolDef[] {
     promptOrder: MCP_PROMPT_ORDER_BASE + index,
     schema: info.inputSchema,
     readOnlyHint: info.annotations?.readOnlyHint === true,
-    run: (input, ctx) => conns.call(info.fqn, input, ctx.signal),
+    run: async (input, ctx) => {
+      const out = await conns.call(info.fqn, input, ctx.signal)
+      // MCP isError → throw (CLI `ys` normalizer parity, RS §12.1). The loop
+      // routes PostToolUse vs PostToolUseFailure by throw-vs-return, so an MCP
+      // error must arrive as a throw to land in PostToolUseFailure. This is the
+      // only place a soft MCP isError becomes a throw: the connection manager
+      // still reports it as a flag, and the loop's catch turns the message into
+      // the error tool_result (same model-facing text as the prior soft return).
+      if (out.isError === true) throw new Error(out.text)
+      return out
+    },
   }))
 }

@@ -289,6 +289,10 @@ export async function runTurn(
       let text: string
       let resultContent: NeutralToolResult['content'] | undefined
       let runFailed = false
+      // The throw-vs-return fact that routes the post-tool hook (RS §12.1).
+      // Distinct from `runFailed`, which is ALSO true for a soft isError normal
+      // return — only a genuine throw sets this.
+      let toolThrew = false
       try {
         const execute = (taskSignal: AbortSignal) =>
           tool.run(toolInput as never, {
@@ -315,6 +319,42 @@ export async function runTurn(
       } catch (err) {
         text = err instanceof Error ? err.message : String(err)
         runFailed = true
+        toolThrew = true
+      }
+      // PostToolUse / PostToolUseFailure seam (RS §12.1). Routing is by
+      // THROW-vs-RETURN only: a normal return — even one whose result carries a
+      // soft isError — dispatches PostToolUse; a thrown error dispatches
+      // PostToolUseFailure. The result's is_error flag is never consulted. The
+      // MCP adapter normalizes MCP isError:true into a throw (CLI `ys` parity),
+      // so MCP errors reach Failure through this same throw fact. Dispatched
+      // after the try/catch so a hook-engine failure can never be misread as a
+      // tool throw (one unified decision point, not two scattered dispatches).
+      if (deps.dispatchHook) {
+        const event = toolThrew ? 'PostToolUseFailure' : 'PostToolUse'
+        const postDecision = await deps.dispatchHook(event, {
+          session_id: ctx.sessionId,
+          cwd: deps.cwd,
+          hook_event_name: event,
+          tool_name: call.name,
+          tool_input: toolInput,
+          tool_use_id: call.id,
+          ...(toolThrew ? { error: text } : { tool_response: text }),
+        }, { signal, hasContext: true })
+        for (const context of postDecision.additionalContext) {
+          if (context.trim() !== '') hookContext.push(context)
+        }
+        // exit-2 / decision block: the tool already ran (or already failed), so
+        // its result stands; the block stderr is fed to the model as next-round
+        // feedback (RS §3 "stderr immediately to the model"), not a replacement.
+        if (postDecision.action === 'block' && postDecision.block && postDecision.block.reason.trim() !== '') {
+          hookContext.push(postDecision.block.reason)
+        }
+        // PostToolUse rewrite: the engine merged updatedToolOutput
+        // last-write-wins across hooks (RS §4.9); the merged string replaces the
+        // model-facing result content. A failure result is never rewritten.
+        if (!toolThrew && postDecision.updatedToolOutput !== undefined) {
+          resultContent = [{ type: 'text', text: postDecision.updatedToolOutput }]
+        }
       }
       results.push({ callId: call.id, content: resultContent ?? [{ type: 'text', text }], isError: runFailed })
     }
