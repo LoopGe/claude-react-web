@@ -39,18 +39,21 @@ export function isAsyncHook(hook: HookConfig): hook is CommandHookConfig {
   return hook.type === 'command' && (hook.async === true || hook.asyncRewake === true)
 }
 
-/** The async ack's asyncTimeout fact (RS §4.4: hook.timeout*1000 ?? 600000). */
-export function asyncTimeoutOf(hook: CommandHookConfig): number {
+/** The async ack's asyncTimeout fact (RS §4.4: hook.timeout*1000 ?? 600000).
+ *  Reads only the base-config timeout, so it serves both the config-async
+ *  ack and the runtime {async:true} conversion ack (one shape for both). */
+export function asyncTimeoutOf(hook: HookConfig): number {
   return hook.timeout ? hook.timeout * 1000 : DEFAULT_ASYNC_TIMEOUT_MS
 }
 
-/** The immediate dispatch result for a config-async hook: the CLI's
- *  asyncResponse ({async:true, asyncTimeout}) shaped as a merge no-op —
- *  success, no decision, empty stdout — so the current action proceeds
- *  unaffected while the background execution owns the eventual decision. */
+/** The immediate dispatch result for an async hook: the CLI's asyncResponse
+ *  ({async:true, asyncTimeout}) shaped as a merge no-op — success, no
+ *  decision, empty stdout — so the current action proceeds unaffected while
+ *  the background execution owns the eventual decision. Used for BOTH the
+ *  config-async dispatch and the runtime {async:true} conversion. */
 export type AsyncHookDispatchResult = HookExecResult & { async: true; asyncTimeout: number }
 
-export function asyncDispatchResult(hook: CommandHookConfig): AsyncHookDispatchResult {
+export function asyncDispatchResult(hook: HookConfig): AsyncHookDispatchResult {
   return { outcome: 'success', stdout: '', stderr: '', async: true, asyncTimeout: asyncTimeoutOf(hook) }
 }
 

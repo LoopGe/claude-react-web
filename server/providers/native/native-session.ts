@@ -1882,9 +1882,15 @@ export class NativeSession implements NativeSessionCore {
       const wake = this.pendingDurableInitial === null && this.input.length === 0
         ? this.hookRewakes.shift() ?? null
         : null
-      // The user-turn pending head (null on a wake turn — a wake has no host
-      // prompt to park). Assigned in the user branch below; the catch reads it.
-      let pending: PendingDurableInitial | null = null
+      // The user-turn shift/park stays SYNCHRONOUS at the top of the iteration
+      // — BEFORE any await (notably sessionStartInit, which a turn interrupt
+      // does not shorten): a cancelQueued drain during that await must find
+      // the head already parked so the pre-await withdrawal guards hold.
+      // Shifting after the await would park a phantom {message:undefined}
+      // head when the drain emptied the FIFO, wedging every later send. A
+      // wake turn has no host prompt to park (null).
+      const pending = wake !== null ? null : this.pendingDurableInitial ?? { message: this.input.shift() as RequestMessage }
+      this.pendingDurableInitial = pending
       // Fresh per-turn signal, armed BEFORE the persistence await: interrupt()
       // kills THIS turn only, and must stay responsive while the consumed
       // turn's write is in flight (the session survives for the next message).
@@ -1924,7 +1930,10 @@ export class NativeSession implements NativeSessionCore {
         // resolved promise on every later turn — no per-turn cost.
         await this.sessionStartInit
         let turnSkillView: NativeSkillInvocationView | undefined
-        if (wake !== null) {
+        // Branch on `pending` so the user branch narrows it to non-null;
+        // pending === null ⇔ wake !== null by the construction above.
+        if (pending === null) {
+          const w = wake!
           // T23 wake turn (RS §4.4): the hook feedback is a system injection,
           // not a user prompt — no UserPromptSubmit dispatch (the wake must not
           // re-feed the prompt hooks), no host pairing (receivedAt / consume /
@@ -1933,9 +1942,18 @@ export class NativeSession implements NativeSessionCore {
           // conversation. The host accounts the turn through the pump's
           // unaccounted-turn assistant catch-all, exactly like a CLI-driven
           // task-notification continuation.
-          await this.skillsReady
-          turnSkillView = this.skills.snapshot(turnSkillPolicy)
-          const feedback = createUserMessage({ content: [{ type: 'text', text: wake.body }], source: { kind: 'user' } })
+          // Mirror the user branch's discovery contract: a skillsReady
+          // rejection is captured and re-thrown only AFTER the feedback is
+          // durable — the wake was already shifted off the queue, so a bare
+          // await here would lose it with no park/retry to recover it.
+          let skillError: unknown
+          try {
+            await this.skillsReady
+            turnSkillView = this.skills.snapshot(turnSkillPolicy)
+          } catch (err) {
+            skillError = err
+          }
+          const feedback = createUserMessage({ content: [{ type: 'text', text: w.body }], source: { kind: 'user' } })
           // The SessionStart seed/context lead the turn's messages exactly as
           // on a user turn (a wake can be the session's first turn).
           initialMessages = [...this.sessionStartTurnMessages(), feedback]
@@ -1959,14 +1977,13 @@ export class NativeSession implements NativeSessionCore {
           // The wake summary is the user-visible one-liner (RS §4.4).
           this.output.push({
             type: 'informational',
-            text: wake.summary,
+            text: w.summary,
             sessionId: this.opts.id,
             uuid: this.ctx.uuid(),
             parentToolUseId: null,
           })
+          if (skillError !== undefined) throw skillError
         } else {
-          pending = this.pendingDurableInitial ?? { message: this.input.shift() as RequestMessage }
-          this.pendingDurableInitial = pending
           const next = pending.message
           let invocation: { name: string; body: string } | null = null
           let skillError: unknown

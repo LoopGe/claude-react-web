@@ -536,9 +536,10 @@ export class HookEngine {
     // Runtime {async:true} conversion (RS §2.2 KFr / §4.4): the command settled
     // but declared itself async — its decision is background-owned (fire-and-
     // forget) and must not act on the current event. The activity record above
-    // carries the REAL execution facts; the merge sees a no-op.
+    // carries the REAL execution facts; the merge sees the same async ack
+    // shape as a config-async dispatch.
     if (result.async === true) {
-      return { outcome: 'success', stdout: '', stderr: '', async: true }
+      return asyncDispatchResult(hook)
     }
     return result
   }

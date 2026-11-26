@@ -32,6 +32,8 @@ import { makeNativePorts } from '../../native-host-adapters.js'
 import type { CanonicalEvent } from '../canonical.js'
 import type { SessionHooksConfig } from '../../../../shared/hooks.js'
 import type { Frame } from '../../native-frames.js'
+import type { NativeHostPorts } from '../ports.js'
+import { nativeSessionLogPath } from '../session-log/paths.js'
 
 // ── unit fixtures ────────────────────────────────────────────────────────────
 
@@ -309,14 +311,20 @@ interface WakeHarness {
   frames: Frame[]
   requests: Array<{ messages: unknown[] }>
   send(text: string): void
+  interrupt(opts?: { cancelQueued?: boolean }): Promise<void>
   destroy(): Promise<void>
 }
 
 /** A live provider session with scripted text rounds and the given hooks.
- *  The caller drives sends / waits and destroys in a finally. */
-async function wakeHarness(hooks: SessionHooksConfig, rounds = 4): Promise<WakeHarness> {
+ *  The caller drives sends / waits and destroys in a finally. `portsFor`
+ *  overrides the host ports (e.g. a failing skill-discovery port). */
+async function wakeHarness(
+  hooks: SessionHooksConfig,
+  rounds = 4,
+  portsFor?: (dir: string) => NativeHostPorts,
+): Promise<WakeHarness> {
   const dir = await tempDir('rewake-')
-  const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+  const provider = new NativeProvider({ stateDir: dir, ports: portsFor ? portsFor(dir) : makeNativePorts({ stateDir: dir }) })
   const requests: Array<{ messages: unknown[] }> = []
   const scripts: CanonicalEvent[][] = Array.from({ length: rounds }, (_, i) => textTurn(`round-${i + 1}`))
   ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { messages: unknown[] }) {
@@ -336,6 +344,7 @@ async function wakeHarness(hooks: SessionHooksConfig, rounds = 4): Promise<WakeH
     frames,
     requests,
     send: (text) => session.enqueueUserMessage(userMsg(text) as never),
+    interrupt: async (opts) => { await session.interrupt!(opts) },
     destroy: async () => { await session.destroy() },
   }
 }
@@ -427,6 +436,76 @@ describe('session idle wake delivery (RS §4.4)', () => {
       await h.destroy()
     }
   }, 40_000)
+
+  it('first-turn cancelQueued interrupt during SessionStart does not wedge the FIFO', async () => {
+    // SessionStart holds open so the first turn's pump suspends at the
+    // sessionStartInit await with the prompt parked. A cancelQueued interrupt
+    // drains the parked head; when SessionStart settles, the iteration must
+    // settle as withdrawn — NOT park a phantom {message:undefined} head from
+    // the emptied FIFO (which arms a durable-retry pause on every later send
+    // and wedges the session permanently).
+    const hooks: SessionHooksConfig = {
+      SessionStart: [{ hooks: [{ type: 'command', command: 'touch started.flag\nwhile [ ! -f release.flag ]; do sleep 0.05; done', shell: 'bash' }] }],
+    }
+    const h = await wakeHarness(hooks)
+    try {
+      h.send('first')
+      await vi.waitFor(async () => {
+        await expect(readFile(join(h.dir, 'started.flag'), 'utf8')).resolves.toBe('')
+      }, { timeout: 15_000 })
+      // The pump is suspended at await sessionStartInit; drain the head.
+      await h.interrupt({ cancelQueued: true })
+      await writeFile(join(h.dir, 'release.flag'), '1')
+      // The withdrawn first iteration settles with a terminal frame...
+      await vi.waitFor(() => {
+        expect(results(h.frames)).toHaveLength(1)
+      }, { timeout: 15_000 })
+      // ...and a fresh send runs a NORMAL turn (no phantom-head wedge).
+      h.send('second')
+      await vi.waitFor(() => {
+        expect(results(h.frames)).toHaveLength(2)
+      }, { timeout: 15_000 })
+      expect((results(h.frames)[1] as { is_error?: boolean }).is_error).toBeFalsy()
+      expect((results(h.frames)[1] as { result?: string }).result).toBe('round-1')
+      expect(h.requests).toHaveLength(1)
+      expect(JSON.stringify(h.requests[0].messages)).toContain('second')
+    } finally {
+      await h.destroy()
+    }
+  }, 30_000)
+
+  it('wake feedback is durable even when skill discovery rejects on the wake turn', async () => {
+    // A failing skill port makes skillsReady reject on EVERY turn. Both turns
+    // error, but both messages must be durable: the user prompt (user-branch
+    // contract) and the wake feedback — the wake was already shifted off the
+    // queue, so a bare skillsReady await in the wake branch would lose it
+    // with no park/retry to recover it.
+    const h = await wakeHarness(
+      upsHook('echo skill-wake >&2; exit 2', { asyncRewake: true }),
+      4,
+      (dir) => {
+        const ports = makeNativePorts({ stateDir: dir })
+        ports.skill.listSkills = async () => { throw new Error('skill discovery exploded') }
+        return ports
+      },
+    )
+    try {
+      h.send('go')
+      await vi.waitFor(() => {
+        expect(results(h.frames)).toHaveLength(2)
+      }, { timeout: 15_000 })
+      expect(results(h.frames).every((r) => (r as { is_error?: boolean }).is_error)).toBe(true)
+      const logText = await readFile(nativeSessionLogPath(h.dir, 'rewake'), 'utf8')
+      const userTexts = logText.split('\n').filter((l) => l.trim() !== '')
+        .map((l) => JSON.parse(l) as { type?: string; data?: { content?: Array<{ text?: string }> } })
+        .filter((e) => e.type === 'user/message')
+        .map((e) => (e.data?.content ?? []).map((b) => b.text ?? '').join(''))
+      expect(userTexts.some((t) => t.includes('skill-wake'))).toBe(true)
+      expect(userTexts.some((t) => t === 'go')).toBe(true)
+    } finally {
+      await h.destroy()
+    }
+  }, 30_000)
 
   it('asyncRewake exit-0 does NOT wake the session', async () => {
     const h = await wakeHarness(upsHook('touch ran.flag; exit 0', { asyncRewake: true }))
