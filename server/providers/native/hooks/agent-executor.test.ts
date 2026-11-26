@@ -493,6 +493,7 @@ interface ApiBody {
   tools: Array<{ name: string }>
   thinking?: unknown
   output_config?: { effort?: string; format?: unknown }
+  speed?: string
   messages: unknown[]
 }
 
@@ -554,6 +555,9 @@ async function runWiredTurn(opts: {
   hooks: SessionHooksConfig
   verdict: unknown
   thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number }
+  model?: string
+  effortLevel?: string
+  fastMode?: boolean
 }): Promise<{ bodies: ApiBody[]; frames: Frame[] }> {
   const dir = await tempDir('agent-hook-wire-')
   const bodies: ApiBody[] = []
@@ -570,6 +574,9 @@ async function runWiredTurn(opts: {
   const session = provider.createSession({
     id: 'wire',
     cwd: dir,
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.effortLevel ? { effortLevel: opts.effortLevel } : {}),
+    ...(opts.fastMode !== undefined ? { fastMode: opts.fastMode } : {}),
     thinking: opts.thinking ?? { type: 'adaptive' },
     promptSuggestions: false,
     providerExtras: { sdkOptions: { settings: { hooks: opts.hooks } } },
@@ -660,5 +667,49 @@ describe('LLM-executor production wiring (real streamFor, stubbed fetch)', () =>
     })
     // Session default model (DEFAULT_MODEL), not the haiku default.
     expect(bodies[0].model).toBe('claude-sonnet-4-5')
+  })
+
+  it('a hook round on a DIFFERENT model strips session effort/fastMode; the main round keeps both', async () => {
+    // Session: opus-4-8 (effort- AND fast-mode-eligible) pinned xhigh + fast.
+    // Hook: a different model (sonnet) — the CLI pZe Gnr gate strips the
+    // effort layers when the evaluator model is not the session's own.
+    const { bodies } = await runWiredTurn({
+      hooks: llmHooks('prompt', 'judge it', 'claude-sonnet-4-5'),
+      verdict: { ok: true, reason: 'fine' },
+      model: 'claude-opus-4-8',
+      effortLevel: 'xhigh',
+      fastMode: true,
+    })
+    expect(bodies).toHaveLength(2)
+    const [hookBody, mainBody] = bodies
+    expect(hookBody.thinking).toEqual({ type: 'disabled' })
+    // The json_schema format rides, but NO effort alongside it.
+    expect(hookBody.output_config?.effort).toBeUndefined()
+    expect(hookBody.output_config?.format).toBeDefined()
+    expect(hookBody.speed).toBeUndefined()
+    // The main turn is untouched: pinned effort + fast mode both present.
+    expect(mainBody.output_config?.effort).toBe('xhigh')
+    expect(mainBody.speed).toBe('fast')
+    expect(mainBody.thinking).toEqual({ type: 'adaptive' })
+  })
+
+  it('a hook round on the SESSION model keeps the pinned effort (CLI Gnr inheritance) but never fast mode', async () => {
+    const { bodies } = await runWiredTurn({
+      hooks: llmHooks('agent', 'verify it', 'claude-opus-4-8'),
+      verdict: { ok: true, reason: 'fine' },
+      model: 'claude-opus-4-8',
+      effortLevel: 'xhigh',
+      fastMode: true,
+    })
+    expect(bodies).toHaveLength(2)
+    const [hookBody, mainBody] = bodies
+    // The verified CLI combination: thinking-disabled + the session effort,
+    // because the evaluator runs on the session's own model.
+    expect(hookBody.thinking).toEqual({ type: 'disabled' })
+    expect(hookBody.output_config?.effort).toBe('xhigh')
+    expect(hookBody.output_config?.format).toBeUndefined()
+    // Fast mode is off for hook rounds outright (controller ruling).
+    expect(hookBody.speed).toBeUndefined()
+    expect(mainBody.speed).toBe('fast')
   })
 })

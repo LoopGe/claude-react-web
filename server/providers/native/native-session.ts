@@ -611,7 +611,25 @@ export class NativeSession implements NativeSessionCore {
       },
       cwd: opts.cwd,
       sessionId: opts.id,
-      stream: (req) => this.streamFor(req, { suppressRetryFrames: true }),
+      stream: (req) => this.streamFor(req, {
+        suppressRetryFrames: true,
+        // Hook rounds are independent small-fast evaluations, not session
+        // turns. Binary-verified (CLI pZe): the agent evaluator keeps the
+        // session effort ONLY when it runs on the session's own model —
+        // `Gnr(hookModel, sessionModel)` compares normalized model ids, and a
+        // mismatch strips the effort layers (`sessionEffort → {kind:'inherit'}`
+        // = model default). The prompt evaluator (iTn) passes the session
+        // permission context through but its request is model-gated, so the
+        // default small-fast model never carries effort either; the same-model
+        // rule here is the conservative union of both. Fast mode is off for
+        // hook rounds outright (controller ruling — an evaluator is never a
+        // fast-mode turn; the model gate already excludes small-fast ids).
+        effortLevel: () =>
+          req.model.trim().toLowerCase() === this.model.trim().toLowerCase()
+            ? this.effortLevel
+            : undefined,
+        fastMode: false,
+      }),
       tools: () => this.tools,
       modelOpts: () => ({
         smallFastEnv: this.opts.ports.config.smallFastModel || undefined,
@@ -1222,7 +1240,10 @@ export class NativeSession implements NativeSessionCore {
    *  retry in the UI. `req.thinking`/`req.outputFormat` are per-request
    *  overrides (the hook verdict rounds): thinking wins over the session's
    *  live config, outputFormat rides as output_config.format. The main turn
-   *  passes neither, so its behavior is unchanged. */
+   *  passes neither, so its behavior is unchanged. `opts.effortLevel` (a
+   *  getter, possibly returning undefined) and `opts.fastMode` override the
+   *  session's live effort/fast-mode intent — the hook stream uses them to
+   *  strip session model config from evaluator rounds. */
   private defaultStream(
     req: {
       model: string
@@ -1233,7 +1254,7 @@ export class NativeSession implements NativeSessionCore {
       thinking?: ThinkingSetting
       outputFormat?: RequestOutputFormat
     },
-    opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined },
+    opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined; fastMode?: boolean },
   ): AsyncIterable<CanonicalEvent> {
     return streamAnthropicMessages(
       {
@@ -1246,7 +1267,7 @@ export class NativeSession implements NativeSessionCore {
         thinking: req.thinking ?? this.thinking,
         thinkingDisplay: this.thinkingDisplay,
         effort: opts?.effortLevel ? opts.effortLevel() : this.effortLevel,
-        fastMode: this.fastMode,
+        fastMode: opts?.fastMode ?? this.fastMode,
         ...(req.outputFormat !== undefined ? { outputFormat: req.outputFormat } : {}),
         signal: req.signal,
       },
@@ -1276,7 +1297,7 @@ export class NativeSession implements NativeSessionCore {
       thinking?: ThinkingSetting
       outputFormat?: RequestOutputFormat
     },
-    opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined },
+    opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined; fastMode?: boolean },
   ): AsyncIterable<CanonicalEvent> {
     // The test seam ignores opts: scripted streams have no retry path.
     const testStream = this.opts.streamSupplier?.()
