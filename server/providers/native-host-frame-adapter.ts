@@ -759,6 +759,16 @@ export function wrapNativeCore(
   }
   if (core.compactInPlace) handle.compactInPlace = (summary, opts) => core.compactInPlace!(summary, opts)
   if (core.seedCompactSummary) handle.seedCompactSummary = (summary, opts) => core.seedCompactSummary!(summary, opts)
+  if (core.dispatchHook) {
+    // The host seam dispatches only the non-REPL compact lifecycle events
+    // (PreCompact / PostCompact), so the context is constructed here: the
+    // session abort signal and hasContext:false (RS §12.2 — prompt/agent hooks
+    // report the non-blocking availability error, never an LLM round).
+    handle.dispatchHook = (event, input) => core.dispatchHook!(event, input, {
+      signal: core.abortSignal,
+      hasContext: false,
+    })
+  }
   if (core.getAttachmentOccurrences) {
     handle.getAttachmentOccurrences = (): readonly ProviderAttachmentOccurrence[] =>
       core.getAttachmentOccurrences!().map((occ: NativeAttachmentOccurrence) => ({

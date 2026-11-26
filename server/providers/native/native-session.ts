@@ -2306,10 +2306,31 @@ export class NativeSession implements NativeSessionCore {
       createUserMessage({ content: [{ type: 'text', text: summary }], source: { kind: 'user' } }),
     )
     this.lastUsage = { input_tokens: 0, output_tokens: 0 }
+    // PostCompact seam (RS §3, §13.3 m0o): fires after the history splice,
+    // immediately BEFORE SessionStart(compact). Non-blocking — the compact is
+    // already durable, so exit-2 never blocks and exit-0 stdout is user-only
+    // (the hook/run activity record carries it; the decision has no actionable
+    // specific output). A dispatch failure is logged, never thrown, for the
+    // same reason as the SessionStart seam below. hasContext:false — PostCompact
+    // is a non-REPL event (RS §12.2); the matcher target is `trigger`. The
+    // trigger is always 'auto': compactInPlace is exclusively the host's
+    // in-place AUTO-compact path — manual /compact is a clear-with-seed fresh
+    // spawn (SessionStart(startup)), which fires no PostCompact.
+    try {
+      await this.dispatchHook('PostCompact', {
+        session_id: this.opts.id,
+        cwd: this.opts.cwd,
+        hook_event_name: 'PostCompact',
+        trigger: 'auto',
+        compact_summary: summary,
+      }, { signal: this.sessionAbort.signal, hasContext: false })
+    } catch (err) {
+      log.warn(`[${this.opts.id}] PostCompact hook dispatch failed:`, err)
+    }
     // SessionStart(compact) seam (RS §13.2 m0o): fires after the splice,
-    // ordered AFTER PostCompact — the PostCompact dispatch belongs immediately
-    // before this call. The compact write is already durable and the history
-    // swapped, so a hook failure here must NOT throw: compactInPlace's throw
+    // ordered AFTER PostCompact (dispatched immediately above). The compact
+    // write is already durable and the history swapped, so a hook failure here
+    // must NOT throw: compactInPlace's throw
     // contract is "before any in-memory state change" (the manager's journal
     // commit relies on it). hasContext:false — EVERY SessionStart source rides
     // the CLI's no-toolUseContext generator (ivr, RS §13.2 dispatch chain /

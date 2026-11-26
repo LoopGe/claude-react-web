@@ -10,6 +10,8 @@ import type { InProcessHookForward, InProcessSubagentStop, InProcessTaskSnapshot
 import type { SessionToolProfile } from '../../shared/tool-profile.js'
 import type { SupplementOutcome } from './steering-format.js'
 import type { NativeFileAttachment } from './attachment-types.js'
+import type { HookEvent } from '../../shared/hooks.js'
+import type { HookDecision } from './native/hooks/types.js'
 
 export interface ProviderAttachmentOccurrence {
   messageUuid: string
@@ -325,6 +327,15 @@ export interface ProviderSessionHandle {
    *  transcript reset. Providers without an in-place compaction path omit it,
    *  which disables the manager's auto-compact trigger. */
   compactInPlace?(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+  /** Dispatch a host-driven lifecycle hook event (PreCompact / PostCompact)
+   *  through the provider's OWN hook engine and return the merged decision.
+   *  Only providers that own host-side hooks implement it (native); the claude
+   *  provider OMITS it — the CLI fires its own compact hooks internally. The
+   *  manager guards on its presence before the pre-summarization PreCompact
+   *  dispatch (RS §13.3). The adapter constructs the dispatch context: the
+   *  session abort signal and hasContext:false (both compact events are
+   *  non-REPL, RS §12.2). */
+  dispatchHook?(event: HookEvent, input: Record<string, unknown>): Promise<HookDecision>
   getUsage?(): Promise<unknown>
   /** Authenticated-account info (SDK Query.accountInfo): email /
    *  organization / subscriptionType / tokenSource / apiKeySource /

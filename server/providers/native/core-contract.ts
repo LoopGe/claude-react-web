@@ -19,6 +19,9 @@ import type { NativeCoreFrame } from './vocabulary/live-frame.js'
 import type { NativeFileAttachment } from '../../../shared/attachment-types.js'
 import type { SessionToolProfile } from '../../../shared/tool-profile.js'
 import type { SupplementOutcome } from '../steering-format.js'
+import type { HookEvent } from '../../../shared/hooks.js'
+import type { HookDecision } from './hooks/types.js'
+import type { HookDispatchContext } from './hooks/engine.js'
 
 /** The durable raw-user persistence outcome the core reports per prompt.
  *  `appended` converts an attachment deletion lease to a log reference;
@@ -129,6 +132,11 @@ export interface NativeSessionCore {
 
   /** Neutral-typed control reads / switches. */
   compactInPlace?(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+  /** The single hook decision point (the trigger seams delegate here). The host
+   *  adapter wraps it into the handle's two-argument dispatchHook, constructing
+   *  the dispatch context internally (session abort signal; hasContext:false for
+   *  the non-REPL compact events, RS §12.2). */
+  dispatchHook?(event: HookEvent, input: Record<string, unknown>, ctx: HookDispatchContext): Promise<HookDecision>
   seedCompactSummary?(summary: string, opts: { uuid: string; timestamp: string; attachments: readonly NativeFileAttachment[] }): Promise<void>
   getAttachmentOccurrences?(): readonly NativeAttachmentOccurrence[]
   getAttachmentCatalog?(): readonly NativeFileAttachment[]

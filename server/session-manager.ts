@@ -5912,6 +5912,13 @@ export class SessionManager {
       case 'working':
         throw new HttpError(409, `session ${id} is working; retry when idle`)
     }
+    // PreCompact BEFORE summarization (RS §13.3), same placement as the auto
+    // path. A blocking hook aborts the manual compact with a user-facing 409
+    // (the CLI throws before the summary request); exit-0 stdout shapes it.
+    const pre = await this.preCompactDispatch(s, 'manual')
+    if (pre.blockedBy !== undefined) {
+      throw new HttpError(409, pre.blockedBy.trim() !== '' ? pre.blockedBy : 'compact blocked by PreCompact hook')
+    }
     // Merged view — behavior parity with the old single mixed ring (the
     // summarizer always saw subagent tool frames; it still sees subagent
     // frames, including the now-forwarded text/thinking ones).
@@ -5933,13 +5940,13 @@ export class SessionManager {
       )
       timer.unref?.()
       try {
-        summary = await this.summarizeMergedForCompact(s, merged, handoff.signal)
+        summary = await this.summarizeMergedForCompact(s, merged, handoff.signal, pre.instructions)
       } finally {
         clearTimeout(timer)
         s.handoffAbort = undefined
       }
     } else {
-      summary = await this.summarizeMergedForCompact(s, merged)
+      summary = await this.summarizeMergedForCompact(s, merged, undefined, pre.instructions)
     }
     // No post-await phase re-check here: doClear owns that invariant (a
     // seeded clear 409s when input raced the summarize window) and runs it
@@ -6126,6 +6133,32 @@ export class SessionManager {
     return tracked
   }
 
+  /** PreCompact host seam (RS §13.3): dispatch BEFORE summarization so an exit-0
+   *  hook's plain stdout shapes the summary (merged custom instructions) and an
+   *  exit-2 / decision:block aborts the compaction before any LLM round or
+   *  journal prepare. Returns `blockedBy` (the block reason, possibly empty)
+   *  when a hook blocked, otherwise the merged `instructions` (undefined when no
+   *  hook contributed). Providers without a host-side hook engine (claude — the
+   *  CLI fires its own compact hooks) omit dispatchHook, so this is a no-op that
+   *  never blocks. The matcher target is `trigger` (RS §3). */
+  private async preCompactDispatch(s: Session, trigger: 'auto' | 'manual'): Promise<{ instructions?: string; blockedBy?: string }> {
+    const dispatchHook = s.handle.dispatchHook
+    if (!dispatchHook) return {}
+    const decision = await dispatchHook.call(s.handle, 'PreCompact', {
+      session_id: s.id,
+      cwd: s.cwd,
+      hook_event_name: 'PreCompact',
+      trigger,
+      custom_instructions: null,
+    })
+    if (decision.action === 'block') {
+      const reason = decision.block?.reason ?? ''
+      log.info(`[session ${s.id}] ${trigger} compact blocked by PreCompact hook: ${reason}`)
+      return { blockedBy: reason }
+    }
+    return { instructions: decision.customInstructions }
+  }
+
   private async runAutoCompact(
     s: Session,
     pressure: AutoCompactPressure | null | undefined,
@@ -6138,8 +6171,12 @@ export class SessionManager {
     const threshold = usage.autoCompactThreshold
       ?? Math.floor(usage.maxTokens * defaultConfig.nativeAutoCompactRatio)
     if (threshold <= 0 || usage.totalTokens < threshold) return
+    // PreCompact BEFORE summarization (RS §13.3): exit-0 stdout shapes the
+    // summary; exit-2 aborts here, before the LLM round and journal prepare.
+    const pre = await this.preCompactDispatch(s, 'auto')
+    if (pre.blockedBy !== undefined) return
     const merged = this.mergedHistoryForCompaction(s)
-    const summary = await this.summarizeMergedForCompact(s, merged)
+    const summary = await this.summarizeMergedForCompact(s, merged, undefined, pre.instructions)
     if (!summary) return
     // A user turn (or a load/clear/delete) can win the summarization window.
     // Re-check identity and phase before touching anything.
@@ -8590,7 +8627,7 @@ export class SessionManager {
   /** Shared manual/auto compact input. Claude has no occurrence provider and
    * retains byte-for-byte legacy summarizer input; native gets a private,
    * bounded attachment projection and an effective-model media request. */
-  private async summarizeMergedForCompact(s: Session, merged: SDKMessage[], signal?: AbortSignal): Promise<string> {
+  private async summarizeMergedForCompact(s: Session, merged: SDKMessage[], signal?: AbortSignal, customInstructions?: string): Promise<string> {
     let hasAttachments = false
     let options: {
       attachmentContent: readonly unknown[]
@@ -8614,7 +8651,7 @@ export class SessionManager {
         }
       }
     }
-    const summary = await summarizeForCompact(merged, this.auxTargetFor(s.id, 'recap'), { ...options, signal })
+    const summary = await summarizeForCompact(merged, this.auxTargetFor(s.id, 'recap'), { ...options, signal, customInstructions })
     // A summarizer mock/provider that resolves blank must never turn an
     // attachment-bearing compact into a destructive plain clear.
     if (!summary && hasAttachments) {

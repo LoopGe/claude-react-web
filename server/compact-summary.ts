@@ -34,6 +34,10 @@ export interface CompactSummaryOptions {
    *  caller's 30s default applies — the send-blocking native auto-compact
    *  keeps that short fail-open cap; user-invoked compact passes a longer one. */
   signal?: AbortSignal
+  /** PreCompact hook exit-0 plain stdout (RS §13.3): custom compression
+   *  instructions appended to the summarizer system prompt so the hook shapes
+   *  the summary. Absent when no hook contributed instructions. */
+  customInstructions?: string
 }
 
 /** Summarise a session's message history into a compact continuation seed.
@@ -66,10 +70,18 @@ export async function summarizeForCompact(
   const model = nativeMedia ? options?.effectiveModel : target.model
   if (!model) throw new Error('No model configured for compact summary and session has no model')
 
+  // PreCompact hook instructions (RS §13.3) append to the compression prompt —
+  // the CLI merges hook exit-0 stdout after any existing custom instructions
+  // (Ryt) and feeds them into the summary request.
+  const hookInstructions = options?.customInstructions?.trim()
+  const system = hookInstructions
+    ? `${COMPACT_SYSTEM_PROMPT}\n\nAdditional compression instructions:\n${hookInstructions}`
+    : COMPACT_SYSTEM_PROMPT
+
   const text = await callAnthropicMessages({
     model,
     target,
-    system: COMPACT_SYSTEM_PROMPT,
+    system,
     userContent: attachments.length > 0
       ? [{ type: 'text', text: transcript }, ...attachments]
       : transcript,
