@@ -169,9 +169,11 @@ catalog name is the fallback). `record.plugin` and the picker group label use `N
   `SkillRecord` gains `plugin?: string` (owning plugin name). Plugin records:
   `scope: 'plugin'`, `readOnly: true`, `valid` per frontmatter parse.
 - `skillRoot` / `getSkillRoots` stay user/project (the writable roots); plugin
-  discovery does not route through them. `isSkillScope` accepts `'plugin'`;
-  the write/import/delete routes reject `'plugin'` (read-only). `projectRootOfSkill`
-  returns null for plugin scope.
+  discovery does not route through them. `isSkillScope` (the writable-scope guard)
+  STAYS user/project, so the write/import/delete routes reject `'plugin'`
+  (read-only) — the `SkillScope` TYPE widens but the guard does not (a writable
+  subset type narrows the install UI). `projectRootOfSkill` returns null for
+  plugin scope.
 - Picker grouping: `commandsFor` (`native/skills.ts:258`) prefixes the description
   with `(<pluginName>) ` for plugin-scope records, so `CommandPicker.pluginTagOf`
   (`src/utils/text.ts:13-17`, `CommandPicker.tsx:52-67`) groups them under the
@@ -212,7 +214,9 @@ catalog name is the fallback). `record.plugin` and the picker group label use `N
 - realpath dedup implementation (against user/project + cross-plugin).
 - The plugin toggle/refresh → native skill-reload fan-out path (which route hooks
   it; whether `reloadSkillsForCwd` suffices or a plugin-specific fan-out is needed).
-- `SkillScope 'plugin'` guard updates across write/import/delete + `isSkillScope`.
+- `SkillScope 'plugin'` type widening + the writable-scope ripple (install UI
+  narrows to a writable subset); `isSkillScope` stays user/project (write/import/
+  delete reject plugin via the unchanged guard).
 - Tests: scan shape (default root, manifest single-dir + root, marketplace-root
   exception, fallback), name derivation per branch + prefix authority, dedup,
   validity (name errors excluded), read-only guards, policy keyspace coverage,
