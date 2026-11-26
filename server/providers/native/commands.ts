@@ -24,9 +24,13 @@ export interface NativeCommand {
   body?: string
 }
 
-/** The builtin prompt commands. Neither template carries a `$ARGUMENTS`
- *  placeholder: user arguments ride the shared substitution contract's
- *  `\n\nARGUMENTS: <args>` fallback (see substituteSkillArguments). */
+/** The builtin slash commands. `/init` and `/review` are prompt commands:
+ *  neither template carries a `$ARGUMENTS` placeholder, so user arguments ride
+ *  the shared substitution contract's `\n\nARGUMENTS: <args>` fallback (see
+ *  substituteSkillArguments). `/compact` is a CONTROL ACTION, not a prompt:
+ *  it carries no body and is intercepted by the session before command/skill
+ *  expansion (the host callback triggers in-place compaction). Reaching
+ *  expandCommandBody with a bodyless row is a loud invariant violation. */
 export const BUILTIN_COMMANDS: NativeCommand[] = [
   {
     name: 'init',
@@ -59,6 +63,13 @@ export const BUILTIN_COMMANDS: NativeCommand[] = [
       '',
       'Report findings as a prioritized list, each with a file:line reference, what is wrong, and a concrete suggested fix. If the changes look sound, say so plainly.',
     ].join('\n'),
+  },
+  {
+    name: 'compact',
+    description: 'Compact the conversation in place to free context space',
+    argumentHint: '',
+    builtin: true,
+    // No body: a control action intercepted before expansion, never a prompt.
   },
 ]
 

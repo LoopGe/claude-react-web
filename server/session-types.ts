@@ -376,6 +376,13 @@ export interface Session {
    *  trigger racing the first (two results settling back-to-back). Runtime-only
    *  — never persisted, reset to false in the trigger's finally. */
   autoCompacting: boolean
+  /** A native `/compact` control turn requested in-place compaction through
+   *  the host callback (requestCompact). Set DURING the control turn, before
+   *  its terminal result; consumed by the post-settle trigger (the same
+   *  setImmediate point as the auto-compact trigger), which runs the manual
+   *  in-place flow under the identical idle gating. Runtime-only — never
+   *  persisted; a respawn starts fresh (undefined). */
+  manualCompactRequested?: boolean
   /** Abort handle + busy marker for the app-side /handoff summarize window.
    *  Set by compact({handoff:true}) for the duration of the aux summarisation
    *  ONLY: its presence maps phaseOf to 'working' and makes requireSendable

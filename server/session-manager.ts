@@ -3928,6 +3928,17 @@ export class SessionManager {
         }
         await this.setPermissionMode(id, mode)
       },
+      // Native `/compact` control action: record the request on the session;
+      // the post-settle trigger (onTurnSettling's setImmediate — the same
+      // point as the auto-compact trigger) runs the in-place compaction flow
+      // once the control turn has settled idle. Recording here rather than
+      // compacting inline is the lifecycle contract: compactInPlace refuses
+      // an in-flight turn, and the control turn IS in flight until its result
+      // settles. A gone session (deleted mid-turn) has nothing to compact.
+      requestCompact: async () => {
+        const s = this.sessions.get(id)
+        if (s) s.manualCompactRequested = true
+      },
       onElicitation: fullOpts.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       // Atomic pair: the SDK requires onUserDialog whenever
       // supportedDialogKinds is non-empty, so the two always travel together.
@@ -6165,13 +6176,55 @@ export class SessionManager {
     const threshold = usage.autoCompactThreshold
       ?? Math.floor(usage.maxTokens * defaultConfig.nativeAutoCompactRatio)
     if (threshold <= 0 || usage.totalTokens < threshold) return
+    await this.runInPlaceCompact(s, compactInPlace, usage.totalTokens, 'auto', threshold)
+  }
+
+  /** User-invoked `/compact` (the native control turn's recorded request).
+   *  The SAME in-place flow as auto-compact — summarize + compactInPlace +
+   *  appended divider/summary, same session id, history retained — minus the
+   *  pressure gate and the nativeAutoCompact policy toggle: an explicit user
+   *  request compacts regardless of context fullness. The idle/degraded/
+   *  in-flight guards are identical to maybeAutoCompact's: a session that is
+   *  working (queued input behind the control turn included) skips, exactly
+   *  like the auto path. */
+  private async runManualCompact(s: Session): Promise<void> {
+    if (this.sessions.get(s.id) !== s) return
+    if (this.transcriptStores.get(s.id)?.degraded === true) return
+    const compactInPlace = s.handle.compactInPlace
+    if (!compactInPlace) return
+    if (this.phaseOf(s) !== 'idle') return
+    if (s.autoCompacting) return
+    s.autoCompacting = true
+    const operation = this.runInPlaceCompact(
+      s, compactInPlace, s.lastContextUsage?.totalTokens ?? 0, 'manual',
+    )
+    const tracked = operation.finally(() => {
+      s.autoCompacting = false
+    })
+    this.autoCompactOperations.set(s, tracked)
+    return tracked
+  }
+
+  /** The shared in-place compaction tail (auto AND manual): summarize the
+   *  local floor span, re-check identity + phase after the LLM round-trip,
+   *  then the provider compact + the appended client-facing frames. Compact
+   *  is an APPEND, not a universe reset — see maybeAutoCompact's doc for the
+   *  retain-history contract. */
+  private async runInPlaceCompact(
+    s: Session,
+    compactInPlace: NonNullable<ProviderSessionHandle['compactInPlace']>,
+    preTokens: number,
+    trigger: 'auto' | 'manual',
+    threshold?: number,
+  ): Promise<void> {
     // D6 local floor: the ring RETAINS pre-compact history, so the summarizer
     // must see only what the model still sees — the span after the last
     // compact boundary. The previous summary heads that span (it is part of
-    // the model's post-compact context). Local to this path: the shared
-    // mergedHistoryForCompaction also feeds /handoff + plugin-compact (incl.
-    // claude), whose input must stay the full merged ring. Backward loop —
-    // repo lib is ES2022 (no Array.findLastIndex).
+    // the model's post-compact context). Local to this path (auto AND manual
+    // share the retain semantics): the shared mergedHistoryForCompaction also
+    // feeds /handoff + plugin-compact (incl. claude), whose input must stay
+    // the full merged ring. Backward loop — repo lib is ES2022 (no
+    // Array.findLastIndex).
     const merged = this.mergedHistoryForCompaction(s)
     let lastBoundary = -1
     for (let i = merged.length - 1; i >= 0; i--) {
@@ -6184,7 +6237,6 @@ export class SessionManager {
     // A user turn (or a load/clear/delete) can win the summarization window.
     // Re-check identity and phase before touching anything.
     if (this.sessions.get(s.id) !== s || this.phaseOf(s) !== 'idle') return
-    const preTokens = usage.totalTokens
     const uuid = randomUUID()
     // D8: one summary identity for both halves — the provider persists it on
     // the session/compact event (the reader synthesizes the disk summary with
@@ -6200,24 +6252,25 @@ export class SessionManager {
     // usage payload from re-triggering on the stale pre-compact high; no zero
     // usage is broadcast, so the ContextBar holds its last displayed value.
     s.lastContextUsage = undefined
-    this.pushCompactFrames(s, summary, uuid, timestamp, preTokens, summaryUuid)
+    this.pushCompactFrames(s, summary, uuid, timestamp, preTokens, summaryUuid, trigger)
     log.info(
-      `[session ${s.id}] auto-compact: appended compact marker, history retained ` +
-      `(pre_tokens=${preTokens}, threshold=${threshold})`,
+      `[session ${s.id}] ${trigger === 'manual' ? 'manual compact' : 'auto-compact'}: appended compact marker, history retained ` +
+      `(pre_tokens=${preTokens}${threshold !== undefined ? `, threshold=${threshold}` : ''})`,
     )
   }
 
-  /** Push the client-facing half of an in-place auto-compact: the synthetic
-   *  `system/compact_boundary` divider followed by the user-role summary,
-   *  APPENDED to the retained ring + seq space (no reset). Push-only — unlike
-   *  `seedCompactSummary` this must NOT call `sendControlMessage`: the
+  /** Push the client-facing half of an in-place compact (auto or manual): the
+   *  synthetic `system/compact_boundary` divider followed by the user-role
+   *  summary, APPENDED to the retained ring + seq space (no reset). Push-only —
+   *  unlike `seedCompactSummary` this must NOT call `sendControlMessage`: the
    *  provider's `compactInPlace` already replaced its model history, so the
    *  summary is UI/ring content only. The boundary MUST precede the summary
    *  (the client derives `isCompactSummary` from the previous transcript item).
    *  `uuid` is the provider log's compact-event uuid so the frame and the
    *  durable boundary share an identity; `summaryUuid` is the summary's own
    *  identity, persisted on the same event so the disk-synthesized summary
-   *  dedupes to this exact frame on restart (D8). */
+   *  dedupes to this exact frame on restart (D8). `trigger` rides
+   *  compact_metadata so a user-invoked /compact renders its own identity. */
   private pushCompactFrames(
     s: Session,
     summary: string,
@@ -6225,6 +6278,7 @@ export class SessionManager {
     timestamp: string,
     preTokens: number,
     summaryUuid: ReturnType<typeof randomUUID>,
+    trigger: 'auto' | 'manual',
   ): void {
     const boundary: import('@anthropic-ai/claude-agent-sdk').SDKCompactBoundaryMessage = {
       type: 'system',
@@ -6232,7 +6286,7 @@ export class SessionManager {
       uuid,
       session_id: s.id,
       compact_metadata: {
-        trigger: 'auto',
+        trigger,
         pre_tokens: preTokens,
       },
     }
@@ -6260,7 +6314,7 @@ export class SessionManager {
       try { sub.push(seed) } catch { /* dropped */ }
     }
     s.lastActivityAt = Date.now()
-    log.info(`[session ${s.id}] auto-compact: pushed compact frames at ${timestamp}`)
+    log.info(`[session ${s.id}] ${trigger === 'manual' ? 'manual compact' : 'auto-compact'}: pushed compact frames at ${timestamp}`)
   }
 
   /** Put a live, idle session into dormant state to release its resources
@@ -12004,11 +12058,21 @@ export class SessionManager {
               log.warn(`[session ${s.id}] queued materialization failed: ${(err as Error).message ?? err}`)
             })
           }
-          // Native in-place auto-compact trigger. Deferred to the next macrotask
+          // Native in-place compact trigger. Deferred to the next macrotask
           // so the pump has finished clearing `turnActive` / `pendingTurns` /
-          // `workingSince` — phaseOf must read 'idle'. Fire-and-forget: a
-          // failed compact is logged and the session keeps running.
+          // `workingSince` — phaseOf must read 'idle'. A `/compact` control
+          // turn's recorded request (manualCompactRequested) wins over the
+          // pressure-gated auto trigger and is consumed here; both run under
+          // the same idle gating. Fire-and-forget: a failed compact is logged
+          // and the session keeps running.
           setImmediate(() => {
+            if (s.manualCompactRequested) {
+              s.manualCompactRequested = false
+              void this.runManualCompact(s).catch((err) => {
+                log.warn(`[session ${s.id}] manual compact failed:`, err)
+              })
+              return
+            }
             void this.maybeAutoCompact(s).catch((err) => {
               log.warn(`[session ${s.id}] auto-compact failed:`, err)
             })
@@ -12614,6 +12678,12 @@ export class SessionManager {
           throw new Error(`requestPermissionModeChange: invalid permission mode ${JSON.stringify(mode)} (expected one of: ${permissionModeList()})`)
         }
         await this.setPermissionMode(session.id, mode)
+      },
+      // Same /compact request binding as the spawn funnel: an in-place respawn
+      // must re-bind it or a recovered native session loses the control action.
+      requestCompact: async () => {
+        const s = this.sessions.get(session.id)
+        if (s) s.manualCompactRequested = true
       },
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onUserDialog: session.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,

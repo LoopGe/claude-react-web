@@ -58,9 +58,20 @@ describe('builtin catalog', () => {
     expect(names).toContain('review')
     for (const c of BUILTIN_COMMANDS) {
       expect(c.builtin).toBe(true)
-      expect(c.body!.length).toBeGreaterThan(0)
       expect(c.description.length).toBeGreaterThan(0)
+      // /compact is a control action (intercepted before expansion), not a
+      // prompt: it is the ONE bodyless builtin row. Every other builtin is a
+      // prompt template and must carry a non-empty body.
+      if (c.name === 'compact') expect(c.body).toBeUndefined()
+      else expect(c.body!.length).toBeGreaterThan(0)
     }
+  })
+
+  it('includes /compact as a bodyless builtin control row', () => {
+    const compact = BUILTIN_COMMANDS.find((c) => c.name === 'compact')
+    expect(compact).toBeTruthy()
+    expect(compact!.builtin).toBe(true)
+    expect(compact!.body).toBeUndefined()
   })
 })
 

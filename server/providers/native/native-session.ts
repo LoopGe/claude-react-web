@@ -263,6 +263,19 @@ function skillInvocationForTurn(
   return match ? skills.expand(match[1], match[2] ?? '') : null
 }
 
+/** `/compact` is a CONTROL ACTION, not a prompt: the session intercepts it
+ *  ahead of command/skill expansion and routes it to the host compaction
+ *  callback (no model turn for the literal text). Name matching shares the
+ *  slash grammar and case-insensitivity of command lookup; trailing arguments
+ *  are ignored — the host summarizer compresses the whole conversation and
+ *  takes no focus instructions. */
+function isCompactControlInvocation(content: unknown): boolean {
+  const text = invocationTextOf(content)
+  if (text === undefined) return false
+  const match = SKILL_COMMAND_RE.exec(text)
+  return match !== null && match[1].toLowerCase() === 'compact'
+}
+
 /** Fire-and-forget flush: a persistence failure must never become an
  *  unhandled rejection or a second terminal frame, but it must be visible. */
 function flushInBackground(sessionLog: NativeSessionLog, sessionId: string, what: string): void {
@@ -384,6 +397,15 @@ export interface NativeSessionOptions {
    *  so a tool-driven mode change routes through the host manager. Absent in
    *  unit sessions that drive the core without a host manager (a no-op then). */
   requestPermissionModeChange?: (mode: string) => Promise<void>
+  /** Host-bound in-place compaction request, threaded from
+   *  CreateSessionOptions. The `/compact` control interception calls it
+   *  instead of expanding a prompt; the manager records the request and runs
+   *  its in-place compaction flow (summarize + compactInPlace + appended
+   *  divider/summary, history retained) once the control turn settles idle.
+   *  Absent in unit sessions that drive
+   *  the core without a host manager (the control turn then simply completes
+   *  with no compaction). */
+  requestCompact?: () => Promise<void>
   /** Test seam: evaluated PER TURN; a non-undefined return replaces the real
    *  network streamer for that turn. Per-turn evaluation lets tests swap the
    *  script between turns. */
@@ -1725,6 +1747,7 @@ export class NativeSession implements NativeSessionCore {
         const turnEffortLevel = this.effortLevel
         let turnSkillView: NativeSkillInvocationView | undefined
         let invocation: { name: string; body: string } | null = null
+        let compactControl = false
         let catalogError: unknown
         try {
           // Catalog discovery is awaited per turn, not at spawn: a slow disk
@@ -1737,13 +1760,18 @@ export class NativeSession implements NativeSessionCore {
           // Invocation, available_skills and the Skill tool now share one view.
           turnSkillView = this.skills.snapshot(turnSkillPolicy)
           // Interception order contract: a control-action interception belongs
-          // ahead of prompt expansion; command expansion precedes skill
-          // matching (a command wins a same-name collision); an unknown name
-          // matches neither and passes through as ordinary text. The command
-          // list is captured once so a later reload cannot mix into this turn.
-          const turnCommands = [...BUILTIN_COMMANDS, ...this.customCommands]
-          invocation = commandInvocationForTurn(next.content, turnCommands)
-            ?? skillInvocationForTurn(next.content, turnSkillView)
+          // ahead of prompt expansion — `/compact` routes to the host
+          // compaction callback and never reaches the catalog (its builtin
+          // row is bodyless). Command expansion precedes skill matching (a
+          // command wins a same-name collision); an unknown name matches
+          // neither and passes through as ordinary text. The command list is
+          // captured once so a later reload cannot mix into this turn.
+          compactControl = isCompactControlInvocation(next.content)
+          if (!compactControl) {
+            const turnCommands = [...BUILTIN_COMMANDS, ...this.customCommands]
+            invocation = commandInvocationForTurn(next.content, turnCommands)
+              ?? skillInvocationForTurn(next.content, turnSkillView)
+          }
         } catch (err) {
           catalogError = err
         }
@@ -1826,82 +1854,107 @@ export class NativeSession implements NativeSessionCore {
         this.steeringOpen = true
         await this.log.flush()
         if (catalogError !== undefined) throw catalogError
-        // MCP discovery is awaited per turn, not at spawn: a slow server never
-        // delays session creation, and a mid-turn replace/toggle only lands
-        // on the next turn (the turn below runs on this snapshot).
-        await this.mcp?.whenReady()
-        // Everything a preset can override was captured before the awaits.
-        // Build the effective list with THAT profile and return the exact
-        // snapshot runTurn will use, rather than reading live fields again.
-        const skillView = turnSkillView!
-        const turnTools = this.rebuildTools(
-          this.skillToolFor(skillView),
-          turnProfile,
-          turnBaseToolProfile,
-        )
-        const turnSystem = withSkillsSection(
-          turnProfile?.instruction
-            ? `${this.baseSystem}\n\n${turnProfile.instruction}`
-            : this.baseSystem,
-          skillView.section(),
-        )
-        const res = await runTurn(
-          {
-            stream: (req) => {
-              // Main-thread rounds only: nested runners call streamFor through
-              // their own deps and never pass here. Last round wins.
-              this.suggestionSnapshot = {
-                at: Date.now(),
-                model: req.model,
-                system: req.system,
-                tools: req.tools,
-                messages: req.messages,
-              }
-              // Plan guidance is appended PER ROUND from the LIVE mode, not
-              // baked into turnSystem: a mid-turn EnterPlanMode adds it to the
-              // very next round and an ExitPlanMode approval removes it. The
-              // snapshot above keeps the base system (the suggestion fork is
-              // suppressed in plan mode, so it never replays this prefix).
-              const system = this.permissionMode === 'plan'
-                ? `${req.system}\n\n${PLAN_MODE_GUIDANCE}`
-                : req.system
-              return this.streamFor({ ...req, system }, { effortLevel: () => turnEffortLevel })
+        if (compactControl) {
+          // Control turn: no model round for the literal text. Request the
+          // host's in-place compaction BEFORE the terminal result so the
+          // manager's request flag is set before the pump settles this turn;
+          // the flow itself runs at the settle trigger point, where the
+          // session reads idle (compactInPlace refuses an in-flight turn or
+          // queued input). The result carries text so the pump classifies a
+          // REAL turn settlement — an empty bookend would skip queued-input
+          // materialization and strand a prompt queued behind this one.
+          await this.opts.requestCompact?.()
+          this.output.push({
+            type: 'result',
+            sessionId: this.opts.id,
+            uuid: this.ctx.uuid(),
+            parentToolUseId: this.ctx.parentToolUseId ?? null,
+            result: 'Compaction requested.',
+            usage: neutralUsageOf({ input_tokens: 0, output_tokens: 0 }),
+            numTurns: 0,
+            durationMs: 0,
+            isError: false,
+            fastMode: this.fastMode,
+          })
+          endReason = 'completed'
+        } else {
+          // MCP discovery is awaited per turn, not at spawn: a slow server never
+          // delays session creation, and a mid-turn replace/toggle only lands
+          // on the next turn (the turn below runs on this snapshot).
+          await this.mcp?.whenReady()
+          // Everything a preset can override was captured before the awaits.
+          // Build the effective list with THAT profile and return the exact
+          // snapshot runTurn will use, rather than reading live fields again.
+          const skillView = turnSkillView!
+          const turnTools = this.rebuildTools(
+            this.skillToolFor(skillView),
+            turnProfile,
+            turnBaseToolProfile,
+          )
+          const turnSystem = withSkillsSection(
+            turnProfile?.instruction
+              ? `${this.baseSystem}\n\n${turnProfile.instruction}`
+              : this.baseSystem,
+            skillView.section(),
+          )
+          const res = await runTurn(
+            {
+              stream: (req) => {
+                // Main-thread rounds only: nested runners call streamFor through
+                // their own deps and never pass here. Last round wins.
+                this.suggestionSnapshot = {
+                  at: Date.now(),
+                  model: req.model,
+                  system: req.system,
+                  tools: req.tools,
+                  messages: req.messages,
+                }
+                // Plan guidance is appended PER ROUND from the LIVE mode, not
+                // baked into turnSystem: a mid-turn EnterPlanMode adds it to the
+                // very next round and an ExitPlanMode approval removes it. The
+                // snapshot above keeps the base system (the suggestion fork is
+                // suppressed in plan mode, so it never replays this prefix).
+                const system = this.permissionMode === 'plan'
+                  ? `${req.system}\n\n${PLAN_MODE_GUIDANCE}`
+                  : req.system
+                return this.streamFor({ ...req, system }, { effortLevel: () => turnEffortLevel })
+              },
+              tools: [...turnTools],
+              maxTurns: turnProfile?.maxTurns,
+              tasks: this.tasks,
+              cwd: this.opts.cwd,
+              requestPermission: (toolName, input, toolUseId, signal, readOnlyHint) =>
+                this.requestPermission(toolName, input, toolUseId, signal, turnMode.mode, readOnlyHint),
+              emit: (frame) => {
+                const parent = this.ctx.parentToolUseId ?? null
+                this.persistFrame(frame, parent)
+                this.emitFrame(frame, parent)
+              },
+              persistToolResult: (result) => this.persistToolResult(result, null),
+              attachmentProjection: {
+                attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
+                preparedPdfs: this.preparedPdfs,
+              },
+              system: turnSystem,
+              fastModeState: () => (this.fastMode ? 'on' : 'off'),
+              drainSupplement: () => this.injectSupplements(),
+              onInitialMessagesOwned: () => { initialMessagesOwned = true },
             },
-            tools: [...turnTools],
-            maxTurns: turnProfile?.maxTurns,
-            tasks: this.tasks,
-            cwd: this.opts.cwd,
-            requestPermission: (toolName, input, toolUseId, signal, readOnlyHint) =>
-              this.requestPermission(toolName, input, toolUseId, signal, turnMode.mode, readOnlyHint),
-            emit: (frame) => {
-              const parent = this.ctx.parentToolUseId ?? null
-              this.persistFrame(frame, parent)
-              this.emitFrame(frame, parent)
-            },
-            persistToolResult: (result) => this.persistToolResult(result, null),
-            attachmentProjection: {
-              attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
-              preparedPdfs: this.preparedPdfs,
-            },
-            system: turnSystem,
-            fastModeState: () => (this.fastMode ? 'on' : 'off'),
-            drainSupplement: () => this.injectSupplements(),
-            onInitialMessagesOwned: () => { initialMessagesOwned = true },
-          },
-          this.ctx,
-          this.history,
-          initialMessages,
-          turnModel,
-          turnSignal,
-        )
-        // Success-path result frame was already emitted by runTurn; only the
-        // LAST-reading accounting happens here. Per-model totals are summed
-        // from the persisted assistant frames in `persistFrame`, so the live
-        // value and a restart's rebuild are identical.
-        this.lastUsage = sdkUsageOf(res.usage)
-        endReason = res.isError ? 'error' : 'completed'
-        if (!res.isError) endUsage = sdkUsageOf(res.usage)
-        turnResult = res
+            this.ctx,
+            this.history,
+            initialMessages,
+            turnModel,
+            turnSignal,
+          )
+          // Success-path result frame was already emitted by runTurn; only the
+          // LAST-reading accounting happens here. Per-model totals are summed
+          // from the persisted assistant frames in `persistFrame`, so the live
+          // value and a restart's rebuild are identical.
+          this.lastUsage = sdkUsageOf(res.usage)
+          endReason = res.isError ? 'error' : 'completed'
+          if (!res.isError) endUsage = sdkUsageOf(res.usage)
+          turnResult = res
+        }
       } catch (err) {
         // A withdrawn parked head (pendingDurableInitial !== pending) already
         // received its terminal 'failed' outcome from drainQueued (the T7

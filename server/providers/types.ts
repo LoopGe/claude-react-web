@@ -110,6 +110,16 @@ export interface CreateSessionOptions {
    *  path; the claude provider ignores it (the CLI enforces plan mode before
    *  canUseTool, so its EnterPlanMode never reaches this callback). */
   requestPermissionModeChange?: (mode: string) => Promise<void>
+  /** Host-bound in-place compaction request (native `/compact` control
+   *  action). The native session intercepts a leading `/compact` before
+   *  command/skill expansion and calls this instead of running a model turn;
+   *  the manager records the request and runs its in-place compaction flow
+   *  (summarize + compactInPlace + appended client-facing divider/summary,
+   *  history retained) once the control turn settles idle — the SAME session
+   *  id, never the /handoff
+   *  fresh-session continuation. The manager binds it on every spawn path;
+   *  the claude provider ignores it (the CLI handles /compact internally). */
+  requestCompact?: () => Promise<void>
   /** MCP elicitation (OAuth auth / server-initiated form) callback.
    *  SDK-agnostic loose signature mirroring canUseTool — the claude provider
    *  casts it to the SDK's OnElicitation when forwarding to query(). */

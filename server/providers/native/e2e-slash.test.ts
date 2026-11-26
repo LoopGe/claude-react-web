@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SessionStore } from '../../persistence.js'
 import { SessionManager } from '../../session-manager.js'
+import { summarizeForCompact } from '../../compact-summary.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts } from '../native-host-adapters.js'
@@ -29,6 +30,13 @@ import { BUILTIN_COMMANDS } from './commands.js'
 import { loadNativeSessionLogSync } from './session-log/log.js'
 import { neutralEventsOf } from './session-log/neutral-read.js'
 import type { NativeSessionEvent } from './vocabulary/session-event.js'
+
+// The /compact integration tests drive the manager's REAL in-place compaction
+// flow; only the auxiliary summarizer LLM round-trip is faked (the same mock
+// shape as e2e-context-window.test.ts).
+vi.mock('../../compact-summary.js', () => ({
+  summarizeForCompact: vi.fn(async () => 'MOCK SUMMARY'),
+}))
 
 type Frame = Record<string, any>
 
@@ -116,6 +124,7 @@ afterEach(async () => {
   sessionIds.length = 0
   for (const sm of managers) await sm.shutdown()
   managers.length = 0
+  vi.mocked(summarizeForCompact).mockClear()
   if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
   else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
   await new Promise((r) => setTimeout(r, 80)) // let in-flight sidecar writes land before rmdir
@@ -127,6 +136,7 @@ afterEach(async () => {
 
 interface Fixture {
   sm: SessionManager
+  provider: NativeProvider
   requests: StreamRequest[]
   scripts: CanonicalEvent[][]
 }
@@ -176,7 +186,7 @@ async function makeFixture(stateDir: string): Promise<Fixture> {
   registry.register(provider)
   const sm = new SessionManager({ store, providers: registry })
   managers.push(sm)
-  return { sm, requests, scripts }
+  return { sm, provider, requests, scripts }
 }
 
 async function createSession(
@@ -463,7 +473,7 @@ describe('native slash surface end to end through SessionManager', () => {
     const id = await createSession(fx, project)
     // Settle the construction-time discovery before mutating the commands dir.
     expect((await fx.sm.supportedCommands(id) as Array<{ name: string }>).map((row) => row.name))
-      .toEqual(['init', 'review', 'foo'])
+      .toEqual(['init', 'review', 'compact', 'foo'])
     const sub = fx.sm.subscribeCommandChanges(id)!
     const seen: Array<Record<string, unknown>> = []
     void (async () => {
@@ -472,7 +482,7 @@ describe('native slash surface end to end through SessionManager', () => {
 
     await writeCommand(project, 'baz', 'BAZ BODY')
     const reloaded = await fx.sm.reloadSkills(id) as { skills: Array<{ name: string }> }
-    expect(reloaded.skills.map((row) => row.name)).toEqual(['init', 'review', 'baz', 'foo'])
+    expect(reloaded.skills.map((row) => row.name)).toEqual(['init', 'review', 'compact', 'baz', 'foo'])
     await vi.waitFor(() => {
       expect(seen).toContainEqual({ commands: reloaded.skills })
     }, { timeout: 5000 })
@@ -480,7 +490,7 @@ describe('native slash surface end to end through SessionManager', () => {
     // A deleted command disappears on the next reload; builtins remain.
     await rm(join(project, '.claude', 'commands', 'foo.md'), { force: true })
     const afterDelete = await fx.sm.reloadSkills(id) as { skills: Array<{ name: string }> }
-    expect(afterDelete.skills.map((row) => row.name)).toEqual(['init', 'review', 'baz'])
+    expect(afterDelete.skills.map((row) => row.name)).toEqual(['init', 'review', 'compact', 'baz'])
     await vi.waitFor(() => {
       expect(seen).toContainEqual({ commands: afterDelete.skills })
     }, { timeout: 5000 })
@@ -540,5 +550,207 @@ describe('native slash surface end to end through SessionManager', () => {
       userTextMessage('Do X'),
       { role: 'assistant', content: [{ type: 'text', text: 'expanded' }] },
     ])
+  }, 20000)
+})
+
+/** One provider-level user turn (the manager's send path is not involved). */
+function providerUserMsg(text: string, uuid: string) {
+  return {
+    type: 'user' as const,
+    message: { role: 'user' as const, content: [{ type: 'text', text }] },
+    parent_tool_use_id: null,
+    session_id: '',
+    uuid,
+  }
+}
+
+/** Replace the fixture's streamer with one that parks its FIRST request on a
+ *  caller-owned gate (later requests run freely), so a test can queue input
+ *  against a deterministically in-flight turn. Requests still land in
+ *  `fx.requests` for the no-model-turn assertions. */
+function installGatedStreamer(fx: Fixture, gate: Promise<void>): void {
+  let first = true
+  ;(fx.provider as unknown as { _testStream: unknown })._testStream = async function* (req: StreamRequest) {
+    fx.requests.push({ system: req.system, tools: req.tools, messages: structuredClone(req.messages) })
+    if (first) {
+      first = false
+      await gate
+    }
+    for (const ev of fx.scripts.shift() ?? []) yield ev
+  }
+}
+
+describe('native /compact control action', () => {
+  it('/compact invokes the host compaction callback, not a model turn', async () => {
+    const { project, stateDir } = await makeEnv()
+    // A custom compact.md must NOT hijack the builtin control action.
+    await writeCommand(project, 'compact', 'HIJACKED COMPACT')
+    const provider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir }) })
+    const requests: StreamRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: StreamRequest) {
+      requests.push({ system: req.system, tools: req.tools, messages: structuredClone(req.messages) })
+      yield* [] // the control turn must never reach the streamer
+    }
+    const requestCompact = vi.fn(async () => {})
+    const session = provider.createSession({ id: 'compact-cb', cwd: project, requestCompact })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(providerUserMsg('/compact', 'u-compact-1') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+      }, { timeout: 5000 })
+      expect(requestCompact).toHaveBeenCalledOnce()
+      expect(requests).toHaveLength(0)
+      const result = frames.find((f) => f.type === 'result')!
+      expect(result.subtype).toBe('success')
+      expect(result.is_error).not.toBe(true)
+      expect(result.num_turns).toBe(0)
+      // The raw typed turn is durable; no hidden instruction was expanded.
+      expect(rawUserEvents(stateDir, 'compact-cb').map((e) => e.text)).toEqual(['/compact'])
+      expect(instructionEvents(stateDir, 'compact-cb')).toEqual([])
+
+      // Case-insensitive name match rides the same control path.
+      session.enqueueUserMessage(providerUserMsg('/COMPACT', 'u-compact-2') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(2)
+      }, { timeout: 5000 })
+      expect(requestCompact).toHaveBeenCalledTimes(2)
+      expect(requests).toHaveLength(0)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('/compact appears in supportedCommands as a builtin row', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    const id = await createSession(fx, project)
+    const rows = (await fx.sm.supportedCommands(id)) as Array<{
+      name: string; description: string; argumentHint: string; builtin?: boolean
+    }>
+    const compact = rows.filter((row) => row.name === 'compact')
+    expect(compact).toHaveLength(1)
+    expect(compact[0].builtin).toBe(true)
+    expect(compact[0].description.length).toBeGreaterThan(0)
+  })
+
+  it('manager binding compacts IN PLACE: same id, manual boundary + summary, history retained', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    const id = await createSession(fx, project)
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    fx.scripts.push(textTurn('first reply'))
+    await sendAndWait(fx, id, frames, 'hello', 1)
+
+    fx.scripts.push(textTurn('unused')) // the control turn must not stream
+    await sendAndWait(fx, id, frames, '/compact', 2)
+    // No model request carried the literal invocation (or ran for it at all).
+    expect(fx.requests).toHaveLength(1)
+    expect(JSON.stringify(fx.requests[0].messages)).not.toContain('/compact')
+
+    // The manager's in-place flow owns the client-facing divider + summary.
+    await vi.waitFor(() => {
+      expect(frames.some((f) => f.type === 'system' && f.subtype === 'compact_boundary')).toBe(true)
+    }, { timeout: 5000 })
+    const boundary = frames.find((f) => f.subtype === 'compact_boundary')!
+    expect(boundary.compact_metadata.trigger).toBe('manual')
+    expect(summarizeForCompact).toHaveBeenCalledTimes(1)
+
+    // SAME session id — no handoff replacement. Compact is an APPEND
+    // (retain-history design): the ring keeps the pre-compact conversation
+    // and the manual divider + summary append AFTER it, in that order.
+    const live = (fx.sm as unknown as { sessions: Map<string, { history: Frame[] }> }).sessions
+    expect(live.has(id)).toBe(true)
+    const ring = live.get(id)!.history
+    const helloIdx = ring.findIndex((f) => f.type === 'user' && f.message?.content === 'hello')
+    const boundaryIdx = ring.findIndex((f) => f.type === 'system' && f.subtype === 'compact_boundary')
+    const summaryIdx = ring.findIndex((f) => f.type === 'user' && f.isCompactSummary === true && f.message?.content === 'MOCK SUMMARY')
+    expect(helloIdx).toBeGreaterThanOrEqual(0)
+    expect(boundaryIdx).toBeGreaterThan(helloIdx)
+    expect(summaryIdx).toBeGreaterThan(boundaryIdx)
+
+    // Durable half: the append-only session/compact boundary plus the raw
+    // typed turns (the /compact prompt itself stays in the log).
+    await vi.waitFor(() => {
+      const snapshot = loadNativeSessionLogSync(stateDir, id)
+      expect(snapshot).not.toBeNull()
+      expect(neutralEventsOf(snapshot!).some((e) => e.type === 'session/compact' && e.data.text === 'MOCK SUMMARY')).toBe(true)
+    }, { timeout: 5000 })
+    expect(rawUserEvents(stateDir, id).map((e) => e.text)).toEqual(['hello', '/compact'])
+    // D8: one summary identity for both halves — the live summary frame and
+    // the durable compact event share summaryUuid; the boundary frame keeps
+    // the event uuid (distinct from the summary). The retain marker fences
+    // the reader's render floor off this compact.
+    const compact = neutralEventsOf(loadNativeSessionLogSync(stateDir, id)!)
+      .find((e): e is Extract<NativeSessionEvent, { type: 'session/compact' }> => e.type === 'session/compact')!
+    expect(compact.data.retainHistory).toBe(true)
+    expect(ring[summaryIdx].uuid).toBe(compact.data.summaryUuid)
+    expect(ring[boundaryIdx].uuid).toBe(compact.data.uuid)
+    expect(ring[summaryIdx].uuid).not.toBe(ring[boundaryIdx].uuid)
+
+    // The next turn runs against the floored MODEL history: the old
+    // conversation is gone from the request, the summary is present — while
+    // the transcript above still shows the retained pre-compact turns.
+    fx.scripts.push(textTurn('after compact'))
+    await sendAndWait(fx, id, frames, 'continue', 3)
+    const last = fx.requests.at(-1)!
+    expect(JSON.stringify(last.messages)).not.toContain('first reply')
+    expect(JSON.stringify(last.messages)).toContain('MOCK SUMMARY')
+    expect(last.messages.at(-1)).toEqual(userTextMessage('continue'))
+    unsubscribe()
+  }, 20000)
+
+  it('/compact queued behind a live turn compacts once the session settles idle', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    const id = await createSession(fx, project)
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    installGatedStreamer(fx, gate)
+
+    fx.scripts.push(textTurn('first reply'))
+    await fx.sm.send(id, 'hello') // parked on the gate — turn in flight
+    await fx.sm.send(id, '/compact') // queued behind it
+    release()
+
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(2)
+    }, { timeout: 5000 })
+    await vi.waitFor(() => {
+      expect(frames.some((f) => f.type === 'system' && f.subtype === 'compact_boundary')).toBe(true)
+    }, { timeout: 5000 })
+    expect(summarizeForCompact).toHaveBeenCalledTimes(1)
+    expect(fx.requests).toHaveLength(1) // only 'hello' streamed
+    unsubscribe()
+  }, 20000)
+
+  it('input queued BEHIND /compact keeps the session working: compaction skips (auto-path gating)', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    const id = await createSession(fx, project)
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    installGatedStreamer(fx, gate)
+
+    fx.scripts.push(textTurn('first reply'), textTurn('next reply'))
+    await fx.sm.send(id, 'hello') // parked on the gate — turn in flight
+    await fx.sm.send(id, '/compact') // queued, then…
+    await fx.sm.send(id, 'next') // …queued BEHIND the control turn
+    release()
+
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(3)
+    }, { timeout: 5000 })
+    // The idle gate refused the compact (queued input) — exactly the
+    // auto-compact behavior; the next turn ran against uncompacted history.
+    expect(summarizeForCompact).not.toHaveBeenCalled()
+    expect(frames.some((f) => f.subtype === 'compact_boundary')).toBe(false)
+    expect(fx.requests).toHaveLength(2)
+    expect(JSON.stringify(fx.requests[1].messages)).toContain('first reply')
+    unsubscribe()
   }, 20000)
 })
