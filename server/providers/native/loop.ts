@@ -56,8 +56,10 @@ export interface LoopDeps {
   /** `questionResult` is the broker's internal marker for an AskUserQuestion
    *  denial that carries the user's ANSWER (answer / clarify / malformed).
    *  It is never set for aborts, session-close denials, missing handlers or
-   *  ordinary permission denials. */
-  requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string; questionResult?: boolean }>
+   *  ordinary permission denials. `readOnlyHint` is the resolved ToolDef's
+   *  read-only metadata (for MCP tools, the server's declared annotation),
+   *  forwarded to the host permission gate as read-only evidence. */
+  requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal, readOnlyHint?: boolean): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string; questionResult?: boolean }>
   emit(frame: NativeLoopFrame): void
   /** Append the canonical result exactly once. The same UUID is passed to the
    * text-only UI frame, so disk replay and live rendering share identity. */
@@ -214,7 +216,7 @@ export async function runTurn(
         results.push({ callId: call.id, content: [{ type: 'text', text: `unknown tool: ${call.name}` }], isError: true })
         continue
       }
-      const decision = await deps.requestPermission(call.name, input, call.id, signal)
+      const decision = await deps.requestPermission(call.name, input, call.id, signal, tool.readOnlyHint === true)
       if (!decision.allowed) {
         // The broker resolves an ANSWERED AskUserQuestion as a marked denial:
         // the message IS the tool's output, not a permission error. Only that

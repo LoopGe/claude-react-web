@@ -55,6 +55,7 @@ export interface AgentToolDeps {
     toolUseId: string,
     signal: AbortSignal,
     permissionMode?: string,
+    readOnlyHint?: boolean,
   ): ReturnType<LoopDeps['requestPermission']>
   /** The session's persist+push path. The neutral frame carries no envelope
    *  identity, so the nested runner forwards its sidechain parent explicitly;
@@ -214,8 +215,8 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
             maxTurns: profile?.maxTurns,
             tasks: deps.tasks,
             cwd: deps.cwd,
-            requestPermission: (toolName, toolInput, toolUseId, signal) =>
-              deps.requestPermission(toolName, toolInput, toolUseId, signal, nestedPermissionMode),
+            requestPermission: (toolName, toolInput, toolUseId, signal, readOnlyHint) =>
+              deps.requestPermission(toolName, toolInput, toolUseId, signal, nestedPermissionMode, readOnlyHint),
             emit: (frame) => {
               if ('type' in frame && frame.type === 'assistant-frame') {
                 const content = frame.message.content

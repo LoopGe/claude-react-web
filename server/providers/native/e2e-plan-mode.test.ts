@@ -547,7 +547,9 @@ describe('native plan mode end to end through SessionManager', () => {
 
     // The Edit AUTO-ALLOWS (acceptEdits, in-scope path) and executes in this SAME
     // turn — no Edit prompt and no second approval. The turn settles on its own;
-    // had the Edit parked (plan-denied or prompted) this wait would time out.
+    // had the Edit parked on a PROMPT this wait would time out. (A plan DENIAL
+    // does not park — it settles the turn, and the is_error/PLAN_DENY/file
+    // assertions below catch it.)
     await vi.waitFor(() => {
       expect(frames.filter((f) => f.type === 'result')).toHaveLength(2)
     }, { timeout: 5000 })

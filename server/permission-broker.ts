@@ -72,7 +72,16 @@ export type BrokerPermissionResult = PermissionResult & { [QUESTION_RESULT]?: tr
 export type BrokerCanUseTool = (
   toolName: string,
   input: Record<string, unknown>,
-  options: Parameters<CanUseTool>[2] & { permissionMode?: string },
+  options: Parameters<CanUseTool>[2] & {
+    permissionMode?: string
+    /** The calling provider's tool-definition read-only metadata
+     *  (`ToolDef.readOnlyHint` — for MCP tools, the server's declared
+     *  `annotations.readOnlyHint`). The SDK's canUseTool options do not
+     *  surface it, so the native loop threads it through its permission
+     *  seam. The plan gate accepts it as read-only evidence; absent is
+     *  always "not proven" (fail-closed). */
+    readOnlyHint?: boolean
+  },
 ) => Promise<BrokerPermissionResult>
 
 const log = createLogger('broker')
@@ -94,6 +103,17 @@ const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   // Assumes the CLI's own skill load has no side effect; a forked skill's
   // inner tool calls are still classified individually.
   'Skill',
+])
+
+/** Read-only built-ins the plan gate passes through. A SUPERSET of the
+ *  dontAsk set: WebFetch/WebSearch are network reads — exploration, which is
+ *  exactly what plan mode is for — while dontAsk (CI lockdown) deliberately
+ *  excludes them. Bash is handled separately via isReadOnlyBash; MCP and
+ *  first-party tools via their own read-only metadata (see the gate). */
+const PLAN_READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...READONLY_TOOL_NAMES,
+  'WebFetch',
+  'WebSearch',
 ])
 
 /** Tools that are always safe in auto-mode — they either only read,
@@ -143,8 +163,22 @@ export class PermissionBroker {
    *  every tool call. */
   private auxTargetFor: (sessionId: string) => AuxLlmTarget | undefined
 
-  constructor(auxTargetFor: (sessionId: string) => AuxLlmTarget | undefined) {
+  /** Whether a provider enforces plan mode on its own side BEFORE canUseTool
+   *  (the `cliSidePlanSteering` capability — true for claude, false for
+   *  native). The host plan gate applies ONLY to providers without it: the
+   *  claude CLI has already classified and allowed the calls that reach us,
+   *  and re-classifying them here would hard-deny tools the CLI proved
+   *  read-only (e.g. a quoted `grep "x" f`, which fails isReadOnlyBash's
+   *  metachar gate). Injected by the manager from its ProviderRegistry —
+   *  the broker stays provider-agnostic. */
+  private cliSidePlanSteeringOf: (provider: string) => boolean
+
+  constructor(
+    auxTargetFor: (sessionId: string) => AuxLlmTarget | undefined,
+    cliSidePlanSteeringOf: (provider: string) => boolean,
+  ) {
     this.auxTargetFor = auxTargetFor
+    this.cliSidePlanSteeringOf = cliSidePlanSteeringOf
   }
 
   /** Per-session denial tracker for auto mode. When consecutive denials
@@ -337,25 +371,33 @@ export class PermissionBroker {
         }), `plan review request — ${toolName}`)
       }
       // Plan-mode hard enforcement: while the session is in plan mode only
-      // read-only exploration runs. Reads the LIVE session.permissionMode,
+      // PROVABLY read-only exploration runs — anything else denies, so a
+      // mutating tool can never reach a prompt the user could approve while
+      // the chip says plan. Scoped to providers WITHOUT cliSidePlanSteering
+      // (native): the claude CLI enforces plan mode itself before canUseTool,
+      // and re-classifying its already-allowed calls here would hard-deny
+      // tools the CLI proved read-only. Reads the LIVE session.permissionMode,
       // NOT the per-call snapshot `mode` above — native main turns carry
       // their turn-start snapshot, and a mid-turn plan transition must bind
       // the very next tool call. Placed after the EnterPlanMode/ExitPlanMode
       // branches (entry stays auto-allowed; a plan proposal always reaches
       // the user) and BEFORE acceptEdits/bypassPermissions so no auto-allow
       // path can skip enforcement.
-      if (session.permissionMode === 'plan') {
-        // Edit-family tools are mutating outright — EDIT_TOOL_PATH_FIELD is
-        // the broker's single edit-tool name source (same lookup the bypass
-        // branch below uses). Bash is mutating unless provably read-only:
-        // isReadOnlyBash is fail-closed, so anything unprovable denies and
-        // the model re-plans. Read-only tools fall through to the normal
-        // pipeline.
-        const isEditTool = Object.hasOwn(EDIT_TOOL_PATH_FIELD, toolName)
-        const isMutatingBash =
-          toolName === 'Bash' &&
-          !isReadOnlyBash((toolInput as { command?: unknown })?.command)
-        if (isEditTool || isMutatingBash) {
+      if (session.permissionMode === 'plan' && !this.cliSidePlanSteeringOf(session.provider)) {
+        // Read-only evidence, fail-closed (unknown → deny): the built-in
+        // read set (incl. WebFetch/WebSearch exploration), Bash proven by
+        // isReadOnlyBash, the registry-declared read-only first-party FQNs,
+        // and the provider's tool-definition readOnlyHint (native threads
+        // its ToolDef metadata — MCP tools' declared annotations — through
+        // the permission seam). Edit-family tools, mutating Bash, mutating
+        // MCP/first-party tools and everything unprovable deny and the
+        // model re-plans.
+        const provablyReadOnly =
+          PLAN_READONLY_TOOL_NAMES.has(toolName) ||
+          (toolName === 'Bash' && isReadOnlyBash((toolInput as { command?: unknown })?.command)) ||
+          firstPartyReadOnlyTools().has(toolName) ||
+          ctx.readOnlyHint === true
+        if (!provablyReadOnly) {
           return {
             behavior: 'deny',
             message: 'plan mode is active — present a plan via ExitPlanMode before making changes',

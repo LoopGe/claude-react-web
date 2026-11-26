@@ -78,7 +78,7 @@ import type { TerminalSnapshot } from '../shared/terminal.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
-import { isSdkForwardedMode } from './permission-modes.js'
+import { isSdkForwardedMode, isUserSelectablePermissionMode, permissionModeList } from './permission-modes.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import {
   pump as pumpSession,
@@ -1236,8 +1236,14 @@ export class SessionManager {
     this.forwardSubagentText = opts.forwardSubagentText ?? defaultConfig.forwardSubagentText
     // The classifier needs the same per-session target the other aux calls
     // use (the session's profile credentials + its model), so hand the broker
-    // a resolver rather than the raw session model.
-    this.permBroker = new PermissionBroker((id) => this.auxTargetFor(id, 'classifier'))
+    // a resolver rather than the raw session model. The plan-gate scoping
+    // resolver reads the same capability flag the mode-forward path uses:
+    // providers that steer plan mode CLI-side (claude) never hit the host
+    // gate; host-enforced providers (native) do.
+    this.permBroker = new PermissionBroker(
+      (id) => this.auxTargetFor(id, 'classifier'),
+      (provider) => this.capsOf(provider).cliSidePlanSteering,
+    )
     this.elicitBroker = new ElicitationBroker()
     // Retraction eviction for user dialogs (Task 5): a resolved
     // refusal_fallback dialog retracts the refused leg
@@ -3912,9 +3918,15 @@ export class SessionManager {
       // gate + UI chip) first, then forwards to the handle (persistence +
       // guidance). Passed unconditionally like systemPromptAppend — the manager
       // is provider-agnostic; native consumes it, claude ignores it (the CLI
-      // enforces plan mode before canUseTool). The tool supplies a valid mode.
+      // enforces plan mode before canUseTool). The seam accepts any string,
+      // so validate against the PermissionMode vocabulary and throw loudly
+      // on anything else rather than casting an unvalidated value into the
+      // mode setter.
       requestPermissionModeChange: async (mode) => {
-        await this.setPermissionMode(id, mode as PermissionMode)
+        if (!isUserSelectablePermissionMode(mode)) {
+          throw new Error(`requestPermissionModeChange: invalid permission mode ${JSON.stringify(mode)} (expected one of: ${permissionModeList()})`)
+        }
+        await this.setPermissionMode(id, mode)
       },
       onElicitation: fullOpts.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       // Atomic pair: the SDK requires onUserDialog whenever
@@ -12643,9 +12655,13 @@ export class SessionManager {
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       // Same tool-driven mode-change binding as the spawn funnel: an in-place
       // respawn (autoResume / crash recovery) must re-bind it or a recovered
-      // native session loses tool-driven plan entry. See the funnel site.
+      // native session loses tool-driven plan entry. See the funnel site
+      // (including the mode validation).
       requestPermissionModeChange: async (mode) => {
-        await this.setPermissionMode(session.id, mode as PermissionMode)
+        if (!isUserSelectablePermissionMode(mode)) {
+          throw new Error(`requestPermissionModeChange: invalid permission mode ${JSON.stringify(mode)} (expected one of: ${permissionModeList()})`)
+        }
+        await this.setPermissionMode(session.id, mode)
       },
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onUserDialog: session.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,

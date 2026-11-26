@@ -1725,6 +1725,56 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('threads each tool definition readOnlyHint into the permission ctx (MCP annotations)', async () => {
+    const dir = await tempDir('native-mcp-readonly-hint-')
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    // One round per tool so each permission ctx is captured distinctly. The
+    // mixedReadOnlyServer fixture declares read=true, write=false, undeclared
+    // absent — the three evidence states the host plan gate distinguishes.
+    const callTurn = (id: string, name: string): CanonicalEvent[] => [
+      { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+      { kind: 'block_start', index: 0, block: { type: 'tool_use', id, name } },
+      { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: '{}' } },
+      { kind: 'block_end', index: 0 },
+      { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+    ]
+    const scripts: CanonicalEvent[][] = [
+      callTurn('m1', 'mcp__a__read'),
+      callTurn('m2', 'mcp__a__write'),
+      callTurn('m3', 'mcp__a__undeclared'),
+      textTurn('done'),
+    ]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const seen: Array<{ toolName: string; readOnlyHint?: boolean }> = []
+    const session = provider.createSession({
+      id: 'mcp-hint',
+      cwd: dir,
+      mcpServers: { a: { type: 'sdk', instance: delayedInstance(mixedReadOnlyServer('a')) } },
+      canUseTool: async (toolName: unknown, input: unknown, ctx: unknown) => {
+        seen.push({ toolName: toolName as string, readOnlyHint: (ctx as { readOnlyHint?: boolean }).readOnlyHint })
+        return { behavior: 'allow', updatedInput: input }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of session.messages) frames.push(f as Frame)
+    })()
+    session.enqueueUserMessage(userMsg('use the tools') as never)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    })
+    // Only the tool whose definition DECLARES readOnlyHint:true carries the
+    // hint; false and absent both omit it (the gate reads absence as unproven).
+    expect(seen).toEqual([
+      { toolName: 'mcp__a__read', readOnlyHint: true },
+      { toolName: 'mcp__a__write', readOnlyHint: undefined },
+      { toolName: 'mcp__a__undeclared', readOnlyHint: undefined },
+    ])
+    await session.destroy()
+  })
+
   it.each(['Agent', 'Task'] as const)('runs %s as a sidechain with one outer result and no nested delegation', async (toolName) => {
     const dir = await tempDir('native-agent-')
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })

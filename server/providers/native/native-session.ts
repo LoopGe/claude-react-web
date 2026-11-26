@@ -1049,6 +1049,7 @@ export class NativeSession implements NativeSessionCore {
     toolUseId: string,
     signal: AbortSignal,
     permissionMode = this.permissionMode,
+    readOnlyHint?: boolean,
   ) => {
     // Guard against an abort that fired while the previous tool executed: an
     // already-aborted signal never fires the broker's abort listener, so
@@ -1061,7 +1062,7 @@ export class NativeSession implements NativeSessionCore {
     // here and surfaces as the turn's error through the pump catch. This is
     // the loop's single pre-tool seam, so it covers bypass / deny paths too.
     if (this.assistantFlush) await this.assistantFlush
-    return this.decidePermission(toolName, input, toolUseId, signal, permissionMode)
+    return this.decidePermission(toolName, input, toolUseId, signal, permissionMode, readOnlyHint)
   }
 
   private async decidePermission(
@@ -1070,6 +1071,7 @@ export class NativeSession implements NativeSessionCore {
     toolUseId: string,
     signal: AbortSignal,
     permissionMode: string,
+    readOnlyHint?: boolean,
   ) {
     // An interrupt/destroy can land while the model turn's flush is in flight.
     // Re-check before handing the signal to the broker: its abort listener
@@ -1089,6 +1091,10 @@ export class NativeSession implements NativeSessionCore {
       toolUseID: toolUseId,
       permissionMode,
       ...(mcpServer ? { mcpServer } : {}),
+      // The resolved ToolDef's read-only metadata (MCP tools: the server's
+      // declared annotation). Only present when proven true — the host plan
+      // gate treats absence as "not proven" (fail-closed).
+      ...(readOnlyHint === true ? { readOnlyHint: true } : {}),
     })) as { behavior?: string; updatedInput?: Record<string, unknown>; message?: string }
     if (result?.behavior === 'allow') {
       return { allowed: true, input: result.updatedInput ?? input }
@@ -1765,8 +1771,8 @@ export class NativeSession implements NativeSessionCore {
             maxTurns: turnProfile?.maxTurns,
             tasks: this.tasks,
             cwd: this.opts.cwd,
-            requestPermission: (toolName, input, toolUseId, signal) =>
-              this.requestPermission(toolName, input, toolUseId, signal, turnMode.mode),
+            requestPermission: (toolName, input, toolUseId, signal, readOnlyHint) =>
+              this.requestPermission(toolName, input, toolUseId, signal, turnMode.mode, readOnlyHint),
             emit: (frame) => {
               const parent = this.ctx.parentToolUseId ?? null
               this.persistFrame(frame, parent)
