@@ -12,6 +12,16 @@ vi.mock('../hooks/useApi', () => ({
   api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
 }))
 
+// The Hooks tab mounts HooksPanel, which subscribes to the hub for hook-run
+// frames. Same stub as HooksPanel.test — the gating tests only need the
+// panel to mount (or NOT mount when locked), not live frames.
+vi.mock('../hooks/useWsHub', () => ({
+  useWsHub: () => ({
+    subscribe: () => () => {},
+    addSessionListener: () => () => {},
+  }),
+}))
+
 import { api } from '../hooks/useApi'
 
 // jsdom doesn't implement matchMedia; useExitPresence probes it when the
@@ -45,7 +55,7 @@ function renderPanel(opts: {
   session?: SessionInfo
   globalPrefs?: Record<string, unknown>
   /** Tab to deep-link into. Defaults to 'mcp' (the historical callers). */
-  tab?: 'general' | 'appearance' | 'mcp' | 'context' | 'skills' | 'plugins'
+  tab?: 'general' | 'appearance' | 'mcp' | 'context' | 'skills' | 'plugins' | 'hooks' | 'usage'
   /** Plugin-tab tests feed a command so a plugin group renders. */
   commands?: SlashCommand[]
 }) {
@@ -1212,22 +1222,53 @@ describe('SettingsPanel plugins tab — per-session enabled state', () => {
   })
 })
 
-describe('SettingsPanel native provider — Plugins tab availability', () => {
+describe('SettingsPanel locked-feature gates (native vs claude vs legacy)', () => {
+  // The projected native frame: every locked-feature boolean explicit false
+  // (the Task 1 capability projection). The gate convention is `!== false`,
+  // so a legacy frame (booleans undefined) stays claude-compatible — pinned
+  // in its own tests below.
   const nativeSession = {
     id: 's1',
     provider: 'native',
     running: true,
     terminated: false,
+    pluginsSupported: false,
+    hooksSupported: false,
+    memorySupported: false,
+    sandboxSupported: false,
+    accountInfoSupported: false,
   } as unknown as SessionInfo
-  const claudeSession = { ...mkSession(), provider: 'claude' } as SessionInfo
+  const claudeSession = {
+    id: 's1',
+    provider: 'claude',
+    running: true,
+    terminated: false,
+    pluginsSupported: true,
+    hooksSupported: true,
+    memorySupported: true,
+    sandboxSupported: true,
+    accountInfoSupported: true,
+  } as unknown as SessionInfo
+
   const leaves = (container: HTMLElement) =>
     [...container.querySelectorAll<HTMLButtonElement>('.settings-tab-leaves button')].map((b) => b.textContent)
+  const notice = (container: HTMLElement) => container.querySelector('.requires-cli-notice')
+  const switchEl = (container: HTMLElement, label: string) =>
+    container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
+  /** The `.settings-group` box whose head title matches exactly. */
+  const findGroup = (container: HTMLElement, title: string) =>
+    [...container.querySelectorAll('.settings-group')].find(
+      (g) => g.querySelector('.settings-group-head h4')?.textContent === title,
+    )
 
   beforeEach(() => {
     vi.clearAllMocks()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
       if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url.endsWith('/hooks')) return Promise.resolve({ hooks: {}, runs: [] })
+      if (url.endsWith('/usage')) return Promise.resolve({ usage: null })
+      if (url.endsWith('/account')) return Promise.resolve({ account: null })
       if (url === '/mcp-config') return Promise.resolve({ servers: [] })
       if (url === '/profiles') return Promise.resolve({ profiles: [] })
       if (url === '/config') return Promise.resolve({ models: [] })
@@ -1236,10 +1277,12 @@ describe('SettingsPanel native provider — Plugins tab availability', () => {
     ;(api.post as ReturnType<typeof vi.fn>).mockResolvedValue({})
   })
 
-  it('hides the Plugins leaf for a native session', async () => {
+  // ── Plugins tab: show-but-locked (the leaf is no longer hidden) ──
+
+  it('keeps the Plugins leaf visible for a native session', async () => {
     const { container } = renderPanel({ session: nativeSession, tab: 'mcp' })
     await waitFor(() => expect(container.querySelector('.settings-tab-leaves')).not.toBeNull())
-    expect(leaves(container)).toEqual(['MCP Servers'])
+    expect(leaves(container)).toEqual(['MCP Servers', 'Plugins'])
   })
 
   it('keeps the Plugins leaf for a claude session', async () => {
@@ -1248,17 +1291,155 @@ describe('SettingsPanel native provider — Plugins tab availability', () => {
     expect(leaves(container)).toEqual(['MCP Servers', 'Plugins'])
   })
 
-  it('redirects a Plugins deep link to General and never reloads plugins', async () => {
+  it('a Plugins deep link lands on the locked tab with the notice and never reloads plugins', async () => {
     const { container } = renderPanel({ session: nativeSession, tab: 'plugins' })
     await waitFor(() =>
-      expect(container.querySelector('.settings-tab-leaves .active')?.textContent).toBe('General'),
+      expect(container.querySelector('.settings-tab-leaves .active')?.textContent).toBe('Plugins'),
     )
+    expect(notice(container)?.textContent).toContain('requires the Claude CLI')
+    // No dead controls behind the notice: the reload/browse actions are gone.
+    expect(container.textContent).not.toContain('Reload plugins')
+    expect(container.textContent).not.toContain('Browse plugins')
     // Let the deferred auto-reload effect (setTimeout 0) run if it were armed.
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
     const reloadCalls = (api.post as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) =>
       String(url).endsWith('/plugins/reload'),
     )
     expect(reloadCalls).toHaveLength(0)
+  })
+
+  it('clicking the Plugins leaf on a native session shows the locked notice', async () => {
+    const { container } = renderPanel({ session: nativeSession, tab: 'mcp' })
+    await waitFor(() => expect(container.querySelector('.settings-tab-leaves')).not.toBeNull())
+    const pluginsLeaf = [...container.querySelectorAll<HTMLButtonElement>('.settings-tab-leaves button')]
+      .find((b) => b.textContent === 'Plugins')!
+    fireEvent.click(pluginsLeaf)
+    await waitFor(() => expect(notice(container)).not.toBeNull())
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
+    const reloadCalls = (api.post as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) =>
+      String(url).endsWith('/plugins/reload'),
+    )
+    expect(reloadCalls).toHaveLength(0)
+  })
+
+  it('claude plugins tab renders the live panel, no notice', async () => {
+    const { container } = renderPanel({ session: claudeSession, tab: 'plugins' })
+    await waitFor(() => expect(container.textContent).toContain('Reload plugins'))
+    expect(notice(container)).toBeNull()
+  })
+
+  // ── Hooks tab ──
+
+  it('native hooks tab shows the locked notice and never fetches hook config', async () => {
+    const { container } = renderPanel({ session: nativeSession, tab: 'hooks' })
+    await waitFor(() => expect(notice(container)).not.toBeNull())
+    expect(notice(container)?.textContent).toContain('requires the Claude CLI')
+    // HooksPanel is not mounted: no config read, no editor chrome.
+    expect(container.textContent).not.toContain('Configured Hooks')
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
+    const hooksCalls = (api.get as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) =>
+      String(url).endsWith('/hooks'),
+    )
+    expect(hooksCalls).toHaveLength(0)
+  })
+
+  it('claude hooks tab mounts the live HooksPanel, no notice', async () => {
+    const { container } = renderPanel({ session: claudeSession, tab: 'hooks' })
+    await waitFor(() => expect(container.textContent).toContain('Configured Hooks'))
+    expect(notice(container)).toBeNull()
+  })
+
+  it('legacy frame (booleans undefined): hooks tab stays claude-compatible', async () => {
+    const { container } = renderPanel({ session: mkSession(), tab: 'hooks' })
+    await waitFor(() => expect(container.textContent).toContain('Configured Hooks'))
+    expect(notice(container)).toBeNull()
+  })
+
+  // ── Memory section (General tab) ──
+
+  it('native memory controls are disabled with the notice', async () => {
+    const { container } = renderPanel({ session: nativeSession, tab: 'general' })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+    const memoryGroup = findGroup(container, 'Memory')!
+    expect(memoryGroup, 'Memory group stays visible').toBeDefined()
+    expect(memoryGroup.querySelector('.requires-cli-notice')?.textContent).toContain('requires the Claude CLI')
+    expect(switchEl(container, 'Auto-memory')!.disabled).toBe(true)
+    expect(switchEl(container, 'Background memory consolidation')!.disabled).toBe(true)
+    const dirInput = container.querySelector<HTMLInputElement>('input[id$="-memory-dir"]')!
+    expect(dirInput.disabled).toBe(true)
+  })
+
+  it('claude memory controls are enabled, no notice', async () => {
+    const { container } = renderPanel({ session: claudeSession, tab: 'general' })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+    expect(switchEl(container, 'Auto-memory')!.disabled).toBe(false)
+    expect(switchEl(container, 'Background memory consolidation')!.disabled).toBe(false)
+    expect(container.querySelector<HTMLInputElement>('input[id$="-memory-dir"]')!.disabled).toBe(false)
+    expect(notice(container)).toBeNull()
+  })
+
+  it('legacy frame (booleans undefined): memory controls stay enabled', async () => {
+    const { container } = renderPanel({ session: mkSession(), tab: 'general' })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+    expect(switchEl(container, 'Auto-memory')!.disabled).toBe(false)
+    expect(notice(container)).toBeNull()
+  })
+
+  // ── Sandbox section (General tab): shown-but-locked, no longer hidden ──
+
+  it('native sandbox section stays visible with disabled controls and the notice', async () => {
+    const { container } = renderPanel({ session: nativeSession, tab: 'general' })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+    const sandboxGroup = findGroup(container, 'Sandbox')!
+    expect(sandboxGroup, 'Sandbox group stays visible').toBeDefined()
+    expect(sandboxGroup.querySelector('.requires-cli-notice')?.textContent).toContain('requires the Claude CLI')
+    expect(switchEl(container, 'Run commands in a sandbox')!.disabled).toBe(true)
+    // Only the sandbox controls lock — the rest of the general tab stays.
+    expect(findGroup(container, 'Session')).toBeDefined()
+  })
+
+  it('claude sandbox controls are enabled, no notice', async () => {
+    const { container } = renderPanel({ session: claudeSession, tab: 'general' })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+    expect(switchEl(container, 'Run commands in a sandbox')!.disabled).toBe(false)
+    expect(notice(container)).toBeNull()
+  })
+
+  it('legacy frame (booleans undefined): sandbox section stays enabled', async () => {
+    const { container } = renderPanel({ session: mkSession(), tab: 'general' })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+    expect(findGroup(container, 'Sandbox')).toBeDefined()
+    expect(switchEl(container, 'Run commands in a sandbox')!.disabled).toBe(false)
+    expect(notice(container)).toBeNull()
+  })
+
+  // ── Each surface gates on its OWN boolean, not a shared provider check ──
+
+  it('a single false boolean locks only its own surface', async () => {
+    const session = { ...claudeSession, memorySupported: false } as SessionInfo
+    const { container } = renderPanel({ session, tab: 'general' })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+    expect(switchEl(container, 'Auto-memory')!.disabled).toBe(true)
+    expect(findGroup(container, 'Memory')!.querySelector('.requires-cli-notice')).not.toBeNull()
+    // Sandbox keeps its own (true) flag: enabled, no notice in its group.
+    expect(switchEl(container, 'Run commands in a sandbox')!.disabled).toBe(false)
+    expect(findGroup(container, 'Sandbox')!.querySelector('.requires-cli-notice')).toBeNull()
+  })
+
+  // ── Account section (Usage tab) ──
+
+  it('native usage tab shows the account locked note', async () => {
+    const { container } = renderPanel({ session: nativeSession, tab: 'usage' })
+    await waitFor(() => expect(container.textContent).toContain('Session usage'))
+    const account = container.querySelector('.usage-account')!
+    expect(account, 'Account section').toBeDefined()
+    expect(account.querySelector('.requires-cli-notice')?.textContent).toContain('requires the Claude CLI')
+  })
+
+  it('claude usage tab shows no locked note', async () => {
+    const { container } = renderPanel({ session: claudeSession, tab: 'usage' })
+    await waitFor(() => expect(container.textContent).toContain('Session usage'))
+    expect(notice(container)).toBeNull()
   })
 })
 
@@ -1580,34 +1761,6 @@ describe('SettingsPanel Loaded skills preview', () => {
     // that silently lose their click targets.
     await waitFor(() => expect(container.textContent).toContain("Couldn't load the skill list"))
     expect(container.textContent).toContain('list down')
-  })
-})
-
-describe('SettingsPanel sandbox section by provider', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
-      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
-      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
-      if (url === '/profiles') return Promise.resolve({ profiles: [] })
-      if (url === '/config') return Promise.resolve({ models: [] })
-      return Promise.resolve({})
-    })
-  })
-
-  it('renders the sandbox section for the claude provider', async () => {
-    const { container } = renderPanel({ tab: 'general', session: mkSession() })
-    await waitFor(() => expect(container.textContent).toContain('Live controls'))
-    expect(screen.queryByRole('heading', { name: 'Sandbox' })).not.toBeNull()
-  })
-
-  it('hides the sandbox section for the native provider', async () => {
-    const session = { ...mkSession(), provider: 'native' } as SessionInfo
-    const { container } = renderPanel({ tab: 'general', session })
-    await waitFor(() => expect(container.textContent).toContain('Live controls'))
-    expect(screen.queryByRole('heading', { name: 'Sandbox' })).toBeNull()
-    // Only the sandbox section is dropped — the rest of the general tab stays.
-    expect(screen.queryByRole('heading', { name: 'Session' })).not.toBeNull()
   })
 })
 

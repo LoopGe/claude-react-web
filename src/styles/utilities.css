@@ -1761,6 +1761,25 @@ button.tool-group-failed-jump:focus-visible {
   font-size: var(--fs-sm);
   font-family: var(--mono);
 }
+/* Locked-feature notice (RequiresCliNotice) — the shown-but-disabled
+   settings surfaces (native provider's plugins/hooks tabs, memory/sandbox
+   sections, account section) explain the lock with this calm informational
+   card. Colors come from the --requires-cli-note-* tokens, defined in both
+   :root and [data-theme="light"]. */
+.requires-cli-notice {
+  padding: var(--space-2) var(--space-2-5);
+  border: 1px solid var(--requires-cli-note-border);
+  border-radius: var(--radius-md);
+  background: var(--requires-cli-note-bg);
+  color: var(--requires-cli-note-fg);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+/* Between a settings group's head and its first row: align with the row
+   inset (the rows carry their own padding, so only top/side margins here). */
+.settings-group > .requires-cli-notice {
+  margin: var(--space-2-5) var(--space-3-5) 0;
+}
 .settings-detail { margin-top: var(--space-1-5); }
 /* Inside a .settings-group-body the flex gap already spaces siblings — the
    margins above were tuned for the old flat .settings-section flow and
