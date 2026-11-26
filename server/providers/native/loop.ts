@@ -82,7 +82,7 @@ export interface LoopDeps {
    *  denial that carries the user's ANSWER (answer / clarify / malformed).
    *  It is never set for aborts, session-close denials, missing handlers or
    *  ordinary permission denials. */
-  requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string; questionResult?: boolean }>
+  requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string; questionResult?: boolean; interrupt?: boolean }>
   /** Hook decision point (T8). The per-call tool block dispatches PreToolUse
    *  BEFORE requestPermission (RS §5): allow/deny short-circuit the permission
    *  request, ask/defer/no-decision enter it. Absent = no hook engine wired
@@ -167,6 +167,10 @@ export async function runTurn(
   // error tool_results and the model gets to recover in the next round.
   // Exhausting maxTurns is the exception: the model gets no recovery round.
   let isError = false
+  // A permission denial carrying interrupt:true (RS §5 / §13.1) aborts the
+  // turn: the remaining calls in the batch are skipped (synthetic 'aborted'
+  // results below) and no recovery round runs.
+  let interruptTurn = false
   // Stop-seam state (RS §5), per turn: whether a Stop hook already forced a
   // continuation this turn (the next Stop input's stop_hook_active) and the
   // running count of forced continuations (the block cap). A new user prompt
@@ -376,6 +380,12 @@ export async function runTurn(
             content: [{ type: 'text', text: decision.message ?? 'permission denied' }],
             isError: !(call.name === 'AskUserQuestion' && decision.questionResult === true),
           })
+          // interrupt:true aborts the turn (RS §5): stop the batch, no recovery
+          // round. The remaining calls get synthetic 'aborted' results below.
+          if (decision.interrupt) {
+            interruptTurn = true
+            break
+          }
           continue
         }
         toolInput = decision.input
@@ -514,6 +524,12 @@ export async function runTurn(
     if (hookContext.length > 0) {
       history.push({ role: 'user', content: [{ type: 'text', text: hookContext.join('\n') }] })
     }
+    // A permission interrupt ends the turn after the denial results are durable
+    // (no recovery round); the terminal result reports the abnormal end.
+    if (interruptTurn) {
+      isError = true
+      break
+    }
     if (capped) break
   }
   if (deps.emitResult !== false) {
@@ -545,8 +561,12 @@ function textOf(blocks: readonly ContentBlock[]): string {
  *  such keys, and native tool inputs never legitimately carry them, so any is
  *  hook-injected. This is a conservative superset of the CLI's `__artifact`-
  *  specific reserved-key gate; RS §5 / Review Focus 5 pin the general `_` prefix. */
-function updatedInputRefusal(tool: ToolDef, updatedInput: Record<string, unknown>): string | null {
-  const hookLabel = `PreToolUse hook for ${tool.name}`
+export function updatedInputRefusal(
+  tool: ToolDef,
+  updatedInput: Record<string, unknown>,
+  event: 'PreToolUse' | 'PermissionRequest' = 'PreToolUse',
+): string | null {
+  const hookLabel = `${event} hook for ${tool.name}`
   const issues = schemaIssues(tool.schema, updatedInput, '')
   if (issues.length > 0) {
     return `${hookLabel} returned updatedInput that failed schema validation: ${issues.join('; ')}\n`

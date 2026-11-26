@@ -37,7 +37,7 @@ import type {
   NativePersistenceOutcome,
   NativeDrainMode,
 } from './core-contract.js'
-import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult, type TurnResult } from './loop.js'
+import { runTurn, updatedInputRefusal, type LoopDeps, type NativeLoopFrame, type PersistedToolResult, type TurnResult } from './loop.js'
 import { estimateText, estimateMessage, estimateToolSchema, ROLE_OVERHEAD } from './estimate.js'
 import { createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
@@ -271,6 +271,27 @@ function addUsage(a: Usage, b: Usage): Usage {
     ...(cacheRead !== 0 ? { cache_read_input_tokens: cacheRead } : {}),
     ...(cacheCreate !== 0 ? { cache_creation_input_tokens: cacheCreate } : {}),
   }
+}
+
+/** RS §13.1 personOnly floor: a personOnly ask is NEVER hook-allowed — the CLI
+ *  skips the PermissionRequest hook (`qMt`) for it entirely, so native skips the
+ *  dispatch and the ask always reaches the user prompt. This mirrors the broker's
+ *  personOnly markings: the plan-mode write floor (`permissionMode === 'plan'` —
+ *  human review required, RS §13.1 planModeWriteFloor) and the ExitPlanMode
+ *  plan-review ask (the broker forces a human prompt for it regardless of mode).
+ *  The other CLI personOnly sources (safetyCheck / access_change) are
+ *  broker-internal: the bypass sensitive-path safety check is short-circuited
+ *  before this seam (native bypass auto-allows), and the auto-mode classifier
+ *  fall-through is an ordinary non-personOnly ask — neither needs a marking here. */
+function isPersonOnlyAsk(toolName: string, permissionMode: string): boolean {
+  return permissionMode === 'plan' || toolName === 'ExitPlanMode'
+}
+
+/** RS §3 PermissionDenied `retry:true` tells the model it may retry the denied
+ *  call. Native has no structured retryable flag on the tool result, so the
+ *  permission is surfaced in the denial message the model reads. */
+function withRetryPermission(message: string, retry: boolean): string {
+  return retry ? `${message} You may retry this tool call.` : message
 }
 
 export interface NativeSessionOptions {
@@ -1198,24 +1219,101 @@ export class NativeSession implements NativeSessionCore {
       return { allowed: false, input, message: 'no permission handler registered for this session' }
     }
     const mcpServer = this.mcpToolServers.get(toolName)
+    // PermissionRequest hook (RS §13.1 main path `qMt`): runs INSIDE the
+    // permission flow, before the user prompt, and CAN auto-allow a normal ask
+    // (no `hooksMayAllow` gate — that field is a narrow plugin-ask wrapper,
+    // undefined here). The personOnly floor is the real safety boundary: a
+    // personOnly ask (plan-mode / safety review) skips the hook entirely — the
+    // CLI never runs `qMt` for it (`c.personOnly===!0 ? … : qMt`) — so it always
+    // reaches the user prompt. AskUserQuestion is an interactive question, not a
+    // tool permission ask, so it skips the hook too. The pre-tool durability
+    // barrier already ran in requestPermission (assistantFlush awaited).
+    if (!isPersonOnlyAsk(toolName, permissionMode) && toolName !== 'AskUserQuestion') {
+      const hookDecision = await this.dispatchHook('PermissionRequest', {
+        session_id: this.opts.id,
+        cwd: this.opts.cwd,
+        hook_event_name: 'PermissionRequest',
+        tool_name: toolName,
+        tool_input: input,
+        ...(mcpServer ? { mcp_server: mcpServer.name } : {}),
+      }, { signal, hasContext: true })
+      if (hookDecision.action === 'deny') {
+        const message = hookDecision.permission?.message ?? 'denied by hook'
+        const retry = await this.dispatchPermissionDenied(toolName, input, toolUseId, message, mcpServer, signal)
+        return {
+          allowed: false,
+          input,
+          message: withRetryPermission(message, retry),
+          interrupt: hookDecision.permission?.interrupt === true,
+        }
+      }
+      if (hookDecision.action === 'allow') {
+        const updated = hookDecision.permission?.updatedInput
+        if (updated !== undefined) {
+          // RS §13.1 / §5: the hook's rewrite must pass the tool input schema and
+          // carry no internal `_`-prefixed keys (the same gate the PreToolUse
+          // seam applies). A refusal denies the call — the tool is NOT run.
+          const tool = this.tools.find((candidate) => candidate.name === toolName)
+          const refusal = tool ? updatedInputRefusal(tool, updated, 'PermissionRequest') : null
+          if (refusal !== null) return { allowed: false, input, message: refusal }
+          return { allowed: true, input: updated }
+        }
+        return { allowed: true, input }
+      }
+      // ask / defer / continue → the normal user prompt below.
+    }
     const result = (await this.opts.canUseTool(toolName, input, {
       signal,
       toolUseID: toolUseId,
       permissionMode,
       ...(mcpServer ? { mcpServer } : {}),
-    })) as { behavior?: string; updatedInput?: Record<string, unknown>; message?: string }
+    })) as { behavior?: string; updatedInput?: Record<string, unknown>; message?: string; interrupt?: boolean }
     if (result?.behavior === 'allow') {
       return { allowed: true, input: result.updatedInput ?? input }
     }
     // The broker marks answer/clarify/malformed AskUserQuestion denials as
     // question RESULTS (the denial message IS the answer). Aborts, denyAll,
     // missing handlers and ordinary denials carry no marker and stay errors.
-    return {
-      allowed: false,
-      input,
-      message: result?.message ?? 'permission denied',
-      questionResult: isQuestionResult(result),
+    const message = result?.message ?? 'permission denied'
+    const questionResult = isQuestionResult(result)
+    // PermissionDenied fires on a genuine deny resolution (RS §5) — never on an
+    // answered AskUserQuestion (that denial IS the answer, not a permission deny).
+    if (!questionResult) {
+      const retry = await this.dispatchPermissionDenied(toolName, input, toolUseId, message, mcpServer, signal)
+      return {
+        allowed: false,
+        input,
+        message: withRetryPermission(message, retry),
+        questionResult,
+        interrupt: result?.interrupt === true,
+      }
     }
+    return { allowed: false, input, message, questionResult }
+  }
+
+  /** The PermissionDenied dispatch (RS §3 / §5): fires at a deny resolution with
+   *  the denied call's facts + reason; a `retry:true` output tells the model it
+   *  may retry. Returns whether retry was granted. hasContext:true — a tool
+   *  event with conversation context (RS §12.2). */
+  private async dispatchPermissionDenied(
+    toolName: string,
+    input: Record<string, unknown>,
+    toolUseId: string,
+    reason: string,
+    mcpServer: { name: string } | undefined,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const decision = await this.dispatchHook('PermissionDenied', {
+      session_id: this.opts.id,
+      cwd: this.opts.cwd,
+      hook_event_name: 'PermissionDenied',
+      tool_name: toolName,
+      tool_input: input,
+      tool_use_id: toolUseId,
+      reason,
+      ...(mcpServer ? { mcp_server: mcpServer.name } : {}),
+    }, { signal, hasContext: true })
+    return decision.retry === true
   }
 
   async readFile(
