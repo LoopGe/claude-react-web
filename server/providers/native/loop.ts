@@ -44,6 +44,13 @@ export type NativeLoopFrame = NativeCoreFrame | ToolResultMessage
 export interface PersistedToolResult {
   uuid: string
   message: ToolResultMessage
+  /** PostToolUse classifier assertion accompanying this result (RS §3). The
+   *  engine merges/ties it to the rewrite; the seam preserves it on the durable
+   *  record so the hook fact is not silently dropped. Native has no result-side
+   *  permission-classifier consumer yet (the host auto-classifier runs
+   *  pre-execution on the action), so delivery to a classifier is a follow-up
+   *  vocabulary/session seam — carrying it here keeps it bound to the call. */
+  classifierContext?: string
 }
 
 export interface LoopDeps {
@@ -107,6 +114,9 @@ interface NeutralToolResult {
   callId: string
   content: ContentBlock[]
   isError: boolean
+  /** PostToolUse classifier assertion accompanying the result (RS §3); carried
+   *  to the durable record, never fed to the model (it is not a delivery channel). */
+  classifierContext?: string
 }
 
 /** One agent turn: stream → assemble → execute tools → repeat until the
@@ -199,9 +209,11 @@ export async function runTurn(
       break
     }
     const results: NeutralToolResult[] = []
-    // PreToolUse additionalContext accumulated across this round's calls; it is
-    // injected into the conversation after the tool results (below) so the next
-    // model round sees it. Collected regardless of each call's allow/deny outcome.
+    // Hook feedback accumulated across this round's calls — PreToolUse /
+    // PostToolUse / PostToolUseFailure additionalContext plus the post-tool
+    // exit-2 block reasons; it is injected into the conversation after the tool
+    // results (below) so the next model round sees it. Collected regardless of
+    // each call's allow/deny outcome.
     const hookContext: string[] = []
     if (capped) {
       isError = true
@@ -329,6 +341,7 @@ export async function runTurn(
       // so MCP errors reach Failure through this same throw fact. Dispatched
       // after the try/catch so a hook-engine failure can never be misread as a
       // tool throw (one unified decision point, not two scattered dispatches).
+      let postClassifierContext: string | undefined
       if (deps.dispatchHook) {
         const event = toolThrew ? 'PostToolUseFailure' : 'PostToolUse'
         const postDecision = await deps.dispatchHook(event, {
@@ -349,14 +362,33 @@ export async function runTurn(
         if (postDecision.action === 'block' && postDecision.block && postDecision.block.reason.trim() !== '') {
           hookContext.push(postDecision.block.reason)
         }
-        // PostToolUse rewrite: the engine merged updatedToolOutput
-        // last-write-wins across hooks (RS §4.9); the merged string replaces the
-        // model-facing result content. A failure result is never rewritten.
-        if (!toolThrew && postDecision.updatedToolOutput !== undefined) {
-          resultContent = [{ type: 'text', text: postDecision.updatedToolOutput }]
+        // PostToolUse rewrite (RS §3 / §4.9): the engine merged the rewrites
+        // last-write-wins across hooks. updatedToolOutput replaces the output of
+        // ANY tool; updatedMCPToolOutput is the MCP-only fallback. CLI precedence:
+        // updatedToolOutput wins when present, else updatedMCPToolOutput for an
+        // MCP tool (the mcp__ name prefix, the CLI's `fh` marker), else nothing —
+        // a non-MCP tool ignores updatedMCPToolOutput. A thrown failure's result
+        // is never rewritten (a soft isError normal return IS).
+        if (!toolThrew) {
+          const isMcpTool = call.name.startsWith('mcp__')
+          const rewrite = postDecision.updatedToolOutput !== undefined
+            ? postDecision.updatedToolOutput
+            : isMcpTool ? postDecision.updatedMCPToolOutput : undefined
+          if (rewrite !== undefined) {
+            resultContent = [{ type: 'text', text: rewrite }]
+          }
         }
+        // The classifier assertion accompanies the result (RS §3); preserve it
+        // on the durable record. It is never model-facing — not a delivery
+        // channel (SDK PostToolUseHookSpecificOutput.classifierContext).
+        postClassifierContext = postDecision.classifierContext
       }
-      results.push({ callId: call.id, content: resultContent ?? [{ type: 'text', text }], isError: runFailed })
+      results.push({
+        callId: call.id,
+        content: resultContent ?? [{ type: 'text', text }],
+        isError: runFailed,
+        ...(postClassifierContext !== undefined ? { classifierContext: postClassifierContext } : {}),
+      })
     }
     // An abort mid-response leaves tool_use blocks unanswered. The API
     // requires every tool_use to be matched by a tool_result in the next user
@@ -373,7 +405,11 @@ export async function runTurn(
       const uuid = ctx.uuid()
       const callId = brandString<'ToolCallId'>(result.callId)
       const historyMessage = createToolResultMessage({ callId, content: result.content, isError: result.isError })
-      deps.persistToolResult({ uuid, message: historyMessage })
+      deps.persistToolResult({
+        uuid,
+        message: historyMessage,
+        ...(result.classifierContext !== undefined ? { classifierContext: result.classifierContext } : {}),
+      })
       const summary = result.content.find((block): block is { type: 'text'; text: string } => block.type === 'text')?.text ?? ''
       // The live UI frame is a text-only tool message keyed by the SAME uuid as
       // the persisted result, so disk replay and live rendering share identity.
@@ -388,9 +424,11 @@ export async function runTurn(
       deps.emit(liveFrame)
       history.push(historyMessage)
     }
-    // PreToolUse additionalContext joins the conversation after the tool results
-    // (the same pre-request boundary as steering supplements), so the next model
-    // round sees it. One user message carries the round's collected context.
+    // The round's collected hook feedback (PreToolUse / PostToolUse /
+    // PostToolUseFailure additionalContext + post-tool exit-2 block reasons)
+    // joins the conversation after the tool results (the same pre-request
+    // boundary as steering supplements), so the next model round sees it. One
+    // user message carries the round's collected context.
     if (hookContext.length > 0) {
       history.push({ role: 'user', content: [{ type: 'text', text: hookContext.join('\n') }] })
     }

@@ -127,6 +127,18 @@ function boomServer(): McpServer {
   return server
 }
 
+/** An in-memory MCP server whose single tool returns a normal (success) result,
+ *  so a PostToolUse rewrite can be observed on the MCP output. */
+function okServer(): McpServer {
+  const server = new McpServer({ name: 'ok-server', version: '1.0.0' })
+  server.registerTool(
+    'ok',
+    { description: 'Returns text.', inputSchema: {} },
+    async () => ({ content: [{ type: 'text', text: 'mcp-original-output' }] }),
+  )
+  return server
+}
+
 interface TurnOutcome {
   dir: string
   frames: Frame[]
@@ -264,6 +276,57 @@ describe('PostToolUse updatedToolOutput rewrite (RS §4.9: last-write-wins)', ()
     expect(content).toContain('rewrite-B')
     expect(content).not.toContain('rewrite-A')
     expect(content).not.toContain('original-output')
+  }, 20_000)
+})
+
+describe('PostToolUse updatedMCPToolOutput rewrite (RS §3: MCP-only channel)', () => {
+  it('an MCP tool output is rewritten by updatedMCPToolOutput', async () => {
+    const hooks = postHook('mcp__a__ok', postHsoJson({ updatedMCPToolOutput: 'mcp-rewrite-Z' }))
+    const { frames } = await runToolTurn({
+      hooks,
+      toolName: 'mcp__a__ok',
+      toolInput: {},
+      mcpServers: { a: { type: 'sdk', instance: okServer() } },
+    })
+    const results = toolResults(frames)
+    expect(results).toHaveLength(1)
+    const content = JSON.stringify(results[0].content)
+    expect(content).toContain('mcp-rewrite-Z')
+    expect(content).not.toContain('mcp-original-output')
+  }, 20_000)
+
+  it('a non-MCP tool IGNORES updatedMCPToolOutput (MCP-only channel)', async () => {
+    const hooks = postHook('Bash', postHsoJson({ updatedMCPToolOutput: 'should-not-apply' }))
+    const { frames } = await runToolTurn({
+      hooks,
+      toolName: 'Bash',
+      toolInput: { command: 'echo original-output' },
+    })
+    const results = toolResults(frames)
+    expect(results).toHaveLength(1)
+    const content = JSON.stringify(results[0].content)
+    // The MCP-only rewrite never touches a builtin tool's output.
+    expect(content).toContain('original-output')
+    expect(content).not.toContain('should-not-apply')
+  }, 20_000)
+
+  it('updatedToolOutput wins over updatedMCPToolOutput for an MCP tool (CLI precedence)', async () => {
+    const hooks = postHook('mcp__a__ok', postHsoJson({
+      updatedToolOutput: 'direct-wins',
+      updatedMCPToolOutput: 'mcp-loses',
+    }))
+    const { frames } = await runToolTurn({
+      hooks,
+      toolName: 'mcp__a__ok',
+      toolInput: {},
+      mcpServers: { a: { type: 'sdk', instance: okServer() } },
+    })
+    const results = toolResults(frames)
+    expect(results).toHaveLength(1)
+    const content = JSON.stringify(results[0].content)
+    // updatedToolOutput works for ALL tools and takes precedence when present.
+    expect(content).toContain('direct-wins')
+    expect(content).not.toContain('mcp-loses')
   }, 20_000)
 })
 
