@@ -2034,7 +2034,7 @@ export class NativeSession implements NativeSessionCore {
    *  only compacts while the session is idle. A queued user turn cannot slip
    *  in: the log's serialized flush chain makes the pump's own flush resolve
    *  after the compact write, so the turn starts against the swapped history. */
-  async compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void> {
+  async compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void> {
     if (this._closed) throw new Error('session is closed')
     if (this.turnAbort !== null) throw new Error('a turn is in flight')
     if (this.queueDepth > 0) throw new Error('input is queued')
@@ -2045,7 +2045,15 @@ export class NativeSession implements NativeSessionCore {
     this.log.append({
       type: 'session/compact',
       time: Date.parse(opts.timestamp),
-      data: { text: summary, context, uuid: opts.uuid, timestamp: opts.timestamp },
+      data: {
+        text: summary, context, uuid: opts.uuid, timestamp: opts.timestamp,
+        // retainHistory keeps the pre-compact transcript visible above this
+        // boundary while the model history still floors here; summaryUuid is
+        // the summary frame's durable identity so disk replay and the live
+        // frame agree (no duplicate card on restart).
+        retainHistory: true,
+        ...(opts.summaryUuid ? { summaryUuid: opts.summaryUuid } : {}),
+      },
     })
     await this.log.flush()
     this.pdfBudgets.rebuildFromEvents(neutralEventsOf(this.log))

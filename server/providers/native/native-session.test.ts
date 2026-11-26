@@ -5753,7 +5753,7 @@ describe('NativeSession', () => {
     // `compactInPlace` is provider-specific (not on ProviderSessionHandle yet),
     // so reach it through the same narrow cast the internals reads use.
     const compactable = coreOf(session) as unknown as {
-      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
     }
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
@@ -5761,7 +5761,7 @@ describe('NativeSession', () => {
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'first reply')).toBe(true))
     await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
 
-    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z', summaryUuid: 'sum-1' })
 
     const compactEvent = legacyViewOf(logOf(session)).find((e) => e.type === 'session/compact') as unknown as {
       text: string
@@ -5802,17 +5802,48 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('compactInPlace persists retainHistory + summaryUuid and floors model history', async () => {
+    const dir = await tempDir('native-retain-')
+    const provider = providerWithStreamer([textTurn('first reply')], dir)
+    const session = provider.createSession({ id: 'retain', cwd: dir })
+    // Same narrow cast the other compactInPlace tests use, plus the log so the
+    // canonical neutral events can be read through `neutralEventsOf`.
+    const compactable = coreOf(session) as unknown as {
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
+      log: NativeSessionLog
+    }
+    void (async () => { for await (const _ of session.messages) { /* drain */ } })()
+    session.enqueueUserMessage(userMsg('pre-compact turn') as never)
+    await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
+
+    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-26T02:59:46.714Z', summaryUuid: 'sum-1' })
+
+    const events = neutralEventsOf(compactable.log)
+    const compact = events.find((e) => e.type === 'session/compact') as
+      Extract<NativeSessionEvent, { type: 'session/compact' }>
+    expect(compact).toBeDefined()
+    expect(compact.data.retainHistory).toBe(true)
+    expect(compact.data.summaryUuid).toBe('sum-1')
+    expect(compact.data.uuid).toBe('c1')
+    // The model-history floor is unchanged: replay starts at the captured
+    // context + summary, never the pre-compact conversation.
+    const model = historyFromEvents(events)
+    expect(JSON.stringify(model)).not.toContain('pre-compact')
+    expect(JSON.stringify(model)).toContain('SUMMARY')
+    await session.destroy()
+  })
+
   it('reconcile snapshot emits compact boundary + summary as two occurrences with sourceOrdinal', async () => {
     const dir = await tempDir('native-snap-')
     const provider = providerWithStreamer([textTurn('first reply')], dir)
     const session = provider.createSession({ id: 'snap', cwd: dir })
     const compactable = coreOf(session) as unknown as {
-      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
     }
     void (async () => { for await (const _ of session.messages) { /* drain */ } })()
     session.enqueueUserMessage(userMsg('OLD') as never)
     await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
-    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z', summaryUuid: 'sum-1' })
     await session.destroy()
 
     const res = await provider.readHistoryForReconcile!('snap', {})
@@ -5892,14 +5923,14 @@ describe('NativeSession', () => {
     const provider = providerWithStreamer([textTurn('first')], dir)
     const session = provider.createSession({ id: 'compact-resume', cwd: dir })
     const compactable = coreOf(session) as unknown as {
-      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
     }
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
     session.enqueueUserMessage(userMsg('OLD-PROMPT') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'first')).toBe(true))
     await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
-    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z', summaryUuid: 'sum-1' })
     await session.destroy()
 
     const resumed = provider.createSession({ id: 'compact-resume', cwd: dir, resume: 'compact-resume' })
@@ -5929,7 +5960,7 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'race', cwd: dir })
     const internals = coreOf(session) as unknown as {
       log: { flush: () => Promise<void>; events: LogEventLike[] }
-      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
     }
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
@@ -5947,7 +5978,7 @@ describe('NativeSession', () => {
       return gate.then(() => originalFlush())
     }
 
-    const compacting = internals.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+    const compacting = internals.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z', summaryUuid: 'sum-1' })
     // The guard already passed; the message lands while the compact write is
     // still in flight.
     session.enqueueUserMessage(userMsg('next') as never)
