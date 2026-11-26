@@ -9,13 +9,21 @@
 // the recovery path (respawnInPlace) re-binds the callback, not just the
 // initial-create funnel.
 //
+// The capstone cases pin the TOOL-PERMISSION outcomes (not just guidance) of
+// the full plan flow through the real broker: approving an ExitPlanMode
+// proposal mid-turn switches the LIVE mode so the very next Edit is no longer
+// plan-denied and executes in the SAME turn; a model EnterPlanMode mid-turn
+// hard-denies a following Edit; and the user mode-chip entry to plan denies
+// Edit. A plan denial is a tool_result error carrying the broker's plan-gate
+// message (interrupt:false, so the turn continues and the model re-plans).
+//
 // Fixture shape copied from e2e-tools.test.ts (temp-dir SessionStore + custom
 // ProviderRegistry + scripted `_testStream`). Network is never touched: the
 // scripted stream bypasses defaultStream, and auto-title only fires from the
 // HTTP route (never from a direct sm.send), so no fetch/DNS stub is needed.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { __setConfigForTest, config } from '../../config.js'
@@ -234,6 +242,47 @@ async function waitIdle(fx: Fixture, id: string): Promise<void> {
   }, { timeout: 5000 })
 }
 
+/** The broker plan-gate denial message (server/permission-broker.ts). A stable
+ *  substring is enough to distinguish a plan hard-deny from any other error. */
+const PLAN_DENY = 'plan mode is active'
+
+interface CapturedToolResult {
+  tool_use_id: string
+  text: string
+  is_error: boolean
+}
+
+/** Every tool_result block across a request's messages, in order (copied from
+ *  e2e-tools.test.ts — the wire projection groups them into user messages). */
+function toolResultsOf(request: StreamRequest): CapturedToolResult[] {
+  const out: CapturedToolResult[] = []
+  for (const message of request.messages) {
+    if (!Array.isArray(message.content)) continue
+    for (const block of message.content as Array<Record<string, unknown>>) {
+      if (block.type !== 'tool_result') continue
+      const content = Array.isArray(block.content)
+        ? (block.content as Array<{ text?: string }>).map((c) => c.text ?? '').join('\n')
+        : ''
+      out.push({
+        tool_use_id: String(block.tool_use_id),
+        text: content,
+        is_error: block.is_error === true,
+      })
+    }
+  }
+  return out
+}
+
+/** The tool_result for a call id, scanned across every captured round (the
+ *  result lands in the round AFTER the call, so the index is not fixed). */
+function toolResultAcross(requests: StreamRequest[], id: string): CapturedToolResult {
+  for (const req of requests) {
+    const found = toolResultsOf(req).find((r) => r.tool_use_id === id)
+    if (found) return found
+  }
+  throw new Error(`no tool_result for ${id}`)
+}
+
 describe('native plan mode end to end through SessionManager', () => {
   it('registers EnterPlanMode and ExitPlanMode in the main tool surface', async () => {
     const { project, stateDir } = await makeEnv()
@@ -443,6 +492,144 @@ describe('native plan mode end to end through SessionManager', () => {
     fx.scripts.push(textTurn('after recovery'))
     await sendAndWait(fx, id, frames, 'hi after recovery', 2)
     expect(fx.requests.at(-1)!.system).toContain(PLAN_MODE_GUIDANCE)
+    unsubscribe()
+  })
+
+  it('approving ExitPlanMode lets the next Edit run in the SAME turn', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    await writeFile(join(project, 'target.txt'), 'old value\n', 'utf8')
+    const id = await createRawSession(fx, project)
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    // Setup turn (default mode): a complete Read seeds the session read-state
+    // so the later Edit has its required read evidence (assertEditable). Read
+    // prompts in default mode — the broker auto-allows read-only built-ins only
+    // in dontAsk/auto — so approve it through the real broker. The read-state
+    // survives the mode switches below (only clear/compact/resume/fork reset it).
+    fx.scripts.push(
+      toolUseTurn('r0', 'Read', JSON.stringify({ file_path: 'target.txt' })),
+      textTurn('read it'),
+    )
+    await fx.sm.send(id, 'read the file')
+    await vi.waitFor(() => {
+      expect(fx.sm.listPending(id)).toHaveLength(1)
+    }, { timeout: 5000 })
+    await fx.sm.decide(id, fx.sm.listPending(id)[0].id, { behavior: 'allow' })
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    }, { timeout: 5000 })
+    await waitIdle(fx, id)
+
+    // Chip into plan, then the plan turn. The turn-start permission snapshot is
+    // 'plan'; the broker plan gate reads the LIVE mode, so approving the plan
+    // mid-turn releases the plan lock for the very next tool call.
+    await fx.sm.setPermissionMode(id, 'plan')
+    fx.scripts.push(
+      toolUseTurn('x1', 'ExitPlanMode', JSON.stringify({ plan: '# Plan\n\n1. Change the value' })),
+      toolUseTurn('e1', 'Edit', JSON.stringify({ file_path: 'target.txt', old_string: 'old value', new_string: 'new value' })),
+      textTurn('executed'),
+    )
+    await fx.sm.send(id, 'plan then edit')
+    await vi.waitFor(() => {
+      expect(fx.sm.listPending(id)).toHaveLength(1)
+    }, { timeout: 5000 })
+    const planPending = fx.sm.listPending(id)[0]
+    expect(planPending.toolName).toBe('ExitPlanMode')
+    // The ExitPlanMode round still carries plan guidance (mode plan at build).
+    expect(fx.requests.at(-1)!.system).toContain(PLAN_MODE_GUIDANCE)
+
+    // Approve the plan into acceptEdits: decide → setPermissionMode flips the
+    // LIVE mode mid-turn.
+    await fx.sm.decide(id, planPending.id, { behavior: 'allow', planTargetMode: 'acceptEdits' })
+    expect(liveMode(fx, id)).toBe('acceptEdits')
+
+    // The Edit is NOT plan-denied. A hard plan deny emits an error tool_result
+    // and never parks (see the entry-path cases below); instead the Edit raises
+    // a NORMAL permission prompt. The turn-start snapshot is still 'plan', so
+    // the acceptEdits auto-allow branch (which reads the snapshot, not the live
+    // mode) does not fire — only the plan gate reads live mode. Approving the
+    // prompt runs the Edit in this SAME turn.
+    await vi.waitFor(() => {
+      expect(fx.sm.listPending(id)).toHaveLength(1)
+    }, { timeout: 5000 })
+    const editPending = fx.sm.listPending(id)[0]
+    expect(editPending.toolName).toBe('Edit')
+    expect(editPending.toolUseID).toBe('e1')
+    await fx.sm.decide(id, editPending.id, { behavior: 'allow' })
+
+    // Exactly ONE more result frame: the plan turn settles after the Edit runs.
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(2)
+    }, { timeout: 5000 })
+
+    // The Edit executed: a non-error result, no plan-denial text, and the file
+    // actually changed on disk.
+    const editResult = toolResultAcross(fx.requests, 'e1')
+    expect(editResult.is_error).toBe(false)
+    expect(editResult.text).toContain('edited target.txt')
+    expect(editResult.text).not.toContain(PLAN_DENY)
+    expect(await readFile(join(project, 'target.txt'), 'utf8')).toBe('new value\n')
+    // Guidance dropped once the mode left plan mid-turn (every round after the
+    // approval), and no permission is left pending.
+    expect(fx.requests.at(-1)!.system).not.toContain(PLAN_MODE_GUIDANCE)
+    expect(fx.sm.listPending(id)).toEqual([])
+    unsubscribe()
+  })
+
+  it('model EnterPlanMode mid-turn denies a following Edit', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    await writeFile(join(project, 'target.txt'), 'old value\n', 'utf8')
+    const id = await createRawSession(fx, project)
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    expect(liveMode(fx, id)).not.toBe('plan')
+    // Round 1: EnterPlanMode (auto-allowed) flips the LIVE mode to plan through
+    // the host callback. Round 2: Edit — the plan gate reads the live mode and
+    // hard-denies it (interrupt:false, so the turn continues). Round 3: re-plan.
+    fx.scripts.push(
+      toolUseTurn('e1', 'EnterPlanMode', '{}'),
+      toolUseTurn('x1', 'Edit', JSON.stringify({ file_path: 'target.txt', old_string: 'old value', new_string: 'new value' })),
+      textTurn('re-planning'),
+    )
+    await sendAndWait(fx, id, frames, 'enter plan then edit', 1)
+
+    expect(liveMode(fx, id)).toBe('plan')
+    const editResult = toolResultAcross(fx.requests, 'x1')
+    expect(editResult.is_error).toBe(true)
+    expect(editResult.text).toContain(PLAN_DENY)
+    // The Edit body never ran (denied at permission time): the file is untouched.
+    expect(await readFile(join(project, 'target.txt'), 'utf8')).toBe('old value\n')
+    // A hard deny, not a prompt: no plan card / pending was raised for the Edit.
+    expect(fx.sm.listPending(id)).toEqual([])
+    // The Edit round carried plan guidance (the mid-turn entry refreshed it).
+    expect(fx.requests[1].system).toContain(PLAN_MODE_GUIDANCE)
+    unsubscribe()
+  })
+
+  it('user mode-chip entry to plan denies Edit', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    await writeFile(join(project, 'target.txt'), 'old value\n', 'utf8')
+    const id = await createRawSession(fx, project)
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    // The chip path: setPermissionMode('plan') before the turn (no model entry).
+    await fx.sm.setPermissionMode(id, 'plan')
+    expect(liveMode(fx, id)).toBe('plan')
+    fx.scripts.push(
+      toolUseTurn('x1', 'Edit', JSON.stringify({ file_path: 'target.txt', old_string: 'old value', new_string: 'new value' })),
+      textTurn('blocked'),
+    )
+    await sendAndWait(fx, id, frames, 'edit something', 1)
+
+    const editResult = toolResultAcross(fx.requests, 'x1')
+    expect(editResult.is_error).toBe(true)
+    expect(editResult.text).toContain(PLAN_DENY)
+    expect(await readFile(join(project, 'target.txt'), 'utf8')).toBe('old value\n')
+    expect(fx.requests[0].system).toContain(PLAN_MODE_GUIDANCE)
+    expect(fx.sm.listPending(id)).toEqual([])
     unsubscribe()
   })
 })
