@@ -244,15 +244,13 @@ async function scanPlugin(entry: EnabledPluginEntry, seen: Set<string>): Promise
 
 /** CLI-shaped plugin skill discovery (§5.8 scan oracle). Iterates enabled
  *  plugin entries (undefined enabledPlugins = all; [] = none; otherwise key
- *  membership), scans each plugin's skills, and dedups by SKILL.md realpath
- *  across plugins (first wins). Per-plugin/per-skill failures are contained:
- *  warn + omit, never throw the whole pass. */
+ *  membership — filtered by the accessor BEFORE its dir-dedup, mirroring the
+ *  claude provider's getEnabledPluginAbsolutePathsFor), scans each plugin's
+ *  skills, and dedups by SKILL.md realpath across plugins (first wins).
+ *  Per-plugin/per-skill failures are contained: warn + omit, never throw the
+ *  whole pass. */
 export async function listPluginSkills(mpStore: PluginSkillSource, enabledPlugins?: string[]): Promise<SkillRecord[]> {
-  let entries = mpStore.getEnabledPluginEntries()
-  if (enabledPlugins !== undefined) {
-    const allow = new Set(enabledPlugins)
-    entries = entries.filter((e) => allow.has(e.key))
-  }
+  const entries = mpStore.getEnabledPluginEntries(enabledPlugins)
   const out: SkillRecord[] = []
   const seen = new Set<string>()
   for (const entry of entries) {

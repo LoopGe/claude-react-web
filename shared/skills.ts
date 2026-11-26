@@ -155,7 +155,7 @@ export interface SkillRecord {
   argumentHint?: string
   /** Present only for GitHub-installed skills (folder imports have none). */
   source?: SkillSourceInfo
-  /** Owning plugin's catalog name — present only for scope 'plugin'. */
+  /** Owning plugin's manifest name (catalog-name fallback) — present only for scope 'plugin'. */
   plugin?: string
 }
 

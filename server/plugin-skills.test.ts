@@ -3,12 +3,13 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { listPluginSkills } from './plugin-skills.js'
-import type { EnabledPluginEntry } from './mp-store.js'
+import { MpStore, type EnabledPluginEntry } from './mp-store.js'
 import { MAX_SKILL_BYTES } from '../shared/skills.js'
 
 // Scan oracle: CLI §5.8 (docs/research/2026-11-25-native-slash-skill-discovery.md).
-// The stub exposes only getEnabledPluginEntries() — the structural minimum the
-// scanner consumes from MpStore.
+// The stub exposes only getEnabledPluginEntries(keys?) — the structural minimum
+// the scanner consumes from MpStore, including the accessor's key-filter
+// contract (undefined = all, [] = none, else membership BEFORE dir-dedup).
 
 let root: string
 
@@ -45,7 +46,10 @@ async function makePlugin(
 }
 
 function stub(entries: EnabledPluginEntry[]) {
-  return { getEnabledPluginEntries: () => entries }
+  return {
+    getEnabledPluginEntries: (keys?: string[]) =>
+      keys === undefined ? entries : entries.filter((e) => keys.includes(e.key)),
+  }
 }
 
 /** Directory link that needs no privileges on Windows (junction); a plain
@@ -367,5 +371,39 @@ describe('listPluginSkills — enabledPlugins filter', () => {
     expect((await listPluginSkills(store)).map((r) => r.name).sort()).toEqual(['alpha:one', 'beta:two'])
     expect(await listPluginSkills(store, [])).toEqual([])
     expect((await listPluginSkills(store, [a.key])).map((r) => r.name)).toEqual(['alpha:one'])
+  })
+
+  it('subset naming the SECOND of two plugins sharing one dir still surfaces its skills', async () => {
+    // Real MpStore: two enabled plugins resolve to ONE dir (two catalog
+    // entries referencing the same external repo dir). The accessor dedupes
+    // by dir first-wins, so the subset filter must run BEFORE that dedup —
+    // otherwise the entry collapses to a@m and the b@m subset drops it,
+    // diverging from the claude provider's getEnabledPluginAbsolutePathsFor.
+    const dir = resolve(root, 'shared-plugin')
+    await makeSkill(join(dir, 'skills', 'one'))
+    const store = new MpStore({ stateDir: root })
+    await store.load()
+    store.upsert({
+      id: 'm',
+      displayName: 'm',
+      source: { type: 'https', url: 'https://example.com/m.git' },
+      cloneDir: resolve(root, 'mp-clone'),
+      addedAt: 1,
+      lastRefreshedAt: 1,
+      lastSha: 'a'.repeat(40),
+      manifest: {
+        name: 'm',
+        plugins: [
+          { name: 'a', dir },
+          { name: 'b', dir },
+        ],
+      },
+    })
+    store.setEnabled('a', 'm', true)
+    store.setEnabled('b', 'm', true)
+
+    const records = await listPluginSkills(store, ['b@m'])
+    expect(records.map((r) => r.name)).toEqual(['b:one'])
+    expect(records[0]!.plugin).toBe('b')
   })
 })

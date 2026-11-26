@@ -451,6 +451,32 @@ describe('MpStore', () => {
     expect(entries[0].dir).toBe('/abs/shared')
   })
 
+  it('getEnabledPluginEntries applies the key filter BEFORE dir-dedup (subset keeps the shared dir)', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    s.upsert(fakeEntry('m', {
+      manifest: {
+        name: 'fake',
+        plugins: [
+          { name: 'a', dir: '/abs/shared' },
+          { name: 'b', dir: '/abs/shared' },
+        ],
+      },
+    }))
+    s.setEnabled('a', 'm', true)
+    s.setEnabled('b', 'm', true)
+    // A subset naming only the SECOND key must still resolve the shared dir —
+    // filtering after dedup would collapse to a@m and then drop it (the
+    // claude-side oracle getEnabledPluginAbsolutePathsFor filters first).
+    const entries = s.getEnabledPluginEntries(['b@m'])
+    expect(entries).toHaveLength(1)
+    expect(entries[0].key).toBe('b@m')
+    expect(entries[0].dir).toBe('/abs/shared')
+    // undefined = all enabled (first-wins dedup unchanged); [] = none.
+    expect(s.getEnabledPluginEntries().map((e) => e.key)).toEqual(['a@m'])
+    expect(s.getEnabledPluginEntries([])).toEqual([])
+  })
+
   it('snapshot enabledMapFor returns only that marketplace', async () => {
     const s = new MpStore({ stateDir: dir })
     await s.load()

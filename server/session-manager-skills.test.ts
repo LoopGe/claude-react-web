@@ -110,7 +110,10 @@ describe('SessionSkillManager.setSkillOverride', () => {
       dir: pluginDir,
       cloneDir: join(root, 'mp', 'clone'),
     }
-    return { getEnabledPluginEntries: () => [entry] } as unknown as MpStore
+    return {
+      getEnabledPluginEntries: (keys?: string[]) =>
+        keys === undefined || keys.includes(entry.key) ? [entry] : [],
+    } as unknown as MpStore
   }
 
   /** Manager whose provider handle captures the applyFlagSettings map. The

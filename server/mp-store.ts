@@ -461,12 +461,17 @@ export class MpStore extends JsonFileStore<MpEntry> {
    *  {@link getEnabledPluginAbsolutePaths}: git-subdir plugins resolve through
    *  the external clone (skipped silently while it is absent), in-repo plugins
    *  use their parse-time-verified dir, and two plugins resolving to one dir
-   *  collapse to the first entry. */
-  getEnabledPluginEntries(): EnabledPluginEntry[] {
+   *  collapse to the first entry. `keys` narrows the set like
+   *  {@link getEnabledPluginAbsolutePathsFor} (undefined = all enabled,
+   *  [] = none, else membership) — applied BEFORE the dir-dedup, so a subset
+   *  naming the second of two plugins sharing one dir still resolves it. */
+  getEnabledPluginEntries(keys?: string[]): EnabledPluginEntry[] {
+    const wanted = keys === undefined ? undefined : new Set(keys)
     const out: EnabledPluginEntry[] = []
     const seen = new Set<string>()
     for (const [key, on] of this.enabled) {
       if (!on) continue
+      if (wanted && !wanted.has(key)) continue
       const resolved = this.resolveEnabledPlugin(key)
       if (!resolved) continue
       const { marketplaceId, plugin } = resolved

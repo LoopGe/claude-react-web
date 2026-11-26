@@ -152,7 +152,10 @@ describe('listSkills — opt-in plugin merge', () => {
       dir: pluginDir,
       cloneDir: join(root, 'mp', 'clone'),
     }
-    const mpStore = { getEnabledPluginEntries: () => [entry] } as unknown as MpStore
+    const mpStore = {
+      getEnabledPluginEntries: (keys?: string[]) =>
+        keys === undefined || keys.includes(entry.key) ? [entry] : [],
+    } as unknown as MpStore
     const cleanup = async () => {
       if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
       else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
