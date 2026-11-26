@@ -13,8 +13,9 @@
 //     the client reads byte-identical raw fields). Envelope identity comes from
 //     the caller's env.
 //   • projectNativeEventToSdk — LIVE operational output: the exact system/result
-//     subtypes native emits (init / api_retry / informational / task_started /
-//     task_notification / result) plus the top-level prompt_suggestion message.
+//     subtypes native emits (init / api_retry / informational / hook_started /
+//     hook_progress / hook_response / task_started / task_notification / result)
+//     plus the top-level prompt_suggestion message.
 //     These are live-only frames, NOT durable SessionEventMap keys (R6). Durable
 //     session events return null — their SDK-line projection is the history-read
 //     seam (T13).
@@ -37,12 +38,15 @@
 // wire adapter projects them to handle text / PDF for the API request); the
 // handle-text form is re-exported here for the legacy text-only boundary.
 //
-// R6 scope: ONLY native's actual emissions are projected. The ~25 claude-only
-// subtypes (hook_*, plugin_install, memory_recall, elicitation_complete,
-// notification, thinking_tokens, …) are NOT native emissions and have no
-// projection here. prompt_suggestion IS a native emission: the neutral
-// prompt/suggestion OperationalFrame projects to the SDK prompt_suggestion
-// message (live-only — the pump bypasses the history ring on its type alone).
+// R6 scope: ONLY native's actual emissions are projected. The claude-only
+// subtypes (plugin_install, memory_recall, elicitation_complete, notification,
+// thinking_tokens, …) are NOT native emissions and have no projection here.
+// prompt_suggestion IS a native emission: the neutral prompt/suggestion
+// OperationalFrame projects to the SDK prompt_suggestion message (live-only —
+// the pump bypasses the history ring on its type alone). Hook activity IS a
+// native emission too: the neutral hook/run OperationalFrame projects to the
+// SDK system/hook_started|hook_progress|hook_response frames the pump's
+// hookLifecycleMessage already parses (zero pump change).
 
 import { randomUUID } from 'node:crypto'
 import {
@@ -60,6 +64,7 @@ import type {
 } from './types.js'
 import type { SupplementOutcome } from './steering-format.js'
 import type { FileAttachmentRef } from '../../shared/attachments.js'
+import type { HookRunStatus } from '../../shared/hooks.js'
 import type { ImageAttachmentRef, LegacyImageBlock } from '../../shared/image-attachment.js'
 import { freezeMessage, type RequestMessage, type ToolResultMessage } from './native/vocabulary/message.js'
 import { brandString } from './native/vocabulary/brand.js'
@@ -154,7 +159,7 @@ function frameEnvelope(env: NativeFrameEnvelope, type: string): Record<string, u
 }
 
 /** Envelope shared by the enveloped operational events (init / api_retry /
- *  informational / result). Task frames do not use it. */
+ *  informational / result / hook/run). Task frames do not use it. */
 function operationalEnvelope(event: { sessionId: string; uuid: string; parentToolUseId: string | null }, type: string, subtype: string): Record<string, unknown> {
   return {
     type,
@@ -162,6 +167,20 @@ function operationalEnvelope(event: { sessionId: string; uuid: string; parentToo
     session_id: event.sessionId,
     uuid: event.uuid,
     parent_tool_use_id: event.parentToolUseId,
+  }
+}
+
+/** SDK hook_response outcome from the neutral terminal run status. A completed
+ *  event carrying a non-terminal status (started/progress) is a contract
+ *  violation — surfaced loudly rather than fabricated into a success/error. */
+function hookOutcome(status: HookRunStatus): 'success' | 'error' | 'cancelled' {
+  switch (status) {
+    case 'success':
+    case 'error':
+    case 'cancelled':
+      return status
+    default:
+      throw new Error(`native host adapter: completed hook run has non-terminal status "${status}"`)
   }
 }
 
@@ -306,6 +325,31 @@ export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalF
         uuid: event.uuid,
         session_id: event.sessionId,
       } as AgentMessage
+    case 'hook/run': {
+      // The pump's hookLifecycleMessage parses system/hook_started|hook_progress|
+      // hook_response; outcome rides only hook_response and the exit code is the
+      // SDK snake_case exit_code. Optional output fields appear only when present.
+      const { kind, run } = event.event
+      const fields = {
+        hook_id: run.hookId,
+        hook_name: run.hookName,
+        hook_event: run.event,
+        ...(run.stdout !== undefined ? { stdout: run.stdout } : {}),
+        ...(run.stderr !== undefined ? { stderr: run.stderr } : {}),
+        ...(run.output !== undefined ? { output: run.output } : {}),
+        ...(run.exitCode !== undefined ? { exit_code: run.exitCode } : {}),
+      }
+      switch (kind) {
+        case 'started':
+          return { ...operationalEnvelope(event, 'system', 'hook_started'), ...fields } as AgentMessage
+        case 'progress':
+          return { ...operationalEnvelope(event, 'system', 'hook_progress'), ...fields } as AgentMessage
+        case 'completed':
+          return { ...operationalEnvelope(event, 'system', 'hook_response'), ...fields, outcome: hookOutcome(run.status) } as AgentMessage
+        default:
+          return assertNever(kind, 'projectNativeEventToSdk hook/run')
+      }
+    }
     // Durable session events: no live operational projection (history seam owns
     // them). Listed exhaustively so a future SessionEventMap merge forces a
     // deliberate decision via the assertNever below rather than silently null.
@@ -472,6 +516,7 @@ function isOperationalFrame(frame: NativeCoreFrame): frame is OperationalFrame {
     case 'task/notification':
     case 'result':
     case 'prompt/suggestion':
+    case 'hook/run':
       return true
     default:
       return false

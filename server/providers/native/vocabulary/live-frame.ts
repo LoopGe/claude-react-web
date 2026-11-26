@@ -20,6 +20,7 @@ import type { AssistantMessage, ToolResultMessage } from './message.js'
 import type { TokenUsage } from './types.js'
 import type { StreamChunk, RawStreamEvent } from './stream.js'
 import type { ReplayEnvelope } from './source.js'
+import type { HookRuntimeEvent } from '../../../../shared/hooks.js'
 
 /** The neutral live assistant emission: the settled message plus its round
  *  usage and the first-class finish facts. The vocabulary's AssistantMessage
@@ -39,9 +40,9 @@ export interface AssistantFrame {
 }
 
 /** Neutral envelope facts carried inline by the enveloped operational frames
- *  (init / api_retry / informational / result / prompt_suggestion). Task frames
- *  are envelope-less — they carry no session_id/uuid/parent on the SDK frame
- *  either. */
+ *  (init / api_retry / informational / result / prompt_suggestion / hook/run).
+ *  Task frames are envelope-less — they carry no session_id/uuid/parent on the
+ *  SDK frame either. */
 interface OperationalEnvelope {
   sessionId: string
   uuid: string
@@ -88,6 +89,10 @@ export type OperationalFrame =
     } & OperationalEnvelope)
   // Live-only next-prompt prediction (R6: never persisted); parentToolUseId always null — main turn only.
   | ({ type: 'prompt/suggestion'; suggestion: string } & OperationalEnvelope)
+  // Live-only hook activity (R6: never persisted). The host adapter projects it
+  // to the SDK system/hook_started|hook_progress|hook_response frames the pump's
+  // hookLifecycleMessage already parses — zero pump/UI change.
+  | ({ type: 'hook/run'; event: HookRuntimeEvent } & OperationalEnvelope)
 
 /** A conversation frame carrying its sidechain emission context (neutral).
  *  The core stamps `parentToolUseId` at emission — null for the main thread,
