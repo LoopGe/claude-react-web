@@ -113,6 +113,7 @@ import {
   resolveNativeReadTarget,
 } from './file-read.js'
 import { HookEngine, type HookDispatchContext } from './hooks/engine.js'
+import type { HookWake } from './hooks/rewake.js'
 import { runPromptHook } from './hooks/prompt-executor.js'
 import { runAgentHook } from './hooks/agent-executor.js'
 import { runHttpHook } from './hooks/http-executor.js'
@@ -571,6 +572,13 @@ export class NativeSession implements NativeSessionCore {
   private steeringOpen = false
   /** Supplements admitted during the current turn, not yet injected. */
   private supplementQueue: Array<{ uuid: string; text: string }> = []
+  /** T23 (RS §4.4): asyncRewake exit-2 wakes awaiting idle delivery. The
+   *  engine's background completion enqueues here; the pump injects each wake
+   *  as a system turn only when no user input is pending — a mid-turn wake
+   *  waits for the active turn to settle, never corrupts it. Live-only (the
+   *  CLI notification queue is likewise in-memory); the injected feedback
+   *  message itself is durable like any turn message. */
+  private readonly hookRewakes: HookWake[] = []
   private lastUsage: Usage = { input_tokens: 0, output_tokens: 0 }
   /** The wire shape of the last MAIN-thread API request, captured per round in
    *  the turn's stream lambda (last round wins). The turn-end suggestion fork
@@ -713,6 +721,9 @@ export class NativeSession implements NativeSessionCore {
       // T22: the materialized artifact path (null until the first successful
       // materialization, or after a failed one → the agent no-transcript clause).
       transcriptPath: () => this.transcriptArtifact ?? undefined,
+      // T23 (RS §4.4): an asyncRewake exit-2 wake joins the idle-injection
+      // queue — delivered as a system turn when the session is next idle.
+      onWake: (wake) => this.enqueueHookWake(wake),
     })
     // Built after `this.model` is bound: the model getter must observe a live
     // switch, not the spawn-time value.
@@ -1859,15 +1870,21 @@ export class NativeSession implements NativeSessionCore {
   }
 
   private async pumpLoop(): Promise<void> {
-    while (!this._closed && (this.pendingDurableInitial !== null || this.input.length > 0)) {
+    while (!this._closed && (this.pendingDurableInitial !== null || this.input.length > 0 || this.hookRewakes.length > 0)) {
       // A new turn supersedes any in-flight suggestion. This covers the drain
       // path (input queued mid-turn, consumed here without a fresh enqueue) as
       // well as the ordinary next-message path; enqueue aborts too, but a fork
       // spawned after that enqueue (during turn/end finalization) is caught here.
       this.suggestionAbort?.abort()
-      const pending = this.pendingDurableInitial ?? { message: this.input.shift() as RequestMessage }
-      this.pendingDurableInitial = pending
-      const next = pending.message
+      // T23 (RS §4.4): a wake turn runs only when no user input is pending —
+      // user turns always take priority, and a parked durable head keeps its
+      // retry precedence. A mid-turn wake waits here for the next idle window.
+      const wake = this.pendingDurableInitial === null && this.input.length === 0
+        ? this.hookRewakes.shift() ?? null
+        : null
+      // The user-turn pending head (null on a wake turn — a wake has no host
+      // prompt to park). Assigned in the user branch below; the catch reads it.
+      let pending: PendingDurableInitial | null = null
       // Fresh per-turn signal, armed BEFORE the persistence await: interrupt()
       // kills THIS turn only, and must stay responsive while the consumed
       // turn's write is in flight (the session survives for the next message).
@@ -1907,195 +1924,240 @@ export class NativeSession implements NativeSessionCore {
         // resolved promise on every later turn — no per-turn cost.
         await this.sessionStartInit
         let turnSkillView: NativeSkillInvocationView | undefined
-        let invocation: { name: string; body: string } | null = null
-        let skillError: unknown
-        try {
-          // Skill discovery is awaited per turn, not at spawn: a slow disk
-          // never delays session creation, and `skillsReady` tracks the LATEST
-          // reload pass, so a manual reload supersedes the construction snapshot.
+        if (wake !== null) {
+          // T23 wake turn (RS §4.4): the hook feedback is a system injection,
+          // not a user prompt — no UserPromptSubmit dispatch (the wake must not
+          // re-feed the prompt hooks), no host pairing (receivedAt / consume /
+          // persistence callbacks), no skill invocation. The feedback message
+          // is durable like any turn message so resume/replay rebuilds the same
+          // conversation. The host accounts the turn through the pump's
+          // unaccounted-turn assistant catch-all, exactly like a CLI-driven
+          // task-notification continuation.
           await this.skillsReady
-          // Freeze the freshly discovered cache BEFORE resolving the command.
-          // Invocation, available_skills and the Skill tool now share one view.
           turnSkillView = this.skills.snapshot(turnSkillPolicy)
-          invocation = skillInvocationForTurn(next.content, turnSkillView)
-        } catch (err) {
-          skillError = err
-        }
-
-        // UserPromptSubmit seam (RS §3): dispatch BEFORE the prompt joins the
-        // conversation. The hook sees the raw prompt text; `source` is 'sdk'
-        // (RS §9). exit-2 / block erases the prompt from native's OWN log only
-        // (the durable append below is skipped) — the host bubble stays, since
-        // the manager broadcast + seq-stored it before the provider saw it.
-        const currentTitle = this.currentSessionTitle()
-        const promptDecision = await this.dispatchHook('UserPromptSubmit', {
-          session_id: this.opts.id,
-          cwd: this.opts.cwd,
-          hook_event_name: 'UserPromptSubmit',
-          prompt: promptTextOf(next.content),
-          source: 'sdk',
-          ...(currentTitle !== undefined ? { session_title: currentTitle } : {}),
-        }, { signal: turnSignal, hasContext: true })
-        // The dispatch awaited hook subprocesses; re-check the withdrawal guards
-        // before any terminal ack (a drain during the await already fired 'failed').
-        if (this._closed) throw new Error('session destroyed before persistence')
-        if (this.pendingDurableInitial !== pending) {
-          throw new Error('initial message was withdrawn before persistence')
-        }
-        if (promptDecision.sessionTitle !== undefined) {
-          await this.log.appendDurable({ type: 'session/title', time: Date.now(), data: { title: promptDecision.sessionTitle } })
-          if (this._closed) throw new Error('session destroyed before persistence')
-          if (this.pendingDurableInitial !== pending) {
-            throw new Error('initial message was withdrawn before persistence')
-          }
-        }
-        if (promptDecision.action === 'block') {
-          // Blocked: skip the durable append (erase from native log). The prompt
-          // never joins the log, so release any PDF reservations it holds — a
-          // parked head can carry them from a prior failed persistence attempt
-          // (durable retry re-dispatches the hook with the SAME pending), and
-          // discarding pending without releasing would leak them in pdfBudgets
-          // until compact/resume. Same release as the suppress branch / drainQueued.
-          for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.release(reservation)
-          pending.pdfReservations = []
-          // The host bubble still settles — fire the consumption ack + a result
-          // frame. persistence('appended') is the adapter's pairing-retention
-          // signal (consumption follows) and releases the attachment send lease;
-          // the prompt's absence from the native v3 log is the erase, orthogonal
-          // to the host's own durable copy. The block reason is user-only (RS §3).
-          this.onUserMessagePersistence?.(next, 'appended')
-          this.pendingDurableInitial = null
-          this.onUserMessageConsumed?.(next)
-          this.receivedAt.delete(next.id!)
-          const reason = promptDecision.block?.reason ?? ''
-          this.output.push({
-            type: 'result',
-            sessionId: this.opts.id,
-            uuid: this.ctx.uuid(),
-            parentToolUseId: this.ctx.parentToolUseId ?? null,
-            result: reason.trim() !== '' ? reason : 'UserPromptSubmit hook blocked the prompt.',
-            usage: neutralUsageOf(this.lastUsage),
-            numTurns: 0,
-            durationMs: 0,
-            isError: true,
-            fastMode: this.fastMode,
-          })
-          // Exactly one turn/end per turn; the shared post-try emission is
-          // skipped by the continue, so emit it here (a flush failure logs,
-          // never lands in the catch as a second terminal frame).
-          try {
-            this.log.append({ type: 'turn/end', time: 0, data: { reason: 'error' } })
-            await this.log.flush()
-          } catch (err) {
-            log.warn(`[${this.opts.id}] failed to persist turn/end:`, err)
-          }
-          continue
-        }
-        const suppressPrompt = promptDecision.suppressOriginalPrompt === true
-        const promptContext = promptDecision.additionalContext.filter((context) => context.trim() !== '')
-
-        // Persist the raw prompt before consumption is acknowledged. A v1 log
-        // upgrades before its first structured occurrence; a failed migration
-        // or raw append leaves `pendingDurableInitial` withdrawable and pauses
-        // the FIFO so later input cannot overtake it.
-        const timestamp = new Date(this.receivedAt.get(next.id!)!).toISOString()
-        if (!suppressPrompt) {
-          if (!pending.persisted) {
-            // The neutral user content blocks are SDK-compatible (text / image /
-            // structured file with the full resolved attachment); the v1/v2 log
-            // stores them verbatim. PDF model forms are assigned once here at the
-            // transactional budget boundary (T11 owns the neutral v3 form).
-            const normalized = { role: 'user' as const, content: next.content as unknown[] }
-            const assigned = assignPdfModelForms(
-              normalized.content,
-              this.pdfBudgets,
-              this.opts.ports.config.nativeAttachmentFidelity && this.opts.ports.config.nativePdfDocuments,
-            )
-            pending.persisted = { ...normalized, content: assigned.content }
-            pending.pdfReservations = assigned.reservations
-          }
-          const persisted = pending.persisted
-          if (this._closed) throw new Error('session destroyed before persistence')
-          if (this.pendingDurableInitial !== pending) {
-            throw new Error('initial message was withdrawn before persistence')
-          }
-          if (containsStructuredFile(persisted.content)) await this.log.migrateToV2()
-          if (this._closed) throw new Error('session destroyed before persistence')
-          if (this.pendingDurableInitial !== pending) {
-            throw new Error('initial message was withdrawn before persistence')
-          }
-          // The persisted content is already neutral (adapter-projected input,
-          // PDF model forms assigned); wrap it as an identified user message for
-          // the turn loop — no SDK→neutral bridge (T13).
-          initialMessages = [createUserMessage({ content: persisted.content as ContentBlock[], source: { kind: 'user' } })]
+          const feedback = createUserMessage({ content: [{ type: 'text', text: wake.body }], source: { kind: 'user' } })
+          // The SessionStart seed/context lead the turn's messages exactly as
+          // on a user turn (a wake can be the session's first turn).
+          initialMessages = [...this.sessionStartTurnMessages(), feedback]
+          appendedInitialMessages = [...initialMessages]
+          this.pendingSessionStartSeed = null
+          this.pendingSessionStartContext = []
           this.log.append({
             type: 'user/message',
-            time: Date.parse(timestamp),
+            time: Date.now(),
             parentToolUseId: null,
             data: {
               role: 'user',
-              id: brandString<'MessageId'>(next.id!),
-              content: persisted.content as ContentBlock[],
+              id: feedback.id,
+              content: feedback.content,
               source: { kind: 'user' },
             },
           })
-          for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.confirm(reservation)
-          pending.pdfReservations = []
           rawAppended = true
-          this.syncAttachmentReferences()
+          this.steeringOpen = true
+          await this.log.flush()
+          // The wake summary is the user-visible one-liner (RS §4.4).
+          this.output.push({
+            type: 'informational',
+            text: wake.summary,
+            sessionId: this.opts.id,
+            uuid: this.ctx.uuid(),
+            parentToolUseId: null,
+          })
         } else {
-          // suppressOriginalPrompt (RS §3): the original prompt does not join
-          // native's conversation (log or model history) — the hook context
-          // replaces it. Release any PDF reservations the prompt held.
+          pending = this.pendingDurableInitial ?? { message: this.input.shift() as RequestMessage }
+          this.pendingDurableInitial = pending
+          const next = pending.message
+          let invocation: { name: string; body: string } | null = null
+          let skillError: unknown
+          try {
+            // Skill discovery is awaited per turn, not at spawn: a slow disk
+            // never delays session creation, and `skillsReady` tracks the LATEST
+            // reload pass, so a manual reload supersedes the construction snapshot.
+            await this.skillsReady
+            // Freeze the freshly discovered cache BEFORE resolving the command.
+            // Invocation, available_skills and the Skill tool now share one view.
+            turnSkillView = this.skills.snapshot(turnSkillPolicy)
+            invocation = skillInvocationForTurn(next.content, turnSkillView)
+          } catch (err) {
+            skillError = err
+          }
+
+          // UserPromptSubmit seam (RS §3): dispatch BEFORE the prompt joins the
+          // conversation. The hook sees the raw prompt text; `source` is 'sdk'
+          // (RS §9). exit-2 / block erases the prompt from native's OWN log only
+          // (the durable append below is skipped) — the host bubble stays, since
+          // the manager broadcast + seq-stored it before the provider saw it.
+          const currentTitle = this.currentSessionTitle()
+          const promptDecision = await this.dispatchHook('UserPromptSubmit', {
+            session_id: this.opts.id,
+            cwd: this.opts.cwd,
+            hook_event_name: 'UserPromptSubmit',
+            prompt: promptTextOf(next.content),
+            source: 'sdk',
+            ...(currentTitle !== undefined ? { session_title: currentTitle } : {}),
+          }, { signal: turnSignal, hasContext: true })
+          // The dispatch awaited hook subprocesses; re-check the withdrawal guards
+          // before any terminal ack (a drain during the await already fired 'failed').
           if (this._closed) throw new Error('session destroyed before persistence')
           if (this.pendingDurableInitial !== pending) {
             throw new Error('initial message was withdrawn before persistence')
           }
-          for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.release(reservation)
-          pending.pdfReservations = []
+          if (promptDecision.sessionTitle !== undefined) {
+            await this.log.appendDurable({ type: 'session/title', time: Date.now(), data: { title: promptDecision.sessionTitle } })
+            if (this._closed) throw new Error('session destroyed before persistence')
+            if (this.pendingDurableInitial !== pending) {
+              throw new Error('initial message was withdrawn before persistence')
+            }
+          }
+          if (promptDecision.action === 'block') {
+            // Blocked: skip the durable append (erase from native log). The prompt
+            // never joins the log, so release any PDF reservations it holds — a
+            // parked head can carry them from a prior failed persistence attempt
+            // (durable retry re-dispatches the hook with the SAME pending), and
+            // discarding pending without releasing would leak them in pdfBudgets
+            // until compact/resume. Same release as the suppress branch / drainQueued.
+            for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.release(reservation)
+            pending.pdfReservations = []
+            // The host bubble still settles — fire the consumption ack + a result
+            // frame. persistence('appended') is the adapter's pairing-retention
+            // signal (consumption follows) and releases the attachment send lease;
+            // the prompt's absence from the native v3 log is the erase, orthogonal
+            // to the host's own durable copy. The block reason is user-only (RS §3).
+            this.onUserMessagePersistence?.(next, 'appended')
+            this.pendingDurableInitial = null
+            this.onUserMessageConsumed?.(next)
+            this.receivedAt.delete(next.id!)
+            const reason = promptDecision.block?.reason ?? ''
+            this.output.push({
+              type: 'result',
+              sessionId: this.opts.id,
+              uuid: this.ctx.uuid(),
+              parentToolUseId: this.ctx.parentToolUseId ?? null,
+              result: reason.trim() !== '' ? reason : 'UserPromptSubmit hook blocked the prompt.',
+              usage: neutralUsageOf(this.lastUsage),
+              numTurns: 0,
+              durationMs: 0,
+              isError: true,
+              fastMode: this.fastMode,
+            })
+            // Exactly one turn/end per turn; the shared post-try emission is
+            // skipped by the continue, so emit it here (a flush failure logs,
+            // never lands in the catch as a second terminal frame).
+            try {
+              this.log.append({ type: 'turn/end', time: 0, data: { reason: 'error' } })
+              await this.log.flush()
+            } catch (err) {
+              log.warn(`[${this.opts.id}] failed to persist turn/end:`, err)
+            }
+            continue
+          }
+          const suppressPrompt = promptDecision.suppressOriginalPrompt === true
+          const promptContext = promptDecision.additionalContext.filter((context) => context.trim() !== '')
+
+          // Persist the raw prompt before consumption is acknowledged. A v1 log
+          // upgrades before its first structured occurrence; a failed migration
+          // or raw append leaves `pendingDurableInitial` withdrawable and pauses
+          // the FIFO so later input cannot overtake it.
+          const timestamp = new Date(this.receivedAt.get(next.id!)!).toISOString()
+          if (!suppressPrompt) {
+            if (!pending.persisted) {
+              // The neutral user content blocks are SDK-compatible (text / image /
+              // structured file with the full resolved attachment); the v1/v2 log
+              // stores them verbatim. PDF model forms are assigned once here at the
+              // transactional budget boundary (T11 owns the neutral v3 form).
+              const normalized = { role: 'user' as const, content: next.content as unknown[] }
+              const assigned = assignPdfModelForms(
+                normalized.content,
+                this.pdfBudgets,
+                this.opts.ports.config.nativeAttachmentFidelity && this.opts.ports.config.nativePdfDocuments,
+              )
+              pending.persisted = { ...normalized, content: assigned.content }
+              pending.pdfReservations = assigned.reservations
+            }
+            const persisted = pending.persisted
+            if (this._closed) throw new Error('session destroyed before persistence')
+            if (this.pendingDurableInitial !== pending) {
+              throw new Error('initial message was withdrawn before persistence')
+            }
+            if (containsStructuredFile(persisted.content)) await this.log.migrateToV2()
+            if (this._closed) throw new Error('session destroyed before persistence')
+            if (this.pendingDurableInitial !== pending) {
+              throw new Error('initial message was withdrawn before persistence')
+            }
+            // The persisted content is already neutral (adapter-projected input,
+            // PDF model forms assigned); wrap it as an identified user message for
+            // the turn loop — no SDK→neutral bridge (T13).
+            initialMessages = [createUserMessage({ content: persisted.content as ContentBlock[], source: { kind: 'user' } })]
+            this.log.append({
+              type: 'user/message',
+              time: Date.parse(timestamp),
+              parentToolUseId: null,
+              data: {
+                role: 'user',
+                id: brandString<'MessageId'>(next.id!),
+                content: persisted.content as ContentBlock[],
+                source: { kind: 'user' },
+              },
+            })
+            for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.confirm(reservation)
+            pending.pdfReservations = []
+            rawAppended = true
+            this.syncAttachmentReferences()
+          } else {
+            // suppressOriginalPrompt (RS §3): the original prompt does not join
+            // native's conversation (log or model history) — the hook context
+            // replaces it. Release any PDF reservations the prompt held.
+            if (this._closed) throw new Error('session destroyed before persistence')
+            if (this.pendingDurableInitial !== pending) {
+              throw new Error('initial message was withdrawn before persistence')
+            }
+            for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.release(reservation)
+            pending.pdfReservations = []
+          }
+          this.onUserMessagePersistence?.(next, 'appended')
+          // The SessionStart seed + context lead the turn's messages — before
+          // the prompt and its UserPromptSubmit context. Read-only here: a
+          // pre-append failure retries this same prompt and must re-read the
+          // same pending; the pending is cleared at the no-return point below.
+          initialMessages.unshift(...this.sessionStartTurnMessages())
+          // UserPromptSubmit additionalContext joins the turn (RS §3). Live model
+          // history only — like the tool/Stop seam context it is not persisted to
+          // the log, so it does not survive resume/replay (a known parity gap).
+          for (const context of promptContext) {
+            initialMessages.push(createUserMessage({ content: [{ type: 'text', text: context }], source: { kind: 'user' } }))
+          }
+          appendedInitialMessages = [...initialMessages]
+          // No-return point: the raw append succeeded (or the prompt was
+          // suppressed), so this prompt is never retried — consume the
+          // SessionStart pending exactly once. A later failure restores
+          // appendedInitialMessages (which already carry the seed/context) into
+          // history, so clearing here is what prevents a double injection.
+          this.pendingSessionStartSeed = null
+          this.pendingSessionStartContext = []
+          if (invocation && !suppressPrompt) {
+            const instruction = createUserMessage({ content: [{ type: 'text', text: invocation.body }], source: { kind: 'user' } })
+            initialMessages.push(instruction)
+            this.log.append({
+              type: 'session/skill',
+              time: Date.parse(timestamp),
+              data: { name: invocation.name, body: invocation.body, timestamp },
+            })
+            appendedInitialMessages.push(instruction)
+          }
+          this.pendingDurableInitial = null
+          this.onUserMessageConsumed?.(next)
+          // Terminal: the durable timestamp is written and the consume ack fired,
+          // so the arrival entry is dead. Delete it here (drainQueued deletes its
+          // own) or the strong Map grows one entry per turn for the session
+          // lifetime — the legacy WeakMap<AgentUserMessage> released on GC.
+          this.receivedAt.delete(next.id!)
+          // The prompt is now durable in the writer's event stream, so steering
+          // admission may open. It closes when the manager settles the turn.
+          this.steeringOpen = true
+          await this.log.flush()
+          if (skillError !== undefined) throw skillError
         }
-        this.onUserMessagePersistence?.(next, 'appended')
-        // The SessionStart seed + context lead the turn's messages — before
-        // the prompt and its UserPromptSubmit context. Read-only here: a
-        // pre-append failure retries this same prompt and must re-read the
-        // same pending; the pending is cleared at the no-return point below.
-        initialMessages.unshift(...this.sessionStartTurnMessages())
-        // UserPromptSubmit additionalContext joins the turn (RS §3). Live model
-        // history only — like the tool/Stop seam context it is not persisted to
-        // the log, so it does not survive resume/replay (a known parity gap).
-        for (const context of promptContext) {
-          initialMessages.push(createUserMessage({ content: [{ type: 'text', text: context }], source: { kind: 'user' } }))
-        }
-        appendedInitialMessages = [...initialMessages]
-        // No-return point: the raw append succeeded (or the prompt was
-        // suppressed), so this prompt is never retried — consume the
-        // SessionStart pending exactly once. A later failure restores
-        // appendedInitialMessages (which already carry the seed/context) into
-        // history, so clearing here is what prevents a double injection.
-        this.pendingSessionStartSeed = null
-        this.pendingSessionStartContext = []
-        if (invocation && !suppressPrompt) {
-          const instruction = createUserMessage({ content: [{ type: 'text', text: invocation.body }], source: { kind: 'user' } })
-          initialMessages.push(instruction)
-          this.log.append({
-            type: 'session/skill',
-            time: Date.parse(timestamp),
-            data: { name: invocation.name, body: invocation.body, timestamp },
-          })
-          appendedInitialMessages.push(instruction)
-        }
-        this.pendingDurableInitial = null
-        this.onUserMessageConsumed?.(next)
-        // Terminal: the durable timestamp is written and the consume ack fired,
-        // so the arrival entry is dead. Delete it here (drainQueued deletes its
-        // own) or the strong Map grows one entry per turn for the session
-        // lifetime — the legacy WeakMap<AgentUserMessage> released on GC.
-        this.receivedAt.delete(next.id!)
-        // The prompt is now durable in the writer's event stream, so steering
-        // admission may open. It closes when the manager settles the turn.
-        this.steeringOpen = true
-        await this.log.flush()
-        if (skillError !== undefined) throw skillError
         // MCP discovery is awaited per turn, not at spawn: a slow server never
         // delays session creation, and a mid-turn replace/toggle only lands
         // on the next turn (the turn below runs on this snapshot).
@@ -2158,6 +2220,10 @@ export class NativeSession implements NativeSessionCore {
             fastModeState: () => (this.fastMode ? 'on' : 'off'),
             drainSupplement: () => this.injectSupplements(),
             onInitialMessagesOwned: () => { initialMessagesOwned = true },
+            // T23 (RS §4.4): the wake turn IS stop-hook feedback — its first
+            // Stop dispatch carries stop_hook_active:true so a well-behaved
+            // asyncRewake Stop hook terminates instead of re-waking forever.
+            initialStopHookActive: wake?.stopHookActive,
           },
           this.ctx,
           this.history,
@@ -2184,17 +2250,21 @@ export class NativeSession implements NativeSessionCore {
         // restore exactly the appended prefix (raw plus any appended skill),
         // unless runTurn already took ownership of that same prefix.
         if (!initialMessagesOwned) this.history.push(...appendedInitialMessages)
-        if (!rawAppended && this.pendingDurableInitial === pending) {
-          pauseForDurableRetry = true
-          pauseEnqueueGeneration = this.enqueueGeneration
-          // Arm the pause signal before the error result frame is pushed below,
-          // so a retry send dispatched while turn/end finalization is still in
-          // flight already reads the pause and takes the synchronous path.
-          this.durableRetryPaused = true
-        } else if (rawAppended && this.pendingDurableInitial === pending) {
-          // A skill append can fail after the raw append. Never retry the raw
-          // event into a duplicate; the restored history matches disk exactly.
-          this.pendingDurableInitial = null
+        // The durable-retry pause is a USER-prompt contract (a parked head
+        // retried by a fresh enqueue); a wake turn has no host prompt to park.
+        if (pending !== null) {
+          if (!rawAppended && this.pendingDurableInitial === pending) {
+            pauseForDurableRetry = true
+            pauseEnqueueGeneration = this.enqueueGeneration
+            // Arm the pause signal before the error result frame is pushed below,
+            // so a retry send dispatched while turn/end finalization is still in
+            // flight already reads the pause and takes the synchronous path.
+            this.durableRetryPaused = true
+          } else if (rawAppended && this.pendingDurableInitial === pending) {
+            // A skill append can fail after the raw append. Never retry the raw
+            // event into a duplicate; the restored history matches disk exactly.
+            this.pendingDurableInitial = null
+          }
         }
         // The assistant message may already be in `history` with unanswered
         // tool calls (the failure can land at the pre-tool barrier); close
@@ -2307,12 +2377,35 @@ export class NativeSession implements NativeSessionCore {
     this.receivedAt.set(message.id!, Date.now())
     this.enqueueGeneration++
     this.input.push(message)
-    if (!this.pumping) {
-      this.pumping = true
-      void this.pumpLoop().finally(() => {
-        this.pumping = false
-      })
-    }
+    this.startPump()
+  }
+
+  /** T23 (RS §4.4): an asyncRewake exit-2 wake joins the idle-injection queue.
+   *  When the session is idle the pump starts and delivers it as a system turn;
+   *  mid-turn (or behind queued user input / a parked durable head) it waits —
+   *  the pump's loop condition picks it up at the next idle window. A wake is
+   *  NOT a user enqueue: it never releases a durable-retry pause. */
+  private enqueueHookWake(wake: HookWake): void {
+    if (this._closed) return
+    this.hookRewakes.push(wake)
+    if (this.pendingDurableInitial === null) this.startPump()
+  }
+
+  /** The single pump-start point (user enqueue + wake injection). The finally
+   *  re-check closes the exit race: work arriving between the loop's exit
+   *  condition and the pumping=false microtask must not strand — a wake has
+   *  no host resend to recover it. The durable-retry pause is exempt: its
+   *  parked head waits for a direct enqueue, never an auto-restart. */
+  private startPump(): void {
+    if (this.pumping) return
+    this.pumping = true
+    void this.pumpLoop().finally(() => {
+      this.pumping = false
+      if (!this._closed && !this.durableRetryPaused
+        && (this.pendingDurableInitial !== null || this.input.length > 0 || this.hookRewakes.length > 0)) {
+        this.startPump()
+      }
+    })
   }
 
   /** Compact-seed path (SessionManager.seedCompactSummary): the message must

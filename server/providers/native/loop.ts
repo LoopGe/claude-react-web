@@ -115,6 +115,12 @@ export interface LoopDeps {
    *  The session uses this to distinguish pre-run failures (where its catch
    *  must restore them) from failures after the loop took ownership. */
   onInitialMessagesOwned?: () => void
+  /** Seed the turn's Stop-guard state (RS §4.4): an asyncRewake wake turn IS
+   *  stop-hook feedback (the CLI notification's stopHookActive:true fact), so
+   *  its FIRST Stop dispatch carries stop_hook_active:true — a well-behaved
+   *  rewake Stop hook checks it and terminates instead of re-waking forever.
+   *  Absent/false = an ordinary user turn (fresh guard). */
+  initialStopHookActive?: boolean
 }
 
 export interface TurnResult {
@@ -175,7 +181,8 @@ export async function runTurn(
   // continuation this turn (the next Stop input's stop_hook_active) and the
   // running count of forced continuations (the block cap). A new user prompt
   // starts a fresh runTurn, so both reset — matching the CLI's per-query guards.
-  let stopHookActive = false
+  // A wake turn seeds the guard true (RS §4.4 stopHookActive notification fact).
+  let stopHookActive = deps.initialStopHookActive === true
   let stopBlockCount = 0
   const initialMessages = Array.isArray(turnInput) ? turnInput : [turnInput]
   history.push(...initialMessages)

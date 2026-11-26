@@ -8,9 +8,13 @@
 // inert (settings-shaped hooks have no removal path, RS §4.3); `if` is a
 // permission-rule filter evaluated per hook AFTER the matcher on the five tool
 // events, and a hook carrying `if` on any other event is skipped + logged
-// (RS §4.2). The per-event ACTION mapping of a decision (does exit-2 block
-// this event, deny-vs-erase-vs-continue, rewrite merge) belongs to the calling
-// seams; the engine returns the merged decision facts.
+// (RS §4.2). Async command hooks (async / asyncRewake, RS §4.4) dispatch to
+// the background scheduler and return an immediate merge-no-op ack so the
+// action proceeds; an asyncRewake exit-2 completion enqueues a wake through
+// `onWake` (the session delivers it as a system turn when next idle). The
+// per-event ACTION mapping of a decision (does exit-2 block this event,
+// deny-vs-erase-vs-continue, rewrite merge) belongs to the calling seams; the
+// engine returns the merged decision facts.
 import { randomUUID } from 'node:crypto'
 import { createLogger } from '../../../log.js'
 import { isPlainObject, isStringArray } from '../../../../shared/type-guards.js'
@@ -32,6 +36,7 @@ import { matches, matcherTarget } from './matcher.js'
 import { applyOnFailure, type HookExecResult } from './output.js'
 import { runCommandHook, type HookExecContext } from './command-executor.js'
 import type { HookModelOptions } from './model.js'
+import { asyncDispatchResult, HookRewakeScheduler, isAsyncHook, type HookWake } from './rewake.js'
 import type { HookDecision, HookSource } from './types.js'
 
 const log = createLogger('native-hooks')
@@ -111,6 +116,10 @@ export interface HookEngineOptions {
    *  here; undefined when no artifact is available (the agent evaluator then
    *  uses the CLI's no-transcript clause). */
   transcriptPath?: () => string | undefined
+  /** T23: the asyncRewake exit-2 wake sink (RS §4.4). The session wires it to
+   *  its idle-injection queue; absent (standalone engine / unit tests) a wake
+   *  is logged and dropped by the scheduler. */
+  onWake?: (wake: HookWake) => void
 }
 
 /** The default command executor: the real runner (T4). The command slot is only
@@ -377,9 +386,12 @@ function mergeDecisions(event: HookEvent, results: readonly HookExecResult[]): H
 
 export class HookEngine {
   private readonly executors: Partial<Record<HookType, HookExecutor>>
+  /** T23: background execution + asyncRewake wake construction (RS §4.4). */
+  private readonly rewake: HookRewakeScheduler
 
   constructor(private readonly opts: HookEngineOptions) {
     this.executors = { command: commandExecutor, ...opts.executors }
+    this.rewake = new HookRewakeScheduler(opts.onWake)
   }
 
   /** Whether any configured source contributes a non-empty hook group for the
@@ -494,6 +506,21 @@ export class HookEngine {
       ...(ctx.transcript !== undefined ? { transcript: ctx.transcript } : {}),
     }
     const executor = this.executors[hook.type]
+    // T23 (RS §4.4): a config-async command hook runs in the background — the
+    // dispatch returns the immediate {async:true, asyncTimeout} ack (a merge
+    // no-op) so the current action proceeds. The background completion emits
+    // the completed activity and, for asyncRewake exit-2, enqueues the wake.
+    if (isAsyncHook(hook)) {
+      this.rewake.schedule({
+        hook,
+        hookName: name,
+        execute: () => executor
+          ? executor(hook, input, execCtx)
+          : Promise.resolve({ outcome: 'error', stdout: '', stderr: `no executor registered for hook type "${hook.type}"` }),
+        onComplete: (result) => this.emitCompleted(hookId, name, event, startedAt, result, parentToolUseId),
+      })
+      return asyncDispatchResult(hook)
+    }
     let result: HookExecResult
     if (executor) {
       result = await executor(hook, input, execCtx)
@@ -505,7 +532,27 @@ export class HookEngine {
     }
     // Idempotent for executors that already applied it (command runner does).
     result = applyOnFailure(hook, result)
+    this.emitCompleted(hookId, name, event, startedAt, result, parentToolUseId)
+    // Runtime {async:true} conversion (RS §2.2 KFr / §4.4): the command settled
+    // but declared itself async — its decision is background-owned (fire-and-
+    // forget) and must not act on the current event. The activity record above
+    // carries the REAL execution facts; the merge sees a no-op.
+    if (result.async === true) {
+      return { outcome: 'success', stdout: '', stderr: '', async: true }
+    }
+    return result
+  }
 
+  /** The completed activity record for one settled execution — shared by the
+   *  sync path and the background completion (T23). */
+  private emitCompleted(
+    hookId: string,
+    name: string,
+    event: HookEvent,
+    startedAt: number,
+    result: HookExecResult,
+    parentToolUseId: string | null,
+  ): void {
     const run: HookRunRecord = {
       id: hookId,
       hookId,
@@ -524,6 +571,5 @@ export class HookEngine {
     const output = result.outcome === 'success' ? result.stdout : result.stderr || result.stdout
     if (output) run.output = output
     this.opts.emit({ kind: 'completed', run }, parentToolUseId)
-    return result
   }
 }
