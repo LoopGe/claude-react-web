@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { NativeSessionLog, loadNativeSessionLogSync } from './log.js'
 import { nativeHistoryCache } from './cache.js'
-import { readNativeHistoryEntries, readNativeHistoryPage } from './reader.js'
+import { readNativeHistoryEntries, readNativeHistoryPage, readNativeHistorySnapshot } from './reader.js'
 import { historyFromEvents } from './replay.js'
 import { migrateEventToV3 } from './migration.js'
 import { isSidechainEvent, projectNeutralEventToLegacy } from './format.js'
@@ -315,6 +315,103 @@ describe('native history reader', () => {
 
     const page = await readNativeHistoryPage(dir, 's1', transcriptPort, { limit: 10 })
     expect(pageText(page)).toContain('hello')
+  })
+})
+
+describe('native history reader — retain compacts', () => {
+  /** A retain compact must be seeded as a NEUTRAL v3 event: the legacy flat
+   *  shape migrates without the retainHistory/summaryUuid markers. */
+  async function seedLogWithRetainCompact() {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    const push = (e: never) => log.append(e)
+    push({ type: 'session/context', text: 'CTX' } as never)
+    push({ type: 'user', uuid: 'p1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'pre-compact' }] } } as never)
+    push({ type: 'assistant', uuid: 'p2', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'pre-compact reply' }] } } as never)
+    push({ type: 'session/compact', time: Date.parse('2026-11-09T00:00:02.000Z'), data: { text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: '2026-11-09T00:00:02.000Z', retainHistory: true, summaryUuid: 'sum-1' } } as never)
+    push({ type: 'user', uuid: 'u3', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:03.000Z', message: { role: 'user', content: [{ type: 'text', text: 'post-compact' }] } } as never)
+    await log.flush(); await log.close()
+  }
+
+  it('retain compact keeps pre-compact history + inline boundary and summary', async () => {
+    await seedLogWithRetainCompact()
+    const page = await readNativeHistoryPage(dir, 's1', transcriptPort, { limit: 20 })
+    expect(pageText(page)).toContain('pre-compact')
+    expect(pageText(page)).toContain('post-compact')
+    expect(pageText(page)).toContain('SUMMARY')
+    expect(pageText(page)).toContain('compact_boundary')
+    // The marker pair sits at the compact's seq position: after the
+    // pre-compact turns, before the post-compact turn.
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['p1', 'p2', 'c1', 'sum-1', 'u3'])
+    const entries = await readNativeHistoryEntries(dir, 's1', transcriptPort)
+    expect(JSON.stringify(entries)).toContain('pre-compact')
+  })
+
+  it('retain compact summary uses summaryUuid (live==disk identity)', async () => {
+    await seedLogWithRetainCompact()
+    const snap = await readNativeHistorySnapshot(dir, 's1', transcriptPort)
+    const summary = snap.entries.find((e) => (e.message as { isCompactSummary?: boolean }).isCompactSummary)
+    expect((summary!.message as { uuid: string }).uuid).toBe('sum-1')
+    const boundary = snap.entries.find((e) => (e.message as { subtype?: string }).subtype === 'compact_boundary')
+    expect((boundary!.message as { uuid: string }).uuid).toBe('c1')
+  })
+
+  it('legacy compact (no marker) still floors (existing behavior unchanged)', async () => {
+    await seedLogWithCompact()
+    const page = await readNativeHistoryPage(dir, 's1', transcriptPort, { limit: 20 })
+    expect(pageText(page)).not.toContain('pre-compact')
+  })
+
+  it('mixed legacy + retain: legacy floor hides its pre-content, retain inserts marker', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    const push = (e: never) => log.append(e)
+    push({ type: 'session/context', text: 'CTX' } as never)
+    push({ type: 'user', uuid: 'p1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'pre-legacy' }] } } as never)
+    push({ type: 'session/compact', text: 'LEGACY SUMMARY', context: 'CTX', uuid: 'c1', timestamp: '2026-11-09T00:00:01.000Z' } as never)
+    push({ type: 'user', uuid: 'm1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'user', content: [{ type: 'text', text: 'post-legacy' }] } } as never)
+    push({ type: 'session/compact', time: Date.parse('2026-11-09T00:00:03.000Z'), data: { text: 'RETAIN SUMMARY', context: 'CTX', uuid: 'c2', timestamp: '2026-11-09T00:00:03.000Z', retainHistory: true, summaryUuid: 'sum-2' } } as never)
+    push({ type: 'user', uuid: 'u3', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:04.000Z', message: { role: 'user', content: [{ type: 'text', text: 'post-retain' }] } } as never)
+    await log.flush(); await log.close()
+
+    const page = await readNativeHistoryPage(dir, 's1', transcriptPort, { limit: 20 })
+    expect(pageText(page)).not.toContain('pre-legacy')
+    expect(pageText(page)).toContain('post-legacy')
+    expect(pageText(page)).toContain('LEGACY SUMMARY')
+    expect(pageText(page)).toContain('RETAIN SUMMARY')
+    expect(pageText(page)).toContain('post-retain')
+    // entries/page keep the summary-only legacy projection; the retain marker
+    // contributes boundary + summary at its seq position.
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['c1', 'm1', 'c2', 'sum-2', 'u3'])
+    expect(JSON.stringify(await readNativeHistoryEntries(dir, 's1', transcriptPort))).not.toContain('pre-legacy')
+
+    // The snapshot path synthesizes boundary + summary for BOTH compacts;
+    // each summary keeps its own identity (legacy uuid vs summaryUuid).
+    const snap = await readNativeHistorySnapshot(dir, 's1', transcriptPort)
+    const summaries = snap.entries.filter((e) => (e.message as { isCompactSummary?: boolean }).isCompactSummary)
+    expect(summaries.map((e) => (e.message as { uuid: string }).uuid)).toEqual(['c1', 'sum-2'])
+    const boundaries = snap.entries.filter((e) => (e.message as { subtype?: string }).subtype === 'compact_boundary')
+    expect(boundaries.map((e) => (e.message as { uuid: string }).uuid)).toEqual(['c1', 'c2'])
+  })
+
+  it('several retain compacts each insert their own pair, including a trailing compact', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    const push = (e: never) => log.append(e)
+    push({ type: 'user', uuid: 'p1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'first turn' }] } } as never)
+    push({ type: 'session/compact', time: Date.parse('2026-11-09T00:00:01.000Z'), data: { text: 'FIRST RETAIN', context: 'CTX', uuid: 'c1', timestamp: '2026-11-09T00:00:01.000Z', retainHistory: true, summaryUuid: 'sum-1' } } as never)
+    push({ type: 'user', uuid: 'm1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'user', content: [{ type: 'text', text: 'middle turn' }] } } as never)
+    // The second retain compact is the log's final event (compaction ran,
+    // then the session went idle) — its pair still renders, at the tail.
+    push({ type: 'session/compact', time: Date.parse('2026-11-09T00:00:03.000Z'), data: { text: 'SECOND RETAIN', context: 'CTX', uuid: 'c2', timestamp: '2026-11-09T00:00:03.000Z', retainHistory: true, summaryUuid: 'sum-2' } } as never)
+    await log.flush(); await log.close()
+
+    const page = await readNativeHistoryPage(dir, 's1', transcriptPort, { limit: 20 })
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['p1', 'c1', 'sum-1', 'm1', 'c2', 'sum-2'])
+    expect(pageText(page)).toContain('first turn')
+    expect(pageText(page)).toContain('middle turn')
+    expect(pageText(page)).toContain('FIRST RETAIN')
+    expect(pageText(page)).toContain('SECOND RETAIN')
   })
 })
 

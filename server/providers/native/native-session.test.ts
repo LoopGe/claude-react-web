@@ -5853,13 +5853,16 @@ describe('NativeSession', () => {
     expect(boundary).toBeDefined()
     expect(summary).toBeDefined()
     expect((boundary!.message as { uuid: string }).uuid).toBe('c1')
-    expect((summary!.message as { uuid: string }).uuid).toBe('c1')
+    // The summary carries its own identity (summaryUuid) — the uuid the live
+    // summary frame uses — while the boundary keeps the event uuid.
+    expect((summary!.message as { uuid: string }).uuid).toBe('sum-1')
     expect(boundary!.sourceOrdinal).not.toBe(summary!.sourceOrdinal)
     expect(res.entries.every((e) => typeof e.sourceOrdinal === 'number')).toBe(true)
-    // The public entries projection stays summary-only: the boundary occurrence
-    // is NEW reconcile behavior, so this contrast pins what the snapshot adds.
+    // compactInPlace writes a RETAIN compact, whose boundary + summary pair
+    // renders in every read path — so the public entries projection carries
+    // the boundary too (the summary-only public shape is the legacy floor's).
     const publicEntries = await provider.readHistoryEntries!('snap', {})
-    expect(publicEntries.some((e) => (e.message as { subtype?: string }).subtype === 'compact_boundary')).toBe(false)
+    expect(publicEntries.some((e) => (e.message as { subtype?: string }).subtype === 'compact_boundary')).toBe(true)
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
