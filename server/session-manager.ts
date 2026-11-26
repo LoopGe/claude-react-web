@@ -6206,10 +6206,10 @@ export class SessionManager {
   }
 
   /** The shared in-place compaction tail (auto AND manual): summarize the
-   *  local floor span, re-check identity + phase after the LLM round-trip,
-   *  then the provider compact + the appended client-facing frames. Compact
-   *  is an APPEND, not a universe reset — see maybeAutoCompact's doc for the
-   *  retain-history contract. */
+   *  authoritative model history (or the capped ring-slice fallback), re-check
+   *  identity + phase after the LLM round-trip, then the provider compact + the
+   *  appended client-facing frames. Compact is an APPEND, not a universe reset
+   *  — see maybeAutoCompact's doc for the retain-history contract. */
   private async runInPlaceCompact(
     s: Session,
     compactInPlace: NonNullable<ProviderSessionHandle['compactInPlace']>,
@@ -6217,21 +6217,14 @@ export class SessionManager {
     trigger: 'auto' | 'manual',
     threshold?: number,
   ): Promise<void> {
-    // D6 local floor: the ring RETAINS pre-compact history, so the summarizer
-    // must see only what the model still sees — the span after the last
-    // compact boundary. The previous summary heads that span (it is part of
-    // the model's post-compact context). Local to this path (auto AND manual
-    // share the retain semantics): the shared mergedHistoryForCompaction also
-    // feeds /handoff + plugin-compact (incl. claude), whose input must stay
-    // the full merged ring. Backward loop — repo lib is ES2022 (no
-    // Array.findLastIndex).
-    const merged = this.mergedHistoryForCompaction(s)
-    let lastBoundary = -1
-    for (let i = merged.length - 1; i >= 0; i--) {
-      const m = merged[i]
-      if (m.type === 'system' && m.subtype === 'compact_boundary') { lastBoundary = i; break }
-    }
-    const span = lastBoundary >= 0 ? merged.slice(lastBoundary + 1) : merged
+    // Authoritative input first: the provider's UNCAPPED model history
+    // (getCompactionInput — native), already floored at the last compact and
+    // excluding sidechain internals (subagent RESULTS remain as main-history
+    // tool_results). The summarizer therefore never loses the previous summary
+    // or early post-compact content to ring eviction. Providers without an
+    // authoritative model history omit the method and fall back to the capped
+    // ring slice (ringSliceForCompact), preserving today's behavior.
+    const span = s.handle.getCompactionInput?.() ?? this.ringSliceForCompact(s)
     const summary = await this.summarizeMergedForCompact(s, span)
     if (!summary) return
     // A user turn (or a load/clear/delete) can win the summarization window.
@@ -6257,6 +6250,26 @@ export class SessionManager {
       `[session ${s.id}] ${trigger === 'manual' ? 'manual compact' : 'auto-compact'}: appended compact marker, history retained ` +
       `(pre_tokens=${preTokens}${threshold !== undefined ? `, threshold=${threshold}` : ''})`,
     )
+  }
+
+  /** Fallback summarizer input for providers without an authoritative model
+   *  history (getCompactionInput): the capped merged ring floored at the last
+   *  compact boundary. D6 local floor — the ring RETAINS pre-compact history,
+   *  so the summarizer must see only what the model still sees (the span after
+   *  the last boundary, headed by the previous summary, which is part of the
+   *  model's post-compact context). Local to the in-place path (auto AND manual
+   *  share the retain semantics): the shared mergedHistoryForCompaction also
+   *  feeds /handoff + plugin-compact (incl. claude), whose input must stay the
+   *  full merged ring. Backward loop — repo lib is ES2022 (no
+   *  Array.findLastIndex). */
+  private ringSliceForCompact(s: Session): SDKMessage[] {
+    const merged = this.mergedHistoryForCompaction(s)
+    let lastBoundary = -1
+    for (let i = merged.length - 1; i >= 0; i--) {
+      const m = merged[i]
+      if (m.type === 'system' && m.subtype === 'compact_boundary') { lastBoundary = i; break }
+    }
+    return lastBoundary >= 0 ? merged.slice(lastBoundary + 1) : merged
   }
 
   /** Push the client-facing half of an in-place compact (auto or manual): the
