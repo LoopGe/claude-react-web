@@ -2190,6 +2190,47 @@ export class NativeSession implements NativeSessionCore {
           fastMode: this.fastMode,
         })
         endReason = interrupted ? 'interrupted' : 'error'
+        // StopFailure seam (RS §3, §9.1): fire-and-forget on a real turn error.
+        // The error result above is already final — the hook's output AND exit
+        // code are ALL ignored, so the awaited decision is discarded (it can
+        // never change the result, force a continuation, or emit a second
+        // terminal frame); the await only lets the hook/run activity emit.
+        // CLI parity (binary-verified T9r/vXe): the CLI fires StopFailure only
+        // on API-error assistant messages, NEVER on an aborted turn — so the
+        // existing `interrupted` classification skips the dispatch and keeps its
+        // 'interrupted by user' result. `error` is the classification (the CLI's
+        // `e.error ?? "unknown"` fallback — a native throw carries no
+        // SDKAssistantMessageError), `error_details` the thrown message, and
+        // `last_assistant_message` the last assistant text when a round preceded
+        // the failure. A dispatch failure is logged, never thrown (the
+        // PostCompact/SessionStart precedent): the pump must not strand or emit
+        // a second terminal frame on a hook failure. hasContext:false —
+        // StopFailure is non-REPL (RS §12.2): prompt/agent hooks report a
+        // non-blocking availability error, which fire-and-forget ignores. The
+        // matcher target is `error` (matcher.ts maps StopFailure→error).
+        if (!interrupted) {
+          let lastAssistantText = ''
+          for (let i = this.history.length - 1; i >= 0; i--) {
+            const message = this.history[i]
+            if (message.role === 'assistant') {
+              lastAssistantText = promptTextOf(message.content)
+              break
+            }
+          }
+          const errorDetails = err instanceof Error ? err.message : String(err)
+          try {
+            await this.dispatchHook('StopFailure', {
+              session_id: this.opts.id,
+              cwd: this.opts.cwd,
+              hook_event_name: 'StopFailure',
+              error: 'unknown',
+              ...(errorDetails !== '' ? { error_details: errorDetails } : {}),
+              ...(lastAssistantText.trim() !== '' ? { last_assistant_message: lastAssistantText } : {}),
+            }, { signal: this.sessionAbort.signal, hasContext: false })
+          } catch (hookErr) {
+            log.warn(`[${this.opts.id}] StopFailure hook dispatch failed:`, hookErr)
+          }
+        }
       } finally {
         this.preparedPdfs.clearHistory('main')
         this.turnAbort = null
