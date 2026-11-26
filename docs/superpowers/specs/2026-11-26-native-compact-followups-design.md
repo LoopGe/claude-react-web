@@ -1,7 +1,7 @@
 # Native compact 后续清理 设计
 
 日期：2026-11-26
-状态：待评审
+状态：已实现（`docs/superpowers/plans/2026-11-26-native-compact-followups.md`）
 范围：retain-history 特性落地后的三项后续（死代码清理、D6 权威摘要地板、测试补全）。`session-cleared` 通道清理**不在本次**（另立票）。
 
 ## 1. 背景与意图
