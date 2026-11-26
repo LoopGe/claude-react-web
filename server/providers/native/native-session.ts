@@ -62,7 +62,8 @@ import type { ToolDef } from './tools/types.js'
 import { createAgentTool, type AgentToolDeps } from './subagent.js'
 import { EXPLORE_AGENT_DESCRIPTION, EXPLORE_AGENT_NAME } from './explore.js'
 import { NativeTaskManager } from './task-manager.js'
-import { NativeSkillCatalog, LISTING_BUDGET_FRACTION, type NativeSkillInvocationView, type NativeSkillView } from './skills.js'
+import { NativeSkillCatalog, LISTING_BUDGET_FRACTION, type NativeSkillCommand, type NativeSkillInvocationView, type NativeSkillView } from './skills.js'
+import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, type NativeCommand } from './commands.js'
 import { createSkillTool } from './tools/skill.js'
 import { createTaskOutputTool } from './tools/task-output.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
@@ -213,6 +214,40 @@ export function packAssistantStream(
  *  so the slash parser and the name validator never drift. */
 const SKILL_COMMAND_RE = new RegExp('^/(' + CANONICAL_SKILL_NAME_SOURCE + ')(?:\\s+([\\s\\S]*))?$')
 
+/** The first text block of a user turn — the only block that can carry a
+ *  leading slash invocation. Every non-text block (image / file) remains
+ *  untouched in the original user message. */
+function invocationTextOf(content: unknown): string | undefined {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    const block = content.find(
+      (candidate) => typeof candidate === 'object' && candidate !== null &&
+        (candidate as { type?: unknown }).type === 'text',
+    ) as { type: 'text'; text?: unknown } | undefined
+    if (typeof block?.text === 'string') return block.text
+  }
+  return undefined
+}
+
+/** Resolve one text block against the command catalog (builtins first, then
+ *  the discovered custom rows). Lookup is case-insensitive — `/Foo` and `/foo`
+ *  both resolve — while the returned name stays the authored catalog name.
+ *  A builtin wins a same-name custom collision because the list is searched
+ *  in concatenation order. Anything else (not a command, an unknown name) has
+ *  no instruction and falls through to skill matching / plain text. */
+function commandInvocationForTurn(
+  content: unknown,
+  commands: readonly NativeCommand[],
+): { name: string; body: string } | null {
+  const text = invocationTextOf(content)
+  if (text === undefined) return null
+  const match = SKILL_COMMAND_RE.exec(text)
+  if (!match) return null
+  const typed = match[1].toLowerCase()
+  const cmd = commands.find((candidate) => candidate.name.toLowerCase() === typed)
+  return cmd ? { name: cmd.name, body: expandCommandBody(cmd, match[2] ?? '') } : null
+}
+
 /** Resolve one text block against the captured scoped view. A `/name args`
  *  invocation of a skill the user may invoke returns that skill's canonical
  *  body with the args substituted exactly once (the raw turn keeps the typed
@@ -222,18 +257,7 @@ function skillInvocationForTurn(
   content: unknown,
   skills: NativeSkillInvocationView,
 ): { name: string; body: string } | null {
-  let text: string | undefined
-  if (typeof content === 'string') {
-    text = content
-  } else if (Array.isArray(content)) {
-    // Only the FIRST text block can carry the slash command. Every non-text
-    // block (image / file) remains untouched in the original user message.
-    const block = content.find(
-      (candidate) => typeof candidate === 'object' && candidate !== null &&
-        (candidate as { type?: unknown }).type === 'text',
-    ) as { type: 'text'; text?: unknown } | undefined
-    if (typeof block?.text === 'string') text = block.text
-  }
+  const text = invocationTextOf(content)
   if (text === undefined) return null
   const match = SKILL_COMMAND_RE.exec(text)
   return match ? skills.expand(match[1], match[2] ?? '') : null
@@ -335,6 +359,10 @@ export interface NativeSessionOptions {
    *  read-only plugin-skill discovery. `undefined` = all enabled, `[]` = none.
    *  Forwarded to the skill port; the catalog never touches the marketplace. */
   enabledPlugins?: string[]
+  /** The host-resolved CLI config root (`claudeConfigDir()`), parent of the
+   *  user-scope `commands/` discovery root. Passed in by the composition root
+   *  — the neutral core never derives host config itself. */
+  commandsUserRoot: string
   /** Create-body tool surface, merged field-wise with the selected persona.
    *  The native loop honors the allow/deny lists; permission aliases/config
    *  remain SDK-only fields and do not affect this in-process tool list. */
@@ -451,6 +479,17 @@ export class NativeSession implements NativeSessionCore {
    *  a manual reload supersedes the construction one (and can recover from a
    *  transient construction failure) for every per-turn await. */
   private skillsReady: Promise<void>
+  /** Custom `.claude/commands` rows discovered as of the last reload. Replaced
+   *  wholesale (never mutated), so a turn's captured reference is a stable
+   *  snapshot. Builtin rows are concatenated separately at every read. */
+  private customCommands: NativeCommand[] = []
+  /** The CURRENT command discovery in flight — the same supersede semantics
+   *  as `skillsReady`, re-assigned by `reloadSkills`. */
+  private commandsReady: Promise<void>
+  /** Generation fence for command discovery: a slower earlier pass must not
+   *  overwrite a newer committed one (mirrors NativeSkillCatalog.reload). */
+  private commandGeneration = 0
+  private committedCommandGeneration = 0
   /** Model-facing tool name → owning server, for the permission request's
    *  `mcpServer` field. Built from discovery metadata, never by parsing the
    *  FQN (it may be truncated and hashed). */
@@ -576,6 +615,9 @@ export class NativeSession implements NativeSessionCore {
     this.skills = new NativeSkillCatalog(opts.cwd, opts.ports.skill, opts.enabledPlugins)
     this.skills.configure(opts.skills)
     this.skillsReady = this.startSkillReload()
+    // Custom commands are discovered before the first turn can invoke them,
+    // the same per-turn-await shape as the skill catalog.
+    this.commandsReady = this.startCommandReload()
     this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
     this.taskOutputTool = createTaskOutputTool(this.tasks)
     // Every session can delegate, MCP or not: `tools` is a live getter and the
@@ -1512,6 +1554,46 @@ export class NativeSession implements NativeSessionCore {
     return reload
   }
 
+  /** Start a command-discovery pass and return it as the current
+   *  `commandsReady`. Same observed-but-loud contract as `startSkillReload`:
+   *  the catch marks the promise handled at process level while the turn path
+   *  still awaits the ORIGINAL promise, so a real failure stays a loud turn
+   *  error. The generation fence keeps a slower earlier pass from overwriting
+   *  a newer committed snapshot. */
+  private startCommandReload(): Promise<void> {
+    const generation = ++this.commandGeneration
+    const reload = discoverCommands(this.opts.cwd, this.opts.commandsUserRoot).then((commands) => {
+      if (generation <= this.committedCommandGeneration) return
+      this.customCommands = commands
+      this.committedCommandGeneration = generation
+    })
+    void reload.catch((err) => log.warn(`[${this.opts.id}] command discovery failed:`, err))
+    return reload
+  }
+
+  /** The full slash surface: builtin rows, then discovered custom rows, then
+   *  the current skill view's rows — deduped by lowercased name so a command
+   *  wins a same-name skill and a builtin wins a same-name custom file.
+   *  Display names stay as authored; only the dedupe key is case-folded. */
+  private commandCatalog(custom: readonly NativeCommand[], skillCommands: readonly NativeSkillCommand[]): NativeSkillCommand[] {
+    const out: NativeSkillCommand[] = []
+    const seen = new Set<string>()
+    const push = (row: NativeSkillCommand): void => {
+      const key = row.name.toLowerCase()
+      if (seen.has(key)) return
+      seen.add(key)
+      out.push(row)
+    }
+    for (const cmd of BUILTIN_COMMANDS) {
+      push({ name: cmd.name, description: cmd.description, argumentHint: cmd.argumentHint, builtin: true })
+    }
+    for (const cmd of custom) {
+      push({ name: cmd.name, description: cmd.description, argumentHint: cmd.argumentHint })
+    }
+    for (const row of skillCommands) push(row)
+    return out
+  }
+
   /** The nested (Agent/Task) prompt: the subagent system plus the nested run's
    *  scoped Skill section. The view reads the shared catalog at call time, so
    *  a reload reaches the next run without reviving an excluded skill. */
@@ -1643,18 +1725,27 @@ export class NativeSession implements NativeSessionCore {
         const turnEffortLevel = this.effortLevel
         let turnSkillView: NativeSkillInvocationView | undefined
         let invocation: { name: string; body: string } | null = null
-        let skillError: unknown
+        let catalogError: unknown
         try {
-          // Skill discovery is awaited per turn, not at spawn: a slow disk
-          // never delays session creation, and `skillsReady` tracks the LATEST
-          // reload pass, so a manual reload supersedes the construction snapshot.
+          // Catalog discovery is awaited per turn, not at spawn: a slow disk
+          // never delays session creation, and the ready promises track the
+          // LATEST reload pass, so a manual reload supersedes the construction
+          // snapshot.
           await this.skillsReady
-          // Freeze the freshly discovered cache BEFORE resolving the command.
+          await this.commandsReady
+          // Freeze the freshly discovered caches BEFORE resolving the invocation.
           // Invocation, available_skills and the Skill tool now share one view.
           turnSkillView = this.skills.snapshot(turnSkillPolicy)
-          invocation = skillInvocationForTurn(next.content, turnSkillView)
+          // Interception order contract: a control-action interception belongs
+          // ahead of prompt expansion; command expansion precedes skill
+          // matching (a command wins a same-name collision); an unknown name
+          // matches neither and passes through as ordinary text. The command
+          // list is captured once so a later reload cannot mix into this turn.
+          const turnCommands = [...BUILTIN_COMMANDS, ...this.customCommands]
+          invocation = commandInvocationForTurn(next.content, turnCommands)
+            ?? skillInvocationForTurn(next.content, turnSkillView)
         } catch (err) {
-          skillError = err
+          catalogError = err
         }
 
         // Persist the raw prompt before consumption is acknowledged. A v1 log
@@ -1708,6 +1799,12 @@ export class NativeSession implements NativeSessionCore {
         this.onUserMessagePersistence?.(next, 'appended')
         appendedInitialMessages = [...initialMessages]
         if (invocation) {
+          // The dual-event model for BOTH skill and command expansion: the raw
+          // typed turn above plus this hidden instruction. `session/skill` is
+          // the durable "instruction paired with the preceding raw user turn"
+          // event — replay inserts the stored body verbatim, fork cuts extend
+          // over the pair, and compaction preserves it, all without consulting
+          // the current catalogs. Command invocations ride the same shape.
           const instruction = createUserMessage({ content: [{ type: 'text', text: invocation.body }], source: { kind: 'user' } })
           initialMessages.push(instruction)
           this.log.append({
@@ -1728,7 +1825,7 @@ export class NativeSession implements NativeSessionCore {
         // admission may open. It closes when the manager settles the turn.
         this.steeringOpen = true
         await this.log.flush()
-        if (skillError !== undefined) throw skillError
+        if (catalogError !== undefined) throw catalogError
         // MCP discovery is awaited per turn, not at spawn: a slow server never
         // delays session creation, and a mid-turn replace/toggle only lands
         // on the next turn (the turn below runs on this snapshot).
@@ -2402,13 +2499,15 @@ export class NativeSession implements NativeSessionCore {
     }
   }
 
-  /** The `/` command catalog: every user-invocable skill of the current
-   *  catalog, in the catalog's own selection state. Awaits the CURRENT
-   *  discovery pass so an immediate `/commands` fetch after spawn cannot race
-   *  it into an empty answer. */
+  /** The `/` command catalog: builtin prompt commands, discovered custom
+   *  commands, and every user-invocable skill of the current catalog (deduped
+   *  by name, command wins). Awaits the CURRENT discovery passes so an
+   *  immediate `/commands` fetch after spawn cannot race them into an empty
+   *  answer. */
   async supportedCommands(): Promise<unknown> {
     await this.skillsReady
-    return this.currentSkillView().commands()
+    await this.commandsReady
+    return this.commandCatalog(this.customCommands, this.currentSkillView().commands())
   }
 
   /** Auto-title through the injected auxiliary LLM port. The model is
@@ -2474,14 +2573,19 @@ export class NativeSession implements NativeSessionCore {
     })
   }
 
-  /** Re-read the skill roots and answer the fresh command catalog. The new
-   *  discovery replaces `skillsReady`, so every per-turn await from here on
-   *  tracks THIS pass — a manual reload both supersedes the construction
-   *  snapshot and recovers the session from a failed one. */
+  /** Re-read the skill AND command roots and answer the fresh merged catalog.
+   *  The new discoveries replace `skillsReady` / `commandsReady`, so every
+   *  per-turn await from here on tracks THIS pass — a manual reload both
+   *  supersedes the construction snapshot and recovers the session from a
+   *  failed one. The `skills` key is the manager's broadcast contract: it
+   *  relays the array as `commands-changed`, so it carries the FULL slash
+   *  surface (builtin + custom + skill rows), not skill rows alone. */
   async reloadSkills(): Promise<unknown> {
     this.skillsReady = this.startSkillReload()
+    this.commandsReady = this.startCommandReload()
     await this.skillsReady
-    return { skills: this.currentSkillView().commands() }
+    await this.commandsReady
+    return { skills: this.commandCatalog(this.customCommands, this.currentSkillView().commands()) }
   }
 
   /** The flag-settings layer for the keys this provider supports.

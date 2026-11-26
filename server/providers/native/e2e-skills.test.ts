@@ -5,8 +5,8 @@
 // system prompt, loads it through the `Skill` tool, sends a user's raw
 // `/name args` turn with a separate canonical instruction (while the manager's
 // ring keeps only the typed text), honours `setSkillOverride`, and clears the
-// catalog — and broadcasts an EMPTY `commands-changed` — when every skill file
-// is deleted.
+// skill rows — broadcasting a builtin-only `commands-changed` — when every
+// skill file is deleted.
 // Fixture shape copied from e2e-mcp.test.ts (temp-dir SessionStore + custom
 // ProviderRegistry + scripted `_testStream`). CLAUDE_CONFIG_DIR is redirected
 // at a temp dir so the developer's real user-scope skills never leak into an
@@ -24,8 +24,15 @@ import { makeNativePorts } from '../native-host-adapters.js'
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import type { ProviderSessionHandle } from '../types.js'
 import type { CanonicalEvent } from './canonical.js'
+import { BUILTIN_COMMANDS } from './commands.js'
 
 type Frame = Record<string, any>
+
+/** The builtin slash rows every native catalog answer now carries ahead of
+ *  the skill rows (the G3 slash surface). */
+const BUILTIN_ROWS = BUILTIN_COMMANDS.map(({ name, description, argumentHint }) => ({
+  name, description, argumentHint, builtin: true,
+}))
 
 /** The project-scope skill every case plants. Tool and slash invocation
  *  expectations use its canonical body without this frontmatter. */
@@ -257,8 +264,8 @@ describe('native skills end to end through SessionManager', () => {
     const id = await createSession(fx, project)
     const { frames, unsubscribe } = collectFrames(fx.sm, id)
 
-    // The `/` command catalog comes straight from the discovered catalog.
-    expect(await fx.sm.supportedCommands(id)).toEqual([DEMO_COMMAND])
+    // The `/` command catalog: builtin rows ahead of the discovered skill rows.
+    expect(await fx.sm.supportedCommands(id)).toEqual([...BUILTIN_ROWS, DEMO_COMMAND])
 
     // The model loads the skill through the Skill tool; the tool_result is
     // the cached SKILL.md body.
@@ -295,7 +302,7 @@ describe('native skills end to end through SessionManager', () => {
     const id = await createSession(fx, project)
     const { frames, unsubscribe } = collectFrames(fx.sm, id)
 
-    expect(await fx.sm.reloadSkills(id)).toEqual({ skills: [DEMO_COMMAND] })
+    expect(await fx.sm.reloadSkills(id)).toEqual({ skills: [...BUILTIN_ROWS, DEMO_COMMAND] })
 
     // `{ kind: 'disabled' }` reaches the catalog through applyFlagSettings:
     // the prompt section empties and the Skill tool refuses the name.
@@ -320,14 +327,14 @@ describe('native skills end to end through SessionManager', () => {
     unsubscribe()
   })
 
-  it('empties the catalog and broadcasts an EMPTY commands-changed when the skill is deleted', async () => {
+  it('empties the skill rows and broadcasts a builtin-only commands-changed when the skill is deleted', async () => {
     const { project, stateDir } = await makeEnv()
     const fx = await makeFixture(stateDir)
     const id = await createSession(fx, project)
     // Settle the construction-time discovery before touching the skill dir —
     // `supportedCommands` awaits it, so the reload below is the only pass that
     // can observe the deletion.
-    expect(await fx.sm.supportedCommands(id)).toEqual([DEMO_COMMAND])
+    expect(await fx.sm.supportedCommands(id)).toEqual([...BUILTIN_ROWS, DEMO_COMMAND])
     const sub = fx.sm.subscribeCommandChanges(id)!
     const seen: Array<Record<string, unknown>> = []
     void (async () => {
@@ -335,12 +342,13 @@ describe('native skills end to end through SessionManager', () => {
     })()
 
     await rm(join(project, '.claude', 'skills', 'demo'), { recursive: true, force: true })
-    expect(await fx.sm.reloadSkills(id)).toEqual({ skills: [] })
+    expect(await fx.sm.reloadSkills(id)).toEqual({ skills: BUILTIN_ROWS })
 
-    // The empty list still reaches the client: otherwise a picker that was
-    // populated before the deletion would never clear.
+    // The skill-free list still reaches the client: otherwise a picker that
+    // was populated before the deletion would never clear the skill row. The
+    // builtin rows remain — they are not discoverable files.
     await vi.waitFor(() => {
-      expect(seen).toContainEqual({ commands: [] })
+      expect(seen).toContainEqual({ commands: BUILTIN_ROWS })
     }, { timeout: 5000 })
     sub.unsubscribe()
   })

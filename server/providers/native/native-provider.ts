@@ -6,6 +6,7 @@
 
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import { HttpError } from '../../errors.js'
+import { claudeConfigDir } from '../../claude-config-dir.js'
 import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../../../shared/transcript-format.js'
 import type { SessionMeta } from '../../persistence.js'
 import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef } from '../types.js'
@@ -308,6 +309,10 @@ export class NativeProvider implements AgentProvider {
         agentStore: this.agentStore,
         skills: sdkOptions?.skills,
         enabledPlugins: opts.enabledPlugins,
+        // The user-scope command root resolves host-side here (the CLI config
+        // dir); the neutral core receives it as a plain path and never derives
+        // host config itself.
+        commandsUserRoot: claudeConfigDir(),
         toolProfile: extractToolProfile(sdkOptions),
         promptSuggestions: opts.promptSuggestions ?? true,
         system,

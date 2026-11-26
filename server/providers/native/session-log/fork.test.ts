@@ -147,6 +147,18 @@ describe('buildForkSeed (neutral)', () => {
       { ...nSkill(1, 'alpha', 'PERSISTED SKILL BODY'), seq: 1 },
     ])
   })
+  it('pairs a case-insensitive command invocation with its instruction at the cut', () => {
+    // Command lookup folds case, so the typed token `/ALPHA` can expand the
+    // authored `alpha` row; the fork cut must still keep the pair together.
+    const withCommand = neutralSource([
+      nUser(0, 'u1', null, [text('/ALPHA args')]),
+      nSkill(1, 'alpha', 'PERSISTED COMMAND BODY'),
+      nAssistant(2, 'a1', [text('done')]),
+    ])
+    const seed = buildForkSeed({ source: withCommand, sourceId: 'src', cwd: '/new', resumeSessionAt: 'u1' })
+    expect(seed.inheritedEventCount).toBe(2)
+    expect(seed.events[1]).toEqual({ ...nSkill(1, 'alpha', 'PERSISTED COMMAND BODY'), seq: 1 })
+  })
   it.each([
     { label: 'ordinary text', parent: null, content: [text('ordinary prompt')] },
     { label: 'sidechain invocation', parent: 'agent-1', content: [text('/alpha')] },

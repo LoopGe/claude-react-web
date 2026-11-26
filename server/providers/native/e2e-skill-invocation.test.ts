@@ -21,6 +21,13 @@ import { loadNativeSessionLogSync, NativeSessionLog } from './session-log/log.js
 import { projectNeutralEventToLegacy } from './session-log/format.js'
 import type { NativeLogEvent } from './session-log/format.js'
 import type { NativeSessionEvent } from './vocabulary/session-event.js'
+import { BUILTIN_COMMANDS } from './commands.js'
+
+/** The builtin slash rows every native catalog answer now carries ahead of
+ *  the skill rows (the G3 slash surface). */
+const BUILTIN_ROWS = BUILTIN_COMMANDS.map(({ name, description, argumentHint }) => ({
+  name, description, argumentHint, builtin: true,
+}))
 
 // T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
 // the legacy shape from the canonical neutral baseline via the pinned compat
@@ -520,7 +527,7 @@ describe('native skill invocation recovery end to end', () => {
     const seen = collect(fx.sm, id)
     await fx.sm.setAgent(id, 'other-only')
     const otherCommand = { name: 'other', description: 'other description', argumentHint: '' }
-    expect(await fx.sm.supportedCommands(id)).toEqual([otherCommand])
+    expect(await fx.sm.supportedCommands(id)).toEqual([...BUILTIN_ROWS, otherCommand])
 
     fx.scripts.push(textTurn('EXCLUDED BEFORE RELOAD'))
     await sendAndWait(fx, id, seen.frames, '/demo before reload')
@@ -531,9 +538,9 @@ describe('native skill invocation recovery end to end', () => {
     void (async () => {
       for await (const change of sub.iterable) changes.push(change as Frame)
     })()
-    expect(await fx.sm.reloadSkills(id)).toEqual({ skills: [otherCommand] })
-    await vi.waitFor(() => expect(changes).toContainEqual({ commands: [otherCommand] }))
-    expect(await fx.sm.supportedCommands(id)).toEqual([otherCommand])
+    expect(await fx.sm.reloadSkills(id)).toEqual({ skills: [...BUILTIN_ROWS, otherCommand] })
+    await vi.waitFor(() => expect(changes).toContainEqual({ commands: [...BUILTIN_ROWS, otherCommand] }))
+    expect(await fx.sm.supportedCommands(id)).toEqual([...BUILTIN_ROWS, otherCommand])
 
     fx.scripts.push(textTurn('EXCLUDED AFTER RELOAD'))
     await sendAndWait(fx, id, seen.frames, '/demo after reload')

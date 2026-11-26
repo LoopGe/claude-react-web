@@ -58,6 +58,14 @@ import type { ToolDef, ToolOutcome } from './tools/types.js'
 import { UploadStore } from '../../upload-store.js'
 import { aliasPathOf, attachmentRoot } from '../../attachment-paths.js'
 import { estimateText, estimateMessage, estimateToolSchema, ROLE_OVERHEAD } from './estimate.js'
+import { BUILTIN_COMMANDS } from './commands.js'
+
+/** The builtin slash rows every native catalog answer now carries ahead of
+ *  the skill rows (the G3 slash surface). */
+const BUILTIN_ROWS = BUILTIN_COMMANDS.map(({ name, description, argumentHint }) => ({
+  name, description, argumentHint, builtin: true,
+}))
+const BUILTIN_NAMES = BUILTIN_ROWS.map((row) => row.name)
 
 // The retry suppression test drives the real `defaultStream` against a mocked
 // wire layer: the mock invokes `onRetry` and yields a minimal canonical round.
@@ -2665,6 +2673,7 @@ describe('NativeSession', () => {
       agent: 'reviewer',
     })
     expect(await resumed.supportedCommands?.()).toEqual([
+      ...BUILTIN_ROWS,
       { name: 'demo', description: 'demo description', argumentHint: '' },
     ])
     await resumed.destroy()
@@ -3387,23 +3396,24 @@ describe('NativeSession', () => {
     await writeProjectSkill(dir, 'demo', { frontmatter: { 'argument-hint': "'[topic]'" } })
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     expect(provider.capabilities.supportsCommands).toBe(true)
-    // Plugins stay unsupported — only the skill command catalog is exposed.
+    // Plugins stay unsupported — the catalog is builtin + custom + skill rows.
     expect(provider.capabilities.supportsPlugins).toBe(false)
     const session = provider.createSession({ id: 'skill-commands', cwd: dir })
     expect(await session.supportedCommands?.()).toEqual([
+      ...BUILTIN_ROWS,
       { name: 'demo', description: 'demo description', argumentHint: '[topic]' },
     ])
     await session.destroy()
   })
 
-  it('reloadSkills re-reads the skill roots and can empty the catalog', async () => {
+  it('reloadSkills re-reads the skill roots and can empty the skill rows', async () => {
     const dir = await tempDir('native-skill-reload-')
     await writeProjectSkill(dir, 'demo', { body: '# demo v1' })
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'skill-reload', cwd: dir })
     const catalog = coreOf(session) as unknown as { skills: { bodyOf(name: string): { text: string } } }
     expect(await session.reloadSkills?.()).toEqual({
-      skills: [{ name: 'demo', description: 'demo description', argumentHint: '' }],
+      skills: [...BUILTIN_ROWS, { name: 'demo', description: 'demo description', argumentHint: '' }],
     })
 
     // A file edit is picked up only by a reload — the catalog caches bodies.
@@ -3411,11 +3421,11 @@ describe('NativeSession', () => {
     await session.reloadSkills?.()
     expect(catalog.skills.bodyOf('demo').text).toContain('# demo v2')
 
-    // A fully deleted catalog answers an empty list (the manager relays that
-    // to the client so the picker clears).
+    // A fully deleted skill catalog answers builtin-only rows (the manager
+    // relays that to the client so the picker clears the skill rows).
     await rm(join(dir, '.claude', 'skills', 'demo'), { recursive: true, force: true })
-    expect(await session.reloadSkills?.()).toEqual({ skills: [] })
-    expect(await session.supportedCommands?.()).toEqual([])
+    expect(await session.reloadSkills?.()).toEqual({ skills: BUILTIN_ROWS })
+    expect(await session.supportedCommands?.()).toEqual(BUILTIN_ROWS)
     await session.destroy()
   })
 
@@ -3430,6 +3440,7 @@ describe('NativeSession', () => {
     // `supportedCommands` awaits the construction-time discovery, so the
     // catalog is populated before the first synchronous read.
     expect(await session.supportedCommands?.()).toEqual([
+      ...BUILTIN_ROWS,
       { name: 'demo', description: 'demo description', argumentHint: '' },
     ])
 
@@ -3516,6 +3527,7 @@ describe('NativeSession', () => {
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
     try {
       expect(await session.supportedCommands?.()).toEqual([
+        ...BUILTIN_ROWS,
         { name: 'demo', description: 'demo description', argumentHint: '' },
       ])
 
@@ -3525,7 +3537,7 @@ describe('NativeSession', () => {
 
       await session.applyFlagSettings?.({ agent: null })
       expect((await session.supportedCommands?.() as Array<{ name: string }>).map((command) => command.name))
-        .toEqual(['demo', 'other'])
+        .toEqual([...BUILTIN_NAMES, 'demo', 'other'])
       session.enqueueUserMessage(userMsg('/other keep this') as never)
       await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result' && frame.result === 'allowed')).toBe(true))
       expect(requests[1].messages.slice(-2)).toEqual([
@@ -3591,6 +3603,7 @@ describe('NativeSession', () => {
     }
     try {
       expect(await session.supportedCommands?.()).toEqual([
+        ...BUILTIN_ROWS,
         { name: 'demo', description: 'demo description', argumentHint: '' },
       ])
       session.enqueueUserMessage(userMsg('/demo do this') as never)
@@ -4095,6 +4108,7 @@ describe('NativeSession', () => {
     await runTurnOnce(3)
     expect(requests[2].system).not.toContain('<available_skills>')
     expect(await session.supportedCommands?.()).toEqual([
+      ...BUILTIN_ROWS,
       { name: 'demo', description: 'demo description', argumentHint: '' },
     ])
 
@@ -4105,7 +4119,7 @@ describe('NativeSession', () => {
     await runTurnOnce(4)
     expect(requests[3].system).not.toContain('<available_skills>')
     expect(requests[3].system).toBe(requests[2].system)
-    expect(await session.supportedCommands?.()).toEqual([])
+    expect(await session.supportedCommands?.()).toEqual(BUILTIN_ROWS)
     await session.destroy()
   })
 
@@ -4215,7 +4229,7 @@ describe('NativeSession', () => {
     // The manual reload supersedes the failed construction pass, so the NEXT
     // turn awaits the fresh one and sees the discovered skill.
     expect(await session.reloadSkills?.()).toEqual({
-      skills: [{ name: 'demo', description: 'demo description', argumentHint: '' }],
+      skills: [...BUILTIN_ROWS, { name: 'demo', description: 'demo description', argumentHint: '' }],
     })
     session.enqueueUserMessage(userMsg('second') as never)
     await vi.waitFor(() => {

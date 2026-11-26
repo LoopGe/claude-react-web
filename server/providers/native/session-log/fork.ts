@@ -60,7 +60,11 @@ function eventUuidOf(event: NativeSessionEvent): string | undefined {
 }
 
 /** True only for the main-thread raw invocation whose FIRST text block names
- *  this instruction's skill. Other user events never claim an adjacent body. */
+ *  this instruction's skill or command. Other user events never claim an
+ *  adjacent body. The name comparison is case-insensitive: command lookup
+ *  folds case (`/Foo` expands the authored `foo`), so the typed token and the
+ *  stored catalog name can differ in casing. Skill lookup is exact, so its
+ *  pairings are unaffected by the fold. */
 export function isSkillInstructionForRawUser(
   user: NativeSessionEvent,
   instruction: SessionEvent<'session/skill'>,
@@ -68,7 +72,7 @@ export function isSkillInstructionForRawUser(
   if (user.type !== 'user/message' || user.parentToolUseId !== null) return false
   const block = user.data.content.find((candidate) => candidate.type === 'text')
   if (!block || block.type !== 'text') return false
-  return SKILL_COMMAND_RE.exec(block.text)?.[1] === instruction.data.name
+  return SKILL_COMMAND_RE.exec(block.text)?.[1].toLowerCase() === instruction.data.name.toLowerCase()
 }
 
 export function buildForkSeed(opts: BuildForkSeedOptions): NativeForkSeed {
