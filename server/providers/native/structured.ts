@@ -118,6 +118,8 @@ function unsupportedSchema(path: string, detail: string): Error {
  * model instruction. Recurses through `properties` and `items` so nested
  * unsupported constructs (including tuple-form or non-object `items`, which
  * a value-driven walk would skip for an empty array) fail here at attach.
+ * A root declaring `type` must declare `object` (tool arguments are JSON
+ * objects); a properties-only root without `type` is accepted.
  */
 function assertSupportedSchema(schema: unknown, path: string): void {
   if (!isRecord(schema)) {
@@ -132,6 +134,12 @@ function assertSupportedSchema(schema: unknown, path: string): void {
     const type = schema.type
     if (typeof type !== 'string' || !SUPPORTED_TYPES.has(type)) {
       throw unsupportedSchema(path, `unsupported type ${JSON.stringify(type)}`)
+    }
+    // Tool arguments are always JSON objects, so a root declaring any other
+    // type is an unsatisfiable input_schema — a caller error, shape-provable
+    // here without inspecting any value.
+    if (path === '$' && type !== 'object') {
+      throw unsupportedSchema(path, `root type must be "object" (tool arguments are JSON objects), got ${JSON.stringify(type)}`)
     }
   }
   if (Object.hasOwn(schema, 'enum') && !Array.isArray(schema.enum)) {

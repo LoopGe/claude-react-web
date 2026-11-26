@@ -115,10 +115,21 @@ describe('bounded schema support: attach-time scan + value validation', () => {
       [{ type: 'object', properties: { x: { type: 'string', minLength: 1 } } }, /minLength/],
       [{ type: 'object', properties: { x: { type: ['string', 'null'] } } }, /unsupported type/],
       [{ type: 'object', additionalProperties: { type: 'string' } }, /additionalProperties/],
+      // Tool arguments are always JSON objects, so a root declaring a
+      // non-object type is an unsatisfiable input_schema — caller error.
+      [{ type: 'string' }, /root type must be "object"/],
+      [{ type: 'array' }, /root type must be "object"/],
     ]
     for (const [s, message] of cases) {
       expect(() => attachStructuredRuntime(s), JSON.stringify(s)).toThrow(message)
     }
+  })
+  it('accepts a properties-only root without a type keyword', async () => {
+    const s = { properties: { result: { type: 'string' } }, required: ['result'] }
+    const a = attachStructuredRuntime(s)
+    const out = await a.tool.run({ result: 'ok' }, ctx)
+    expect(out.isError).toBeFalsy()
+    expect(a.captured()).toEqual({ value: { result: 'ok' } })
   })
   it('shape-checks items at attach regardless of value: unsupported items with an empty array still throws', () => {
     for (const items of [[{ type: 'string' }], true, 42]) {

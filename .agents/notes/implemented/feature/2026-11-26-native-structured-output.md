@@ -78,8 +78,11 @@ annotations. Two failure classes are deliberately separated:
   can ever satisfy. A one-time, value-independent shape scan at attach
   (`assertSupportedSchema`) throws a clear Error naming the construct and its
   path. It recurses through `properties` and `items`, so e.g. tuple `items`
-  fails even for an empty array — a value-driven walk would skip it. It never
-  reaches the model as a retry instruction.
+  fails even for an empty array — a value-driven walk would skip it. A root
+  declaring `type` must declare `object`: tool arguments are always JSON
+  objects, so a non-object root type is a shape-provable unsatisfiable
+  `input_schema` (a properties-only root without `type` is accepted). It
+  never reaches the model as a retry instruction.
 - **Value-nonconforming** — a supported schema with bad arguments returns the
   retryable `isError` result above.
 
@@ -234,7 +237,8 @@ What it costs:
 `server/providers/native/structured.test.ts` pins the runtime: tool naming
 and caller-schema parameters, the read-only declaration, capture / retryable
 violation / monotonic guard, the attach-time scan (unsupported constructs
-throw, value-independent `items` shape check), integer / null / boolean
+throw, value-independent `items` shape check, root object-typing with a
+properties-only root accepted), integer / null / boolean
 `additionalProperties` support, annotation skipping, and structural enum
 equality. `server/providers/native/e2e-structured.test.ts` drives both
 entries through the real manager: the subagent capture lands as the parent
