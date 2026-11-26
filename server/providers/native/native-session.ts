@@ -1698,12 +1698,19 @@ export class NativeSession implements NativeSessionCore {
           }
         }
         if (promptDecision.action === 'block') {
-          // Blocked: skip the durable append (erase from native log). The host
-          // bubble still settles — fire the consumption ack + a result frame.
-          // persistence('appended') is the adapter's pairing-retention signal
-          // (consumption follows) and releases the attachment send lease; the
-          // prompt's absence from the native v3 log is the erase, orthogonal to
-          // the host's own durable copy. The block reason is user-only (RS §3).
+          // Blocked: skip the durable append (erase from native log). The prompt
+          // never joins the log, so release any PDF reservations it holds — a
+          // parked head can carry them from a prior failed persistence attempt
+          // (durable retry re-dispatches the hook with the SAME pending), and
+          // discarding pending without releasing would leak them in pdfBudgets
+          // until compact/resume. Same release as the suppress branch / drainQueued.
+          for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.release(reservation)
+          pending.pdfReservations = []
+          // The host bubble still settles — fire the consumption ack + a result
+          // frame. persistence('appended') is the adapter's pairing-retention
+          // signal (consumption follows) and releases the attachment send lease;
+          // the prompt's absence from the native v3 log is the erase, orthogonal
+          // to the host's own durable copy. The block reason is user-only (RS §3).
           this.onUserMessagePersistence?.(next, 'appended')
           this.pendingDurableInitial = null
           this.onUserMessageConsumed?.(next)

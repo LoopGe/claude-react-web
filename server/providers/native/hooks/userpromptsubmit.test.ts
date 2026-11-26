@@ -10,13 +10,19 @@
 // removes the original prompt from the model turn (the context replaces it);
 // sessionTitle is applied. No hook / continue → normal processing.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { NativeProvider } from '../native-provider.js'
 import { makeNativePorts } from '../../native-host-adapters.js'
+import { nativeCoreOf } from '../../native-host-frame-adapter.js'
 import { nativeSessionLogPath } from '../session-log/paths.js'
+import { config, __setConfigForTest } from '../../../config.js'
+import { UploadStore } from '../../../upload-store.js'
+import { aliasPathOf, attachmentRoot } from '../../../attachment-paths.js'
 import type { CanonicalEvent } from '../canonical.js'
+import type { NativeFileAttachment } from '../session-log/format.js'
 import type { SessionHooksConfig } from '../../../../shared/hooks.js'
 import type { Frame } from '../../native-frames.js'
 
@@ -82,6 +88,37 @@ function promptHooks(command: string): SessionHooksConfig {
 /** The JSON a command hook echoes to emit a UserPromptSubmit hookSpecificOutput. */
 function promptHsoJson(fields: Record<string, unknown>): string {
   return `echo '${JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', ...fields } })}'`
+}
+
+/** Register a real PDF upload so the attachment resolves (same fixture as the
+ *  native-session PDF tests). The reservation assignment only needs the metadata,
+ *  but the adapter's input projection resolves the attachment against the store. */
+async function pdfUpload(stateDir: string, id = 'pdf-1', bytes = Buffer.from('%PDF-1.4\nstable body')) {
+  const digest = createHash('sha256').update(bytes).digest('hex')
+  const name = `${id}.pdf`
+  const path = aliasPathOf(attachmentRoot(stateDir), digest, name)
+  await mkdir(join(path, '..'), { recursive: true })
+  await writeFile(path, bytes)
+  const store = new UploadStore({ stateDir })
+  store.record([{
+    id, path, cwd: stateDir, name, size: bytes.length, digest,
+    uploadedAt: 1, sessionTitle: '', sessionId: 'ups',
+  }])
+  const attachment: Omit<NativeFileAttachment, 'modelForm'> = {
+    id, name, size: bytes.length, digest, path, mediaType: 'application/pdf',
+  }
+  return { store, attachment }
+}
+
+function pdfUserMsg(uuid: string, attachment: Omit<NativeFileAttachment, 'modelForm'>) {
+  return {
+    ...userMsg('inspect the PDF'),
+    uuid,
+    message: {
+      role: 'user' as const,
+      content: [{ type: 'file', attachment }, { type: 'text', text: 'inspect the PDF' }],
+    },
+  }
 }
 
 interface PromptOutcome {
@@ -159,6 +196,10 @@ describe('UserPromptSubmit exit-2 block (RS §3: erase native log, host bubble s
     // and the prompt was never reported as a terminal 'failed' (withdrawal).
     expect(consumed).toContain(promptUuid)
     expect(persistence.filter((p) => p.uuid === promptUuid).every((p) => p.outcome !== 'failed')).toBe(true)
+    // Positive lease-release pin: the 'appended' persistence outcome fired (the
+    // manager releases the attachment send lease on it). Consumption alone would
+    // pass if 'appended' were dropped, stranding the lease.
+    expect(persistence).toContainEqual({ uuid: promptUuid, outcome: 'appended' })
   }, 30_000)
 
   it('a bare exit-2 block (empty stderr) still settles with a factual marker', async () => {
@@ -249,5 +290,58 @@ describe('UserPromptSubmit with no blocking decision', () => {
     const results = frames.filter((f) => f.type === 'result')
     expect(results).toHaveLength(1)
     expect((results[0] as { is_error?: boolean }).is_error).toBeFalsy()
+  }, 30_000)
+})
+
+describe('UserPromptSubmit block releases PDF reservations (retry-then-block)', () => {
+  it('releases the parked head reservations when a durable retry then blocks', async () => {
+    // Attempt 1: the hook continues (flag absent), normalization assigns a PDF
+    // reservation, then migrateToV2 fails → the head parks WITH the reservation.
+    // Attempt 2 (explicit input restarts the pump, SAME pending): the hook now
+    // blocks (flag present). The block branch must release the reservation it
+    // discards — otherwise it leaks in pdfBudgets until compact/resume.
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true, nativePdfDocuments: true })
+    const dir = await tempDir('ups-retry-block-')
+    const { store, attachment } = await pdfUpload(dir)
+    const provider = new NativeProvider({ stateDir: dir, uploadStore: store, ports: makeNativePorts({ stateDir: dir, uploadStore: store }) })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of textTurn('answer')) yield ev
+    }
+    const command = 'if [ -f ups-retry-block.flag ]; then echo retry-block-stderr >&2; exit 2; fi\ntouch ups-retry-block.flag\nexit 0'
+    const session = provider.createSession({
+      id: 'ups',
+      cwd: dir,
+      providerExtras: { sdkOptions: { settings: { hooks: promptHooks(command) } } },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      const core = nativeCoreOf(session)!
+      const sessionLog = (core as unknown as { log: { migrateToV2(): Promise<void> } }).log
+      vi.spyOn(sessionLog, 'migrateToV2').mockRejectedValueOnce(new Error('migration failed'))
+      session.enqueueUserMessage(pdfUserMsg('pdf-prompt', attachment) as never)
+      // The failed migration parks the head (pumping stops, reservation pending).
+      await vi.waitFor(() => expect((core as unknown as { pumping: boolean }).pumping).toBe(false))
+      const pending = (core as unknown as {
+        pendingDurableInitial: { pdfReservations?: Array<{ _state: string }> } | null
+      }).pendingDurableInitial
+      expect(pending).not.toBeNull()
+      const reservation = pending!.pdfReservations![0]
+      expect(reservation._state).toBe('pending')
+      // Explicit input restarts the pump with the SAME parked head; the hook blocks.
+      session.enqueueUserMessage({ ...userMsg('retry'), uuid: 'retry' } as never)
+      // Wait for the BLOCK result specifically (attempt 1's migration failure also
+      // emitted an error result; matching any is_error would race ahead of the block).
+      await vi.waitFor(() => {
+        expect(frames.some((f) => f.type === 'result' && (f as { result?: string }).result?.includes('retry-block-stderr'))).toBe(true)
+      })
+      // The block released the discarded head's reservation (no pdfBudgets leak).
+      expect(reservation._state).toBe('released')
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
   }, 30_000)
 })
