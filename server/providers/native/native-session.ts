@@ -238,6 +238,12 @@ function skillInvocationForTurn(
   return match ? skills.expand(match[1], match[2] ?? '') : null
 }
 
+/** The user prompt text for the UserPromptSubmit hook input: the joined text
+ *  blocks (image/file blocks carry no prompt text). Mirrors the loop's textOf. */
+function promptTextOf(content: readonly ContentBlock[]): string {
+  return content.filter((b): b is { type: 'text'; text: string } => b.type === 'text').map((b) => b.text).join('')
+}
+
 /** Fire-and-forget flush: a persistence failure must never become an
  *  unhandled rejection or a second terminal frame, but it must be visible. */
 function flushInBackground(sessionLog: NativeSessionLog, sessionId: string, what: string): void {
@@ -1661,57 +1667,143 @@ export class NativeSession implements NativeSessionCore {
           skillError = err
         }
 
+        // UserPromptSubmit seam (RS §3): dispatch BEFORE the prompt joins the
+        // conversation. The hook sees the raw prompt text; `source` is 'sdk'
+        // (RS §9). exit-2 / block erases the prompt from native's OWN log only
+        // (the durable append below is skipped) — the host bubble stays, since
+        // the manager broadcast + seq-stored it before the provider saw it.
+        let currentTitle: string | undefined
+        for (const event of neutralEventsOf(this.log)) {
+          if (event.type === 'session/title') currentTitle = event.data.title
+        }
+        const promptDecision = await this.dispatchHook('UserPromptSubmit', {
+          session_id: this.opts.id,
+          cwd: this.opts.cwd,
+          hook_event_name: 'UserPromptSubmit',
+          prompt: promptTextOf(next.content),
+          source: 'sdk',
+          ...(currentTitle !== undefined ? { session_title: currentTitle } : {}),
+        }, { signal: turnSignal, hasContext: true })
+        // The dispatch awaited hook subprocesses; re-check the withdrawal guards
+        // before any terminal ack (a drain during the await already fired 'failed').
+        if (this._closed) throw new Error('session destroyed before persistence')
+        if (this.pendingDurableInitial !== pending) {
+          throw new Error('initial message was withdrawn before persistence')
+        }
+        if (promptDecision.sessionTitle !== undefined) {
+          await this.log.appendDurable({ type: 'session/title', time: Date.now(), data: { title: promptDecision.sessionTitle } })
+          if (this._closed) throw new Error('session destroyed before persistence')
+          if (this.pendingDurableInitial !== pending) {
+            throw new Error('initial message was withdrawn before persistence')
+          }
+        }
+        if (promptDecision.action === 'block') {
+          // Blocked: skip the durable append (erase from native log). The host
+          // bubble still settles — fire the consumption ack + a result frame.
+          // persistence('appended') is the adapter's pairing-retention signal
+          // (consumption follows) and releases the attachment send lease; the
+          // prompt's absence from the native v3 log is the erase, orthogonal to
+          // the host's own durable copy. The block reason is user-only (RS §3).
+          this.onUserMessagePersistence?.(next, 'appended')
+          this.pendingDurableInitial = null
+          this.onUserMessageConsumed?.(next)
+          this.receivedAt.delete(next.id!)
+          const reason = promptDecision.block?.reason ?? ''
+          this.output.push({
+            type: 'result',
+            sessionId: this.opts.id,
+            uuid: this.ctx.uuid(),
+            parentToolUseId: this.ctx.parentToolUseId ?? null,
+            result: reason.trim() !== '' ? reason : 'UserPromptSubmit hook blocked the prompt.',
+            usage: neutralUsageOf(this.lastUsage),
+            numTurns: 0,
+            durationMs: 0,
+            isError: true,
+            fastMode: this.fastMode,
+          })
+          // Exactly one turn/end per turn; the shared post-try emission is
+          // skipped by the continue, so emit it here (a flush failure logs,
+          // never lands in the catch as a second terminal frame).
+          try {
+            this.log.append({ type: 'turn/end', time: 0, data: { reason: 'error' } })
+            await this.log.flush()
+          } catch (err) {
+            log.warn(`[${this.opts.id}] failed to persist turn/end:`, err)
+          }
+          continue
+        }
+        const suppressPrompt = promptDecision.suppressOriginalPrompt === true
+        const promptContext = promptDecision.additionalContext.filter((context) => context.trim() !== '')
+
         // Persist the raw prompt before consumption is acknowledged. A v1 log
         // upgrades before its first structured occurrence; a failed migration
         // or raw append leaves `pendingDurableInitial` withdrawable and pauses
         // the FIFO so later input cannot overtake it.
         const timestamp = new Date(this.receivedAt.get(next.id!)!).toISOString()
-        if (!pending.persisted) {
-          // The neutral user content blocks are SDK-compatible (text / image /
-          // structured file with the full resolved attachment); the v1/v2 log
-          // stores them verbatim. PDF model forms are assigned once here at the
-          // transactional budget boundary (T11 owns the neutral v3 form).
-          const normalized = { role: 'user' as const, content: next.content as unknown[] }
-          const assigned = assignPdfModelForms(
-            normalized.content,
-            this.pdfBudgets,
-            this.opts.ports.config.nativeAttachmentFidelity && this.opts.ports.config.nativePdfDocuments,
-          )
-          pending.persisted = { ...normalized, content: assigned.content }
-          pending.pdfReservations = assigned.reservations
+        if (!suppressPrompt) {
+          if (!pending.persisted) {
+            // The neutral user content blocks are SDK-compatible (text / image /
+            // structured file with the full resolved attachment); the v1/v2 log
+            // stores them verbatim. PDF model forms are assigned once here at the
+            // transactional budget boundary (T11 owns the neutral v3 form).
+            const normalized = { role: 'user' as const, content: next.content as unknown[] }
+            const assigned = assignPdfModelForms(
+              normalized.content,
+              this.pdfBudgets,
+              this.opts.ports.config.nativeAttachmentFidelity && this.opts.ports.config.nativePdfDocuments,
+            )
+            pending.persisted = { ...normalized, content: assigned.content }
+            pending.pdfReservations = assigned.reservations
+          }
+          const persisted = pending.persisted
+          if (this._closed) throw new Error('session destroyed before persistence')
+          if (this.pendingDurableInitial !== pending) {
+            throw new Error('initial message was withdrawn before persistence')
+          }
+          if (containsStructuredFile(persisted.content)) await this.log.migrateToV2()
+          if (this._closed) throw new Error('session destroyed before persistence')
+          if (this.pendingDurableInitial !== pending) {
+            throw new Error('initial message was withdrawn before persistence')
+          }
+          // The persisted content is already neutral (adapter-projected input,
+          // PDF model forms assigned); wrap it as an identified user message for
+          // the turn loop — no SDK→neutral bridge (T13).
+          initialMessages = [createUserMessage({ content: persisted.content as ContentBlock[], source: { kind: 'user' } })]
+          this.log.append({
+            type: 'user/message',
+            time: Date.parse(timestamp),
+            parentToolUseId: null,
+            data: {
+              role: 'user',
+              id: brandString<'MessageId'>(next.id!),
+              content: persisted.content as ContentBlock[],
+              source: { kind: 'user' },
+            },
+          })
+          for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.confirm(reservation)
+          pending.pdfReservations = []
+          rawAppended = true
+          this.syncAttachmentReferences()
+        } else {
+          // suppressOriginalPrompt (RS §3): the original prompt does not join
+          // native's conversation (log or model history) — the hook context
+          // replaces it. Release any PDF reservations the prompt held.
+          if (this._closed) throw new Error('session destroyed before persistence')
+          if (this.pendingDurableInitial !== pending) {
+            throw new Error('initial message was withdrawn before persistence')
+          }
+          for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.release(reservation)
+          pending.pdfReservations = []
         }
-        const persisted = pending.persisted
-        if (this._closed) throw new Error('session destroyed before persistence')
-        if (this.pendingDurableInitial !== pending) {
-          throw new Error('initial message was withdrawn before persistence')
-        }
-        if (containsStructuredFile(persisted.content)) await this.log.migrateToV2()
-        if (this._closed) throw new Error('session destroyed before persistence')
-        if (this.pendingDurableInitial !== pending) {
-          throw new Error('initial message was withdrawn before persistence')
-        }
-        // The persisted content is already neutral (adapter-projected input,
-        // PDF model forms assigned); wrap it as an identified user message for
-        // the turn loop — no SDK→neutral bridge (T13).
-        initialMessages = [createUserMessage({ content: persisted.content as ContentBlock[], source: { kind: 'user' } })]
-        this.log.append({
-          type: 'user/message',
-          time: Date.parse(timestamp),
-          parentToolUseId: null,
-          data: {
-            role: 'user',
-            id: brandString<'MessageId'>(next.id!),
-            content: persisted.content as ContentBlock[],
-            source: { kind: 'user' },
-          },
-        })
-        for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.confirm(reservation)
-        pending.pdfReservations = []
-        rawAppended = true
-        this.syncAttachmentReferences()
         this.onUserMessagePersistence?.(next, 'appended')
+        // UserPromptSubmit additionalContext joins the turn (RS §3). Live model
+        // history only — like the tool/Stop seam context it is not persisted to
+        // the log, so it does not survive resume/replay (a known parity gap).
+        for (const context of promptContext) {
+          initialMessages.push(createUserMessage({ content: [{ type: 'text', text: context }], source: { kind: 'user' } }))
+        }
         appendedInitialMessages = [...initialMessages]
-        if (invocation) {
+        if (invocation && !suppressPrompt) {
           const instruction = createUserMessage({ content: [{ type: 'text', text: invocation.body }], source: { kind: 'user' } })
           initialMessages.push(instruction)
           this.log.append({
