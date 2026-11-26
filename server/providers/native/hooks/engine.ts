@@ -25,6 +25,7 @@ import type {
 } from '../../../../shared/hooks.js'
 import type { LoopDeps } from '../loop.js'
 import type { ToolDef } from '../tools/types.js'
+import type { RequestMessage } from '../vocabulary/message.js'
 import { collectForEvent } from './collection.js'
 import { evaluateIf, TOOL_HOOK_EVENTS } from './if-condition.js'
 import { matches, matcherTarget } from './matcher.js'
@@ -52,6 +53,14 @@ export type HookExecutor = (
     tools?: ToolDef[]
     modelOpts?: HookModelOptions
     agentId?: string
+    /** T22: the projected CLI-shaped transcript artifact path (the agent
+     *  evaluator's Read target + system-text clause). Undefined when no
+     *  artifact is materialized. */
+    transcriptPath?: string
+    /** T22: the dispatch's conversation transcript for the prompt evaluator
+     *  (a subagent seam supplies its own nested history; the main thread omits
+     *  it and the session wiring falls back to the live model history). */
+    transcript?: readonly RequestMessage[]
   },
 ) => Promise<HookExecResult>
 
@@ -63,6 +72,10 @@ export interface HookDispatchContext {
   signal: AbortSignal
   hasContext: boolean
   parentToolUseId?: string | null
+  /** T22: the conversation transcript the prompt evaluator judges against. A
+   *  subagent dispatch seam passes its own nested history; main-thread seams
+   *  omit it (the session wiring uses the live model history). */
+  transcript?: readonly RequestMessage[]
 }
 
 export interface HookEngineOptions {
@@ -93,6 +106,11 @@ export interface HookEngineOptions {
    *  `hook-agent-` prefix cancels prompt/agent rounds. Absent on the main
    *  thread; a subagent dispatch seam supplies its own id. */
   agentId?: () => string | undefined
+  /** LIVE projected transcript artifact path (T22), read per dispatch. The
+   *  session materializes the artifact before dispatching and exposes its path
+   *  here; undefined when no artifact is available (the agent evaluator then
+   *  uses the CLI's no-transcript clause). */
+  transcriptPath?: () => string | undefined
 }
 
 /** The default command executor: the real runner (T4). The command slot is only
@@ -364,6 +382,14 @@ export class HookEngine {
     this.executors = { command: commandExecutor, ...opts.executors }
   }
 
+  /** Whether any configured source contributes a non-empty hook group for the
+   *  event (matcher-agnostic superset). The session uses it to skip transcript
+   *  materialization entirely on the common hook-less path; a group that exists
+   *  but matches nothing only costs one cheap no-op materialize. */
+  hasConfiguredHooks(event: HookEvent): boolean {
+    return collectForEvent(this.opts.sources(), event).some((group) => group.hooks.length > 0)
+  }
+
   async dispatch(
     event: HookEvent,
     input: Record<string, unknown>,
@@ -452,6 +478,8 @@ export class HookEngine {
       tools?: ToolDef[]
       modelOpts?: HookModelOptions
       agentId?: string
+      transcriptPath?: string
+      transcript?: readonly RequestMessage[]
     } = {
       cwd: this.opts.cwd,
       sessionId: this.opts.sessionId,
@@ -462,6 +490,8 @@ export class HookEngine {
       ...(this.opts.tools !== undefined ? { tools: this.opts.tools() } : {}),
       ...(this.opts.modelOpts !== undefined ? { modelOpts: this.opts.modelOpts() } : {}),
       ...(this.opts.agentId !== undefined ? { agentId: this.opts.agentId() } : {}),
+      ...(this.opts.transcriptPath !== undefined ? { transcriptPath: this.opts.transcriptPath() } : {}),
+      ...(ctx.transcript !== undefined ? { transcript: ctx.transcript } : {}),
     }
     const executor = this.executors[hook.type]
     let result: HookExecResult

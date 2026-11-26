@@ -17,6 +17,7 @@ import { listSkills } from '../skills.js'
 import type { MpStore } from '../mp-store.js'
 import { normalize, paginateRenderable } from '../history-reader.js'
 import { normalizeSubagentLine } from '../subagent-transcripts.js'
+import { projectNativeEventToSdkLine } from './native-host-frame-adapter.js'
 import type { UploadStore } from '../upload-store.js'
 import { resolveNativeStateDir } from './native/session-log/paths.js'
 import type { NativeConfigPort, NativeHostPorts } from './native/ports.js'
@@ -99,6 +100,7 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
       normalize: (line, sessionId, trim) => normalize(line, sessionId, trim),
       paginateRenderable: (renderable, sessionId, opts) => paginateRenderable(renderable, sessionId, opts),
       normalizeSubagentLine: (line, sessionId) => normalizeSubagentLine(line, sessionId),
+      projectEventToSdkLine: (event, sessionId) => projectNativeEventToSdkLine(event, sessionId),
     },
   }
 }

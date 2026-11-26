@@ -14,6 +14,7 @@ import type { McpTransportTarget } from '../../../shared/mcp-transport.js'
 import type { ResolvedFileAttachment } from '../../../shared/attachment-types.js'
 import type { SkillRecord, SkillRootInfo } from '../../../shared/skills.js'
 import type { HistoryPage, RawLine } from '../../../shared/transcript-format.js'
+import type { NativeSessionEvent } from './vocabulary/session-event.js'
 
 /** Getter-backed LIVE view of the host config plus resolved-profile methods.
  *  Getters read the CURRENT config binding, so runtime reload and call-time
@@ -82,6 +83,14 @@ export interface NativeTranscriptPort {
   normalize(line: RawLine, sessionId: string, trim: boolean): unknown
   paginateRenderable(renderable: RawLine[], sessionId: string, opts: { before?: number; beforeUuid?: string; limit: number }): HistoryPage
   normalizeSubagentLine(line: RawLine, sessionId: string): unknown | undefined
+  /** Project one durable neutral event to the SDK RawLine the CLI transcript
+   *  uses (the host history-read seam `projectNativeEventToSdkLine`). Returns
+   *  null for non-message events. This is the injected projection port for the
+   *  hook transcript artifact (T22): the core materializer owns the JSONL
+   *  projection/write, but the neutral→SDK-line translation stays host-side, so
+   *  the core never imports the host adapter. Both types crossing here are
+   *  neutral (vocabulary event + shared RawLine). */
+  projectEventToSdkLine(event: NativeSessionEvent, sessionId: string): RawLine | null
 }
 
 /** The grouped domain ports injected as one unit through NativeProvider opts

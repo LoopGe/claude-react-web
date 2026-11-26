@@ -308,7 +308,7 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
             agent_id: ctx.toolUseId,
             agent_type: agentType,
             last_assistant_message: lastReport(assistantTexts),
-          }, { signal: ctx.signal, hasContext: true, parentToolUseId: ctx.toolUseId })
+          }, { signal: ctx.signal, hasContext: true, parentToolUseId: ctx.toolUseId, transcript: nestedHistory })
           // continue:false overrides exit-2 (RS §2.3); a maxTurns-capped turn
           // ends regardless (the Stop seam's maxTurns precedence).
           if (turn.isError || stopDecision.continue === false) break

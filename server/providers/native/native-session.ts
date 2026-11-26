@@ -116,6 +116,12 @@ import { HookEngine, type HookDispatchContext } from './hooks/engine.js'
 import { runPromptHook } from './hooks/prompt-executor.js'
 import { runAgentHook } from './hooks/agent-executor.js'
 import { runHttpHook } from './hooks/http-executor.js'
+import {
+  TranscriptMaterializer,
+  hookTranscriptMessages,
+  sidechainTranscriptArtifactPath,
+  transcriptArtifactPath,
+} from './hooks/transcript.js'
 import type { HookDecision, HookEvent, HookSource } from './hooks/types.js'
 import { formatHooksValidationErrors, validateSessionHooksConfig, type AgentHookConfig, type HttpHookConfig, type PromptHookConfig, type SessionHooksConfig } from '../../../shared/hooks.js'
 
@@ -527,6 +533,17 @@ export class NativeSession implements NativeSessionCore {
   /** The neutral hook orchestrator. The trigger seams call dispatchHook;
    *  activity emits as hook/run operational frames on the live channel. */
   private readonly hookEngine: HookEngine
+  /** T22: the main-thread CLI-JSONL transcript artifact materializer (neutral
+   *  log → SDK RawLines via the injected projection port). The durable log stays
+   *  v3; this is a read-only projection for hook stdin / the agent evaluator. */
+  private readonly transcriptMaterializer: TranscriptMaterializer
+  /** T22: per-agent sidechain artifact materializers (SubagentStop's
+   *  agent_transcript_path), keyed by agent id. */
+  private readonly sidechainMaterializers = new Map<string, TranscriptMaterializer>()
+  /** T22: the materialized main artifact path, or null when the last
+   *  materialization failed (stdin then carries the CLI's empty-string shape
+   *  and the agent evaluator the no-transcript clause). */
+  private transcriptArtifact: string | null = null
   /** The init SessionStart dispatch (startup/resume/fork), kicked off at
    *  construction. Never rejects — SessionStart is non-blocking (RS §3), so a
    *  hook/application failure is logged and the session starts regardless.
@@ -616,6 +633,13 @@ export class NativeSession implements NativeSessionCore {
     // dispatch time, and modelOpts observes a live model switch. Hook rounds
     // suppress retry frames (auxiliary rounds, the nested-runner convention).
     const flagHookSource: HookSource = { kind: 'flag', collect: (event) => this.hooksConfig[event] ?? [] }
+    // T22: the projection port is the only neutral path from the host history
+    // seam into the core materializer (the core never imports the host adapter).
+    this.transcriptMaterializer = new TranscriptMaterializer({
+      path: transcriptArtifactPath(opts.stateDir, opts.id),
+      sessionId: opts.id,
+      project: (event, sessionId) => opts.ports.transcript.projectEventToSdkLine(event, sessionId),
+    })
     this.hookEngine = new HookEngine({
       sources: () => [flagHookSource],
       // The dispatch's sidechain parent rides the frame envelope: main-thread
@@ -633,7 +657,10 @@ export class NativeSession implements NativeSessionCore {
           ...ctx,
           // The session always wires the engine stream below; the assertion
           // is the wiring invariant, not a runtime state.
-          stream: ctx.stream!,
+          // T22: the dispatch seam prepends the conversation transcript before
+          // the verdict question (RS §6.1) — the executor sends the question
+          // alone, the attachment lives here.
+          stream: (req) => this.promptHookStream(req, ctx.stream!, ctx.transcript),
           // RS §6.1: prompt has NO gateway fallback — the transport fact is
           // forced off for this type (the agent keeps it).
           modelOpts: ctx.modelOpts ? { ...ctx.modelOpts, gateway: false } : undefined,
@@ -683,6 +710,9 @@ export class NativeSession implements NativeSessionCore {
         sessionModel: this.model,
         gateway: this.isGatewayTransport(),
       }),
+      // T22: the materialized artifact path (null until the first successful
+      // materialization, or after a failed one → the agent no-transcript clause).
+      transcriptPath: () => this.transcriptArtifact ?? undefined,
     })
     // Built after `this.model` is bound: the model getter must observe a live
     // switch, not the spawn-time value.
@@ -2879,8 +2909,84 @@ export class NativeSession implements NativeSessionCore {
    *  config replacement between dispatches is observed without a respawn
    *  (RS §12.3). The per-event ACTION semantics of the returned multi-fact
    *  decision belong to the calling seam. */
-  dispatchHook(event: HookEvent, input: Record<string, unknown>, ctx: HookDispatchContext): Promise<HookDecision> {
-    return this.hookEngine.dispatch(event, input, ctx)
+  async dispatchHook(event: HookEvent, input: Record<string, unknown>, ctx: HookDispatchContext): Promise<HookDecision> {
+    // T22: materialize the CLI-JSONL transcript artifact and stamp transcript_path
+    // on the dispatch (BaseHookInput, RS §3). Skipped entirely when no hooks are
+    // configured for the event (the common hook-less path). A materialization
+    // failure degrades to the CLI's empty-string shape (served/remote sessions,
+    // RS §3) rather than blocking the turn on an auxiliary artifact write.
+    let stamped = input
+    if (this.hookEngine.hasConfiguredHooks(event)) {
+      const path = await this.refreshTranscriptArtifact()
+      stamped = { ...input, transcript_path: path ?? '' }
+      // SubagentStop also carries the subagent's own sidechain transcript
+      // (agent_transcript_path, RS §3; the T18 deferral).
+      if (event === 'SubagentStop' && typeof input.agent_id === 'string') {
+        stamped.agent_transcript_path = (await this.refreshSidechainArtifact(input.agent_id)) ?? ''
+      }
+    }
+    return this.hookEngine.dispatch(event, stamped, ctx)
+  }
+
+  /** Materialize the main artifact from the current neutral log; return its
+   *  stable path, or null on failure (logged, never thrown). */
+  private async refreshTranscriptArtifact(): Promise<string | null> {
+    try {
+      this.transcriptArtifact = await this.transcriptMaterializer.materialize(neutralEventsOf(this.log))
+      return this.transcriptArtifact
+    } catch (err) {
+      this.transcriptArtifact = null
+      log.warn(`[${this.opts.id}] transcript artifact materialization failed:`, err)
+      return null
+    }
+  }
+
+  /** Materialize a subagent's sidechain artifact (the log slice whose envelope
+   *  parent is the agent id); return its path, or null on failure. */
+  private async refreshSidechainArtifact(agentId: string): Promise<string | null> {
+    try {
+      let materializer = this.sidechainMaterializers.get(agentId)
+      if (!materializer) {
+        materializer = new TranscriptMaterializer({
+          path: sidechainTranscriptArtifactPath(this.opts.stateDir, this.opts.id, agentId),
+          sessionId: this.opts.id,
+          project: (event, sessionId) => this.opts.ports.transcript.projectEventToSdkLine(event, sessionId),
+        })
+        this.sidechainMaterializers.set(agentId, materializer)
+      }
+      const sidechain = neutralEventsOf(this.log).filter((event) => event.parentToolUseId === agentId)
+      return await materializer.materialize(sidechain)
+    } catch (err) {
+      log.warn(`[${this.opts.id}] sidechain transcript artifact (${agentId}) materialization failed:`, err)
+      return null
+    }
+  }
+
+  /** The prompt evaluator's stream wrapper (T22, RS §6.1): prepend the
+   *  budget-truncated conversation transcript before the verdict question. The
+   *  transcript is the dispatch's nested history (a subagent seam) or the live
+   *  main model history, wire-projected; the question round's messages follow.
+   *  The attachment lives at the dispatch seam — the executor sends the question
+   *  alone. */
+  private promptHookStream(
+    req: Parameters<LoopDeps['stream']>[0],
+    baseStream: LoopDeps['stream'],
+    transcript: readonly RequestMessage[] | undefined,
+  ): AsyncIterable<CanonicalEvent> {
+    const history = transcript ?? this.history
+    // The last-usage fast path is authoritative only for the main history (the
+    // reading is the main thread's last round); a subagent transcript has no
+    // such correspondence, so it takes the estimate path.
+    const lastUsage = transcript === undefined ? this.lastRoundUsage : null
+    const messages = hookTranscriptMessages(history, req.model, lastUsage)
+    const projection = {
+      attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
+      preparedPdfs: this.preparedPdfs,
+    }
+    return (async function* () {
+      const wire = await projectNativeHistoryToWire(messages, projection, req.signal)
+      yield* baseStream({ ...req, messages: [...wire, ...req.messages] })
+    })()
   }
 
   /** The latest durable session title (latest-wins scan), for hook inputs. */
