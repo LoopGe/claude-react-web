@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { createSkill, deleteSkill, getSkillRoots, listSkills, parseSkillFrontmatter } from './skills.js'
+import { listPluginSkills } from './plugin-skills.js'
+import type { EnabledPluginEntry, MpStore } from './mp-store.js'
 
 // The user-scope skills dir lives inside the CLI's config dir, so it has to
 // follow $CLAUDE_CONFIG_DIR rather than a hardcoded ~/.claude — otherwise a
@@ -112,6 +114,91 @@ describe('listSkills — invocation frontmatter', () => {
       if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
       else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
       await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// The plugin merge is OPT-IN: the skill-manager UI route keeps the plain
+// user/project call, while plugin-aware callers (native catalog, policy
+// keyspace) pass pluginOpts. Plugin records whose SKILL.md realpath collides
+// with a user/project skill are dropped — the writable record wins (§5.8 Eze).
+describe('listSkills — opt-in plugin merge', () => {
+  function skillMd(name: string): string {
+    return ['---', `name: ${name}`, `description: ${name} skill`, '---', '', 'body', ''].join('\n')
+  }
+
+  async function setup() {
+    const root = await mkdtemp(join(tmpdir(), 'crw-skills-merge-'))
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const project = join(root, 'project')
+    // User skill (real dir) + project skill.
+    await mkdir(join(root, 'config', 'skills', 'shared'), { recursive: true })
+    await writeFile(join(root, 'config', 'skills', 'shared', 'SKILL.md'), skillMd('shared'), 'utf8')
+    await mkdir(join(project, '.claude', 'skills', 'proj'), { recursive: true })
+    await writeFile(join(project, '.claude', 'skills', 'proj', 'SKILL.md'), skillMd('proj'), 'utf8')
+    // Plugin: one unique skill + one dir junctioned to the user skill (same
+    // SKILL.md realpath). Junctions need no privileges on Windows; POSIX gets
+    // a plain symlink.
+    const pluginDir = join(root, 'mp', 'plugin')
+    await mkdir(join(pluginDir, 'skills', 'unique'), { recursive: true })
+    await writeFile(join(pluginDir, 'skills', 'unique', 'SKILL.md'), skillMd('unique'), 'utf8')
+    const linkPath = join(pluginDir, 'skills', 'linked')
+    await mkdir(dirname(linkPath), { recursive: true })
+    await symlink(join(root, 'config', 'skills', 'shared'), linkPath, 'junction')
+    const entry: EnabledPluginEntry = {
+      key: 'plug@mp',
+      name: 'plug',
+      dir: pluginDir,
+      cloneDir: join(root, 'mp', 'clone'),
+    }
+    const mpStore = { getEnabledPluginEntries: () => [entry] } as unknown as MpStore
+    const cleanup = async () => {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      await rm(root, { recursive: true, force: true })
+    }
+    return { root, project, mpStore, cleanup }
+  }
+
+  it('without pluginOpts stays user/project only', async () => {
+    const { project, cleanup } = await setup()
+    try {
+      const { roots, skills } = await listSkills(project)
+      expect(skills.map((s) => s.name).sort()).toEqual(['proj', 'shared'])
+      expect(skills.every((s) => s.scope !== 'plugin')).toBe(true)
+      expect(roots.map((r) => r.scope)).toEqual(['user', 'project'])
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it('with pluginOpts appends plugin records and drops realpath collisions with user/project', async () => {
+    const { project, mpStore, cleanup } = await setup()
+    try {
+      // The scanner itself surfaces the junctioned skill — the merge is what
+      // drops it on the user-skill realpath collision.
+      expect((await listPluginSkills(mpStore)).map((s) => s.name).sort()).toEqual(['plug:linked', 'plug:unique'])
+      const { roots, skills } = await listSkills(project, { mpStore })
+      expect(skills.map((s) => s.name).sort()).toEqual(['plug:unique', 'proj', 'shared'])
+      // The junctioned plugin skill resolves to the user skill's realpath —
+      // dropped, and the surviving 'shared' record is the writable user one.
+      expect(skills.filter((s) => s.name === 'shared')).toMatchObject([{ scope: 'user', readOnly: false }])
+      expect(skills.find((s) => s.name === 'plug:unique')).toMatchObject({ scope: 'plugin', readOnly: true, plugin: 'plug' })
+      // roots stays user/project — plugin discovery adds no writable root.
+      expect(roots.map((r) => r.scope)).toEqual(['user', 'project'])
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it('enabledPlugins: [] appends nothing', async () => {
+    const { project, mpStore, cleanup } = await setup()
+    try {
+      const { skills } = await listSkills(project, { mpStore, enabledPlugins: [] })
+      expect(skills.map((s) => s.name).sort()).toEqual(['proj', 'shared'])
+    } finally {
+      await cleanup()
     }
   })
 })

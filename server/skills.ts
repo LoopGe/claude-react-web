@@ -1,9 +1,11 @@
-import { promises as fs } from 'node:fs'
+import { promises as fs, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
 import { claudeConfigDir } from './claude-config-dir.js'
 import { MAX_SKILL_IMPORT_TOTAL_BYTES } from './constants.js'
+import { listPluginSkills } from './plugin-skills.js'
+import type { MpStore } from './mp-store.js'
 
 const log = createLogger('skills-core')
 import type { SkillImportFile, SkillRecord, SkillRootInfo, SkillScope, SkillValidationResponse } from '../shared/skills.js'
@@ -198,9 +200,46 @@ export function getSkillRoots(cwd?: string): SkillRootInfo[] {
   ]
 }
 
-export async function listSkills(cwd?: string): Promise<{ roots: SkillRootInfo[]; skills: SkillRecord[] }> {
+/** Opt-in plugin discovery for plugin-aware callers (native skill catalog,
+ *  policy keyspace). The plain `listSkills(cwd)` call stays user/project —
+ *  the skill-manager UI route keeps it unchanged. */
+export interface PluginSkillOptions {
+  mpStore: MpStore
+  /** undefined = all enabled plugins; [] = none; otherwise key membership. */
+  enabledPlugins?: string[]
+}
+
+/** Realpath for dedup, or null when it cannot be resolved. A failed realpath
+ *  means dedup is impossible for that path — the record is kept (§5.8 VXt:
+ *  resolution failure keeps the skill but abandons dedup, with a warning). */
+function realpathOrNull(path: string): string | null {
+  try {
+    return realpathSync(path)
+  } catch {
+    return null
+  }
+}
+
+export async function listSkills(cwd?: string, pluginOpts?: PluginSkillOptions): Promise<{ roots: SkillRootInfo[]; skills: SkillRecord[] }> {
   const [userSkills, projectSkills] = await Promise.all([listScope('user', cwd), listScope('project', cwd)])
-  return { roots: getSkillRoots(cwd), skills: [...userSkills, ...projectSkills] }
+  const skills = [...userSkills, ...projectSkills]
+  if (pluginOpts) {
+    const pluginRecords = await listPluginSkills(pluginOpts.mpStore, pluginOpts.enabledPlugins)
+    // The writable user/project record wins a realpath collision (§5.8 Eze:
+    // plugin skills dedup against the user-level realpath set first).
+    const claimed = new Set<string>()
+    for (const record of skills) {
+      const real = realpathOrNull(record.path)
+      if (real !== null) claimed.add(real)
+    }
+    for (const record of pluginRecords) {
+      const real = realpathOrNull(record.path)
+      if (real !== null && claimed.has(real)) continue
+      skills.push(record)
+    }
+  }
+  // roots stays user/project — plugin discovery adds no writable root.
+  return { roots: getSkillRoots(cwd), skills }
 }
 
 export async function getSkill(scope: SkillScope, name: string, cwd?: string): Promise<SkillRecord> {
