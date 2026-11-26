@@ -347,6 +347,11 @@ export interface NativeSessionOptions {
   subagentSystem?: string
   /** Loose canUseTool from CreateSessionOptions — (toolName, input, {signal}) => PermissionResult. */
   canUseTool?: (...args: unknown[]) => Promise<unknown>
+  /** Host-bound permission-mode change request, threaded from
+   *  CreateSessionOptions. Consumed by the plan-mode entry hook (enterPlanMode)
+   *  so a tool-driven mode change routes through the host manager. Absent in
+   *  unit sessions that drive the core without a host manager (a no-op then). */
+  requestPermissionModeChange?: (mode: string) => Promise<void>
   /** Test seam: evaluated PER TURN; a non-undefined return replaces the real
    *  network streamer for that turn. Per-turn evaluation lets tests swap the
    *  script between turns. */
@@ -2135,6 +2140,16 @@ export class NativeSession implements NativeSessionCore {
   async setModel(model?: string): Promise<void> {
     if (!model) return
     await this.updateAgentBase({ model })
+  }
+
+  /** Plan-mode entry signal: route the mode change through the host-bound
+   *  callback so the manager's live permissionMode (the broker plan gate + UI
+   *  chip) and this handle's mode (persistence + per-round guidance) update
+   *  together. The EnterPlanMode tool deps bind to this hook; a session with no
+   *  host callback (bare unit core) is a no-op. The mode string stays neutral —
+   *  the host owns the permission-mode vocabulary. */
+  async enterPlanMode(): Promise<void> {
+    await this.opts.requestPermissionModeChange?.('plan')
   }
 
   async setPermissionMode(mode: string): Promise<void> {

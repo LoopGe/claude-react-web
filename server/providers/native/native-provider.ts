@@ -311,6 +311,7 @@ export class NativeProvider implements AgentProvider {
         system,
         subagentSystem,
         canUseTool: opts.canUseTool,
+        requestPermissionModeChange: opts.requestPermissionModeChange,
         streamSupplier: () => this._testStream,
       })
       const hostCallbacks: NativeHostCallbacks = {

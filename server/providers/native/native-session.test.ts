@@ -37,6 +37,7 @@ import { SKILL_GUIDANCE } from './tools/skill.js'
 import { TASK_OUTPUT_GUIDANCE } from './tools/task-output.js'
 import { globTool } from './tools/glob.js'
 import { lsTool } from './tools/ls.js'
+import { createEnterPlanModeTool } from './tools/plan-mode.js'
 import { setFakeWebHandler } from './tools/web-test-transport.js'
 import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import { WEB_SEARCH_GUIDANCE } from './tools/web-search.js'
@@ -659,6 +660,31 @@ describe('NativeSession', () => {
     const result = frames.at(-1) as Frame
     expect(result.subtype).toBe('success')
     expect(result.result).toBe('hello native')
+    await session.destroy()
+  })
+
+  it('EnterPlanMode tool callback routes through requestPermissionModeChange', async () => {
+    const dir = await tempDir('native-plan-callback-')
+    const requestPermissionModeChange = vi.fn(async () => {})
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const session = provider.createSession({ id: 'plan-cb', cwd: dir, requestPermissionModeChange })
+    // The session exposes a bound enter-plan hook; the EnterPlanMode tool deps
+    // bind to it (registration itself is Task 4). Drive the real tool body.
+    const core = coreOf(session) as { enterPlanMode(): Promise<void> }
+    const tool = createEnterPlanModeTool({ enterPlanMode: () => core.enterPlanMode() })
+    const out = await tool.run({}, { cwd: dir, signal: new AbortController().signal })
+    expect(requestPermissionModeChange).toHaveBeenCalledOnce()
+    expect(requestPermissionModeChange).toHaveBeenCalledWith('plan')
+    expect(out.isError).toBeFalsy()
+    await session.destroy()
+  })
+
+  it('enterPlanMode is a no-op when no host callback is bound', async () => {
+    const dir = await tempDir('native-plan-noop-')
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const session = provider.createSession({ id: 'plan-noop', cwd: dir })
+    const core = coreOf(session) as { enterPlanMode(): Promise<void> }
+    await expect(core.enterPlanMode()).resolves.toBeUndefined()
     await session.destroy()
   })
 

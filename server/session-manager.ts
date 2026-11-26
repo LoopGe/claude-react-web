@@ -3905,6 +3905,17 @@ export class SessionManager {
       },
       onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(id, uuid, outcome),
       canUseTool: fullOpts.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
+      // Tool-driven permission-mode change (native EnterPlanMode). Bound on
+      // every spawn path through this funnel (create / resume / respawnFresh /
+      // fork / clear / Side Chat) so the mode change routes through the manager:
+      // doSetPermissionMode updates the LIVE s.permissionMode (the broker plan
+      // gate + UI chip) first, then forwards to the handle (persistence +
+      // guidance). Passed unconditionally like systemPromptAppend — the manager
+      // is provider-agnostic; native consumes it, claude ignores it (the CLI
+      // enforces plan mode before canUseTool). The tool supplies a valid mode.
+      requestPermissionModeChange: async (mode) => {
+        await this.setPermissionMode(id, mode as PermissionMode)
+      },
       onElicitation: fullOpts.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       // Atomic pair: the SDK requires onUserDialog whenever
       // supportedDialogKinds is non-empty, so the two always travel together.
@@ -12630,6 +12641,12 @@ export class SessionManager {
       },
       onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(session.id, uuid, outcome),
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
+      // Same tool-driven mode-change binding as the spawn funnel: an in-place
+      // respawn (autoResume / crash recovery) must re-bind it or a recovered
+      // native session loses tool-driven plan entry. See the funnel site.
+      requestPermissionModeChange: async (mode) => {
+        await this.setPermissionMode(session.id, mode as PermissionMode)
+      },
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onUserDialog: session.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,
       supportedDialogKinds: session.onUserDialog ? [...SUPPORTED_DIALOG_KINDS] : undefined,

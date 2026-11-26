@@ -102,6 +102,14 @@ export interface CreateSessionOptions {
    *  turn 结束的余量由 drainSupplements + 宿主 requeue 处理，不经此回调。 */
   onSupplementDelivered?: (uuid: string, outcome: SupplementOutcome) => void
   canUseTool?: (...args: unknown[]) => Promise<unknown>
+  /** Host-bound permission-mode change request (native tool-driven plan entry).
+   *  A native tool (EnterPlanMode) calls this to route a mode change through
+   *  SessionManager.setPermissionMode, so the manager's LIVE permissionMode
+   *  (the broker plan gate + UI chip) AND the native handle (persistence +
+   *  per-round guidance) update together. The manager binds it on every spawn
+   *  path; the claude provider ignores it (the CLI enforces plan mode before
+   *  canUseTool, so its EnterPlanMode never reaches this callback). */
+  requestPermissionModeChange?: (mode: string) => Promise<void>
   /** MCP elicitation (OAuth auth / server-initiated form) callback.
    *  SDK-agnostic loose signature mirroring canUseTool — the claude provider
    *  casts it to the SDK's OnElicitation when forwarding to query(). */
