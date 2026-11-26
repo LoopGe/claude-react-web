@@ -221,6 +221,35 @@ describe.runIf(process.platform === 'win32')('runCommandHook powershell (RS §4.
     // PowerShell kind keeps the native Windows path (no backslash normalization).
     expect(r.stdout.trim()).toBe(dir)
   })
+
+  // hn exit propagation (binary-verified): PowerShell does not surface a native
+  // command's exit code as its own. cmd.exe is native from PowerShell's view, so
+  // its exit code lands in $LASTEXITCODE; without the wrapper powershell.exe exits
+  // 0 and the exit-2 block silently fails on the win32 default PowerShell path.
+  it('a NATIVE command exiting 2 propagates through the wrapper → blocked', async () => {
+    const r = await runCommandHook(ps('cmd /c exit 2'), {}, ctx(dir))
+    expect(r.outcome).toBe('blocked')
+    expect(r.exitCode).toBe(2)
+  })
+
+  it('a NATIVE command exiting 3 propagates → non-blocking error', async () => {
+    const r = await runCommandHook(ps('cmd /c exit 3'), {}, ctx(dir))
+    expect(r.outcome).toBe('error')
+    expect(r.exitCode).toBe(3)
+  })
+
+  it('a NATIVE command exiting 0 stays success through the wrapper', async () => {
+    const r = await runCommandHook(ps('cmd /c exit 0'), {}, ctx(dir))
+    expect(r.outcome).toBe('success')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('a terminating PowerShell error is caught → exit 1 (non-blocking error)', async () => {
+    const r = await runCommandHook(ps('throw "ps-terminating-boom"'), {}, ctx(dir))
+    expect(r.outcome).toBe('error')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toContain('ps-terminating-boom')
+  })
 })
 
 describe('resolveHookShell (RS §4.8)', () => {

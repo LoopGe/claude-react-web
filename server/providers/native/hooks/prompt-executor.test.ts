@@ -85,12 +85,14 @@ function userText(req: CapturedReq): string {
 
 describe('runPromptHook', () => {
   describe('verdict mapping (RS §6.1)', () => {
-    it('ok:true → success, no block decision', async () => {
+    it('ok:true → success with EMPTY stdout (no verdict JSON leaked as context)', async () => {
       const raw = JSON.stringify({ ok: true, reason: 'looks fine' })
       const result = await runPromptHook(hook('Check it'), {}, makeCtx(verdictStream(raw)))
       expect(result.outcome).toBe('success')
       expect(result.decision?.decision).not.toBe('block')
-      expect(result.stdout).toBe(raw)
+      // The CLI's hook_success content is '' (binary iTn): a passing verdict must
+      // not ride stdout into the engine's plain-stdout context channel.
+      expect(result.stdout).toBe('')
     })
 
     it('ok:false reason "no" → blocked with the reason', async () => {
@@ -143,6 +145,7 @@ describe('runPromptHook', () => {
       )
       expect(result.outcome).toBe('success')
       expect(result.decision?.decision).not.toBe('block')
+      expect(result.stdout).toBe('')
     })
 
     it('SubagentStop + impossible:true → success as well', async () => {
@@ -264,7 +267,8 @@ describe('runPromptHook', () => {
         })()
       const result = await runPromptHook(hook('cond'), {}, makeCtx(stream))
       expect(result.outcome).toBe('success')
-      expect(result.stdout).toBe('{"ok":true,"reason":"split"}')
+      // Success carries empty stdout regardless of how the verdict text arrived.
+      expect(result.stdout).toBe('')
     })
   })
 

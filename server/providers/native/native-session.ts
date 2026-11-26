@@ -2309,9 +2309,12 @@ export class NativeSession implements NativeSessionCore {
         endReason = interrupted ? 'interrupted' : 'error'
         // StopFailure seam (RS §3, §9.1): fire-and-forget on a real turn error.
         // The error result above is already final — the hook's output AND exit
-        // code are ALL ignored, so the awaited decision is discarded (it can
-        // never change the result, force a continuation, or emit a second
-        // terminal frame); the await only lets the hook/run activity emit.
+        // code are ALL ignored, so the decision is discarded (it can never change
+        // the result, force a continuation, or emit a second terminal frame). The
+        // dispatch is DETACHED (void + .catch), NOT awaited: awaiting it would hold
+        // pumping=true up to the hook timeout (600s) and stall turn settlement, and
+        // the CLI does not await StopFailure (RS §3). The hook/run activity still
+        // emits asynchronously on the session signal, which outlives the turn.
         // CLI parity (binary-verified T9r/vXe): the CLI fires StopFailure only
         // on API-error assistant messages, NEVER on an aborted turn — so the
         // existing `interrupted` classification skips the dispatch and keeps its
@@ -2335,18 +2338,16 @@ export class NativeSession implements NativeSessionCore {
             }
           }
           const errorDetails = err instanceof Error ? err.message : String(err)
-          try {
-            await this.dispatchHook('StopFailure', {
-              session_id: this.opts.id,
-              cwd: this.opts.cwd,
-              hook_event_name: 'StopFailure',
-              error: 'unknown',
-              ...(errorDetails !== '' ? { error_details: errorDetails } : {}),
-              ...(lastAssistantText.trim() !== '' ? { last_assistant_message: lastAssistantText } : {}),
-            }, { signal: this.sessionAbort.signal, hasContext: false })
-          } catch (hookErr) {
+          void this.dispatchHook('StopFailure', {
+            session_id: this.opts.id,
+            cwd: this.opts.cwd,
+            hook_event_name: 'StopFailure',
+            error: 'unknown',
+            ...(errorDetails !== '' ? { error_details: errorDetails } : {}),
+            ...(lastAssistantText.trim() !== '' ? { last_assistant_message: lastAssistantText } : {}),
+          }, { signal: this.sessionAbort.signal, hasContext: false }).catch((hookErr) => {
             log.warn(`[${this.opts.id}] StopFailure hook dispatch failed:`, hookErr)
-          }
+          })
         }
       } finally {
         this.preparedPdfs.clearHistory('main')

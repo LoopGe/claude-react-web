@@ -4,7 +4,10 @@
 // result frame. StopFailure dispatches there fire-and-forget: the hook's output
 // AND exit code are ALL ignored (RS §3) — the error result is already final and
 // the decision can never change it, force a continuation, or emit a second
-// terminal frame. The dispatch is awaited only so its hook/run activity emits.
+// terminal frame. The dispatch is DETACHED (void + .catch) so it never stalls
+// turn settlement; its hook/run activity emits asynchronously on the session
+// signal. The harness waits for that activity before teardown so the hook is
+// observed rather than aborted mid-flight.
 //
 // CLI parity (binary-verified `T9r`/`vXe`): the CLI fires StopFailure only on
 // API-error assistant messages (`error = e.error ?? "unknown"`), NEVER on an
@@ -138,8 +141,8 @@ async function runErrorTurn(opts: {
     session.enqueueUserMessage(userMsg('go') as never)
     await vi.waitFor(() => {
       expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
-      // The dispatch is awaited after the result frame; don't tear down until
-      // the hook has actually run (else destroy aborts it mid-flight).
+      // The dispatch is detached after the result frame; don't tear down until
+      // the hook's activity has landed (else destroy aborts it mid-flight).
       if (opts.hooks) expect(hookCompleted(frames, 'StopFailure')).toBe(true)
     }, { timeout: 15_000 })
   } finally {
@@ -163,7 +166,7 @@ function hookEvents(frames: Frame[]): string[] {
 }
 
 /** Whether a hook's terminal activity (hook_response) for `event` has landed.
- *  The StopFailure dispatch is awaited AFTER the error result frame is pushed,
+ *  The StopFailure dispatch is detached AFTER the error result frame is pushed,
  *  so a harness that tears down on the result frame alone would race the hook;
  *  waiting for hook_response guarantees the hook ran and recorded its input. */
 function hookCompleted(frames: Frame[], event: string): boolean {

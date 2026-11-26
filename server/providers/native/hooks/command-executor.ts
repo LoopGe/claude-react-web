@@ -41,6 +41,18 @@ function toPowerShellCommand(command: string): string {
   return out
 }
 
+/** The CLI `hn` exit-propagation wrapper (binary-verified): PowerShell does NOT
+ *  surface a native command's exit code as its own — `python check.py` exiting 2
+ *  would otherwise leave powershell.exe at exit 0, so the exit-2 block silently
+ *  fails on the win32-without-Git-Bash default PowerShell path. Reset
+ *  $LASTEXITCODE, run the command in a try/catch (a terminating PowerShell error
+ *  becomes exit 1 via Write-Error), then exit with the native command's code
+ *  (including 2). The policy-helper PSModulePath / OutputEncoding prefixes the
+ *  CLI's hn also prepends are not hook facts and are deliberately omitted. */
+function withExitPropagation(command: string): string {
+  return `$LASTEXITCODE = 0; try { ${command} } catch { Write-Error $_; exit 1 }; exit $LASTEXITCODE`
+}
+
 /** The CLI `mX()` + `KVn()` PowerShell argv: -NoProfile -NonInteractive, then
  *  -ExecutionPolicy Bypass unless CLAUDE_CODE_POWERSHELL_RESPECT_EXECUTION_POLICY
  *  is set, then -Command <command>. */
@@ -94,7 +106,7 @@ export async function runCommandHook(
 
   const env = hookEnv(ctx, shell.kind)
   const args = shell.kind === 'powershell'
-    ? powerShellArgs(toPowerShellCommand(hook.command), env)
+    ? powerShellArgs(withExitPropagation(toPowerShellCommand(hook.command)), env)
     : ['-c', hook.command]
 
   return new Promise((resolvePromise) => {

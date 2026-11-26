@@ -1158,3 +1158,108 @@ describe('Review Focus cases end-to-end', () => {
     }
   }, 30_000)
 })
+
+// ── 5. prompt success injects no context (RS §6.1: hook_success content is '') ──
+// The prompt executor's success branch must carry EMPTY stdout: the engine's
+// exit-0 plain-stdout rule feeds success stdout into additionalContext on
+// UserPromptSubmit/SessionStart, so a verdict JSON returned as stdout would leak
+// into the turn as a user message. The CLI builds content:"" on both the ok:true
+// and the impossible-success branches (binary iTn). These dispatch through the
+// single decision point (NativeSession.dispatchHook) with a PASSING verdict round.
+describe('prompt success injects no context (RS §6.1 empty hook_success content)', () => {
+  const VERDICT = '{"ok":true,"reason":"prompt-verdict-reason"}'
+
+  /** A provider whose test stream answers the prompt verdict round (no tools)
+   *  with a PASSING verdict and every main round with a plain text turn. */
+  async function promptSession(hooks: SessionHooksConfig) {
+    const dir = await tempDir('parity-prompt-')
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const reqs: Array<{ messages: unknown[]; tools: unknown[] }> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = (req: { messages: unknown[]; tools: unknown[] }) => {
+      reqs.push(req)
+      const events = req.tools.length === 0 ? textTurn(VERDICT) : textTurn('answer')
+      return (async function* () { for (const ev of events) yield ev })()
+    }
+    const handle = provider.createSession({
+      id: 'parity-prompt',
+      cwd: dir,
+      providerExtras: { sdkOptions: { settings: { hooks } } },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const core = nativeCoreOf(handle)! as NativeSession
+    const frames: Array<Record<string, unknown>> = []
+    void (async () => { for await (const f of handle.messages) frames.push(f as Record<string, unknown>) })()
+    return {
+      dir,
+      core,
+      handle,
+      frames,
+      reqs,
+      destroy: async () => {
+        await (core as unknown as { sessionStartInit?: Promise<void> }).sessionStartInit?.catch(() => {})
+        await handle.destroy()
+      },
+    }
+  }
+
+  it('a PASSING prompt hook on UserPromptSubmit adds no context to the decision or the turn', async () => {
+    const hooks: SessionHooksConfig = {
+      UserPromptSubmit: [{ hooks: [{ type: 'prompt', prompt: 'check the prompt' }] }],
+    }
+    const s = await promptSession(hooks)
+    try {
+      // Decision level: the merged decision carries no additionalContext.
+      const decision = await s.core.dispatchHook(
+        'UserPromptSubmit',
+        { session_id: 'parity-prompt', cwd: s.dir, hook_event_name: 'UserPromptSubmit', prompt: 'go' },
+        { signal: s.handle.abortSignal, hasContext: true },
+      )
+      expect(decision).toEqual({ action: 'continue', additionalContext: [] })
+      // Turn level: drive a real turn and prove the verdict JSON never reaches the
+      // model request (the injection path the CRITICAL finding flagged).
+      s.handle.enqueueUserMessage(userMsg('go') as never)
+      await vi.waitFor(() => expect(resultFrames(s.frames)).toHaveLength(1), { timeout: 15_000 })
+      const turnReqs = s.reqs.filter((r) => r.tools.length > 0)
+      expect(turnReqs).toHaveLength(1)
+      const wire = JSON.stringify(turnReqs[0].messages)
+      expect(wire).toContain('go')
+      expect(wire).not.toContain('prompt-verdict-reason')
+      expect(wire).not.toContain('"ok":true')
+      // The verdict round ran and succeeded (manual dispatch + turn = 2 records).
+      const responses = hookResponses(s.frames, 'UserPromptSubmit')
+      expect(responses.length).toBeGreaterThanOrEqual(1)
+      expect(responses.every((r) => r.outcome === 'success')).toBe(true)
+    } finally {
+      await s.destroy()
+    }
+  }, 30_000)
+
+  it('a PASSING prompt hook on SessionStart adds no context', async () => {
+    const hooks: SessionHooksConfig = {
+      SessionStart: [{ hooks: [{ type: 'prompt', prompt: 'check the session' }] }],
+    }
+    const s = await promptSession(hooks)
+    try {
+      // The real init seam passes hasContext:false (RF4 pins the availability
+      // error); this dispatch forces hasContext:true so the prompt round actually
+      // runs and PASSES, pinning the empty-stdout contract on the SessionStart
+      // context channel too.
+      const decision = await s.core.dispatchHook(
+        'SessionStart',
+        { session_id: 'parity-prompt', cwd: s.dir, hook_event_name: 'SessionStart', source: 'startup' },
+        { signal: s.handle.abortSignal, hasContext: true },
+      )
+      expect(decision).toEqual({ action: 'continue', additionalContext: [] })
+      // init (availability error) + this passing dispatch → a success record exists.
+      await vi.waitFor(
+        () => {
+          const responses = hookResponses(s.frames, 'SessionStart')
+          expect(responses.some((r) => r.outcome === 'success')).toBe(true)
+        },
+        { timeout: 10_000 },
+      )
+    } finally {
+      await s.destroy()
+    }
+  }, 30_000)
+})

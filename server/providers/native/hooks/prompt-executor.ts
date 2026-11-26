@@ -147,7 +147,11 @@ export function validateVerdict(raw: unknown): { ok: true; verdict: Verdict } | 
   return { ok: true, verdict }
 }
 
-/** Verdict → HookExecResult (RS §6.1, binary `iTn` tail). ok:true succeeds.
+/** Verdict → HookExecResult (RS §6.1, binary `iTn` tail). ok:true succeeds with
+ *  EMPTY stdout — the CLI's hook_success content is '' (binary-verified: both the
+ *  ok:true and the impossible-success branch build `content:""`), so a successful
+ *  verdict never injects context on UserPromptSubmit/SessionStart (the engine's
+ *  exit-0 plain-stdout rule would otherwise push the verdict JSON into the turn).
  *  ok:false blocks with the CLI `[prompt]: reason` message; on non-Stop events
  *  the block also carries the CLI `preventContinuation:!q` fact as
  *  continue:false + stopReason (the engine merge is sticky-false; the Stop seam
@@ -158,12 +162,12 @@ export function validateVerdict(raw: unknown): { ok: true; verdict: Verdict } | 
 function verdictResult(hook: PromptHookConfig, verdict: Verdict, rawText: string, isStop: boolean): HookExecResult {
   if (verdict.ok) {
     log.debug(`prompt hook condition met: ${verdict.reason ?? ''}`)
-    return { outcome: 'success', stdout: rawText, stderr: '' }
+    return { outcome: 'success', stdout: '', stderr: '' }
   }
   const reason = verdict.reason ?? ''
   if (verdict.impossible === true && isStop) {
     log.debug(`prompt hook condition judged impossible: ${reason}`)
-    return { outcome: 'success', stdout: rawText, stderr: '' }
+    return { outcome: 'success', stdout: '', stderr: '' }
   }
   log.debug(`prompt hook condition not met: ${reason}`)
   const decision: SyncHookDecision = { decision: 'block', reason }
