@@ -2963,7 +2963,11 @@ describe('SessionManager', () => {
       // The seq sidecar is KEPT and appended (no deletion, no reset batch):
       // the boundary + summary seq-assign onto the same space as the seed turn.
       const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
-      expect(existsSync(sidecarFile)).toBe(true)
+      // The sidecar append is fire-and-forget (a serial promise queue onto a
+      // file handle), so under parallel test load the seed turn's file may
+      // not have landed by the time compact resolves — wait for existence
+      // the same way the row-count check below waits for the rows.
+      expect(await waitFor(() => existsSync(sidecarFile))).toBe(true)
       expect(await waitFor(async () =>
         (await new TranscriptSidecar(dir, info.id).load()).filter((r) => typeof r.seq === 'number').length === 5,
       )).toBe(true)
