@@ -1772,6 +1772,15 @@ export class NativeSession implements NativeSessionCore {
             cwd: this.opts.cwd,
             requestPermission: (toolName, input, toolUseId, signal) =>
               this.requestPermission(toolName, input, toolUseId, signal, turnPermissionMode),
+            dispatchHook: async (event, input, hookCtx) => {
+              // Pre-tool durability barrier (spec §7): a hook allow short-circuits
+              // requestPermission, which normally awaits the assistant flush before
+              // any tool runs. The PreToolUse dispatch awaits it here instead, so a
+              // hook-allowed tool still never runs before its announcing assistant
+              // frame is durable. A rejected flush surfaces as the turn's error.
+              if (event === 'PreToolUse' && this.assistantFlush) await this.assistantFlush
+              return this.dispatchHook(event, input, hookCtx)
+            },
             emit: (frame) => {
               const parent = this.ctx.parentToolUseId ?? null
               this.persistFrame(frame, parent)

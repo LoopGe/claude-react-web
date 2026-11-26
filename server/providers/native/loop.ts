@@ -28,6 +28,8 @@ import type { FrameContext } from './vocabulary/frame-context.js'
 import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
 import type { NativeProjectionOptions } from './attachment-projection.js'
+import type { HookDecision, HookEvent } from './hooks/types.js'
+import { isPlainObject } from '../../../shared/type-guards.js'
 
 /** The loop's live emission union: the core frame language plus a first-class
  *  tool result. Tool results travel as a ToolResultMessage (the host adapter's
@@ -58,6 +60,12 @@ export interface LoopDeps {
    *  It is never set for aborts, session-close denials, missing handlers or
    *  ordinary permission denials. */
   requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string; questionResult?: boolean }>
+  /** Hook decision point (T8). The per-call tool block dispatches PreToolUse
+   *  BEFORE requestPermission (RS §5): allow/deny short-circuit the permission
+   *  request, ask/defer/no-decision enter it. Absent = no hook engine wired
+   *  (the nested Agent runner until its own seam lands), so the permission
+   *  flow runs unchanged. The session owns the engine + config re-collection. */
+  dispatchHook?: (event: HookEvent, input: Record<string, unknown>, ctx: { signal: AbortSignal; hasContext: boolean }) => Promise<HookDecision>
   emit(frame: NativeLoopFrame): void
   /** Append the canonical result exactly once. The same UUID is passed to the
    * text-only UI frame, so disk replay and live rendering share identity. */
@@ -191,6 +199,10 @@ export async function runTurn(
       break
     }
     const results: NeutralToolResult[] = []
+    // PreToolUse additionalContext accumulated across this round's calls; it is
+    // injected into the conversation after the tool results (below) so the next
+    // model round sees it. Collected regardless of each call's allow/deny outcome.
+    const hookContext: string[] = []
     if (capped) {
       isError = true
       finalText = textOf(blocks)
@@ -214,25 +226,72 @@ export async function runTurn(
         results.push({ callId: call.id, content: [{ type: 'text', text: `unknown tool: ${call.name}` }], isError: true })
         continue
       }
-      const decision = await deps.requestPermission(call.name, input, call.id, signal)
-      if (!decision.allowed) {
-        // The broker resolves an ANSWERED AskUserQuestion as a marked denial:
-        // the message IS the tool's output, not a permission error. Only that
-        // explicit marker qualifies — aborts, session-close denials and
-        // ordinary permission denials stay errors for every tool.
-        results.push({
-          callId: call.id,
-          content: [{ type: 'text', text: decision.message ?? 'permission denied' }],
-          isError: !(call.name === 'AskUserQuestion' && decision.questionResult === true),
-        })
+      // PreToolUse hook seam (RS §5): dispatch BEFORE the permission request.
+      // allow/deny short-circuit canUseTool; ask/defer/no-decision enter the
+      // normal permission flow. A denied/blocked tool is never run.
+      // Alias parity (T2 carry-forward): the engine matches the literal
+      // tool_name; Agent/Task/Explore alias normalization belongs to the
+      // matcher seam and is deferred — a matcher naming only one alias does
+      // not yet fire on its siblings.
+      let effectiveInput = input
+      let hookAllow = false
+      let hookDenyMessage: string | undefined
+      if (deps.dispatchHook) {
+        const hookDecision = await deps.dispatchHook('PreToolUse', {
+          session_id: ctx.sessionId,
+          cwd: deps.cwd,
+          hook_event_name: 'PreToolUse',
+          tool_name: call.name,
+          tool_input: input,
+          tool_use_id: call.id,
+        }, { signal, hasContext: true })
+        for (const context of hookDecision.additionalContext) {
+          if (context.trim() !== '') hookContext.push(context)
+        }
+        if (hookDecision.action === 'block') {
+          hookDenyMessage = hookDecision.block?.reason ?? 'blocked by hook'
+        } else if (hookDecision.action === 'deny') {
+          hookDenyMessage = hookDecision.permission?.message ?? 'denied by hook'
+        } else if (hookDecision.action === 'allow') {
+          const updated = hookDecision.permission?.updatedInput
+          if (updated !== undefined) {
+            const refusal = updatedInputRefusal(tool, updated)
+            if (refusal !== null) hookDenyMessage = refusal
+            else effectiveInput = updated
+          }
+          if (hookDenyMessage === undefined) hookAllow = true
+        }
+        // ask / defer / continue → the normal permission flow below.
+      }
+      if (hookDenyMessage !== undefined) {
+        results.push({ callId: call.id, content: [{ type: 'text', text: hookDenyMessage }], isError: true })
         continue
+      }
+      let toolInput: Record<string, unknown>
+      if (hookAllow) {
+        toolInput = effectiveInput
+      } else {
+        const decision = await deps.requestPermission(call.name, effectiveInput, call.id, signal)
+        if (!decision.allowed) {
+          // The broker resolves an ANSWERED AskUserQuestion as a marked denial:
+          // the message IS the tool's output, not a permission error. Only that
+          // explicit marker qualifies — aborts, session-close denials and
+          // ordinary permission denials stay errors for every tool.
+          results.push({
+            callId: call.id,
+            content: [{ type: 'text', text: decision.message ?? 'permission denied' }],
+            isError: !(call.name === 'AskUserQuestion' && decision.questionResult === true),
+          })
+          continue
+        }
+        toolInput = decision.input
       }
       let text: string
       let resultContent: NeutralToolResult['content'] | undefined
       let runFailed = false
       try {
         const execute = (taskSignal: AbortSignal) =>
-          tool.run(decision.input as never, {
+          tool.run(toolInput as never, {
             cwd: deps.cwd,
             signal: taskSignal,
             toolUseId: call.id,
@@ -243,8 +302,8 @@ export async function runTurn(
           ? await deps.tasks.runForeground({
               toolUseId: call.id,
               taskType: backgroundable.taskType,
-              description: backgroundable.describe(decision.input),
-              subagentType: backgroundable.subagentType?.(decision.input),
+              description: backgroundable.describe(toolInput),
+              subagentType: backgroundable.subagentType?.(toolInput),
             }, execute, signal, ctx.parentToolUseId ?? undefined)
           : await execute(signal)
         text = outcome.text
@@ -289,6 +348,12 @@ export async function runTurn(
       deps.emit(liveFrame)
       history.push(historyMessage)
     }
+    // PreToolUse additionalContext joins the conversation after the tool results
+    // (the same pre-request boundary as steering supplements), so the next model
+    // round sees it. One user message carries the round's collected context.
+    if (hookContext.length > 0) {
+      history.push({ role: 'user', content: [{ type: 'text', text: hookContext.join('\n') }] })
+    }
     if (capped) break
   }
   if (deps.emitResult !== false) {
@@ -311,6 +376,89 @@ export async function runTurn(
 /** Concatenate the text blocks of an assembled round (the turn's final text). */
 function textOf(blocks: readonly ContentBlock[]): string {
   return blocks.filter((b): b is { type: 'text'; text: string } => b.type === 'text').map((b) => b.text).join('')
+}
+
+/** RS §5 Man/EWe: a PreToolUse hook's `updatedInput` must satisfy the tool's
+ *  input schema and must not carry internal reserved keys. Returns the deny
+ *  message (the tool is NOT run) or null when the rewrite is acceptable.
+ *  Internal `_`-prefixed keys are rejected outright — only Claude Code sets
+ *  such keys, and native tool inputs never legitimately carry them, so any is
+ *  hook-injected. This is a conservative superset of the CLI's `__artifact`-
+ *  specific reserved-key gate; RS §5 / Review Focus 5 pin the general `_` prefix. */
+function updatedInputRefusal(tool: ToolDef, updatedInput: Record<string, unknown>): string | null {
+  const hookLabel = `PreToolUse hook for ${tool.name}`
+  const issues = schemaIssues(tool.schema, updatedInput, '')
+  if (issues.length > 0) {
+    return `${hookLabel} returned updatedInput that failed schema validation: ${issues.join('; ')}\n`
+      + 'The tool input from the model was valid; the hook\'s rewrite of it was not.'
+  }
+  const reserved = Object.keys(updatedInput).find((key) => key.toLowerCase().startsWith('_'))
+  if (reserved !== undefined) {
+    return `${hookLabel} returned updatedInput with a key starting with "_" (in any letter case). `
+      + 'Only Claude Code sets such keys. Remove the key from updatedInput. The tool was not run.'
+  }
+  return null
+}
+
+/** Validate a value against the JSON-Schema subset the native tool schemas use
+ *  (type / enum / required / properties / items / additionalProperties:false /
+ *  minLength / minimum / maximum). Returns human-readable issue strings; empty
+ *  means valid. Unknown keywords are ignored, per JSON Schema semantics. This
+ *  mirrors the CLI's `inputSchema.safeParse` gate on a hook's updatedInput. */
+function schemaIssues(schema: Record<string, unknown>, value: unknown, path: string): string[] {
+  const issues: string[] = []
+  const at = path === '' ? 'input' : path
+  if (schema.type !== undefined && !matchesJsonType(schema.type, value)) {
+    issues.push(`${at} must be of type ${Array.isArray(schema.type) ? schema.type.join(' or ') : String(schema.type)}`)
+    return issues
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((option) => option === value)) {
+    issues.push(`${at} must be one of ${JSON.stringify(schema.enum)}`)
+  }
+  if (typeof value === 'string' && typeof schema.minLength === 'number' && value.length < schema.minLength) {
+    issues.push(`${at} must have at least ${schema.minLength} characters`)
+  }
+  if (typeof value === 'number') {
+    if (typeof schema.minimum === 'number' && value < schema.minimum) issues.push(`${at} must be >= ${schema.minimum}`)
+    if (typeof schema.maximum === 'number' && value > schema.maximum) issues.push(`${at} must be <= ${schema.maximum}`)
+  }
+  if (isPlainObject(value)) {
+    const properties = isPlainObject(schema.properties) ? schema.properties : {}
+    if (Array.isArray(schema.required)) {
+      for (const key of schema.required) {
+        if (typeof key === 'string' && !(key in value)) issues.push(`${childPath(path, key)} is required`)
+      }
+    }
+    for (const [key, child] of Object.entries(value)) {
+      const childSchema = properties[key]
+      if (isPlainObject(childSchema)) issues.push(...schemaIssues(childSchema, child, childPath(path, key)))
+      else if (schema.additionalProperties === false) issues.push(`${childPath(path, key)} is not an allowed property`)
+    }
+  }
+  if (Array.isArray(value) && isPlainObject(schema.items)) {
+    const items = schema.items
+    value.forEach((item, index) => issues.push(...schemaIssues(items, item, `${at}[${index}]`)))
+  }
+  return issues
+}
+
+function childPath(path: string, key: string): string {
+  return path === '' ? key : `${path}.${key}`
+}
+
+/** JSON-Schema `type` check (a single type or an array of alternatives). */
+function matchesJsonType(type: unknown, value: unknown): boolean {
+  if (Array.isArray(type)) return type.some((t) => matchesJsonType(t, value))
+  switch (type) {
+    case 'object': return isPlainObject(value)
+    case 'array': return Array.isArray(value)
+    case 'string': return typeof value === 'string'
+    case 'boolean': return typeof value === 'boolean'
+    case 'null': return value === null
+    case 'number': return typeof value === 'number' && Number.isFinite(value)
+    case 'integer': return typeof value === 'number' && Number.isInteger(value)
+    default: return true // an unknown type keyword imposes no constraint
+  }
 }
 
 /** Merge a protocol usage partial into the round's running neutral totals.
