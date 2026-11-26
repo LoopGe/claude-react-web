@@ -115,8 +115,9 @@ import {
 import { HookEngine } from './hooks/engine.js'
 import { runPromptHook } from './hooks/prompt-executor.js'
 import { runAgentHook } from './hooks/agent-executor.js'
+import { runHttpHook } from './hooks/http-executor.js'
 import type { HookDecision, HookEvent, HookSource } from './hooks/types.js'
-import { formatHooksValidationErrors, validateSessionHooksConfig, type AgentHookConfig, type PromptHookConfig, type SessionHooksConfig } from '../../../shared/hooks.js'
+import { formatHooksValidationErrors, validateSessionHooksConfig, type AgentHookConfig, type HttpHookConfig, type PromptHookConfig, type SessionHooksConfig } from '../../../shared/hooks.js'
 
 interface PendingDurableInitial {
   message: RequestMessage
@@ -572,7 +573,8 @@ export class NativeSession implements NativeSessionCore {
     // engine re-invokes sources() on every dispatch, so a live
     // applyFlagSettings replacement is effective on the next event (RS §12.3).
     // `command` defaults to the real runner inside HookEngine; prompt/agent
-    // are the LLM verdict executors (T13/T14). The engine's stream/tools/
+    // are the LLM verdict executors (T13/T14) and http is the POST executor
+    // (T15). The engine's stream/tools/
     // modelOpts are LIVE: the stream lambda reads the session's current
     // thinking/credentials per round, tools is the effective snapshot at
     // dispatch time, and modelOpts observes a live model switch. Hook rounds
@@ -608,6 +610,12 @@ export class NativeSession implements NativeSessionCore {
           },
           frameCtx: this.ctx,
         }),
+        // http (T15): POST the event JSON, parse the response as hook output.
+        // The URL / env gates (allowedUrls / managedEnvVars) come from the
+        // settings-source seam (allowedHttpHookUrls / httpHookAllowedEnvVars);
+        // until it supplies them they are undefined on ctx → allow-all URLs and
+        // hook-list-only header interpolation (RS §6.3).
+        http: (hook, input, ctx) => runHttpHook(hook as HttpHookConfig, input, ctx),
       },
       cwd: opts.cwd,
       sessionId: opts.id,
