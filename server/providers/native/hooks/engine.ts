@@ -55,12 +55,24 @@ export type HookExecutor = (
   },
 ) => Promise<HookExecResult>
 
+/** The per-dispatch context a trigger seam supplies. `parentToolUseId` is the
+ *  sidechain attribution for the hook activity frames: a subagent seam passes
+ *  the spawning tool_use id so its hook runs attribute to the sidechain, not
+ *  the main thread; main-thread seams omit it (null). */
+export interface HookDispatchContext {
+  signal: AbortSignal
+  hasContext: boolean
+  parentToolUseId?: string | null
+}
+
 export interface HookEngineOptions {
   /** Ordered hook-config sources (CLI precedence flag → settings → plugin →
    *  agent). Re-invoked on EVERY dispatch so live config changes apply. */
   sources: () => readonly HookSource[]
-  /** Activity sink — the session wires this to the neutral hook/run frame. */
-  emit: (e: HookRuntimeEvent) => void
+  /** Activity sink — the session wires this to the neutral hook/run frame.
+   *  The second argument is the dispatch's sidechain parent (null for the
+   *  main thread), carried verbatim into the frame envelope. */
+  emit: (e: HookRuntimeEvent, parentToolUseId: string | null) => void
   /** Per-type executors. `command` defaults to the real command runner; the
    *  other types arrive with their executor tasks. A type with no executor is a
    *  non-blocking start failure, not a crash. */
@@ -355,7 +367,7 @@ export class HookEngine {
   async dispatch(
     event: HookEvent,
     input: Record<string, unknown>,
-    ctx: { signal: AbortSignal; hasContext: boolean },
+    ctx: HookDispatchContext,
   ): Promise<HookDecision> {
     // Fresh per-event collection (RS §12.3) — never a cached snapshot.
     const groups = collectForEvent(this.opts.sources(), event)
@@ -420,17 +432,18 @@ export class HookEngine {
   private async runHook(
     hook: HookConfig,
     input: Record<string, unknown>,
-    ctx: { signal: AbortSignal; hasContext: boolean },
+    ctx: HookDispatchContext,
     event: HookEvent,
   ): Promise<HookExecResult> {
     const hookId = randomUUID()
     const name = hookName(hook)
     const startedAt = Date.now()
+    const parentToolUseId = ctx.parentToolUseId ?? null
     // The pump derives both id and hookId from hook_id, so they must be equal.
     this.opts.emit({
       kind: 'started',
       run: { id: hookId, hookId, hookName: name, event, status: 'started', startedAt, updatedAt: startedAt },
-    })
+    }, parentToolUseId)
 
     const execCtx: HookExecContext & {
       event: HookEvent
@@ -480,7 +493,7 @@ export class HookEngine {
     // output contract's log; the raw output is carried here).
     const output = result.outcome === 'success' ? result.stdout : result.stderr || result.stdout
     if (output) run.output = output
-    this.opts.emit({ kind: 'completed', run })
+    this.opts.emit({ kind: 'completed', run }, parentToolUseId)
     return result
   }
 }

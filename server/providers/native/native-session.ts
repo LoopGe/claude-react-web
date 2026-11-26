@@ -112,7 +112,7 @@ import {
   readNativeTarget,
   resolveNativeReadTarget,
 } from './file-read.js'
-import { HookEngine } from './hooks/engine.js'
+import { HookEngine, type HookDispatchContext } from './hooks/engine.js'
 import { runPromptHook } from './hooks/prompt-executor.js'
 import { runAgentHook } from './hooks/agent-executor.js'
 import { runHttpHook } from './hooks/http-executor.js'
@@ -597,13 +597,16 @@ export class NativeSession implements NativeSessionCore {
     const flagHookSource: HookSource = { kind: 'flag', collect: (event) => this.hooksConfig[event] ?? [] }
     this.hookEngine = new HookEngine({
       sources: () => [flagHookSource],
-      emit: (event) => this.emitFrame({
+      // The dispatch's sidechain parent rides the frame envelope: main-thread
+      // seams pass null, a subagent seam passes the spawning tool_use id so
+      // its hook activity attributes to the sidechain (T18).
+      emit: (event, parentToolUseId) => this.emitFrame({
         type: 'hook/run',
         event,
         sessionId: this.opts.id,
         uuid: this.ctx.uuid(),
-        parentToolUseId: null,
-      }, null),
+        parentToolUseId,
+      }, parentToolUseId),
       executors: {
         prompt: (hook, input, ctx) => runPromptHook(hook as PromptHookConfig, input, {
           ...ctx,
@@ -716,6 +719,7 @@ export class NativeSession implements NativeSessionCore {
         return { ...input, seq: appended.seq } as SessionEvent<'subagent/descriptor'>
       },
       agentStore: opts.agentStore,
+      dispatchHook: (event, input, hookCtx) => this.dispatchHook(event, input, hookCtx),
     }
     this.agentTool = createAgentTool(agentDeps)
     this.taskTool = createAgentTool(agentDeps, 'Task')
@@ -2715,7 +2719,7 @@ export class NativeSession implements NativeSessionCore {
    *  config replacement between dispatches is observed without a respawn
    *  (RS §12.3). The per-event ACTION semantics of the returned multi-fact
    *  decision belong to the calling seam. */
-  dispatchHook(event: HookEvent, input: Record<string, unknown>, ctx: { signal: AbortSignal; hasContext: boolean }): Promise<HookDecision> {
+  dispatchHook(event: HookEvent, input: Record<string, unknown>, ctx: HookDispatchContext): Promise<HookDecision> {
     return this.hookEngine.dispatch(event, input, ctx)
   }
 
