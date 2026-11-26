@@ -14,6 +14,7 @@ import { createMcpTransport, isMcpAuthError } from '../mcp-config.js'
 import { AttachmentObjectStore } from '../attachment-object-store.js'
 import { resolveAuthorizedAttachment } from '../attachment-access.js'
 import { listSkills } from '../skills.js'
+import type { MpStore } from '../mp-store.js'
 import { normalize, paginateRenderable } from '../history-reader.js'
 import { normalizeSubagentLine } from '../subagent-transcripts.js'
 import type { UploadStore } from '../upload-store.js'
@@ -32,6 +33,9 @@ export interface NativeHostPortsDeps {
    *  which resolves the per-server provider and passes it to
    *  createTransport as opts.authProvider. */
   authFor?: (name: string) => OAuthClientProvider | undefined
+  /** Marketplace store for read-only plugin-skill discovery. Absent = the
+   *  skill port stays user/project-only (handle-only unit sessions). */
+  mpStore?: MpStore
 }
 
 /** Build the real host adapters for one NativeProvider. The ConfigPort is a
@@ -88,7 +92,7 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
       },
     },
     skill: {
-      listSkills: (cwd) => listSkills(cwd),
+      listSkills: (cwd, enabledPlugins) => listSkills(cwd, deps.mpStore ? { mpStore: deps.mpStore, enabledPlugins } : undefined),
     },
     transcript: {
       normalize: (line, sessionId, trim) => normalize(line, sessionId, trim),

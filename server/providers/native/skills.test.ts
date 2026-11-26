@@ -488,3 +488,72 @@ describe('canonical plugin names', () => {
     expect(catalog.expand('plugin:skill', 'a b')!.body.endsWith('\n\nARGUMENTS: a b')).toBe(true)
   })
 })
+
+describe('NativeSkillCatalog — plugin scope', () => {
+  /** A plugin-scope record whose document lives at an ordinary path (the
+   *  composed `plugin:skill` name is record-only, never a directory). The
+   *  catalog reads `record.path` for the body and `record.scope`/`plugin` for
+   *  the picker tag — discovery itself stays host-side behind the port. */
+  async function pluginRecord(): Promise<SkillRecord> {
+    const dir = join(root, 'plugins', 'superpowers', 'skills', 'demo')
+    await mkdir(dir, { recursive: true })
+    const path = join(dir, 'SKILL.md')
+    await writeFile(path, [
+      '---',
+      'name: demo',
+      'description: Plugin demo skill',
+      '---',
+      '',
+      'Plugin demo instructions.',
+      '',
+    ].join('\n'), 'utf8')
+    return {
+      scope: 'plugin',
+      plugin: 'superpowers',
+      name: 'superpowers:demo',
+      description: 'Plugin demo skill',
+      path,
+      relativePath: join('skills', 'demo', 'SKILL.md'),
+      readOnly: true,
+      valid: true,
+      errors: [],
+    }
+  }
+
+  it('tags the command description with the owning plugin but keeps the model listing plain', async () => {
+    const record = await pluginRecord()
+    const catalog = new NativeSkillCatalog(project, {
+      listSkills: async () => ({ roots: [], skills: [record] }),
+    }, ['superpowers@mp'])
+    catalog.configure('all')
+    await catalog.reload()
+
+    // Picker grouping: the `/` command description carries `(plugin) `.
+    expect(catalog.commands()).toEqual([
+      { name: 'superpowers:demo', description: '(superpowers) Plugin demo skill', argumentHint: '' },
+    ])
+
+    // The model-facing listing stays PLAIN — no picker tag leaks into the prompt.
+    expect(catalog.section()).toBe('<available_skills>\n- superpowers:demo: Plugin demo skill\n</available_skills>')
+
+    // Expansion works for the composed name with positional args.
+    const expanded = catalog.expand('superpowers:demo', 'a b')
+    expect(expanded).not.toBeNull()
+    expect(expanded!.name).toBe('superpowers:demo')
+    expect(expanded!.body.endsWith('\n\nARGUMENTS: a b')).toBe(true)
+  })
+
+  it('forwards its enabledPlugins to the skill port on reload', async () => {
+    const listSkills = vi.fn(async () => ({ roots: [], skills: [] }))
+    const catalog = new NativeSkillCatalog(project, { listSkills }, ['superpowers@mp', 'other@mp'])
+    await catalog.reload()
+    expect(listSkills).toHaveBeenCalledWith(project, ['superpowers@mp', 'other@mp'])
+  })
+
+  it('passes undefined enabledPlugins when none are configured', async () => {
+    const listSkills = vi.fn(async () => ({ roots: [], skills: [] }))
+    const catalog = new NativeSkillCatalog(project, { listSkills })
+    await catalog.reload()
+    expect(listSkills).toHaveBeenCalledWith(project, undefined)
+  })
+})

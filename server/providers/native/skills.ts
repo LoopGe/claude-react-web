@@ -74,6 +74,9 @@ export type NativeSkillInvocationView = NativeSkillView & {
 export class NativeSkillCatalog {
   private readonly cwd: string | undefined
   private readonly skillPort: NativeSkillPort
+  /** Per-session plugin subset forwarded to the port's discovery; the catalog
+   *  itself never resolves plugins (that stays host-side behind the port). */
+  private readonly enabledPlugins: string[] | undefined
   /** Spawn `Options.skills`. `undefined` keeps the CLI default: every skill
    *  listed by name only. */
   private policy: string[] | 'all' | undefined
@@ -86,9 +89,10 @@ export class NativeSkillCatalog {
    *  its resolved context window. The default holds until the first resolve. */
   private listingBudget = DEFAULT_LISTING_BUDGET_TOKENS
 
-  constructor(cwd: string | undefined, skillPort: NativeSkillPort) {
+  constructor(cwd: string | undefined, skillPort: NativeSkillPort, enabledPlugins?: string[]) {
     this.cwd = cwd
     this.skillPort = skillPort
+    this.enabledPlugins = enabledPlugins
   }
 
   /** Store the spawn policy. Does not touch discovered skills — state is
@@ -113,7 +117,7 @@ export class NativeSkillCatalog {
   /** Re-read both skill roots and cache every valid skill's body. */
   async reload(): Promise<void> {
     const generation = ++this.nextGeneration
-    const { skills } = await this.skillPort.listSkills(this.cwd)
+    const { skills } = await this.skillPort.listSkills(this.cwd, this.enabledPlugins)
     // The skill port's listSkills returns user scope first, project scope
     // second; a project skill with the same name wins — the project is the
     // more specific owner.
@@ -152,7 +156,7 @@ export class NativeSkillCatalog {
    *  takes this after its discovery await so a later reload cannot mix a new
    *  prompt section or Skill-tool body with the invocation it already stored. */
   snapshot(policy?: readonly string[] | 'all'): NativeSkillInvocationView {
-    const snapshot = new NativeSkillCatalog(this.cwd, this.skillPort)
+    const snapshot = new NativeSkillCatalog(this.cwd, this.skillPort, this.enabledPlugins)
     snapshot.overrides = { ...this.overrides }
     snapshot.entries = [...this.entries]
     snapshot.byName = new Map(this.byName)
@@ -260,9 +264,15 @@ export class NativeSkillCatalog {
     for (const entry of this.entries) {
       if (this.stateOf(entry, policy) === 'off') continue
       if (entry.record.userInvocable === false) continue
+      // Plugin-scope commands carry a leading `(plugin) ` tag so the picker
+      // groups them by owning plugin (`pluginTagOf`). The model-facing listing
+      // (`sectionFor`) stays plain — the tag is a user-surface affordance only.
+      const description = entry.record.scope === 'plugin'
+        ? `(${entry.record.plugin}) ${entry.record.description}`
+        : entry.record.description
       out.push({
         name: entry.record.name,
-        description: entry.record.description,
+        description,
         argumentHint: entry.record.argumentHint ?? '',
       })
     }

@@ -62,9 +62,13 @@ export interface NativeAttachmentPort {
   resolveAuthorized(occurrence: ResolvedFileAttachment): Promise<ResolvedFileAttachment>
 }
 
-/** Skill discovery over the host's user/project skill roots. */
+/** Skill discovery over the host's user/project skill roots, plus the
+ *  read-only plugin roots when the host adapter has a marketplace store.
+ *  `enabledPlugins` is the per-session plugin subset (compound
+ *  `<plugin>@<marketplace>` keys); `undefined` = all enabled, `[]` = none.
+ *  Plugin discovery stays host-side — the port only forwards the subset. */
 export interface NativeSkillPort {
-  listSkills(cwd?: string): Promise<{ roots: SkillRootInfo[]; skills: SkillRecord[] }>
+  listSkills(cwd?: string, enabledPlugins?: string[]): Promise<{ roots: SkillRootInfo[]; skills: SkillRecord[] }>
 }
 
 /** Transcript format transforms: raw-line normalization, renderable paging,

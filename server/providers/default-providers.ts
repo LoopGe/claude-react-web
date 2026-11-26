@@ -53,7 +53,7 @@ export function createDefaultProviders(opts: DefaultProvidersOptions = {}): Prov
     authFor,
     agentStore: opts.agentStore,
     uploadStore: opts.uploadStore,
-    ports: createNativeHostPorts({ stateDir: opts.stateDir, uploadStore: opts.uploadStore, authFor }),
+    ports: createNativeHostPorts({ stateDir: opts.stateDir, uploadStore: opts.uploadStore, authFor, mpStore: opts.mpStore }),
   }))
   return registry
 }

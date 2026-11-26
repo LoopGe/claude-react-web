@@ -305,6 +305,7 @@ export class NativeProvider implements AgentProvider {
         mcp,
         agentStore: this.agentStore,
         skills: sdkOptions?.skills,
+        enabledPlugins: opts.enabledPlugins,
         toolProfile: extractToolProfile(sdkOptions),
         promptSuggestions: opts.promptSuggestions ?? true,
         system,

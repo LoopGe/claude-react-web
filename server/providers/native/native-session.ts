@@ -327,6 +327,10 @@ export interface NativeSessionOptions {
   /** Spawn `Options.skills` policy: `undefined` = the CLI's name-only
    *  default, `'all'` = list with descriptions, `string[]` = allowlist. */
   skills?: string[] | 'all'
+  /** Per-session plugin subset (compound `<plugin>@<marketplace>` keys) for
+   *  read-only plugin-skill discovery. `undefined` = all enabled, `[]` = none.
+   *  Forwarded to the skill port; the catalog never touches the marketplace. */
+  enabledPlugins?: string[]
   /** Create-body tool surface, merged field-wise with the selected persona.
    *  The native loop honors the allow/deny lists; permission aliases/config
    *  remain SDK-only fields and do not affect this in-process tool list. */
@@ -551,7 +555,7 @@ export class NativeSession implements NativeSessionCore {
     // Skills are discovered before the first turn can ask for them. The
     // policy is stored separately from discovery (the catalog resolves state
     // lazily), so configure-before/after-reload makes no difference.
-    this.skills = new NativeSkillCatalog(opts.cwd, opts.ports.skill)
+    this.skills = new NativeSkillCatalog(opts.cwd, opts.ports.skill, opts.enabledPlugins)
     this.skills.configure(opts.skills)
     this.skillsReady = this.startSkillReload()
     this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
