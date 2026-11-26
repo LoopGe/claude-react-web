@@ -474,6 +474,15 @@ export class NativeSession implements NativeSessionCore {
    *  of the session — the spawn-time opts value is only the starting point, so
    *  a bypass-spawned session can be downgraded mid-flight. */
   private permissionMode: string
+  /** The ACTIVE main turn's permission-mode snapshot, passed to every tool's
+   *  permission call for that turn. Normally frozen at turn start (a non-plan
+   *  mid-turn chip switch only lands next turn). A PLAN-involved mid-turn
+   *  transition — entry to plan (EnterPlanMode) or exit from plan (an approved
+   *  ExitPlanMode) — refreshes it via setPermissionMode so the broker's
+   *  acceptEdits/bypass auto-allow engages for the rest of the SAME turn, matching
+   *  the CLI's approve→execute semantics. Null when no main turn is running; the
+   *  turn loop owns a local reference, so a stale holder is never read. */
+  private activeTurnMode: { mode: string } | null = null
   /** Live extended-thinking config, read when the next request is built.
    *  `undefined` = no explicit choice (API/model default). */
   private thinking: ThinkingSetting | undefined
@@ -1617,7 +1626,11 @@ export class NativeSession implements NativeSessionCore {
         const turnSkillPolicy = turnProfile?.skills ?? this.baseSkillPolicy
         const turnBaseToolProfile = this.baseToolProfile
         const turnModel = this.model
-        const turnPermissionMode = this.permissionMode
+        // The turn's permission-mode snapshot. A plan-involved mid-turn
+        // transition refreshes `turnMode.mode` in place (setPermissionMode), so
+        // the loop below reads the current value on every tool call.
+        const turnMode = { mode: this.permissionMode }
+        this.activeTurnMode = turnMode
         const turnEffortLevel = this.effortLevel
         let turnSkillView: NativeSkillInvocationView | undefined
         let invocation: { name: string; body: string } | null = null
@@ -1753,7 +1766,7 @@ export class NativeSession implements NativeSessionCore {
             tasks: this.tasks,
             cwd: this.opts.cwd,
             requestPermission: (toolName, input, toolUseId, signal) =>
-              this.requestPermission(toolName, input, toolUseId, signal, turnPermissionMode),
+              this.requestPermission(toolName, input, toolUseId, signal, turnMode.mode),
             emit: (frame) => {
               const parent = this.ctx.parentToolUseId ?? null
               this.persistFrame(frame, parent)
@@ -1833,6 +1846,7 @@ export class NativeSession implements NativeSessionCore {
       } finally {
         this.preparedPdfs.clearHistory('main')
         this.turnAbort = null
+        this.activeTurnMode = null
       }
       // Exactly one turn/end per turn, OUTSIDE the turn try/catch: a flush
       // failure here must log rather than land in the catch above, which
@@ -2168,6 +2182,7 @@ export class NativeSession implements NativeSessionCore {
   }
 
   async setPermissionMode(mode: string): Promise<void> {
+    const previousEffective = this.permissionMode
     try {
       await this.updateAgentBase({ permissionMode: mode })
     } catch (err) {
@@ -2177,7 +2192,25 @@ export class NativeSession implements NativeSessionCore {
       // mode (requested base without a persona override, persona otherwise).
       this.basePermissionMode = mode
       this.applyEffectiveProfile()
+      this.refreshActiveTurnModeOnPlanTransition(previousEffective)
       throw err
+    }
+    this.refreshActiveTurnModeOnPlanTransition(previousEffective)
+  }
+
+  /** Spec G1 "Mid-turn transitions": a PLAN-involved mode change (entry to plan
+   *  via EnterPlanMode, or exit from plan via an approved ExitPlanMode) must bind
+   *  the very next tool call of the CURRENT turn — not just the next turn — so an
+   *  approved plan lets acceptEdits/bypass auto-allow the following edits in the
+   *  SAME turn (CLI approve→execute parity). Non-plan mid-turn switches keep the
+   *  turn-start snapshot (next-turn behavior). The broker plan gate already reads
+   *  the manager's live mode; this refreshes the per-call snapshot the
+   *  acceptEdits/bypass branches read. Model/effort/skill snapshots are untouched. */
+  private refreshActiveTurnModeOnPlanTransition(previousEffective: string): void {
+    const holder = this.activeTurnMode
+    if (!holder) return
+    if (previousEffective === 'plan' || this.permissionMode === 'plan') {
+      holder.mode = this.permissionMode
     }
   }
 

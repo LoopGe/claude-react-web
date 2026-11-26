@@ -11,11 +11,12 @@
 //
 // The capstone cases pin the TOOL-PERMISSION outcomes (not just guidance) of
 // the full plan flow through the real broker: approving an ExitPlanMode
-// proposal mid-turn switches the LIVE mode so the very next Edit is no longer
-// plan-denied and executes in the SAME turn; a model EnterPlanMode mid-turn
-// hard-denies a following Edit; and the user mode-chip entry to plan denies
-// Edit. A plan denial is a tool_result error carrying the broker's plan-gate
-// message (interrupt:false, so the turn continues and the model re-plans).
+// proposal mid-turn switches the LIVE mode and refreshes the turn snapshot so
+// the very next Edit AUTO-ALLOWS and executes in the SAME turn; a model
+// EnterPlanMode mid-turn hard-denies a following Edit; and the user mode-chip
+// entry to plan denies Edit. A plan denial is a tool_result error carrying the
+// broker's plan-gate message (interrupt:false, so the turn continues and the
+// model re-plans).
 //
 // Fixture shape copied from e2e-tools.test.ts (temp-dir SessionStore + custom
 // ProviderRegistry + scripted `_testStream`). Network is never touched: the
@@ -522,8 +523,8 @@ describe('native plan mode end to end through SessionManager', () => {
     await waitIdle(fx, id)
 
     // Chip into plan, then the plan turn. The turn-start permission snapshot is
-    // 'plan'; the broker plan gate reads the LIVE mode, so approving the plan
-    // mid-turn releases the plan lock for the very next tool call.
+    // 'plan'; approving the plan mid-turn refreshes that snapshot (spec G1 second
+    // seam), so the acceptEdits auto-allow engages for the rest of THIS turn.
     await fx.sm.setPermissionMode(id, 'plan')
     fx.scripts.push(
       toolUseTurn('x1', 'ExitPlanMode', JSON.stringify({ plan: '# Plan\n\n1. Change the value' })),
@@ -540,25 +541,13 @@ describe('native plan mode end to end through SessionManager', () => {
     expect(fx.requests.at(-1)!.system).toContain(PLAN_MODE_GUIDANCE)
 
     // Approve the plan into acceptEdits: decide → setPermissionMode flips the
-    // LIVE mode mid-turn.
+    // LIVE mode AND refreshes the active-turn snapshot mid-turn.
     await fx.sm.decide(id, planPending.id, { behavior: 'allow', planTargetMode: 'acceptEdits' })
     expect(liveMode(fx, id)).toBe('acceptEdits')
 
-    // The Edit is NOT plan-denied. A hard plan deny emits an error tool_result
-    // and never parks (see the entry-path cases below); instead the Edit raises
-    // a NORMAL permission prompt. The turn-start snapshot is still 'plan', so
-    // the acceptEdits auto-allow branch (which reads the snapshot, not the live
-    // mode) does not fire — only the plan gate reads live mode. Approving the
-    // prompt runs the Edit in this SAME turn.
-    await vi.waitFor(() => {
-      expect(fx.sm.listPending(id)).toHaveLength(1)
-    }, { timeout: 5000 })
-    const editPending = fx.sm.listPending(id)[0]
-    expect(editPending.toolName).toBe('Edit')
-    expect(editPending.toolUseID).toBe('e1')
-    await fx.sm.decide(id, editPending.id, { behavior: 'allow' })
-
-    // Exactly ONE more result frame: the plan turn settles after the Edit runs.
+    // The Edit AUTO-ALLOWS (acceptEdits, in-scope path) and executes in this SAME
+    // turn — no Edit prompt and no second approval. The turn settles on its own;
+    // had the Edit parked (plan-denied or prompted) this wait would time out.
     await vi.waitFor(() => {
       expect(frames.filter((f) => f.type === 'result')).toHaveLength(2)
     }, { timeout: 5000 })
@@ -570,10 +559,13 @@ describe('native plan mode end to end through SessionManager', () => {
     expect(editResult.text).toContain('edited target.txt')
     expect(editResult.text).not.toContain(PLAN_DENY)
     expect(await readFile(join(project, 'target.txt'), 'utf8')).toBe('new value\n')
-    // Guidance dropped once the mode left plan mid-turn (every round after the
-    // approval), and no permission is left pending.
-    expect(fx.requests.at(-1)!.system).not.toContain(PLAN_MODE_GUIDANCE)
+    // No Edit permission was ever parked: the turn settled with only the
+    // ExitPlanMode plan card approved (a parked Edit would have blocked it).
     expect(fx.sm.listPending(id)).toEqual([])
+    // Guidance dropped from EVERY round built after the approval — the Edit
+    // round (at(-2), the first post-approval round) and the final text round.
+    expect(fx.requests.at(-2)!.system).not.toContain(PLAN_MODE_GUIDANCE)
+    expect(fx.requests.at(-1)!.system).not.toContain(PLAN_MODE_GUIDANCE)
     unsubscribe()
   })
 
