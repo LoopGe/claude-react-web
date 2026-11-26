@@ -1,11 +1,12 @@
 // server/providers/native/hooks/command-executor.test.ts
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runCommandHook, type HookExecContext } from './command-executor.js'
 import { resolveHookShell } from './shell.js'
+import { getLogConfig, setLogConfig } from '../../../log.js'
 import type { CommandHookConfig } from '../../../../shared/hooks.js'
 
 const cmd = (command: string, extra: Partial<CommandHookConfig> = {}): CommandHookConfig =>
@@ -236,6 +237,48 @@ describe('resolveHookShell (RS §4.8)', () => {
       platform: 'win32', env: { PATH: 'C:\\ps' }, exists: (p) => p === 'C:\\ps\\pwsh.exe',
     })
     expect(r).toEqual({ path: 'C:\\ps\\pwsh.exe', kind: 'powershell' })
+  })
+
+  // The fallback warn is gated on the override being set: a broken
+  // CLAUDE_CODE_GIT_BASH_PATH is a misconfiguration that must surface, while
+  // the normal Git-Bash-absent default stays quiet (no per-resolution spam).
+  // Log config is pinned and restored so ambient LOG_LEVEL/LOG_SCOPES cannot
+  // mute or filter the line under test.
+  it('broken CLAUDE_CODE_GIT_BASH_PATH override on win32 default → warns AND falls back', () => {
+    const snapshot = getLogConfig()
+    setLogConfig({ level: 'warn', scopes: null })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const r = resolveHookShell(undefined, {
+        platform: 'win32',
+        env: { CLAUDE_CODE_GIT_BASH_PATH: 'C:\\missing\\bash.exe', PATH: 'C:\\ps' },
+        exists: (p) => p === 'C:\\ps\\pwsh.exe',
+      })
+      expect(r).toEqual({ path: 'C:\\ps\\pwsh.exe', kind: 'powershell' })
+      const warned = warnSpy.mock.calls.some(([tag, msg]) =>
+        tag === '[native-hooks]' && String(msg).includes('CLAUDE_CODE_GIT_BASH_PATH'))
+      expect(warned).toBe(true)
+    } finally {
+      warnSpy.mockRestore()
+      setLogConfig({ level: snapshot.level, scopes: snapshot.scopes ?? null })
+    }
+  })
+
+  it('normal Git-Bash-absent win32 default falls back silently (no warn)', () => {
+    const snapshot = getLogConfig()
+    setLogConfig({ level: 'warn', scopes: null })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const r = resolveHookShell(undefined, {
+        platform: 'win32', env: { PATH: 'C:\\ps' }, exists: (p) => p === 'C:\\ps\\pwsh.exe',
+      })
+      expect(r).toEqual({ path: 'C:\\ps\\pwsh.exe', kind: 'powershell' })
+      const warned = warnSpy.mock.calls.some(([tag]) => tag === '[native-hooks]')
+      expect(warned).toBe(false)
+    } finally {
+      warnSpy.mockRestore()
+      setLogConfig({ level: snapshot.level, scopes: snapshot.scopes ?? null })
+    }
   })
 
   it('powershell probe falls back to powershell.exe when pwsh absent', () => {

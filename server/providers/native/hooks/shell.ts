@@ -8,8 +8,11 @@
 // neither is found.
 import { existsSync } from 'node:fs'
 import { posix, win32 } from 'node:path'
+import { createLogger } from '../../../log.js'
 import { resolveBashShell, type ShellResolutionDeps } from '../tools/shell.js'
 import type { HookShell } from '../../../../shared/hooks.js'
+
+const log = createLogger('native-hooks')
 
 export interface HookShellResolution {
   path: string
@@ -47,13 +50,18 @@ export function resolveHookShell(shell?: HookShell, deps: ShellResolutionDeps = 
 
   const platform = deps.platform ?? process.platform
   if (platform !== 'win32') return { path: resolveBashShell(deps), kind: 'bash' }
-  // Windows default: bash when Git Bash resolves, powershell otherwise. The
-  // CLI's Git Bash probe returns null (after a warning) for a broken
-  // CLAUDE_CODE_GIT_BASH_PATH override, so OG() falls back to powershell there
-  // too — catching the resolver's throw reproduces that observable default.
+  // Windows default: bash when Git Bash resolves, powershell otherwise (RS
+  // §4.8, CLI OG()). A broken CLAUDE_CODE_GIT_BASH_PATH override is a
+  // misconfiguration, not a cue to silently run PowerShell — warn so it
+  // surfaces (the CLI's Git Bash probe warns there too). The normal
+  // Git-Bash-absent case stays quiet: the fallback IS the documented default.
   try {
     return { path: resolveBashShell(deps), kind: 'bash' }
-  } catch {
+  } catch (err) {
+    const env = deps.env ?? process.env
+    if (env.CLAUDE_CODE_GIT_BASH_PATH) {
+      log.warn(`Git Bash resolution failed, falling back to PowerShell: ${err instanceof Error ? err.message : String(err)}`)
+    }
     return { path: resolvePowerShell(deps), kind: 'powershell' }
   }
 }

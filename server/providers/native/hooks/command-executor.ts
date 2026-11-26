@@ -2,14 +2,15 @@
 // Runs a `type:'command'` hook: spawn the resolved shell, feed the event JSON on
 // stdin, capture stdout/stderr/exit under a bounded accumulator, enforce the
 // timeout / abort signal by killing the process tree, then hand the raw capture
-// to the output contract (parseHookOutput + applyOnFailure). Mirrors the spawn /
-// kill / timeout discipline of tools/bash.ts; the difference is stdin 'pipe'
-// (bash uses 'ignore') so the event JSON can be written.
-import { spawn, type ChildProcess } from 'node:child_process'
+// to the output contract (parseHookOutput + applyOnFailure). Shares the spawn /
+// kill / bounded-output discipline of tools/bash.ts via tools/process-output.ts;
+// the difference is stdin 'pipe' (bash uses 'ignore') so the event JSON can be
+// written.
+import { spawn } from 'node:child_process'
 import { createLogger } from '../../../log.js'
-import { decodeShellBytes } from '../../../shell-encoding.js'
-import { captureBirthTime, killTreeWin32 } from '../../../win32-job.js'
+import { captureBirthTime } from '../../../win32-job.js'
 import { capToolText } from '../tools/bash.js'
+import { CappedOutput, killTree } from '../tools/process-output.js'
 import type { CommandHookConfig, HookShell } from '../../../../shared/hooks.js'
 import { parseHookOutput, applyOnFailure, type HookExecResult } from './output.js'
 import { resolveHookShell } from './shell.js'
@@ -19,13 +20,6 @@ const log = createLogger('native-hooks')
 const DEFAULT_TIMEOUT_MS = 600_000
 // setTimeout's 32-bit ceiling (RS §4.5, CLI `tc=2147483647`).
 const MAX_TIMEOUT_MS = 2_147_483_647
-const HEAD_CHARS = 25_000
-const TAIL_CHARS = 5_000
-// Byte caps for the bounded accumulator: a UTF-8 character is at most 4 bytes,
-// so HEAD_BYTES decodes to at least HEAD_CHARS characters and capToolText still
-// sees a full head window (same reasoning as tools/bash.ts).
-const HEAD_BYTES = HEAD_CHARS * 4
-const TAIL_BYTES = TAIL_CHARS * 4
 
 export interface HookExecContext {
   cwd: string
@@ -33,55 +27,6 @@ export interface HookExecContext {
   signal: AbortSignal
   effortLevel?: string
   env?: NodeJS.ProcessEnv
-}
-
-/** Bounded head+tail byte buffer (mirrors tools/bash.ts CappedOutput, which is
- *  module-private there): keeps the first HEAD_BYTES and the last TAIL_BYTES,
- *  discarding the middle, so a `yes`-style flood cannot grow the heap. Bytes are
- *  decoded once at close so a multi-byte UTF-8 character split across pipe
- *  chunks survives. */
-class CappedOutput {
-  private readonly head: Buffer[] = []
-  private headBytes = 0
-  private tail: Buffer = Buffer.alloc(0)
-  private dropped = false
-
-  push(chunk: Buffer): void {
-    if (this.headBytes < HEAD_BYTES) {
-      const room = HEAD_BYTES - this.headBytes
-      const take = chunk.subarray(0, Math.min(room, chunk.length))
-      this.head.push(take)
-      this.headBytes += take.length
-      chunk = chunk.subarray(take.length)
-    }
-    if (chunk.length === 0) return
-    const merged = this.tail.length === 0 ? chunk : Buffer.concat([this.tail, chunk])
-    if (merged.length > TAIL_BYTES) {
-      this.tail = merged.subarray(merged.length - TAIL_BYTES)
-      this.dropped = true
-    } else {
-      this.tail = merged
-    }
-  }
-
-  text(): string {
-    const head = decodeShellBytes(Buffer.concat(this.head))
-    const tail = this.tail.length === 0 ? '' : decodeShellBytes(this.tail)
-    if (!this.dropped) return head + tail
-    return `${head}\n...[truncated]...\n${tail}`
-  }
-}
-
-/** Kill the command AND its children. On Windows the spawned Git Bash is a
- *  launcher whose real shell and command run as descendants, so killing the
- *  direct child leaves them running and the promise parked on the open stdio
- *  pipes (same hazard as tools/bash.ts). */
-function killTree(child: ChildProcess, birthTime: string | null): void {
-  if (process.platform === 'win32' && child.pid !== undefined) {
-    killTreeWin32(child.pid, birthTime)
-    return
-  }
-  child.kill('SIGKILL')
 }
 
 /** The CLI `yEr` PowerShell command transform (RS §4.8): `${CLAUDE_PROJECT_DIR}`
