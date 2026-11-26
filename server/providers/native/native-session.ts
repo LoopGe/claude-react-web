@@ -46,7 +46,7 @@ import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
 import type { NativeHostPorts } from './ports.js'
-import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel, type StreamRequest } from './anthropic-stream.js'
+import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel, type RequestOutputFormat, type StreamRequest } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, type FrameContext } from './vocabulary/frame-context.js'
 import { NativeSessionLog, loadNativeSessionLogSync, type NativeSeed } from './session-log/log.js'
@@ -113,8 +113,10 @@ import {
   resolveNativeReadTarget,
 } from './file-read.js'
 import { HookEngine } from './hooks/engine.js'
+import { runPromptHook } from './hooks/prompt-executor.js'
+import { runAgentHook } from './hooks/agent-executor.js'
 import type { HookDecision, HookEvent, HookSource } from './hooks/types.js'
-import { formatHooksValidationErrors, validateSessionHooksConfig, type SessionHooksConfig } from '../../../shared/hooks.js'
+import { formatHooksValidationErrors, validateSessionHooksConfig, type AgentHookConfig, type PromptHookConfig, type SessionHooksConfig } from '../../../shared/hooks.js'
 
 interface PendingDurableInitial {
   message: RequestMessage
@@ -569,9 +571,12 @@ export class NativeSession implements NativeSessionCore {
     // The flag source reads the LIVE config field per collection, and the
     // engine re-invokes sources() on every dispatch, so a live
     // applyFlagSettings replacement is effective on the next event (RS §12.3).
-    // `command` defaults to the real runner inside HookEngine; the
-    // http/prompt/agent executors arrive with their tasks (a type with no
-    // executor is a non-blocking start failure, not a crash).
+    // `command` defaults to the real runner inside HookEngine; prompt/agent
+    // are the LLM verdict executors (T13/T14). The engine's stream/tools/
+    // modelOpts are LIVE: the stream lambda reads the session's current
+    // thinking/credentials per round, tools is the effective snapshot at
+    // dispatch time, and modelOpts observes a live model switch. Hook rounds
+    // suppress retry frames (auxiliary rounds, the nested-runner convention).
     const flagHookSource: HookSource = { kind: 'flag', collect: (event) => this.hooksConfig[event] ?? [] }
     this.hookEngine = new HookEngine({
       sources: () => [flagHookSource],
@@ -582,9 +587,37 @@ export class NativeSession implements NativeSessionCore {
         uuid: this.ctx.uuid(),
         parentToolUseId: null,
       }, null),
-      executors: {},
+      executors: {
+        prompt: (hook, input, ctx) => runPromptHook(hook as PromptHookConfig, input, {
+          ...ctx,
+          // The session always wires the engine stream below; the assertion
+          // is the wiring invariant, not a runtime state.
+          stream: ctx.stream!,
+          // RS §6.1: prompt has NO gateway fallback — the transport fact is
+          // forced off for this type (the agent keeps it).
+          modelOpts: ctx.modelOpts ? { ...ctx.modelOpts, gateway: false } : undefined,
+        }),
+        agent: (hook, input, ctx) => runAgentHook(hook as AgentHookConfig, input, {
+          ...ctx,
+          stream: ctx.stream!,
+          tools: ctx.tools ?? [],
+          tasks: this.tasks,
+          attachmentProjection: {
+            attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
+            preparedPdfs: this.preparedPdfs,
+          },
+          frameCtx: this.ctx,
+        }),
+      },
       cwd: opts.cwd,
       sessionId: opts.id,
+      stream: (req) => this.streamFor(req, { suppressRetryFrames: true }),
+      tools: () => this.tools,
+      modelOpts: () => ({
+        smallFastEnv: this.opts.ports.config.smallFastModel || undefined,
+        sessionModel: this.model,
+        gateway: this.isGatewayTransport(),
+      }),
     })
     // Built after `this.model` is bound: the model getter must observe a live
     // switch, not the spawn-time value.
@@ -1186,9 +1219,20 @@ export class NativeSession implements NativeSessionCore {
    *  callback surfaces each backoff as an `api_retry` frame. A nested
    *  (subagent) stream sets `suppressRetryFrames`: retry behavior is
    *  unchanged, but a subagent's backoff must not look like a main-thread
-   *  retry in the UI. */
+   *  retry in the UI. `req.thinking`/`req.outputFormat` are per-request
+   *  overrides (the hook verdict rounds): thinking wins over the session's
+   *  live config, outputFormat rides as output_config.format. The main turn
+   *  passes neither, so its behavior is unchanged. */
   private defaultStream(
-    req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
+    req: {
+      model: string
+      system: string
+      tools: unknown[]
+      messages: unknown[]
+      signal: AbortSignal
+      thinking?: ThinkingSetting
+      outputFormat?: RequestOutputFormat
+    },
     opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined },
   ): AsyncIterable<CanonicalEvent> {
     return streamAnthropicMessages(
@@ -1199,10 +1243,11 @@ export class NativeSession implements NativeSessionCore {
         tools: req.tools,
         messages: req.messages,
         maxTokens: DEFAULT_MAX_TOKENS,
-        thinking: this.thinking,
+        thinking: req.thinking ?? this.thinking,
         thinkingDisplay: this.thinkingDisplay,
         effort: opts?.effortLevel ? opts.effortLevel() : this.effortLevel,
         fastMode: this.fastMode,
+        ...(req.outputFormat !== undefined ? { outputFormat: req.outputFormat } : {}),
         signal: req.signal,
       },
       async (info) => {
@@ -1222,12 +1267,35 @@ export class NativeSession implements NativeSessionCore {
   }
 
   private streamFor(
-    req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
+    req: {
+      model: string
+      system: string
+      tools: unknown[]
+      messages: unknown[]
+      signal: AbortSignal
+      thinking?: ThinkingSetting
+      outputFormat?: RequestOutputFormat
+    },
     opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined },
   ): AsyncIterable<CanonicalEvent> {
     // The test seam ignores opts: scripted streams have no retry path.
     const testStream = this.opts.streamSupplier?.()
     return testStream ? testStream(req) : this.defaultStream(req, opts)
+  }
+
+  /** The RS §6.2 gateway fact for the agent-hook model fallback: a
+   *  non-first-party endpoint is a gateway (the CLI's transport-type check;
+   *  native classifies the resolved credentials' baseUrl by the same
+   *  first-party host rule the claude provider's tool-search gate uses). An
+   *  unparseable URL is treated as a gateway — the session-model fallback is
+   *  the model this transport actually serves. */
+  private isGatewayTransport(): boolean {
+    try {
+      const host = new URL(this.opts.credentials().baseUrl).hostname.toLowerCase()
+      return host !== 'api.anthropic.com' && !host.endsWith('.anthropic.com')
+    } catch {
+      return true
+    }
   }
 
   /** Turn-end prompt-suggestion orchestration (design §5–§7). Runs the

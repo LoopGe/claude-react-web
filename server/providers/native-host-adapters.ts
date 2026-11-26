@@ -55,6 +55,7 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
     get nativeAutoCompactRatio() { return config.nativeAutoCompactRatio },
     get modelList() { return config.modelList },
     get hasProfiles() { return config.profiles.length > 0 },
+    get smallFastModel() { return config.smallFastModel },
     activeProfile: () => resolveActiveProfile(config.profiles, config.activeProfileId, DEFAULT_PROFILE),
     fallbackProfile(): ProviderProfile {
       const cached = fallbackProfiles.get(config)

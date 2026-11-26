@@ -25,6 +25,10 @@ export interface NativeConfigPort {
   readonly nativeAutoCompactRatio: number
   readonly modelList: readonly string[]
   readonly hasProfiles: boolean
+  /** Small-fast model for the prompt/agent hook evaluators (the CLI's
+   *  ANTHROPIC_SMALL_FAST_MODEL override path). EMPTY = unset — the hook
+   *  model resolver applies its own default. */
+  readonly smallFastModel: string
   activeProfile(): ProviderProfile
   fallbackProfile(): ProviderProfile
 }

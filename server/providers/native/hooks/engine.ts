@@ -27,6 +27,7 @@ import { collectForEvent } from './collection.js'
 import { matches, matcherTarget } from './matcher.js'
 import { applyOnFailure, type HookExecResult } from './output.js'
 import { runCommandHook, type HookExecContext } from './command-executor.js'
+import type { HookModelOptions } from './model.js'
 import type { HookDecision, HookSource } from './types.js'
 
 const log = createLogger('native-hooks')
@@ -36,7 +37,8 @@ const PARALLEL_CAP = 12
 
 /** The execution context an executor receives: the base command-exec context
  *  plus the event facts the prompt/agent executors consume (command/http ignore
- *  them). The engine fills event/hasContext/stream/tools. */
+ *  them). The engine fills event/hasContext/stream/tools/modelOpts/agentId from
+ *  its options (tools/modelOpts/agentId are LIVE getters, read per dispatch). */
 export type HookExecutor = (
   hook: HookConfig,
   input: Record<string, unknown>,
@@ -45,6 +47,8 @@ export type HookExecutor = (
     hasContext: boolean
     stream?: LoopDeps['stream']
     tools?: ToolDef[]
+    modelOpts?: HookModelOptions
+    agentId?: string
   },
 ) => Promise<HookExecResult>
 
@@ -61,7 +65,19 @@ export interface HookEngineOptions {
   cwd: string
   sessionId: string
   stream?: LoopDeps['stream']
-  tools?: ToolDef[]
+  /** LIVE session-tool snapshot getter, read per dispatch — a mid-session
+   *  MCP/persona change must reach the agent evaluator, not a spawn-frozen
+   *  list. */
+  tools?: () => ToolDef[]
+  /** LIVE model-resolution facts for the prompt/agent executors (T12): the
+   *  config small-fast value, the session's current main model and the
+   *  transport gateway fact. Read per dispatch so a live model switch moves
+   *  the gateway fallback. */
+  modelOpts?: () => HookModelOptions
+  /** The running context's agent id (RS §12.2 recursion guard): a
+   *  `hook-agent-` prefix cancels prompt/agent rounds. Absent on the main
+   *  thread; a subagent dispatch seam supplies its own id. */
+  agentId?: () => string | undefined
 }
 
 /** The default command executor: the real runner (T4). The command slot is only
@@ -397,14 +413,23 @@ export class HookEngine {
       run: { id: hookId, hookId, hookName: name, event, status: 'started', startedAt, updatedAt: startedAt },
     })
 
-    const execCtx: HookExecContext & { event: HookEvent; hasContext: boolean; stream?: LoopDeps['stream']; tools?: ToolDef[] } = {
+    const execCtx: HookExecContext & {
+      event: HookEvent
+      hasContext: boolean
+      stream?: LoopDeps['stream']
+      tools?: ToolDef[]
+      modelOpts?: HookModelOptions
+      agentId?: string
+    } = {
       cwd: this.opts.cwd,
       sessionId: this.opts.sessionId,
       signal: ctx.signal,
       event,
       hasContext: ctx.hasContext,
       ...(this.opts.stream !== undefined ? { stream: this.opts.stream } : {}),
-      ...(this.opts.tools !== undefined ? { tools: this.opts.tools } : {}),
+      ...(this.opts.tools !== undefined ? { tools: this.opts.tools() } : {}),
+      ...(this.opts.modelOpts !== undefined ? { modelOpts: this.opts.modelOpts() } : {}),
+      ...(this.opts.agentId !== undefined ? { agentId: this.opts.agentId() } : {}),
     }
     const executor = this.executors[hook.type]
     let result: HookExecResult

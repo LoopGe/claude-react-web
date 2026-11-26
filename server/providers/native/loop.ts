@@ -29,6 +29,8 @@ import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
 import type { NativeProjectionOptions } from './attachment-projection.js'
 import type { HookDecision, HookEvent } from './hooks/types.js'
+import type { ThinkingSetting } from '../../../shared/session-info.js'
+import type { RequestOutputFormat } from './anthropic-stream.js'
 import { isPlainObject } from '../../../shared/type-guards.js'
 
 /** The loop's live emission union: the core frame language plus a first-class
@@ -54,7 +56,21 @@ export interface PersistedToolResult {
 }
 
 export interface LoopDeps {
-  stream(req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal }): AsyncIterable<CanonicalEvent>
+  /** One API round. `thinking`/`outputFormat` are OPTIONAL per-request
+   *  overrides: the production supplier (native-session streamFor →
+   *  defaultStream) projects them onto the Anthropic request OVER the session
+   *  defaults. The main turn loop passes neither (session behavior unchanged);
+   *  the hook verdict rounds pass thinking-disabled (+ json_schema for prompt)
+   *  through this same shape. */
+  stream(req: {
+    model: string
+    system: string
+    tools: unknown[]
+    messages: unknown[]
+    signal: AbortSignal
+    thinking?: ThinkingSetting
+    outputFormat?: RequestOutputFormat
+  }): AsyncIterable<CanonicalEvent>
   tools: ToolDef[]
   /** Maximum number of model API rounds for this prompt. A final-round
    *  tool_use receives a synthetic error result instead of being executed. */

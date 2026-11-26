@@ -20,6 +20,15 @@ export type RequestThinking = ThinkingSetting
 /** The API's reasoning-effort ladder (same union as the SDK's EffortLevel). */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+/** Structured-output constraint for one request (the prompt hook's verdict
+ *  json_schema). Wire form: `output_config.format` — the API deprecated the
+ *  top-level `output_format` field (binary-verified: the pinned SDK migrates
+ *  `output_format` into `output_config.format` and rejects sending both). */
+export interface RequestOutputFormat {
+  type: 'json_schema'
+  schema: Record<string, unknown>
+}
+
 /** Runtime membership list for the union above — the live-control path
  *  validates against it so an invalid level fails loudly instead of being
  *  silently omitted from the request. */
@@ -52,6 +61,9 @@ export interface StreamRequest {
   /** Fast-mode intent. Model-gated at build time, like `effort`: the
    *  `speed` field AND the beta header are omitted together. */
   fastMode?: boolean
+  /** Per-request structured-output constraint (hook verdict rounds). Merged
+   *  into `output_config.format` alongside any effort level. */
+  outputFormat?: RequestOutputFormat
   signal: AbortSignal
 }
 
@@ -138,6 +150,12 @@ export function buildRequestBody(req: StreamRequest): Record<string, unknown> {
   // 'xhigh' survives a switch to a model that only offers 'max'.
   if (req.effort !== undefined && effortLevelsForModel(req.model)?.includes(req.effort)) {
     body.output_config = { effort: req.effort }
+  }
+
+  // Structured output shares output_config with effort (the API's single
+  // home for both; the deprecated top-level output_format is never sent).
+  if (req.outputFormat) {
+    body.output_config = { ...(body.output_config as Record<string, unknown> | undefined), format: req.outputFormat }
   }
 
   if (fastModeEnabled(req)) body.speed = 'fast'

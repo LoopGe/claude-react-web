@@ -48,12 +48,14 @@ function hangingStream(): LoopDeps['stream'] {
         if (req.signal.aborted) resolve()
         else req.signal.addEventListener('abort', () => resolve(), { once: true })
       })
+      yield* []
     })()
 }
 
 function throwingStream(message: string): LoopDeps['stream'] {
   return () =>
     (async function* () {
+      yield* []
       throw new Error(message)
     })()
 }
@@ -224,7 +226,10 @@ describe('runPromptHook', () => {
       await runPromptHook(hook('Keep \\$ARGUMENTS literal'), { a: 1 }, makeCtx(verdictStream('{"ok":true,"reason":"r"}', capture)))
       const text = userText(capture.req!)
       expect(text).toContain('Keep $ARGUMENTS literal')
-      expect(text).not.toContain('{"a":1} please')
+      // The escaped placeholder was NOT replaced by the input JSON (the JSON
+      // still rides the appended ARGUMENTS line, since no unescaped placeholder
+      // was substituted).
+      expect(text).not.toContain('Keep {"a":1} literal')
     })
   })
 

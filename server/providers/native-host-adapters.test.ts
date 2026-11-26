@@ -133,6 +133,7 @@ describe('ConfigPort adapter mirrors the provider resolution', () => {
       nativeAutoCompactRatio: 0.5,
       modelList: ['injected-model'],
       hasProfiles,
+      smallFastModel: '',
       activeProfile: () => injected,
       fallbackProfile: () => injected,
     })

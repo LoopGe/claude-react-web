@@ -130,6 +130,13 @@ interface ConfigFile {
    *  when neither is set). Empty is the default — see DEFAULTS. */
   autoClassifierModel: string
   autoClassifierTimeout: number
+  /** Small-fast model for the native provider's prompt/agent hook evaluators
+   *  (the CLI's ANTHROPIC_SMALL_FAST_MODEL; server/config.ts reads no
+   *  process.env, so this config field is the override path). EMPTY = unset:
+   *  the hook model resolver falls back to its Haiku-class default (agent on
+   *  a gateway falls back to the session model). Never the session main model
+   *  by default. */
+  smallFastModel?: string
   /** Global default for the pinned "current question" header. Per-session
    *  overrides (SessionMeta.showPinnedUserMessage) take priority; sessions
    *  without an override inherit this value. */
@@ -257,6 +264,9 @@ export interface ServerConfig {
    *  the session model is a large/slow one, since the classifier must answer
    *  within autoClassifierTimeout or it fails closed to the human prompt. */
   readonly autoClassifierModel: string
+  /** Small-fast model for the native prompt/agent hook evaluators — see
+   *  ConfigFile.smallFastModel. EMPTY = unset (resolver default applies). */
+  readonly smallFastModel: string
   /** Timeout (ms) for classifier API calls. The 15s default is measured
    *  against reasoning models (GLM / DeepSeek on Anthropic-compatible
    *  gateways): their thinking block runs 4–9s per verdict, so the old 5s
@@ -353,6 +363,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   skillLoadMode: 'default',
   enabledSkills: Object.freeze([]),
   autoClassifierModel: '',
+  smallFastModel: '',
   autoClassifierTimeout: 15_000,
   showPinnedUserMessage: true,
   autoRecap: true,
@@ -691,6 +702,15 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { autoClassifierModel: string }).autoClassifierModel = file_.autoClassifierModel.trim()
   }
 
+  // Blank/unset falls through to DEFAULTS.smallFastModel ('' = unset): the
+  // hook model resolver then applies its own default (Haiku-class, or the
+  // session model for an agent hook on a gateway). Same truthiness gate as
+  // autoClassifierModel — an explicit '' is indistinguishable from a removed
+  // key, and both mean "unset".
+  if (typeof file_.smallFastModel === 'string' && file_.smallFastModel.trim()) {
+    ;(merged as { smallFastModel: string }).smallFastModel = file_.smallFastModel.trim()
+  }
+
   if (typeof file_.autoClassifierTimeout === 'number' && file_.autoClassifierTimeout > 0) {
     ;(merged as { autoClassifierTimeout: number }).autoClassifierTimeout = Math.round(file_.autoClassifierTimeout)
   }
@@ -851,6 +871,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'enabledSkills',
   'autoClassifierModel',
   'autoClassifierTimeout',
+  'smallFastModel',
   'showPinnedUserMessage',
   'autoRecap',
   'toolGroupCards',
