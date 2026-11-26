@@ -23,6 +23,7 @@
 import { policyToDynamicSkillOverrides, type SessionSkillOverride, type EffectiveSkillPolicy } from '../shared/skills.js'
 import type { SessionToolProfile } from '../shared/tool-profile.js'
 import { listSkills } from './skills.js'
+import type { MpStore } from './mp-store.js'
 import type { ControlWrapOpts } from './errors.js'
 import type { Session, SessionInfo } from './session-types.js'
 import type { ProviderCapabilities, ProviderSessionHandle } from './providers/types.js'
@@ -64,6 +65,11 @@ export interface SkillManagerDeps {
    *  which pulls defaultConfig.skillLoadMode/enabledSkills — not exported
    *  from shared/skills.ts, so it's injected here). */
   effectiveSkillPolicyFor(override: SessionSkillOverride | undefined): EffectiveSkillPolicy
+  /** Marketplace store for plugin-skill discovery. When wired, the dynamic
+   *  override keyspace includes the session's plugin skills (plugin-aware
+   *  listSkills, same opt-in as the native catalog's skill port); absent,
+   *  it stays user/project only. */
+  mpStore?: MpStore
 }
 
 export class SessionSkillManager {
@@ -148,8 +154,9 @@ export class SessionSkillManager {
 
   /** Send the session's currently-effective skill policy to the SDK via
    *  applyFlagSettings({ skillOverrides: <map> }). The map is built from the
-   *  set of skills actually available to this cwd (user + project), so the
-   *  flag layer covers every skill explicitly — no ambiguity about which
+   *  set of skills actually available to this session — user + project, plus
+   *  its enabled plugin skills when a marketplace store is wired — so the
+   *  flag layer covers every skill explicitly, no ambiguity about which
    *  layer wins for a given skill.
    *
    *  For 'default' mode we deliberately send an empty `{}` rather than
@@ -161,7 +168,10 @@ export class SessionSkillManager {
     const policy = this.deps.effectiveSkillPolicyFor(s.skillOverride)
     let availableSkills: string[]
     try {
-      const list = await listSkills(s.cwd)
+      const list = await listSkills(
+        s.cwd,
+        this.deps.mpStore ? { mpStore: this.deps.mpStore, enabledPlugins: s.enabledPlugins } : undefined,
+      )
       availableSkills = list.skills.map((skill) => skill.name)
     } catch (err) {
       log.warn(`[session ${s.id}] applyDynamicSkillOverrides: listSkills failed:`, err)

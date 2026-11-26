@@ -1388,6 +1388,7 @@ export class SessionManager {
       info: (s) => this.info(s),
       sessions: this.sessions,
       effectiveSkillPolicyFor: (override) => effectiveSkillPolicyFor(override),
+      mpStore: this.mpStore,
     })
 
     log.info(
