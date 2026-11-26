@@ -68,6 +68,7 @@ import { createTaskOutputTool } from './tools/task-output.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
 import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
+import { createEnterPlanModeTool, createExitPlanModeTool, PLAN_MODE_GUIDANCE } from './tools/plan-mode.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import { agentUnusableReason } from '../../../shared/agent-definitions.js'
 import {
@@ -1512,7 +1513,11 @@ export class NativeSession implements NativeSessionCore {
   } {
     // Agent, Task and Skill ride EVERY list, MCP-less sessions included —
     // otherwise the model loses delegation exactly when it has no servers to
-    // call, and a subagent could never load a skill.
+    // call, and a subagent could never load a skill. The plan tools ride every
+    // list too (main AND nested): a subagent inherits plan enforcement, and
+    // EnterPlanMode binds to the session's host-bound entry hook so a
+    // tool-driven mode change routes through the manager. Stateless, so a
+    // fresh instance per rebuild is fine (the hook reads live opts at call).
     const tools: ToolDef[] = [
       ...this.opts.tools,
       this.webFetchTool,
@@ -1522,6 +1527,8 @@ export class NativeSession implements NativeSessionCore {
       this.taskTool,
       this.taskOutputTool,
       skillTool,
+      createEnterPlanModeTool({ enterPlanMode: () => this.enterPlanMode() }),
+      createExitPlanModeTool(),
     ]
     const mcpToolServers = new Map<string, { name: string; source: 'sdk' | 'dynamic' }>()
     if (this.mcp) {
@@ -1731,7 +1738,15 @@ export class NativeSession implements NativeSessionCore {
                 tools: req.tools,
                 messages: req.messages,
               }
-              return this.streamFor(req, { effortLevel: () => turnEffortLevel })
+              // Plan guidance is appended PER ROUND from the LIVE mode, not
+              // baked into turnSystem: a mid-turn EnterPlanMode adds it to the
+              // very next round and an ExitPlanMode approval removes it. The
+              // snapshot above keeps the base system (the suggestion fork is
+              // suppressed in plan mode, so it never replays this prefix).
+              const system = this.permissionMode === 'plan'
+                ? `${req.system}\n\n${PLAN_MODE_GUIDANCE}`
+                : req.system
+              return this.streamFor({ ...req, system }, { effortLevel: () => turnEffortLevel })
             },
             tools: [...turnTools],
             maxTurns: turnProfile?.maxTurns,

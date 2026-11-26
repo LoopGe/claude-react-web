@@ -670,8 +670,8 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'plan-cb', cwd: dir, requestPermissionModeChange })
     // The session exposes a bound enter-plan hook; the EnterPlanMode tool deps
     // bind to it (registration itself is Task 4). Drive the real tool body.
-    const core = coreOf(session) as { enterPlanMode(): Promise<void> }
-    const tool = createEnterPlanModeTool({ enterPlanMode: () => core.enterPlanMode() })
+    const core = nativeCoreOf(session)!
+    const tool = createEnterPlanModeTool({ enterPlanMode: () => core.enterPlanMode!() })
     const out = await tool.run({}, { cwd: dir, signal: new AbortController().signal })
     expect(requestPermissionModeChange).toHaveBeenCalledOnce()
     expect(requestPermissionModeChange).toHaveBeenCalledWith('plan')
@@ -683,8 +683,8 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-plan-noop-')
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'plan-noop', cwd: dir })
-    const core = coreOf(session) as { enterPlanMode(): Promise<void> }
-    await expect(core.enterPlanMode()).resolves.toBeUndefined()
+    const core = nativeCoreOf(session)!
+    await expect(core.enterPlanMode!()).resolves.toBeUndefined()
     await session.destroy()
   })
 
@@ -1694,7 +1694,7 @@ describe('NativeSession', () => {
 
     // The first API request advertises the builtins plus the discovered tool.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
     ])
     // The permission request carries the server OWNED BY the tool's FQN,
     // resolved from discovery metadata (never parsed back out of the name).
@@ -1792,12 +1792,12 @@ describe('NativeSession', () => {
     // The parent advertises both delegation names plus the discovered MCP
     // tool; every nested request drops both (depth cap 1) but keeps MCP and Skill.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
     ])
     const nestedRequests = requests.filter((r) => !r.tools.some((t) => t.name === 'Agent'))
     expect(nestedRequests).toHaveLength(2)
     for (const r of nestedRequests) {
-      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskOutput', 'Skill', 'mcp__a__echo'])
+      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo'])
       expect(r.tools.some((tool) => tool.name === 'Task')).toBe(false)
       expect(r.system).not.toContain(AGENT_GUIDANCE)
     }
@@ -3090,7 +3090,7 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('review') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
 
-    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill'])
+    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
     const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
     // The definition's prompt is the nested instruction suffix and its model the
     // default nested model...
@@ -3320,7 +3320,7 @@ describe('NativeSession', () => {
     // The effective tool list holds from construction (rebuildTools runs in the
     // constructor), not builtins-only until the first turn.
     expect((coreOf(session) as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name))
-      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill'])
+      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
     const other = provider.createSession({ id: 'agents-cap-other', cwd: dir })
     expect((coreOf(session) as unknown as { todoWriteTool: unknown }).todoWriteTool)
       .not.toBe((coreOf(other) as unknown as { todoWriteTool: unknown }).todoWriteTool)

@@ -148,6 +148,10 @@ export interface NativeSessionCore {
   stopTask?(taskId: string): Promise<void>
   setModel?(model?: string): Promise<void>
   setPermissionMode?(mode: string): Promise<void>
+  /** Plan-mode entry signal: routes the mode change through the host-bound
+   *  callback (the EnterPlanMode tool deps bind to this). A bare core with no
+   *  host callback is a no-op. */
+  enterPlanMode?(): Promise<void>
   applyFlagSettings?(settings: Record<string, unknown>): Promise<void>
   setMaxThinkingTokens?(tokens: number | null, display?: 'summarized' | 'omitted' | 'highlights' | null): Promise<void>
   supportedModels?(): Promise<unknown>
