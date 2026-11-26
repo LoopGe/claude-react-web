@@ -336,6 +336,34 @@ export class PermissionBroker {
           abortHandler,
         }), `plan review request — ${toolName}`)
       }
+      // Plan-mode hard enforcement: while the session is in plan mode only
+      // read-only exploration runs. Reads the LIVE session.permissionMode,
+      // NOT the per-call snapshot `mode` above — native main turns carry
+      // their turn-start snapshot, and a mid-turn plan transition must bind
+      // the very next tool call. Placed after the EnterPlanMode/ExitPlanMode
+      // branches (entry stays auto-allowed; a plan proposal always reaches
+      // the user) and BEFORE acceptEdits/bypassPermissions so no auto-allow
+      // path can skip enforcement.
+      if (session.permissionMode === 'plan') {
+        // Edit-family tools are mutating outright — EDIT_TOOL_PATH_FIELD is
+        // the broker's single edit-tool name source (same lookup the bypass
+        // branch below uses). Bash is mutating unless provably read-only:
+        // isReadOnlyBash is fail-closed, so anything unprovable denies and
+        // the model re-plans. Read-only tools fall through to the normal
+        // pipeline.
+        const isEditTool = Object.hasOwn(EDIT_TOOL_PATH_FIELD, toolName)
+        const isMutatingBash =
+          toolName === 'Bash' &&
+          !isReadOnlyBash((toolInput as { command?: unknown })?.command)
+        if (isEditTool || isMutatingBash) {
+          return {
+            behavior: 'deny',
+            message: 'plan mode is active — present a plan via ExitPlanMode before making changes',
+            interrupt: false,
+            toolUseID: ctx.toolUseID,
+          } satisfies PermissionResult
+        }
+      }
       // `acceptEdits` auto-approves pure file-editing tools so the user isn't
       // prompted for every Edit/Write. Non-edit tools (Bash, etc.) fall through
       // to the pending-request path below and still prompt. Implemented here
