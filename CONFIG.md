@@ -158,6 +158,29 @@ session's model is a large/slow one. There is no UI for it; set it via `config.j
 
 ---
 
+### `smallFastModel`
+
+|         |                                                        |
+| ------- | ------------------------------------------------------ |
+| Type    | `string`                                               |
+| Default | `""` (unset — the hook resolver's Haiku-class default) |
+
+Model used by the native provider's `prompt` and `agent` hook evaluators — the single no-tool
+verdict round that judges a hook condition. Empty means "unset": the resolver falls back to its
+Haiku-class default (`claude-haiku-5-5`), except an `agent` hook on a gateway transport with no
+small-fast configured falls back to the session's own model. A per-hook `model` field always wins
+over this value. Like `autoClassifierModel` it is **global, not per-profile**, and it is never the
+session main model by default. There is no UI for it; set it via `config.json` or
+`npx claude-react-web config set smallFastModel <id>` (use `null` to clear it back to unset).
+
+```json
+{
+  "smallFastModel": ""
+}
+```
+
+---
+
 ### `historyCap`
 
 |         |                     |

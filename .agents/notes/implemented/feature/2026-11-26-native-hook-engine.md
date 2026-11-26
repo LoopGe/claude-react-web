@@ -195,6 +195,18 @@ Behavioral deviations:
 - **Hook rounds**: same-model effort inheritance + unconditional `fastMode:false`
   (the CLI's is conditional); the same-model gate uses raw ids vs the CLI's
   normalized ids.
+- **Backgroundable-tool throws route to PostToolUse, not PostToolUseFailure** —
+  `task-manager.runForeground` catches a backgroundable tool's (Bash/Agent/Task)
+  throw and returns a soft `errorOutcome` (`{text, isError:true}`), a normal return;
+  the loop routes by throw-vs-return (T9), so it observes PostToolUse. Pre-existing
+  native architecture, untouched by the hook engine; full CLI parity for
+  backgroundable-tool throws is a separate task-manager decision.
+- **StopFailure dispatch is detached fire-and-forget** (`void … .catch`) — the pump
+  catch does NOT await it (final-review ruling; RS §3 is binding and overrides the
+  plan's "await but ignore" wording): awaiting held `pumping=true` up to the 600s
+  hook timeout and stalled turn settlement. The decision is ignored either way; the
+  hook/run activity emits asynchronously on the session signal, which outlives the
+  turn.
 
 ## Testing
 
