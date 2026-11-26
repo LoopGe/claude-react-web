@@ -285,8 +285,10 @@ export async function readNativeHistoryPage(
 /** The compact boundary occurrence. The legacy floor's public entries/page
  *  projection synthesizes it away (summary only), while the reconcile
  *  snapshot and every retain marker render it: ordered reconcile must see
- *  BOTH boundary and summary as distinct occurrences sharing the event uuid
- *  (spec §11 compact); frameKind tells them apart. */
+ *  BOTH boundary and summary as distinct occurrences (spec §11 compact).
+ *  The boundary uses the event uuid; the summary uses `summaryUuid ?? uuid`
+ *  — they share the event uuid only for legacy compacts and differ for
+ *  retain compacts; frameKind tells the two occurrences apart. */
 function compactBoundaryLine(event: NeutralCompactEvent): RawLine {
   return {
     type: 'system',
@@ -321,8 +323,9 @@ async function nativeLogTornTail(stateDir: string, id: string): Promise<boolean>
 
 /** Ordered-reconcile snapshot for the native log (spec §7.1). Emits the compact
  *  boundary + summary dual occurrence, sourceOrdinal-bearing entries, and an
- *  explicit read status. The public entries/page paths above keep the
- *  summary-only projection unchanged. */
+ *  explicit read status. The summary-only projection in the public
+ *  entries/page paths above applies to the legacy floor only; retain
+ *  markers render boundary + summary in every path. */
 export async function readNativeHistorySnapshot(
   stateDir: string,
   id: string,
