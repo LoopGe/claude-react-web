@@ -52,6 +52,7 @@ import { NativeAttachmentReferenceIndex } from './attachment-reference-index.js'
 import { PdfBudgetLedger, PreparedPdfStore } from './pdf-documents.js'
 import { createAttachmentReadTool } from './tools/index.js'
 import { extractToolProfile } from '../../../shared/tool-profile.js'
+import { formatHooksValidationErrors, validateSessionHooksConfig, type SessionHooksConfig } from '../../../shared/hooks.js'
 
 import { NativeReadState } from './read-state.js'
 
@@ -253,7 +254,7 @@ export class NativeProvider implements AgentProvider {
     // coerced here at the `unknown` boundary (same rule as the persistence
     // coerce) and reaches the neutral core as a plain number.
     const sdkOptions = opts.providerExtras?.sdkOptions as
-      ({ skills?: string[] | 'all'; settings?: { autoCompactWindow?: unknown } } & Record<string, unknown>) | undefined
+      ({ skills?: string[] | 'all'; settings?: { hooks?: unknown; autoCompactWindow?: unknown } } & Record<string, unknown>) | undefined
     const rawAutoCompactWindow = sdkOptions?.settings?.autoCompactWindow
     const autoCompactWindow = typeof rawAutoCompactWindow === 'number' && Number.isFinite(rawAutoCompactWindow) && rawAutoCompactWindow > 0
       ? Math.round(rawAutoCompactWindow)
@@ -272,6 +273,19 @@ export class NativeProvider implements AgentProvider {
       return { baseUrl: profile.baseUrl, authToken: profile.authToken }
     }
     try {
+      // Spawn hooks ride the same settings channel as the auto-compact pin.
+      // Coerced at the unknown boundary (the routes already validate; this
+      // fence covers direct provider callers — fork / respawn / tests). An
+      // invalid config fails loudly instead of silently dropping the hooks.
+      // Inside the try so a validation throw tears down the queued MCP load.
+      let hooks: SessionHooksConfig | undefined
+      if (sdkOptions?.settings?.hooks !== undefined) {
+        const parsedHooks = validateSessionHooksConfig(sdkOptions.settings.hooks)
+        if (!parsedHooks.ok) {
+          throw new HttpError(400, `invalid hooks config: ${formatHooksValidationErrors(parsedHooks.errors)}`)
+        }
+        hooks = parsedHooks.value
+      }
       // The neutral core (NativeSessionCore) owns the turn engine, persistence
       // and neutral emission; wrapNativeCore translates it into the SDK-shaped
       // ProviderSessionHandle (host-input identity, lease callbacks, frame
@@ -298,6 +312,7 @@ export class NativeProvider implements AgentProvider {
         profile,
         modelContext: this.modelContext,
         autoCompactWindow,
+        hooks,
         ports: this.ports,
         credentials,
         readState,

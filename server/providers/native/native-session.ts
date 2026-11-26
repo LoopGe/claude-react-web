@@ -112,6 +112,9 @@ import {
   readNativeTarget,
   resolveNativeReadTarget,
 } from './file-read.js'
+import { HookEngine } from './hooks/engine.js'
+import type { HookDecision, HookEvent, HookSource } from './hooks/types.js'
+import { formatHooksValidationErrors, validateSessionHooksConfig, type SessionHooksConfig } from '../../../shared/hooks.js'
 
 interface PendingDurableInitial {
   message: RequestMessage
@@ -305,6 +308,12 @@ export interface NativeSessionOptions {
    *  adapter from Options.settings. Clamped under the resolved model window
    *  in getContextUsage; undefined = no pin. */
   autoCompactWindow?: number
+  /** Spawn hooks config (SDK `Options.settings.hooks`, validated at the
+   *  provider's unknown boundary). Only the starting point:
+   *  `applyFlagSettings({hooks})` replaces it live — the flag source is
+   *  re-collected per dispatch, so the next event observes the new config
+   *  (RS §12.3). */
+  hooks?: SessionHooksConfig
   /** Host-service ports threaded from the provider (stored on opts; the
    *  per-service call sites consume them). Config reads (profile resolution,
    *  fidelity flags, auto-compact ratio, model list) go through ports.config. */
@@ -480,6 +489,14 @@ export class NativeSession implements NativeSessionCore {
   private effortLevel: EffortLevel | undefined
   /** Live fast-mode intent, read when the next request is built. */
   private fastMode: boolean
+  /** Live flag-source hooks config. Seeded from opts.hooks at spawn;
+   *  applyFlagSettings({hooks}) REPLACES it (never merges). The flag HookSource
+   *  reads this field on every collection, so a replacement takes effect on
+   *  the next dispatch — never a frozen spawn snapshot (RS §12.3). */
+  private hooksConfig: SessionHooksConfig
+  /** The neutral hook orchestrator. The trigger seams call dispatchHook;
+   *  activity emits as hook/run operational frames on the live channel. */
+  private readonly hookEngine: HookEngine
   /** Synchronous pump guard: set before the async pumpLoop starts, so a
    *  second enqueueUserMessage while the first turn is still being scheduled
    *  cannot start a second concurrent pump. */
@@ -542,6 +559,27 @@ export class NativeSession implements NativeSessionCore {
     this.fastMode = opts.fastMode === true
     this.pdfBudgets = opts.pdfBudgets ?? new PdfBudgetLedger()
     this.preparedPdfs = opts.preparedPdfs ?? new PreparedPdfStore(this.pdfBudgets)
+    this.hooksConfig = opts.hooks ?? {}
+    // The flag source reads the LIVE config field per collection, and the
+    // engine re-invokes sources() on every dispatch, so a live
+    // applyFlagSettings replacement is effective on the next event (RS §12.3).
+    // `command` defaults to the real runner inside HookEngine; the
+    // http/prompt/agent executors arrive with their tasks (a type with no
+    // executor is a non-blocking start failure, not a crash).
+    const flagHookSource: HookSource = { kind: 'flag', collect: (event) => this.hooksConfig[event] ?? [] }
+    this.hookEngine = new HookEngine({
+      sources: () => [flagHookSource],
+      emit: (event) => this.emitFrame({
+        type: 'hook/run',
+        event,
+        sessionId: this.opts.id,
+        uuid: this.ctx.uuid(),
+        parentToolUseId: null,
+      }, null),
+      executors: {},
+      cwd: opts.cwd,
+      sessionId: opts.id,
+    })
     // Built after `this.model` is bound: the model getter must observe a live
     // switch, not the spawn-time value.
     this.webFetchTool = createWebFetchTool({
@@ -1349,7 +1387,7 @@ export class NativeSession implements NativeSessionCore {
   private isOperationalFrame(frame: NativeLoopFrame): frame is OperationalFrame {
     if (!('type' in frame)) return false
     switch (frame.type) {
-      case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/notification': case 'result': case 'prompt/suggestion':
+      case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/notification': case 'result': case 'prompt/suggestion': case 'hook/run':
         return true
       default:
         return false
@@ -2404,19 +2442,30 @@ export class NativeSession implements NativeSessionCore {
     return { skills: this.currentSkillView().commands() }
   }
 
+  /** The single hook decision point for the trigger seams: delegates to the
+   *  engine, which re-collects the live flag config for EVERY event, so a
+   *  config replacement between dispatches is observed without a respawn
+   *  (RS §12.3). The per-event ACTION semantics of the returned multi-fact
+   *  decision belong to the calling seam. */
+  dispatchHook(event: HookEvent, input: Record<string, unknown>, ctx: { signal: AbortSignal; hasContext: boolean }): Promise<HookDecision> {
+    return this.hookEngine.dispatch(event, input, ctx)
+  }
+
   /** The flag-settings layer for the keys this provider supports.
    *  `skillOverrides` replaces the per-skill override map (`{}` restores the
    *  spawn default); `effortLevel` takes a level from the API's ladder or null
    *  (clear back to the model default — anything else throws); `fastMode`
    *  takes true to enable and false/null to clear; `agent` selects a stored
-   *  main-thread persona or clears it with null.
+   *  main-thread persona or clears it with null; `hooks` replaces the flag
+   *  hooks config (`{}` clears it) — per-event re-collection makes the
+   *  replacement live on the next dispatch (RS §12.3).
    *
    *  Every key and any incoming definition is validated BEFORE state changes.
    *  Agent/base snapshots take effect on the next turn; fast mode and skill
    *  overrides keep their existing live-field behavior. Every other key fails
    *  loudly rather than reporting a change the native provider cannot honor. */
   async applyFlagSettings(settings: Record<string, unknown>): Promise<void> {
-    const supported = new Set(['skillOverrides', 'effortLevel', 'fastMode', 'agent'])
+    const supported = new Set(['skillOverrides', 'effortLevel', 'fastMode', 'agent', 'hooks'])
     const unknownKeys = Object.keys(settings).filter((key) => !supported.has(key))
     if (unknownKeys.length > 0) {
       throw new Error(`native provider does not support flag settings: ${unknownKeys.join(', ')}`)
@@ -2437,6 +2486,17 @@ export class NativeSession implements NativeSessionCore {
     const fastMode = settings.fastMode
     if (fastMode !== undefined && fastMode !== null && typeof fastMode !== 'boolean') {
       throw new Error(`native provider does not support fast mode: ${String(fastMode)}`)
+    }
+
+    // Hooks: validate at the unknown boundary BEFORE any state change (the
+    // manager's routes already validate; this fence covers direct callers).
+    let nextHooks: SessionHooksConfig | undefined
+    if (settings.hooks !== undefined) {
+      const parsedHooks = validateSessionHooksConfig(settings.hooks)
+      if (!parsedHooks.ok) {
+        throw new Error(`invalid hooks config: ${formatHooksValidationErrors(parsedHooks.errors)}`)
+      }
+      nextHooks = parsedHooks.value
     }
 
     let agentIntent: {
@@ -2469,6 +2529,9 @@ export class NativeSession implements NativeSessionCore {
       await this.updateAgentBase({ effortLevel: nextEffort })
     }
     if (fastMode !== undefined) this.fastMode = fastMode === true
+    // Replace (never merge): the flag source re-collects per dispatch, so the
+    // next hook event observes exactly this config (RS §12.3).
+    if (nextHooks !== undefined) this.hooksConfig = nextHooks
 
     const overrides = settings.skillOverrides
     if (overrides === undefined) return
