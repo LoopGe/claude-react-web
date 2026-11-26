@@ -29,7 +29,7 @@ import type {
   SkillImportFile,
   SkillImportResponse,
   SkillRecord,
-  SkillScope,
+  WritableSkillScope,
 } from '../../../shared/skills'
 
 interface DragFileEntry extends FileSystemEntry {
@@ -102,8 +102,8 @@ export function AddSkillCard({
   cwd: string
   /** Shared recent-projects MRU (same list the New Session dialog offers). */
   recentCwds: string[]
-  importScope: SkillScope
-  onScopeChange: (scope: SkillScope) => void
+  importScope: WritableSkillScope
+  onScopeChange: (scope: WritableSkillScope) => void
   /** Select a target project from the footer dropdown. */
   onPickTarget: (path: string) => void
   /** Forget one recent-project entry (the picker's per-row ✕). */

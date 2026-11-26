@@ -381,6 +381,76 @@ describe('MpStore', () => {
     expect(paths).toEqual(['/fake/same'])
   })
 
+  it('getEnabledPluginEntries returns key, name, dir, source and cloneDir for enabled plugins', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    const pluginDir = join(s.cloneDirFor('m'), 'plugins', 'p')
+    s.upsert(fakeEntry('m', {
+      cloneDir: s.cloneDirFor('m'),
+      manifest: {
+        name: 'fake',
+        plugins: [{ name: 'p', dir: pluginDir, source: { kind: 'in-repo' } }],
+      },
+    }))
+    s.setEnabled('p', 'm', true)
+    expect(s.getEnabledPluginEntries()).toEqual([
+      { key: 'p@m', name: 'p', dir: pluginDir, source: { kind: 'in-repo' }, cloneDir: s.cloneDirFor('m') },
+    ])
+  })
+
+  it('getEnabledPluginEntries omits disabled plugins', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    s.upsert(fakeEntry('m', { manifest: fakeManifest(['p', 'q']) }))
+    s.setEnabled('p', 'm', true)
+    s.setEnabled('q', 'm', true)
+    s.setEnabled('q', 'm', false)
+    expect(s.getEnabledPluginEntries().map((e) => e.key)).toEqual(['p@m'])
+  })
+
+  it('getEnabledPluginEntries skips a git-subdir plugin whose external clone is absent, then includes it once cloned', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    const url = 'https://github.com/adobe/skills.git'
+    const sha = 'e23271f65aa7572f567d085d6baec5c2408e2ad5'
+    const subPath = 'plugins/creative-cloud'
+    const source = { kind: 'git-subdir' as const, url, subPath, sha }
+    s.upsert(fakeEntry('m', {
+      cloneDir: s.cloneDirFor('m'),
+      manifest: { name: 'fake', plugins: [{ name: 'adobe', dir: null, source }] },
+    }))
+    s.setEnabled('adobe', 'm', true)
+
+    // External clone not materialised yet — omitted, no throw.
+    expect(s.getEnabledPluginEntries()).toEqual([])
+
+    const full = join(s.externalCloneDir(url, sha), subPath)
+    mkdirSync(full, { recursive: true })
+    expect(s.getEnabledPluginEntries()).toEqual([
+      { key: 'adobe@m', name: 'adobe', dir: full, source, cloneDir: s.cloneDirFor('m') },
+    ])
+  })
+
+  it('getEnabledPluginEntries dedupes entries resolving to the same dir', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    s.upsert(fakeEntry('m', {
+      manifest: {
+        name: 'fake',
+        plugins: [
+          { name: 'a', dir: '/abs/shared' },
+          { name: 'b', dir: '/abs/shared' },
+        ],
+      },
+    }))
+    s.setEnabled('a', 'm', true)
+    s.setEnabled('b', 'm', true)
+    const entries = s.getEnabledPluginEntries()
+    expect(entries).toHaveLength(1)
+    expect(entries[0].key).toBe('a@m')
+    expect(entries[0].dir).toBe('/abs/shared')
+  })
+
   it('snapshot enabledMapFor returns only that marketplace', async () => {
     const s = new MpStore({ stateDir: dir })
     await s.load()

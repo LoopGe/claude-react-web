@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { getSkillRoots, listSkills, parseSkillFrontmatter } from './skills.js'
+import { createSkill, deleteSkill, getSkillRoots, listSkills, parseSkillFrontmatter } from './skills.js'
 
 // The user-scope skills dir lives inside the CLI's config dir, so it has to
 // follow $CLAUDE_CONFIG_DIR rather than a hardcoded ~/.claude — otherwise a
@@ -53,6 +53,25 @@ describe('parseSkillFrontmatter — canonical body', () => {
 
     expect(parsed.body).toBeUndefined()
     expect(parsed.errors).toEqual(['SKILL.md frontmatter is missing closing ---'])
+  })
+})
+
+// SkillScope includes 'plugin' (read-only discovery of marketplace-plugin
+// skills), but the writable-scope guard (isSkillScope) must stay user/project:
+// plugin skills are never created or deleted through these paths.
+describe('writable-scope guard — plugin scope is read-only', () => {
+  it('createSkill rejects scope plugin with 400', async () => {
+    await expect(createSkill({ scope: 'plugin', name: 'demo' })).rejects.toMatchObject({
+      status: 400,
+      message: 'scope must be user or project',
+    })
+  })
+
+  it('deleteSkill rejects scope plugin with 400', async () => {
+    await expect(deleteSkill('plugin', 'demo')).rejects.toMatchObject({
+      status: 400,
+      message: 'scope must be user or project',
+    })
   })
 })
 

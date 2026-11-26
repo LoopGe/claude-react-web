@@ -1,4 +1,11 @@
-export type SkillScope = 'user' | 'project'
+/** The scopes a skill can be created/imported/updated/deleted in. The
+ *  writable-scope guard (server/skills.ts isSkillScope) accepts exactly these;
+ *  install UIs target this subset, never the full {@link SkillScope}. */
+export type WritableSkillScope = 'user' | 'project'
+
+/** Where a skill lives. 'plugin' skills are discovered read-only from enabled
+ *  marketplace plugins — create/update/delete/import routes reject them. */
+export type SkillScope = WritableSkillScope | 'plugin'
 export type SkillLoadMode = 'default' | 'all' | 'allowlist'
 
 export interface SkillRootInfo {
@@ -148,6 +155,8 @@ export interface SkillRecord {
   argumentHint?: string
   /** Present only for GitHub-installed skills (folder imports have none). */
   source?: SkillSourceInfo
+  /** Owning plugin's catalog name — present only for scope 'plugin'. */
+  plugin?: string
 }
 
 export interface SkillsListResponse {

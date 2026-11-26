@@ -30,6 +30,7 @@ import {
   parseRepoManifest,
   type MarketplaceManifest,
   type ParsedPlugin,
+  type ParsedPluginSource,
 } from './marketplace-parser.js'
 
 const log = createLogger('mp-store')
@@ -60,6 +61,22 @@ export interface MpEntry {
   branch?: string
   /** Cached parsed manifest. Refreshed on every clone/pull. */
   manifest: MarketplaceManifest
+}
+
+/** One enabled plugin with its resolved on-disk dir plus catalog metadata —
+ *  the discovery-side shape (native plugin-skill discovery), as opposed to
+ *  the bare paths {@link MpStore.getEnabledPluginAbsolutePaths} hands the SDK. */
+export interface EnabledPluginEntry {
+  /** Compound `<plugin>@<marketplace>` key (Settings.enabledPlugins form). */
+  key: string
+  /** Catalog plugin name from the marketplace manifest. */
+  name: string
+  /** Absolute on-disk plugin directory (resolved + existence-guarded). */
+  dir: string
+  /** Physical-location discriminator; undefined means in-repo (back-compat). */
+  source?: ParsedPluginSource
+  /** The owning marketplace's clone dir. */
+  cloneDir: string
 }
 
 interface MpFileShape {
@@ -434,6 +451,45 @@ export class MpStore extends JsonFileStore<MpEntry> {
         marketplace: resolved.marketplaceId,
         description: resolved.plugin.description,
         version: resolved.plugin.version,
+      })
+    }
+    return out
+  }
+
+  /** Enabled plugins with their resolved on-disk dir plus catalog metadata,
+   *  for skill/command discovery. Same dir-resolution and dedupe rules as
+   *  {@link getEnabledPluginAbsolutePaths}: git-subdir plugins resolve through
+   *  the external clone (skipped silently while it is absent), in-repo plugins
+   *  use their parse-time-verified dir, and two plugins resolving to one dir
+   *  collapse to the first entry. */
+  getEnabledPluginEntries(): EnabledPluginEntry[] {
+    const out: EnabledPluginEntry[] = []
+    const seen = new Set<string>()
+    for (const [key, on] of this.enabled) {
+      if (!on) continue
+      const resolved = this.resolveEnabledPlugin(key)
+      if (!resolved) continue
+      const { marketplaceId, plugin } = resolved
+      let dir: string | null = null
+      if (plugin.source && plugin.source.kind === 'git-subdir') {
+        const abs = resolvePath(
+          this.externalCloneDir(plugin.source.url, plugin.source.sha),
+          plugin.source.subPath,
+        )
+        if (existsSync(abs)) dir = abs
+      } else if (plugin.dir) {
+        dir = plugin.dir
+      }
+      if (!dir || seen.has(dir)) continue
+      seen.add(dir)
+      out.push({
+        key,
+        name: plugin.name,
+        dir,
+        source: plugin.source,
+        // resolveEnabledPlugin found the plugin in this marketplace's manifest,
+        // so the entry is guaranteed present.
+        cloneDir: this.get(marketplaceId)!.cloneDir,
       })
     }
     return out
