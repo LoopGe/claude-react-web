@@ -16,7 +16,10 @@ import { NativeProvider } from '../native-provider.js'
 import { makeNativePorts } from '../../native-host-adapters.js'
 import type { CanonicalEvent } from '../canonical.js'
 import type { SessionHooksConfig } from '../../../../shared/hooks.js'
-import type { Frame } from '../../native-frames.js'
+import { defaultFrameContext, type Frame } from '../../native-frames.js'
+import { runTurn, type LoopDeps, type NativeLoopFrame } from '../loop.js'
+import { NativeTaskManager } from '../task-manager.js'
+import type { RequestMessage } from '../vocabulary/message.js'
 
 const tempDirs: string[] = []
 
@@ -203,7 +206,10 @@ exit 2`
     // never reached the model — continue:false overrides exit-2 on Stop.
     expect(hookEvents(frames)).toEqual(['Stop'])
     expect(requests).toHaveLength(1)
-    expect(JSON.stringify(requests[0].messages)).not.toContain('overridden-stderr')
+    // The overridden block stderr never reaches the model in ANY round (the
+    // length pin above already precludes a continuation round; this states the
+    // invariant directly rather than testing the structurally-clean first round).
+    expect(requests.every((r) => !JSON.stringify(r.messages).includes('overridden-stderr'))).toBe(true)
     const results = frames.filter((f) => f.type === 'result')
     expect(results).toHaveLength(1)
     expect((results[0] as { is_error?: boolean }).is_error).toBeFalsy()
@@ -252,4 +258,94 @@ describe('Stop with no blocking decision', () => {
     expect(results).toHaveLength(1)
     expect((results[0] as { is_error?: boolean }).is_error).toBeFalsy()
   }, 30_000)
+})
+
+// ── direct runTurn pins ──────────────────────────────────────────────────────
+// maxTurns is a LoopDeps field (the provider derives it from an agent profile,
+// not settable in the fixture above) and the empty-stderr marker is a loop
+// emission detail — both are pinned against runTurn directly with a fake
+// dispatchHook (no bash spawn).
+
+function loopDeps(over: Partial<LoopDeps>): LoopDeps {
+  return {
+    stream: async function* () {},
+    tools: [],
+    cwd: process.cwd(),
+    tasks: new NativeTaskManager(() => {}),
+    requestPermission: async (_t, input) => ({ allowed: true, input }),
+    emit: () => {},
+    persistToolResult: () => {},
+    attachmentProjection: {},
+    system: 'SYS',
+    ...over,
+  }
+}
+
+const userText = (text: string): RequestMessage => ({ role: 'user', content: [{ type: 'text', text }] })
+
+describe('Stop seam — direct runTurn pins', () => {
+  it('maxTurns ends the turn even when a Stop hook forces continuation', async () => {
+    const scripts = [textTurn('r1'), textTurn('r2'), textTurn('r3')]
+    let call = 0
+    const requests: unknown[] = []
+    const stopInputs: Array<Record<string, unknown>> = []
+    const emitted: NativeLoopFrame[] = []
+    const res = await runTurn(
+      loopDeps({
+        maxTurns: 2,
+        stream: async function* (req: { messages: unknown[] }) {
+          requests.push(req.messages)
+          for (const ev of scripts[call++] ?? []) yield ev
+        },
+        dispatchHook: async (event, input) => {
+          if (event === 'Stop') {
+            stopInputs.push(input)
+            return { action: 'block', block: { reason: 'keep going', target: 'model' }, additionalContext: [] }
+          }
+          return { action: 'continue', additionalContext: [] }
+        },
+        emit: (f) => emitted.push(f),
+      }),
+      defaultFrameContext('sess-stop'),
+      [], userText('go'), 'm1', new AbortController().signal,
+    )
+    // maxTurns=2 caps the turn at 2 rounds despite the Stop block wanting more.
+    expect(res.numTurns).toBe(2)
+    expect(requests).toHaveLength(2)
+    expect(stopInputs).toHaveLength(2)
+    expect(res.isError).toBe(false)
+    // The turn ended via maxTurns, not the block cap — no cap warning.
+    expect(emitted.some((f) => 'type' in f && f.type === 'informational')).toBe(false)
+  })
+
+  it('a bare exit-2 Stop block (empty stderr) continues with a factual marker', async () => {
+    const scripts = [textTurn('r1'), textTurn('r2')]
+    let call = 0
+    let stopCalls = 0
+    const requests: Array<{ messages: unknown[] }> = []
+    const res = await runTurn(
+      loopDeps({
+        stream: async function* (req: { messages: unknown[] }) {
+          requests.push(req)
+          for (const ev of scripts[call++] ?? []) yield ev
+        },
+        dispatchHook: async (event) => {
+          if (event === 'Stop') {
+            stopCalls++
+            // First dispatch blocks with an EMPTY reason; the second is inert.
+            return stopCalls === 1
+              ? { action: 'block', block: { reason: '', target: 'model' }, additionalContext: [] }
+              : { action: 'continue', additionalContext: [] }
+          }
+          return { action: 'continue', additionalContext: [] }
+        },
+      }),
+      defaultFrameContext('sess-stop'),
+      [], userText('go'), 'm1', new AbortController().signal,
+    )
+    expect(res.numTurns).toBe(2)
+    expect(requests).toHaveLength(2)
+    // The empty block reason became the factual marker in the continuation message.
+    expect(JSON.stringify(requests[1].messages)).toContain('Stop hook blocked the turn from ending.')
+  })
 })

@@ -483,6 +483,72 @@ describe('HookEngine.dispatch — side facts (multi-fact contract)', () => {
   })
 })
 
+describe('HookEngine.dispatch — sticky-false continue merge (CLI preventContinuation)', () => {
+  /** An engine whose two command hooks (a.sh / b.sh) return distinct results. */
+  function twoHookEngine(a: HookExecResult, b: HookExecResult): HookEngine {
+    return new HookEngine({
+      sources: () => [sourceOf([{ hooks: [command('a.sh'), command('b.sh')] }])],
+      emit: () => {},
+      executors: { command: async (hook) => ((hook as CommandHookConfig).command === 'a.sh' ? a : b) },
+      cwd: '/tmp/project',
+      sessionId: 'session-1',
+    })
+  }
+
+  const stopFalse = (stopReason?: string): HookExecResult => ({
+    outcome: 'blocked',
+    exitCode: 2,
+    stdout: '',
+    stderr: 'block-stderr',
+    decision: { continue: false, ...(stopReason !== undefined ? { stopReason } : {}) },
+  })
+  const continueTrue = (stopReason?: string): HookExecResult => ({
+    outcome: 'success',
+    exitCode: 0,
+    stdout: '',
+    stderr: '',
+    decision: { continue: true, ...(stopReason !== undefined ? { stopReason } : {}) },
+  })
+
+  it('a later continue:true does NOT resurrect an earlier continue:false (exit-2)', async () => {
+    // The safety-relevant regression: hook A stops the turn (continue:false +
+    // exit 2); hook B asks to continue. Any false wins — the turn stays stopped.
+    const decision = await twoHookEngine(stopFalse('stop-A'), continueTrue()).dispatch('Stop', {}, ctx())
+    expect(decision.continue).toBe(false)
+    // A's exit-2 still dominates the primary action; the seam applies the
+    // continue:false override over it.
+    expect(decision.action).toBe('block')
+  })
+
+  it('continue:false wins regardless of collection order', async () => {
+    const decision = await twoHookEngine(continueTrue(), stopFalse()).dispatch('Stop', {}, ctx())
+    expect(decision.continue).toBe(false)
+  })
+
+  it('two continue:true hooks merge to continue:true', async () => {
+    const decision = await twoHookEngine(continueTrue(), continueTrue()).dispatch('Stop', {}, ctx())
+    expect(decision.continue).toBe(true)
+  })
+
+  it('stopReason accompanies continue:false — a later continue:true cannot overwrite it', async () => {
+    const decision = await twoHookEngine(stopFalse('stop-A'), continueTrue('stop-B')).dispatch('Stop', {}, ctx())
+    expect(decision.continue).toBe(false)
+    expect(decision.stopReason).toBe('stop-A')
+  })
+
+  it('among stopping hooks the last stopReason wins', async () => {
+    const decision = await twoHookEngine(stopFalse('first'), stopFalse('second')).dispatch('Stop', {}, ctx())
+    expect(decision.continue).toBe(false)
+    expect(decision.stopReason).toBe('second')
+  })
+
+  it('a stopReason without continue:false is not carried (CLI v5 gates it)', async () => {
+    const decision = await twoHookEngine(continueTrue('ignored'), continueTrue()).dispatch('Stop', {}, ctx())
+    expect(decision.continue).toBe(true)
+    expect(decision.stopReason).toBeUndefined()
+  })
+})
+
 describe('HookEngine.dispatch — hookEventName validation + per-event applicability', () => {
   it('a mismatched hookEventName payload is rejected, not leaked (PostToolUse hso on PreToolUse)', async () => {
     const result = withHso({ hookEventName: 'PostToolUse', updatedToolOutput: 'should not leak' })

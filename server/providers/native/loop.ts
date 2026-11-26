@@ -235,10 +235,10 @@ export async function runTurn(
           last_assistant_message: finalText,
         }, { signal, hasContext: true })
         // continue:false overrides exit-2 on Stop (RS §2.3): end the turn even
-        // when the merged action is block. Cross-hook reading: the seam consumes
-        // the engine-merged top-level `continue` (last-write-wins, the T6 merge
-        // ruling). The CLI short-circuits on ANY hook's continue:false; matching
-        // that requires a sticky-false merge in the engine, outside this seam.
+        // when the merged action is block. The engine merge is sticky-false —
+        // any hook's continue:false wins and a later continue:true cannot
+        // resurrect continuation (the CLI's preventContinuation short-circuit) —
+        // and the seam consumes that merged fact.
         if (stopDecision.continue !== false) {
           const feedback: string[] = []
           if (stopDecision.action === 'block') {

@@ -260,9 +260,19 @@ function mergeDecisions(event: HookEvent, results: readonly HookExecResult[]): H
   let classifierTied = false
   for (const result of results) {
     const decision = result.decision
-    // Top-level scalar fields (event-agnostic), last-write-wins in collection order.
-    if (decision?.continue !== undefined) merged.continue = decision.continue
-    if (decision?.stopReason !== undefined) merged.stopReason = decision.stopReason
+    // Top-level scalar fields (event-agnostic). `continue` is STICKY-false:
+    // once ANY hook sets continue:false a later continue:true cannot resurrect
+    // continuation — the CLI accumulates a per-result preventContinuation flag
+    // and short-circuits on any false (binary-verified `N`; the Stop seam ends
+    // the turn on it). `stopReason` accompanies continue:false: only a stopping
+    // hook's reason is carried (CLI command-result builder `v5` reads stopReason
+    // solely inside its `continue===false` branch), last-write-wins among the
+    // stopping hooks. The remaining scalars stay last-write-wins in collection
+    // order.
+    if (decision?.continue !== undefined) {
+      if (decision.continue === false || merged.continue !== false) merged.continue = decision.continue
+    }
+    if (decision?.continue === false && decision.stopReason !== undefined) merged.stopReason = decision.stopReason
     if (decision?.suppressOutput !== undefined) merged.suppressOutput = decision.suppressOutput
     if (decision?.systemMessage !== undefined) merged.systemMessage = decision.systemMessage
 
