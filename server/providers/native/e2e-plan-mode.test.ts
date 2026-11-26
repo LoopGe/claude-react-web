@@ -224,6 +224,16 @@ function liveMode(fx: Fixture, id: string): string | undefined {
   return fx.sm.list().find((s) => s.id === id)?.permissionMode
 }
 
+/** The result frame is broadcast BEFORE the session-update that flips `working`
+ *  to false (see SessionInfo.phase note), so a turn that just settled can still
+ *  read 'working' for a tick. Sleep's idle gate would 409 in that window — wait
+ *  for the public phase to land on 'idle' first. */
+async function waitIdle(fx: Fixture, id: string): Promise<void> {
+  await vi.waitFor(() => {
+    expect(fx.sm.get(id).phase).toBe('idle')
+  }, { timeout: 5000 })
+}
+
 describe('native plan mode end to end through SessionManager', () => {
   it('registers EnterPlanMode and ExitPlanMode in the main tool surface', async () => {
     const { project, stateDir } = await makeEnv()
@@ -358,6 +368,81 @@ describe('native plan mode end to end through SessionManager', () => {
     fx.scripts.push(toolUseTurn('e2', 'EnterPlanMode', '{}'), textTurn('planning again'))
     await sendAndWait(fx, id, frames, 'go plan after recovery', 2)
     expect(liveMode(fx, id)).toBe('plan')
+    unsubscribe()
+  })
+
+  it('persists plan mode across sleep/resume and restores guidance on the first turn', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    const id = await createAllowedSession(fx, project)
+    let { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    // Turn 1 in default mode: no guidance, and a completed turn so the resume
+    // below is a real transcript resume (not a turn-less respawnFresh).
+    fx.scripts.push(textTurn('before'))
+    await sendAndWait(fx, id, frames, 'hi', 1)
+    expect(fx.requests.at(-1)!.system).not.toContain(PLAN_MODE_GUIDANCE)
+
+    // Enter plan, then sleep → resume. The mode is persisted on the session
+    // meta (doSetPermissionMode → persist) and carried back through doResume's
+    // `meta.permissionMode` spawn option — plan rides the existing
+    // permission-mode persistence, no separate event.
+    await fx.sm.setPermissionMode(id, 'plan')
+    await waitIdle(fx, id)
+    unsubscribe()
+    await fx.sm.sleep(id)
+    await fx.sm.resume(id)
+    expect(liveMode(fx, id)).toBe('plan')
+
+    // The resumed session's FIRST turn must carry the guidance: the per-round
+    // stream wrapper reads the restored live mode, not a spawn-time snapshot.
+    ;({ frames, unsubscribe } = collectFrames(fx.sm, id))
+    fx.scripts.push(textTurn('after'))
+    await sendAndWait(fx, id, frames, 'hi after resume', 1)
+    expect(fx.requests.at(-1)!.system).toContain(PLAN_MODE_GUIDANCE)
+
+    // Exiting plan persists too: a second sleep/resume restores default and the
+    // guidance is gone (the switch TO and FROM plan both ride the same path).
+    await fx.sm.setPermissionMode(id, 'default')
+    await waitIdle(fx, id)
+    unsubscribe()
+    await fx.sm.sleep(id)
+    await fx.sm.resume(id)
+    expect(liveMode(fx, id)).toBe('default')
+    ;({ frames, unsubscribe } = collectFrames(fx.sm, id))
+    fx.scripts.push(textTurn('plain'))
+    await sendAndWait(fx, id, frames, 'hi plain', 1)
+    expect(fx.requests.at(-1)!.system).not.toContain(PLAN_MODE_GUIDANCE)
+    unsubscribe()
+  })
+
+  it('restores plan mode after an in-place respawn (recovery)', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    const id = await createAllowedSession(fx, project)
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    fx.scripts.push(textTurn('first'))
+    await sendAndWait(fx, id, frames, 'first', 1)
+    await fx.sm.setPermissionMode(id, 'plan')
+
+    const internals = fx.sm as unknown as {
+      sessions: Map<string, { handle: { destroy(reason: string): Promise<void> } }>
+    }
+    const session = internals.sessions.get(id)!
+    const oldHandle = session.handle
+    // Clean idle-exit → cleanupPump → autoResume → buildResumeOpts →
+    // respawnInPlace. buildResumeOpts reads the LIVE manager mode, so the
+    // recovered handle starts in plan (a distinct path from doResume's meta).
+    await oldHandle.destroy('test clean exit')
+    await vi.waitFor(() => {
+      expect(session.handle).not.toBe(oldHandle)
+    }, { timeout: 5000 })
+
+    expect(liveMode(fx, id)).toBe('plan')
+    fx.scripts.push(textTurn('after recovery'))
+    await sendAndWait(fx, id, frames, 'hi after recovery', 2)
+    expect(fx.requests.at(-1)!.system).toContain(PLAN_MODE_GUIDANCE)
     unsubscribe()
   })
 })
