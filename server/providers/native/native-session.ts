@@ -2269,8 +2269,15 @@ export class NativeSession implements NativeSessionCore {
    *  and the history is swapped only after it resolves, so no
    *  `sendControlMessage` may run during that await — the manager owns it and
    *  only compacts while the session is idle. A queued user turn cannot slip
-   *  in: the log's serialized flush chain makes the pump's own flush resolve
-   *  after the compact write, so the turn starts against the swapped history. */
+   *  in ahead of the swap: the log's serialized flush chain makes the pump's
+   *  own flush resolve after the compact write, so the turn starts against the
+   *  swapped history. The post-splice SessionStart(compact) hook await extends
+   *  this idle window to hook-subprocess duration (command/http up to 600s),
+   *  and the manager's journal-commit window (prepare → compactInPlace →
+   *  reset) with it. A send racing that extended window starts a turn against
+   *  the swapped history before the hook decision applies; the pending
+   *  SessionStart model covers that race — the context/seed lands in a later
+   *  turn exactly once, never lost and never duplicated. */
   async compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void> {
     if (this._closed) throw new Error('session is closed')
     if (this.turnAbort !== null) throw new Error('a turn is in flight')
@@ -2300,12 +2307,15 @@ export class NativeSession implements NativeSessionCore {
     // before this call. The compact write is already durable and the history
     // swapped, so a hook failure here must NOT throw: compactInPlace's throw
     // contract is "before any in-memory state change" (the manager's journal
-    // commit relies on it). hasContext:true — the compacted conversation is
-    // live, so prompt/agent hooks are available here (unlike init).
+    // commit relies on it). hasContext:false — EVERY SessionStart source rides
+    // the CLI's no-toolUseContext generator (ivr, RS §13.2 dispatch chain /
+    // §12.2 matrix), compact included: prompt/agent hooks report the
+    // non-blocking availability error here exactly as at init, never an LLM
+    // round.
     try {
       const decision = await this.dispatchHook('SessionStart', this.sessionStartInput('compact'), {
         signal: this.sessionAbort.signal,
-        hasContext: true,
+        hasContext: false,
       })
       if (!this._closed) await this.applySessionStartDecision(decision)
     } catch (err) {

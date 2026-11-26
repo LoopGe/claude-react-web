@@ -12,6 +12,11 @@
 // turn for 'compact'), sessionTitle is applied to the durable log, reloadSkills
 // triggers the manual-reload path, watchPaths is accepted but inert (native has
 // no fs watcher — layer-2). exit-2 never blocks the session (stderr user-only).
+// EVERY source (compact included) is a no-conversation-context dispatch
+// (RS §12.2/§13.2 ivr): prompt/agent hooks yield the non-blocking availability
+// error, never an LLM round. The pending consumption is exactly-once across
+// turn failures: a post-append failure restores the injected prefix once, a
+// pre-append failure parks the prompt and the retry re-reads the same pending.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -319,8 +324,11 @@ describe('SessionStart(compact) after the compact splice (RS §13.2 m0o)', () =>
         expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
       }, { timeout: 15_000 })
       expect(requests).toHaveLength(1)
-      expect(JSON.stringify(requests[0].messages)).toContain('post-compact-ctx')
-      expect(JSON.stringify(requests[0].messages)).toContain('after-compact')
+      const wire = JSON.stringify(requests[0].messages)
+      expect(wire).toContain('post-compact-ctx')
+      expect(wire).toContain('after-compact')
+      // The compact context LEADS the post-compact prompt (same ordering as init).
+      expect(wire.indexOf('post-compact-ctx')).toBeLessThan(wire.indexOf('after-compact'))
     } finally {
       await session.destroy()
     }
@@ -413,5 +421,205 @@ describe('SessionStart specific output (RS §3)', () => {
     const results = frames.filter((f) => f.type === 'result')
     expect(results).toHaveLength(1)
     expect((results[0] as { is_error?: boolean }).is_error).toBeFalsy()
+  }, 30_000)
+})
+
+/** The SessionStart hook_response activity frames (the adapter projects the
+ *  neutral hook/run completion to system/hook_response). */
+function sessionStartHookResponses(frames: Frame[]): Array<{ outcome?: string; output?: string }> {
+  return frames.filter((f) => f.type === 'system'
+    && (f as { subtype?: string }).subtype === 'hook_response'
+    && (f as { hook_event?: string }).hook_event === 'SessionStart') as Array<{ outcome?: string; output?: string }>
+}
+
+describe('SessionStart prompt/agent availability (RS §12.2/§13.2: NO context on ANY source)', () => {
+  // Every SessionStart source rides the CLI's no-toolUseContext generator
+  // (ivr) — compact included. A prompt-type hook must yield the non-blocking
+  // availability error, never an LLM round (the hook round would route through
+  // the same _testStream and show up as an extra request).
+  const promptHooks: SessionHooksConfig = {
+    SessionStart: [{ matcher: '', hooks: [{ type: 'prompt', prompt: 'Is this session okay?' }] }],
+  }
+
+  it('a prompt-type SessionStart hook is a non-blocking availability error at init', async () => {
+    const dir = await tempDir('ss-avail-init-')
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const requests: Array<{ messages: unknown[] }> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { messages: unknown[] }) {
+      requests.push(structuredClone(req))
+      for (const ev of textTurn('answer')) yield ev
+    }
+    const session = provider.createSession({
+      id: 'ss-avail-init', cwd: dir,
+      providerExtras: { sdkOptions: { settings: { hooks: promptHooks } } },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('go') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+      }, { timeout: 15_000 })
+      const responses = sessionStartHookResponses(frames)
+      expect(responses).toHaveLength(1)
+      expect(responses[0].outcome).toBe('error')
+      expect(responses[0].output).toContain('no conversation context is available')
+      // No hook LLM round ran — only the turn's own API request.
+      expect(requests).toHaveLength(1)
+      // Non-blocking: the turn processed normally.
+      expect((frames.find((f) => f.type === 'result') as { is_error?: boolean }).is_error).toBeFalsy()
+    } finally {
+      await session.destroy()
+    }
+  }, 30_000)
+
+  it('a prompt-type SessionStart hook is a non-blocking availability error on compact too', async () => {
+    const dir = await tempDir('ss-avail-compact-')
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const requests: Array<{ messages: unknown[] }> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { messages: unknown[] }) {
+      requests.push(structuredClone(req))
+      for (const ev of textTurn('answer')) yield ev
+    }
+    const session = provider.createSession({
+      id: 'ss-avail-compact', cwd: dir,
+      providerExtras: { sdkOptions: { settings: { hooks: promptHooks } } },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      // The init dispatch's availability error lands first.
+      await vi.waitFor(() => expect(sessionStartHookResponses(frames)).toHaveLength(1), { timeout: 10_000 })
+      const core = nativeCoreOf(session)!
+      expect(core.compactInPlace).toBeDefined()
+      await core.compactInPlace!('compact summary text', { uuid: 'ss-avail-compact-uuid', timestamp: new Date().toISOString() })
+      // The compact dispatch reports the SAME availability error — not an LLM round.
+      await vi.waitFor(() => expect(sessionStartHookResponses(frames)).toHaveLength(2), { timeout: 10_000 })
+      const responses = sessionStartHookResponses(frames)
+      expect(responses[1].outcome).toBe('error')
+      expect(responses[1].output).toContain('no conversation context is available')
+      expect(requests).toHaveLength(0)
+      // The session still turns normally afterwards.
+      session.enqueueUserMessage(userMsg('after-compact') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+      }, { timeout: 15_000 })
+      expect(requests).toHaveLength(1)
+    } finally {
+      await session.destroy()
+    }
+  }, 30_000)
+})
+
+describe('SessionStart pending consumption on turn failure (exactly-once)', () => {
+  it('a post-append flush failure restores seed + context once; the next turn does not re-inject', async () => {
+    const dir = await tempDir('ss-fail-post-')
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const requests: Array<{ messages: unknown[] }> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { messages: unknown[] }) {
+      requests.push(structuredClone(req))
+      for (const ev of textTurn('answer')) yield ev
+    }
+    const session = provider.createSession({
+      id: 'ss-fail-post', cwd: dir,
+      providerExtras: { sdkOptions: { settings: { hooks: ssHooks(ssHsoJson({ additionalContext: 'ss-fail-ctx', initialUserMessage: 'ss-fail-seed' })) } } },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      const core = nativeCoreOf(session)!
+      const sessionLog = (core as unknown as { log: { flush(): Promise<void> } }).log
+      // The FIRST flush of the session is the turn's post-append flush (the
+      // SessionStart decision here carries no title/reload, so nothing flushed
+      // earlier). Rejecting it fails the turn AFTER the raw append and AFTER
+      // the pending was consumed at the no-return point.
+      vi.spyOn(sessionLog, 'flush').mockRejectedValueOnce(new Error('flush failed'))
+      session.enqueueUserMessage(userMsg('first-prompt') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+      }, { timeout: 15_000 })
+      const first = frames.find((f) => f.type === 'result') as { is_error?: boolean; result?: string }
+      expect(first.is_error).toBe(true)
+      expect(first.result).toContain('flush failed')
+      // The failed turn never reached the API.
+      expect(requests).toHaveLength(0)
+      // The next turn runs against the restored history: seed + context were
+      // pushed back exactly once (the catch restoration), and the cleared
+      // pending is NOT re-injected.
+      session.enqueueUserMessage(userMsg('second-prompt') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(2)
+      }, { timeout: 15_000 })
+      expect(requests).toHaveLength(1)
+      const wire = JSON.stringify(requests[0].messages)
+      expect(wire.split('ss-fail-seed').length - 1).toBe(1)
+      expect(wire.split('ss-fail-ctx').length - 1).toBe(1)
+      expect(wire).toContain('first-prompt')
+      expect(wire).toContain('second-prompt')
+      // Restored prefix order: seed, context, first prompt — then the new turn.
+      expect(wire.indexOf('ss-fail-seed')).toBeLessThan(wire.indexOf('ss-fail-ctx'))
+      expect(wire.indexOf('ss-fail-ctx')).toBeLessThan(wire.indexOf('first-prompt'))
+      expect(wire.indexOf('first-prompt')).toBeLessThan(wire.indexOf('second-prompt'))
+      const results = frames.filter((f) => f.type === 'result')
+      expect((results[1] as { is_error?: boolean }).is_error).toBeFalsy()
+    } finally {
+      await session.destroy()
+    }
+  }, 30_000)
+
+  it('a pre-append failure parks the prompt; the durable retry re-reads the same pending (no loss)', async () => {
+    const dir = await tempDir('ss-fail-pre-')
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const requests: Array<{ messages: unknown[] }> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { messages: unknown[] }) {
+      requests.push(structuredClone(req))
+      for (const ev of textTurn('answer')) yield ev
+    }
+    const session = provider.createSession({
+      id: 'ss-fail-pre', cwd: dir,
+      providerExtras: { sdkOptions: { settings: { hooks: ssHooks(ssHsoJson({ additionalContext: 'ss-retry-ctx' })) } } },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      const core = nativeCoreOf(session)!
+      const sessionLog = (core as unknown as { log: { append(input: unknown): unknown } }).log
+      // The FIRST append of the session is the raw user/message append (fresh
+      // seed writes synchronously at open; no title event here). Throwing on it
+      // parks the head WITH the SessionStart pending unconsumed.
+      vi.spyOn(sessionLog, 'append').mockImplementationOnce(() => { throw new Error('append failed') })
+      session.enqueueUserMessage(userMsg('parked-prompt') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+      }, { timeout: 15_000 })
+      const first = frames.find((f) => f.type === 'result') as { is_error?: boolean; result?: string }
+      expect(first.is_error).toBe(true)
+      expect(first.result).toContain('append failed')
+      expect(requests).toHaveLength(0)
+      // Explicit input releases the pause and retries the parked head first;
+      // the retry re-reads the SAME pending context (read-only projection).
+      session.enqueueUserMessage(userMsg('retry-trigger') as never)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(3)
+      }, { timeout: 15_000 })
+      expect(requests).toHaveLength(2)
+      const wire1 = JSON.stringify(requests[0].messages)
+      expect(wire1.split('ss-retry-ctx').length - 1).toBe(1)
+      expect(wire1).toContain('parked-prompt')
+      expect(wire1.indexOf('ss-retry-ctx')).toBeLessThan(wire1.indexOf('parked-prompt'))
+      // The second turn carries the history copy exactly once — no re-injection.
+      const wire2 = JSON.stringify(requests[1].messages)
+      expect(wire2.split('ss-retry-ctx').length - 1).toBe(1)
+      expect(wire2).toContain('retry-trigger')
+      const results = frames.filter((f) => f.type === 'result')
+      expect((results[1] as { is_error?: boolean }).is_error).toBeFalsy()
+      expect((results[2] as { is_error?: boolean }).is_error).toBeFalsy()
+    } finally {
+      await session.destroy()
+    }
   }, 30_000)
 })
