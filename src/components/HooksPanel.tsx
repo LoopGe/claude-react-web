@@ -30,6 +30,27 @@ const EVENT_CATEGORIES: EventCategory[] = [
   { label: 'Lifecycle & Config', events: ['TaskCreated', 'TaskCompleted', 'ConfigChange', 'WorktreeCreate', 'WorktreeRemove', 'InstructionsLoaded', 'CwdChanged', 'FileChanged'] },
 ]
 
+/** Layer-2 events: accepted in a native session's hooks config but with no
+ *  native trigger mechanism, so hooks on them never fire (native-hook-engine
+ *  design, "Excluded events"). Surfaced as a passive note, NOT a validation
+ *  rejection — the same config stays valid on both providers. */
+const NATIVE_NO_TRIGGER_EVENTS: readonly HookEvent[] = [
+  'SessionEnd',
+  'ConfigChange',
+  'TaskCreated',
+  'TaskCompleted',
+  'Setup',
+  'TeammateIdle',
+  'InstructionsLoaded',
+  'CwdChanged',
+  'FileChanged',
+  'WorktreeCreate',
+  'WorktreeRemove',
+  'Notification',
+  'Elicitation',
+  'ElicitationResult',
+]
+
 // Status → dot color and CSS class mapping
 const STATUS_META: Record<string, { color: string; cls: string }> = {
   started:   { color: 'var(--accent)', cls: 'running' },
@@ -129,6 +150,14 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
   }, [parsedConfig])
 
   const totalConfigured = useMemo(() => allConfiguredHookCount(parsedConfig ?? {}), [parsedConfig])
+
+  // Configured layer-2 events on a native session — the passive no-trigger
+  // note. "Configured" matches the panel's own semantics (totalHookCount > 0):
+  // an empty matcher placeholder holds no hook that could fire.
+  const noTriggerEvents = useMemo(() => {
+    if (session.provider !== 'native' || !parsedConfig) return []
+    return NATIVE_NO_TRIGGER_EVENTS.filter((event) => totalHookCount(parsedConfig[event]) > 0)
+  }, [session.provider, parsedConfig])
 
   // ── Fetch + WS ──────────────────────────────────────────────────
   useEffect(() => {
@@ -265,6 +294,11 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
           <span className="settings-group-desc">Hook matchers registered on this session's events.</span>
         </div>
         <div className="settings-group-body">
+          {noTriggerEvents.length > 0 && (
+            <div className="settings-note hooks-no-trigger-note">
+              Hooks on these events never fire on the native provider (no trigger mechanism): {noTriggerEvents.join(', ')}. The config stays valid on both providers.
+            </div>
+          )}
           {configuredEntries.length > 0 ? (
             <div className="hooks-config-list">
             {configuredEntries.map(({ event, matcherIdx, matcher }) => (
