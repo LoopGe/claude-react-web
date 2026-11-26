@@ -41,7 +41,9 @@ import { nativeCoreOf } from '../../native-host-frame-adapter.js'
 import { summarizeForCompact } from '../../../compact-summary.js'
 import type { Session } from '../../../session-types.js'
 import type { ResetJournal } from '../../../reset-journal.js'
-import type { HookDecision } from './types.js'
+import type { NativeSession } from '../native-session.js'
+import type { HookDecision, HookEvent } from './types.js'
+import type { HookDispatchContext } from './engine.js'
 
 const tempDirs: string[] = []
 
@@ -108,10 +110,13 @@ const callAutoCompact = (session: Session, pressure?: Pressure | null) =>
 // Pressure that crosses a 50-token threshold (90/100) — fires the compact.
 const OVER_THRESHOLD: Pressure = { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 }
 
-async function createNativeSession(): Promise<{ id: string; live: Session; core: NonNullable<ReturnType<typeof nativeCoreOf>> }> {
+async function createNativeSession(): Promise<{ id: string; live: Session; core: NativeSession }> {
   const info = await sm.create({ provider: 'native', cwd: dir })
   const live = liveSession(info.id)
-  const core = nativeCoreOf(live.handle)!
+  // NativeProvider always constructs a NativeSession core, whose dispatchHook /
+  // compactInPlace are required methods (optional only on the NativeSessionCore
+  // contract) — narrow to the concrete class so spies and binds type cleanly.
+  const core = nativeCoreOf(live.handle)! as NativeSession
   return { id: info.id, live, core }
 }
 
@@ -181,7 +186,7 @@ describe('PostCompact + compact order (core compactInPlace)', () => {
     const order: string[] = []
     let historyAtPostCompact = -1
     const origDispatch = core.dispatchHook.bind(core)
-    vi.spyOn(core, 'dispatchHook').mockImplementation(async (event, input, ctx) => {
+    vi.spyOn(core, 'dispatchHook').mockImplementation(async (event: HookEvent, input: Record<string, unknown>, ctx: HookDispatchContext) => {
       if (event === 'PostCompact') {
         // The splice already replaced the history (context + summary) by now.
         historyAtPostCompact = (core as unknown as { history: unknown[] }).history.length
@@ -201,12 +206,12 @@ describe('PostCompact + compact order (core compactInPlace)', () => {
     const { live, core } = await createNativeSession()
     const order: string[] = []
     const origDispatch = core.dispatchHook.bind(core)
-    vi.spyOn(core, 'dispatchHook').mockImplementation(async (event, input, ctx) => {
+    vi.spyOn(core, 'dispatchHook').mockImplementation(async (event: HookEvent, input: Record<string, unknown>, ctx: HookDispatchContext) => {
       order.push(event === 'SessionStart' ? `SessionStart:${String(input.source)}` : event)
       return origDispatch(event, input, ctx)
     })
     const origCompact = core.compactInPlace!.bind(core)
-    vi.spyOn(core, 'compactInPlace').mockImplementation(async (summary, opts) => {
+    vi.spyOn(core, 'compactInPlace').mockImplementation(async (summary: string, opts: { uuid: string; timestamp: string }) => {
       order.push('compactInPlace')
       return origCompact(summary, opts)
     })
