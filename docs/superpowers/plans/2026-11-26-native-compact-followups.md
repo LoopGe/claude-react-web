@@ -252,6 +252,53 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 ---
 
+### Task 6: 压缩摘要 image ref→base64 水合（预存 bug 修复）
+
+**Files:**
+- Modify: `server/compact-attachments.ts`（`buildCompactAttachmentContent` ~341，image 块处理 ~360；`imageBase64Chars` ~172）
+- Test: `server/compact-attachments.test.ts`
+
+**Interfaces:**
+- Consumes: `resolveImageBlocks(content, opts: ResolveImageOptions): Promise<(T|ResolvedImageBlock)[]>`（attachment-resolver.ts:264，验证 ref→base64 source，fail-closed，opts.stateDir+signal）；`ImageRefBlock`/`isImageRefBlock`（shared/image-attachment.ts）。
+- Produces: compact 摘要请求的 image 块带 base64 `source`（Anthropic API 要求），ring-slice 与权威投影两路径共享受益。
+
+**背景**：预存 bug——native 压缩带图像 session 时，`buildCompactAttachmentContent` 把 image ref 原样（`structuredClone`）推入摘要内容，`callAnthropicMessages` 不解析 ref → API 400。旧 ring 路径同样如此（parity）。
+
+- [ ] **Step 1: 写失败测试**
+
+```ts
+it('buildCompactAttachmentContent resolves image refs to verified base64 source', async () => {
+  // 构造含 ImageRefBlock 的 message + occurrences，store 里有对应图像
+  const result = await buildCompactAttachmentContent(messages, occurrences, { uploadStore, stateDir })
+  // 断言 image 块带 source:{type:'base64',data,media_type}（非纯 ref）
+  // budget（imageBase64Chars）按 base64 计
+})
+it('legacy base64 image blocks pass through unchanged', async () => { /* ... */ })
+it('missing/corrupt image ref fails closed (resolver verification)', async () => { /* ref 无对应 store 对象 → throw */ })
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `npx vitest run server/compact-attachments.test.ts -t 'resolves image refs'`
+Expected: FAIL — image 块仍是纯 ref（无 source）。
+
+- [ ] **Step 3: 实现水合**
+
+`buildCompactAttachmentContent` 组装 image 块前，对 ImageRefBlock 复用 `resolveImageBlocks`（opts.stateDir 已传入；signal 若有则传）解析为 ResolvedImageBlock（base64 source）。legacy base64 块直通。`imageBase64Chars` 预算按解析后 base64 计。fail-closed（ref 无对应/损坏 → resolver throw）。不新建图像存储路径，复用单一验证点。
+
+- [ ] **Step 4: 跑测试确认绿 + 提交**
+
+Run: `npx vitest run server/compact-attachments.test.ts`
+Expected: PASS。
+```bash
+git add server/compact-attachments.ts server/compact-attachments.test.ts
+git commit -m "fix(native): hydrate compact image refs to verified base64 for the summary API
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>"
+```
+
+---
+
 ## Self-Review 记录
 
 - **Spec 覆盖**：A1→Task1；B1/B2→Task2/3；B3/B4/B5→Task2；C1→Task4；§6 测试→各 task；§5 边界（claude/handoff/legacy/模型地板）→Global Constraints + Task1/3 测试。
