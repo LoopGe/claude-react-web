@@ -128,7 +128,7 @@ export interface NativeSessionCore {
   readonly steeringActive?: boolean
 
   /** Neutral-typed control reads / switches. */
-  compactInPlace?(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+  compactInPlace?(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
   seedCompactSummary?(summary: string, opts: { uuid: string; timestamp: string; attachments: readonly NativeFileAttachment[] }): Promise<void>
   getAttachmentOccurrences?(): readonly NativeAttachmentOccurrence[]
   getAttachmentCatalog?(): readonly NativeFileAttachment[]

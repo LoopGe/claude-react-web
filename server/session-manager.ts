@@ -5559,10 +5559,11 @@ export class SessionManager {
    *
    *  No `session-cleared` frame is emitted for this — Y is a fresh session
    *  with no pre-clear content to hide, so the client simply swaps the panel
-   *  from X to Y. The `session-cleared` frame's producer is the native
-   *  in-place compact (runAutoCompact), which carries clearedGeneration; the
-   *  client handler stays for that path. (Spec §8.3: app /clear X→Y writes no
-   *  reset journal on X; the journal covers same-id in-band resets only.)
+   *  from X to Y. Native in-place compact no longer emits it either (compact
+   *  is an append that retains the transcript), so the channel has no live
+   *  producer; the frame + client handler stay for legacy reset semantics.
+   *  (Spec §8.3: app /clear X→Y writes no reset journal on X; the journal
+   *  covers same-id in-band resets only.)
    *
    *  Idempotent: a second clear() while one is already in flight returns the
    *  current SessionInfo without re-driving the lifecycle. */
@@ -6099,7 +6100,7 @@ export class SessionManager {
   }
 
   /** Native auto-compact (P1.1): when an IDLE session has crossed its
-   *  auto-compact window, summarize the conversation and reset the model
+   *  auto-compact window, summarize the conversation and swap the model
    *  history IN PLACE — same session id, append-only `session/compact`
    *  boundary, no fresh subprocess. Replaces the CLI's own compaction for the
    *  native provider, whose transcript lives in the host log rather than a
@@ -6119,22 +6120,25 @@ export class SessionManager {
    *  and the provider refuses a compact while a turn is in flight or input is
    *  queued. `autoCompacting` is released in `finally` on every path.
    *
-   *  Manager state is reset to match the provider's restarted history: the
-   *  ring, prompt-uuid pairing, steering in-flight map, withdrawal window,
-   *  deferred snapshot anchors and the cached context usage all describe the
-   *  pre-compact conversation. The durable seq sidecar is KEPT (spec §8.3): a
-   *  reset generation batch (`old + 1`) is appended + fsynced via the reset
-   *  journal, the in-memory store resets to that generation (seqs restart at
-   *  0), and the new compact frames record after the reset batch — the universe
-   *  change the client's `session-cleared` floor (clearedGeneration) expects.
-   *  Background task records and file snapshots survive (the provider's
-   *  compaction does not touch them). The client resets its transcript on the
-   *  `session-cleared` signal, then paints the new divider + summary. */
+   *  Compact is an APPEND, not a universe reset (retain-history design): the
+   *  provider appends its durable marker and swaps its model history, then the
+   *  manager appends the client-facing divider + summary to the ring and the
+   *  SAME seq space. The pre-compact conversation stays visible (scrollback,
+   *  reopen, resume, fork, search), matching the claude provider's compact
+   *  presentation; only the model's context floors at the marker. No reset
+   *  journal, no generation bump, no sidecar deletion, no `session-cleared`.
+   *  The cached context usage IS cleared so a turn that settles without a
+   *  fresh usage payload cannot re-trigger on the stale pre-compact high (no
+   *  zero usage is broadcast — the ContextBar holds its last displayed value).
+   *  Crash safety rides the append-only log: the reader synthesizes the marker
+   *  from the provider's `session/compact` event if the manager frames never
+   *  landed. Legacy compact-reset journals are still recovered at startup
+   *  (`recoverResetJournal`) for sessions compacted under the old design. */
   private async maybeAutoCompact(s: Session, pressure?: AutoCompactPressure | null): Promise<void> {
     if (!defaultConfig.nativeAutoCompact) return
-    // Degraded fence (spec §10): in-place compact resets the seq store — it
-    // must not lift the degraded fence outside the explicit Retry path. A
-    // degraded session compacts only after recovery.
+    // Degraded fence (spec §10): a degraded holder accepts no durable append,
+    // so compacting would append the provider marker + ring frames with no seq
+    // rows. A degraded session compacts only after recovery lifts the fence.
     if (this.transcriptStores.get(s.id)?.degraded === true) return
     const compactInPlace = s.handle.compactInPlace
     if (!compactInPlace) return
@@ -6161,96 +6165,66 @@ export class SessionManager {
     const threshold = usage.autoCompactThreshold
       ?? Math.floor(usage.maxTokens * defaultConfig.nativeAutoCompactRatio)
     if (threshold <= 0 || usage.totalTokens < threshold) return
+    // D6 local floor: the ring RETAINS pre-compact history, so the summarizer
+    // must see only what the model still sees — the span after the last
+    // compact boundary. The previous summary heads that span (it is part of
+    // the model's post-compact context). Local to this path: the shared
+    // mergedHistoryForCompaction also feeds /handoff + plugin-compact (incl.
+    // claude), whose input must stay the full merged ring. Backward loop —
+    // repo lib is ES2022 (no Array.findLastIndex).
     const merged = this.mergedHistoryForCompaction(s)
-    const summary = await this.summarizeMergedForCompact(s, merged)
+    let lastBoundary = -1
+    for (let i = merged.length - 1; i >= 0; i--) {
+      const m = merged[i]
+      if (m.type === 'system' && m.subtype === 'compact_boundary') { lastBoundary = i; break }
+    }
+    const span = lastBoundary >= 0 ? merged.slice(lastBoundary + 1) : merged
+    const summary = await this.summarizeMergedForCompact(s, span)
     if (!summary) return
     // A user turn (or a load/clear/delete) can win the summarization window.
     // Re-check identity and phase before touching anything.
     if (this.sessions.get(s.id) !== s || this.phaseOf(s) !== 'idle') return
     const preTokens = usage.totalTokens
     const uuid = randomUUID()
+    // D8: one summary identity for both halves — the provider persists it on
+    // the session/compact event (the reader synthesizes the disk summary with
+    // it) and the live summary frame carries it, so a restart dedupes to one
+    // card instead of appending the disk summary as a second copy.
+    const summaryUuid = randomUUID()
     const timestamp = new Date().toISOString()
-    // The seq generation must survive the store swap below: `session-cleared`
-    // makes every client arm a `generation + 1` floor, and the re-created
-    // store starts at 0. Carrying the bump is what lets the follow-up tail
-    // fetch and live frames re-anchor instead of retrying forever.
-    const prevGeneration = this.transcriptStores.get(s.id)?.store.generation ?? 0
-    // Two-phase reset (spec §8.3): prepare the journal BEFORE the provider op,
-    // then write the reset generation batch + fsync + journal commit AFTER it
-    // succeeds. The seq sidecar is KEPT (no deletion) — the reset batch is the
-    // new publication marker; the loader projects from it on the next reload.
-    const journal = this.journalFor(s.id)
-    await journal.prepare({ generation: prevGeneration + 1, reason: 'compact', seedBoundaryUuid: uuid })
-    await compactInPlace.call(s.handle, summary, { uuid, timestamp })
-    try {
-      await this.resetTranscriptGeneration(s.id, 'compact', journal)
-    } catch (err) {
-      // The reset batch / journal commit failed AFTER the provider compacted.
-      // Do NOT continue appending under the old generation (spec §10 提交后失败):
-      // fence the holder read-only and surface the error; the startup fence /
-      // Retry repairs the reset (writes the missing batch, commits the journal).
-      this.getOrCreateTranscript(s.id).degraded = true
-      log.warn(`[session ${s.id}] auto-compact reset failed; transcript degraded until retry:`, err)
-      return
-    }
-    // These APP sidecars describe the pre-compact conversation and are cleared
-    // (the seq sidecar above is kept). A failed app reset is logged, not fatal.
-    const sidecarResets: Array<[string, () => Promise<void>]> = [
-      ['prompt-uuid', () => this.promptUuidStore.remove(s.id)],
-      ['client-operations', () => this.clientOperationStore.remove(s.id)],
-      ['steered', () => this.steeredStore.remove(s.id)],
-      ['turn-anchor', () => this.turnAnchorStore.remove(s.id)],
-      ['result-frame', () => this.resultFrameStore.remove(s.id)],
-    ]
-    for (const [label, remove] of sidecarResets) {
-      try {
-        await remove()
-      } catch (err) {
-        log.warn(`[session ${s.id}] auto-compact: ${label} sidecar reset failed:`, err)
-      }
-    }
-    // One synchronous block from here: reset the in-memory seq space to the
-    // reset generation, wipe the in-memory state, signal, push the new frames.
-    // No await may be introduced between these statements — a client that
-    // samples the generation in between would arm a floor one too high.
-    // store.reset() bumps generation prev→prev+1 (matching the reset batch)
-    // and zeroes seqs; `reconciled` stays true because this seq space is
-    // defined by the reset batch + the two frames below, not a disk backfill.
-    const t = this.getOrCreateTranscript(s.id)
-    t.reconciled = true
-    t.store.reset()
-    // Record the compact reset in the cached history so the client-facing
-    // epochs (clearEpoch / lastFullResetGeneration) reflect it immediately.
-    t.generationHistory = [...(t.generationHistory ?? []), { generation: t.store.generation, reason: 'compact', contentPolicy: 'preserve' }]
-    s.history = []
-    s.subagentHistory = []
-    s.promptUuids = []
-    s.steeredInFlight.clear()
-    s.withdrawnUuids = []
-    s.pendingSnapshotAnchors = undefined
+    await compactInPlace.call(s.handle, summary, { uuid, timestamp, summaryUuid })
+    // Append, not reset: the provider swapped its model history and appended
+    // its durable marker; the ring, seq space and app sidecars keep the
+    // pre-compact conversation, and the boundary + summary append normally.
+    // Clearing the cached usage prevents a turn that settles without a fresh
+    // usage payload from re-triggering on the stale pre-compact high; no zero
+    // usage is broadcast, so the ContextBar holds its last displayed value.
     s.lastContextUsage = undefined
-    this.broadcastSessionCleared(s.id, t.store.generation)
-    this.pushCompactFrames(s, summary, uuid, timestamp, preTokens)
+    this.pushCompactFrames(s, summary, uuid, timestamp, preTokens, summaryUuid)
     log.info(
-      `[session ${s.id}] auto-compact: reset transcript in place ` +
+      `[session ${s.id}] auto-compact: appended compact marker, history retained ` +
       `(pre_tokens=${preTokens}, threshold=${threshold})`,
     )
   }
 
   /** Push the client-facing half of an in-place auto-compact: the synthetic
-   *  `system/compact_boundary` divider followed by the user-role summary.
-   *  Push-only — unlike `seedCompactSummary` this must NOT call
-   *  `sendControlMessage`: the provider's `compactInPlace` already replaced
-   *  its model history, so the summary is UI/ring content only. The boundary
-   *  MUST precede the summary (the client derives `isCompactSummary` from the
-   *  previous transcript item), and `uuid` is the provider log's compact-event
-   *  uuid so the frame and the durable boundary share an identity. */
+   *  `system/compact_boundary` divider followed by the user-role summary,
+   *  APPENDED to the retained ring + seq space (no reset). Push-only — unlike
+   *  `seedCompactSummary` this must NOT call `sendControlMessage`: the
+   *  provider's `compactInPlace` already replaced its model history, so the
+   *  summary is UI/ring content only. The boundary MUST precede the summary
+   *  (the client derives `isCompactSummary` from the previous transcript item).
+   *  `uuid` is the provider log's compact-event uuid so the frame and the
+   *  durable boundary share an identity; `summaryUuid` is the summary's own
+   *  identity, persisted on the same event so the disk-synthesized summary
+   *  dedupes to this exact frame on restart (D8). */
   private pushCompactFrames(
     s: Session,
     summary: string,
     uuid: ReturnType<typeof randomUUID>,
     timestamp: string,
     preTokens: number,
+    summaryUuid: ReturnType<typeof randomUUID>,
   ): void {
     const boundary: import('@anthropic-ai/claude-agent-sdk').SDKCompactBoundaryMessage = {
       type: 'system',
@@ -6276,7 +6250,7 @@ export class SessionManager {
       isSynthetic: true,
       isCompactSummary: true,
       shouldQuery: false,
-      uuid: randomUUID(),
+      uuid: summaryUuid,
       session_id: s.id,
     }
     stampReceivedAt(seed)
@@ -10297,28 +10271,6 @@ export class SessionManager {
     this.resetJournals.delete(id)
     if (j) await j.remove()
     else await new ResetJournal(this.store?.getDir() ? join(this.store.getDir(), 'reset-journals') : undefined, id).remove()
-  }
-
-  /** Write a reset generation batch + fsync + journal commit (spec §8.3),
-   *  KEEPING the sidecar. The caller must have `journal.prepare`d the same
-   *  `holder.generation + 1` before the provider op. Uses a reset-only writer
-   *  initialized to the holder's current generation so the batch generation
-   *  matches the prepared journal entry. Returns the new generation. */
-  private async resetTranscriptGeneration(id: string, reason: 'clear' | 'compact', journal: ResetJournal): Promise<number> {
-    const t = this.getOrCreateTranscript(id)
-    const writer = TranscriptWriter.forReset(
-      (rows, commit) => t.sidecar.appendBatch(rows, commit),
-      t.store.generation,
-    )
-    const gen = await writer.resetGeneration(reason, undefined, journal)
-    // A committed reset generation supersedes every rebuild-pending row
-    // (readPendingRebuilds' generation/reset filter): the wipe resolves the
-    // pending operation, so admission reopens (spec §8.1) — the reset twin of
-    // reconcileOrdered's publication clear. In-place compact RETAINS this
-    // holder (reconciled stays true, no re-reconcile runs), so without this
-    // clear the flag would outlive its durable pending payload forever.
-    this.setRebuildAdmissionPending(id, false)
-    return gen
   }
 
   /** Startup reset-journal fence (spec §8.3): enforce the invariant *sidecar

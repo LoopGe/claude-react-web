@@ -330,9 +330,12 @@ export interface ProviderSessionHandle {
    *  provider's captured context snapshot plus `summary`. Only legal while the
    *  session is idle — the manager treats a throw as "not now" and skips the
    *  attempt. Emits NO frames: the manager owns the client-facing divider and
-   *  transcript reset. Providers without an in-place compaction path omit it,
-   *  which disables the manager's auto-compact trigger. */
-  compactInPlace?(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+   *  summary append (the transcript is retained, not reset). `summaryUuid` is
+   *  the identity the manager's live summary frame carries, persisted on the
+   *  compact event so disk replay synthesizes the SAME card (no duplicate on
+   *  restart). Providers without an in-place compaction path omit it, which
+   *  disables the manager's auto-compact trigger. */
+  compactInPlace?(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
   getUsage?(): Promise<unknown>
   /** Authenticated-account info (SDK Query.accountInfo): email /
    *  organization / subscriptionType / tokenSource / apiKeySource /
