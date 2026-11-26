@@ -506,6 +506,21 @@ export class NativeSession implements NativeSessionCore {
   /** The neutral hook orchestrator. The trigger seams call dispatchHook;
    *  activity emits as hook/run operational frames on the live channel. */
   private readonly hookEngine: HookEngine
+  /** The init SessionStart dispatch (startup/resume/fork), kicked off at
+   *  construction. Never rejects — SessionStart is non-blocking (RS §3), so a
+   *  hook/application failure is logged and the session starts regardless.
+   *  The first turn awaits it before its UserPromptSubmit dispatch so the
+   *  hook's context/seed land in the first turn. */
+  private readonly sessionStartInit: Promise<void>
+  /** SessionStart additionalContext awaiting the next turn: the init sources
+   *  seed the FIRST turn, 'compact' the first post-compact turn. Live model
+   *  history only — the UserPromptSubmit context contract (not persisted to
+   *  the log, so it does not survive resume/replay; a known parity gap). */
+  private pendingSessionStartContext: string[] = []
+  /** SessionStart initialUserMessage: the leading user message of the next
+   *  turn. Read together with the context per attempt and cleared at the
+   *  turn's no-return point, so a durable retry re-reads the same facts. */
+  private pendingSessionStartSeed: string | null = null
   /** Synchronous pump guard: set before the async pumpLoop starts, so a
    *  second enqueueUserMessage while the first turn is still being scheduled
    *  cannot start a second concurrent pump. */
@@ -752,6 +767,13 @@ export class NativeSession implements NativeSessionCore {
         .then(() => { if (!this._closed) this.rebuildTools() })
         .catch((err) => log.debug(`[${opts.id}] post-discovery tool refresh failed:`, err))
     }
+    // SessionStart seam (RS §3, §13.2): fires at init with the source mapped
+    // from the spawn mode — the SAME branch the log open used. CRW's /clear is
+    // a host-driven fresh spawn, so it surfaces as 'startup'; there is no
+    // 'clear' source. Async (hook subprocesses): the first turn awaits
+    // `sessionStartInit` before UserPromptSubmit.
+    const initSource = opts.forkSession && opts.resume ? 'fork' : opts.resume ? 'resume' : 'startup'
+    this.sessionStartInit = this.runSessionStart(initSource)
   }
 
   private currentSkillView(): ReturnType<NativeSkillCatalog['view']> {
@@ -1748,6 +1770,10 @@ export class NativeSession implements NativeSessionCore {
         const turnModel = this.model
         const turnPermissionMode = this.permissionMode
         const turnEffortLevel = this.effortLevel
+        // The init SessionStart dispatch must settle before the first turn's
+        // UserPromptSubmit so its context/seed lead this turn's messages. A
+        // resolved promise on every later turn — no per-turn cost.
+        await this.sessionStartInit
         let turnSkillView: NativeSkillInvocationView | undefined
         let invocation: { name: string; body: string } | null = null
         let skillError: unknown
@@ -1769,10 +1795,7 @@ export class NativeSession implements NativeSessionCore {
         // (RS §9). exit-2 / block erases the prompt from native's OWN log only
         // (the durable append below is skipped) — the host bubble stays, since
         // the manager broadcast + seq-stored it before the provider saw it.
-        let currentTitle: string | undefined
-        for (const event of neutralEventsOf(this.log)) {
-          if (event.type === 'session/title') currentTitle = event.data.title
-        }
+        const currentTitle = this.currentSessionTitle()
         const promptDecision = await this.dispatchHook('UserPromptSubmit', {
           session_id: this.opts.id,
           cwd: this.opts.cwd,
@@ -1900,6 +1923,11 @@ export class NativeSession implements NativeSessionCore {
           pending.pdfReservations = []
         }
         this.onUserMessagePersistence?.(next, 'appended')
+        // The SessionStart seed + context lead the turn's messages — before
+        // the prompt and its UserPromptSubmit context. Read-only here: a
+        // pre-append failure retries this same prompt and must re-read the
+        // same pending; the pending is cleared at the no-return point below.
+        initialMessages.unshift(...this.sessionStartTurnMessages())
         // UserPromptSubmit additionalContext joins the turn (RS §3). Live model
         // history only — like the tool/Stop seam context it is not persisted to
         // the log, so it does not survive resume/replay (a known parity gap).
@@ -1907,6 +1935,13 @@ export class NativeSession implements NativeSessionCore {
           initialMessages.push(createUserMessage({ content: [{ type: 'text', text: context }], source: { kind: 'user' } }))
         }
         appendedInitialMessages = [...initialMessages]
+        // No-return point: the raw append succeeded (or the prompt was
+        // suppressed), so this prompt is never retried — consume the
+        // SessionStart pending exactly once. A later failure restores
+        // appendedInitialMessages (which already carry the seed/context) into
+        // history, so clearing here is what prevents a double injection.
+        this.pendingSessionStartSeed = null
+        this.pendingSessionStartContext = []
         if (invocation && !suppressPrompt) {
           const instruction = createUserMessage({ content: [{ type: 'text', text: invocation.body }], source: { kind: 'user' } })
           initialMessages.push(instruction)
@@ -2223,7 +2258,9 @@ export class NativeSession implements NativeSessionCore {
    *  append-only `session/compact` boundary, then restart the model history
    *  from the captured context snapshot plus the summary. Only legal while the
    *  session is idle — the manager treats a throw as "not now" and skips this
-   *  attempt. Emits NO frames: the manager owns the client-facing divider.
+   *  attempt. Emits NO conversation frames (the manager owns the client-facing
+   *  divider); the post-splice SessionStart(compact) seam emits hook/run
+   *  activity only.
    *  `lastUsage` resets so the context bar starts from zero while
    *  `usageByModel` keeps the cumulative billing totals. A failed flush throws
    *  before any in-memory state changes, leaving the session exactly as it was.
@@ -2258,6 +2295,22 @@ export class NativeSession implements NativeSessionCore {
       createUserMessage({ content: [{ type: 'text', text: summary }], source: { kind: 'user' } }),
     )
     this.lastUsage = { input_tokens: 0, output_tokens: 0 }
+    // SessionStart(compact) seam (RS §13.2 m0o): fires after the splice,
+    // ordered AFTER PostCompact — the PostCompact dispatch belongs immediately
+    // before this call. The compact write is already durable and the history
+    // swapped, so a hook failure here must NOT throw: compactInPlace's throw
+    // contract is "before any in-memory state change" (the manager's journal
+    // commit relies on it). hasContext:true — the compacted conversation is
+    // live, so prompt/agent hooks are available here (unlike init).
+    try {
+      const decision = await this.dispatchHook('SessionStart', this.sessionStartInput('compact'), {
+        signal: this.sessionAbort.signal,
+        hasContext: true,
+      })
+      if (!this._closed) await this.applySessionStartDecision(decision)
+    } catch (err) {
+      log.warn(`[${this.opts.id}] SessionStart(compact) hook application failed:`, err)
+    }
   }
 
   clearQueued(): number {
@@ -2654,6 +2707,89 @@ export class NativeSession implements NativeSessionCore {
    *  decision belong to the calling seam. */
   dispatchHook(event: HookEvent, input: Record<string, unknown>, ctx: { signal: AbortSignal; hasContext: boolean }): Promise<HookDecision> {
     return this.hookEngine.dispatch(event, input, ctx)
+  }
+
+  /** The latest durable session title (latest-wins scan), for hook inputs. */
+  private currentSessionTitle(): string | undefined {
+    let currentTitle: string | undefined
+    for (const event of neutralEventsOf(this.log)) {
+      if (event.type === 'session/title') currentTitle = event.data.title
+    }
+    return currentTitle
+  }
+
+  /** The SessionStart stdin (RS §3): source is the matcher target. The
+   *  resume/fork cache facts (seconds_since_last_response / context_tokens /
+   *  prompt_cache_likely_expired / estimated_cache_write_usd) are optional
+   *  CLI fields outside layer-1 scope and are not synthesized. */
+  private sessionStartInput(source: 'startup' | 'resume' | 'fork' | 'compact'): Record<string, unknown> {
+    const currentTitle = this.currentSessionTitle()
+    return {
+      session_id: this.opts.id,
+      cwd: this.opts.cwd,
+      hook_event_name: 'SessionStart',
+      source,
+      model: this.model,
+      ...(currentTitle !== undefined ? { session_title: currentTitle } : {}),
+    }
+  }
+
+  /** The init SessionStart seam (startup/resume/fork). SessionStart never
+   *  blocks the session (RS §3: exit-2 stderr is user-only), so a dispatch or
+   *  application failure is logged and the session starts regardless — the
+   *  first turn must not strand on a hook failure. */
+  private async runSessionStart(source: 'startup' | 'resume' | 'fork'): Promise<void> {
+    try {
+      // hasContext:false — SessionStart is a no-conversation-context event
+      // (RS §12.2): prompt/agent hooks report a non-blocking availability error.
+      const decision = await this.dispatchHook('SessionStart', this.sessionStartInput(source), {
+        signal: this.sessionAbort.signal,
+        hasContext: false,
+      })
+      if (this._closed) return
+      await this.applySessionStartDecision(decision)
+    } catch (err) {
+      log.warn(`[${this.opts.id}] SessionStart(${source}) hook application failed:`, err)
+    }
+  }
+
+  /** Apply the SessionStart specific output (RS §3), shared by the init and
+   *  compact seams. additionalContext / initialUserMessage seed the NEXT turn
+   *  (live model history only — the UserPromptSubmit context contract);
+   *  sessionTitle is durable; reloadSkills takes the manual-reload path;
+   *  watchPaths is accepted but inert — native has no filesystem watcher
+   *  (layer-2, RS §9.2), so no watch is armed. */
+  private async applySessionStartDecision(decision: HookDecision): Promise<void> {
+    for (const context of decision.additionalContext) {
+      if (context.trim() !== '') this.pendingSessionStartContext.push(context)
+    }
+    if (decision.initialUserMessage !== undefined && decision.initialUserMessage.trim() !== '') {
+      this.pendingSessionStartSeed = decision.initialUserMessage
+    }
+    if (decision.sessionTitle !== undefined) {
+      await this.log.appendDurable({ type: 'session/title', time: Date.now(), data: { title: decision.sessionTitle } })
+    }
+    if (decision.reloadSkills === true) {
+      // skillsReady tracks the new pass, so the next turn's await sees
+      // hook-installed skills. The catch only prevents an unhandled rejection
+      // from the fire-and-forget call — startSkillReload logs the failure and
+      // the next turn's await surfaces it (the construction-time contract).
+      void this.reloadSkills().catch(() => {})
+    }
+  }
+
+  /** The pending SessionStart seed + additionalContext as the leading user
+   *  messages of the next turn. Read-only: pumpLoop clears the pending at the
+   *  turn's no-return point, so a durable retry re-reads the same facts. */
+  private sessionStartTurnMessages(): RequestMessage[] {
+    const messages: RequestMessage[] = []
+    if (this.pendingSessionStartSeed !== null) {
+      messages.push(createUserMessage({ content: [{ type: 'text', text: this.pendingSessionStartSeed }], source: { kind: 'user' } }))
+    }
+    for (const context of this.pendingSessionStartContext) {
+      messages.push(createUserMessage({ content: [{ type: 'text', text: context }], source: { kind: 'user' } }))
+    }
+    return messages
   }
 
   /** The flag-settings layer for the keys this provider supports.
