@@ -108,6 +108,15 @@ export interface TurnResult {
   isError: boolean
 }
 
+/** RS §5: the Stop forced-continuation cap (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP??8`).
+ *  The count increments on EVERY Stop feedback continuation (exit-2 block OR
+ *  additionalContext — both ride the CLI's blockingErrors list); the turn ends
+ *  with a warning when the incremented count EXCEEDS the cap (CLI `Da`:
+ *  `$e = Ts + 1; if (He > 0 && $e > He)`), so 8 continuations are honored and
+ *  the 9th block ends the turn. Native pins the default — there is no env knob
+ *  (server/config.ts reads no process.env). */
+const STOP_BLOCK_CAP = 8
+
 /** One gathered tool result in neutral form: the call it answers, its content
  *  blocks (text / file), and whether the invocation failed. */
 interface NeutralToolResult {
@@ -142,6 +151,12 @@ export async function runTurn(
   // error tool_results and the model gets to recover in the next round.
   // Exhausting maxTurns is the exception: the model gets no recovery round.
   let isError = false
+  // Stop-seam state (RS §5), per turn: whether a Stop hook already forced a
+  // continuation this turn (the next Stop input's stop_hook_active) and the
+  // running count of forced continuations (the block cap). A new user prompt
+  // starts a fresh runTurn, so both reset — matching the CLI's per-query guards.
+  let stopHookActive = false
+  let stopBlockCount = 0
   const initialMessages = Array.isArray(turnInput) ? turnInput : [turnInput]
   history.push(...initialMessages)
   deps.onInitialMessagesOwned?.()
@@ -206,6 +221,57 @@ export async function runTurn(
     if (toolCalls.length === 0) {
       finalText = textOf(blocks)
       if (capped && stopReason !== 'end_turn') isError = true
+      // Stop seam (RS §5): dispatch BEFORE settling the turn. An exit-2 /
+      // decision block feeds the block reason to the model and forces another
+      // API round; additionalContext is the non-error feedback continuation
+      // channel (same capped path). An aborted turn is an interrupt, not a
+      // model stop — no Stop dispatch (the CLI cancels its stop hooks on abort).
+      if (deps.dispatchHook && !signal.aborted) {
+        const stopDecision = await deps.dispatchHook('Stop', {
+          session_id: ctx.sessionId,
+          cwd: deps.cwd,
+          hook_event_name: 'Stop',
+          stop_hook_active: stopHookActive,
+          last_assistant_message: finalText,
+        }, { signal, hasContext: true })
+        // continue:false overrides exit-2 on Stop (RS §2.3): end the turn even
+        // when the merged action is block. Cross-hook reading: the seam consumes
+        // the engine-merged top-level `continue` (last-write-wins, the T6 merge
+        // ruling). The CLI short-circuits on ANY hook's continue:false; matching
+        // that requires a sticky-false merge in the engine, outside this seam.
+        if (stopDecision.continue !== false) {
+          const feedback: string[] = []
+          if (stopDecision.action === 'block') {
+            const reason = stopDecision.block?.reason ?? ''
+            // exit-2 with empty stderr is a real hook shape; the continuation
+            // still happens, with a factual marker so the user message is never
+            // empty (the CLI wraps the stderr in an event-prefixed message).
+            feedback.push(reason.trim() !== '' ? reason : 'Stop hook blocked the turn from ending.')
+          }
+          for (const context of stopDecision.additionalContext) {
+            if (context.trim() !== '') feedback.push(context)
+          }
+          // maxTurns wins over a Stop forced continuation (the CLI checks
+          // max_turns before the cap): a capped turn ends regardless.
+          if (feedback.length > 0 && !capped) {
+            stopBlockCount++
+            stopHookActive = true
+            if (stopBlockCount > STOP_BLOCK_CAP) {
+              deps.emit({
+                type: 'informational',
+                text: `A hook blocked the turn from ending ${stopBlockCount} consecutive times — overriding and ending turn. `
+                  + "For Stop hooks, check stop_hook_active in the input and return success while it's true.",
+                sessionId: ctx.sessionId,
+                uuid: ctx.uuid(),
+                parentToolUseId: ctx.parentToolUseId ?? null,
+              })
+              break
+            }
+            history.push({ role: 'user', content: [{ type: 'text', text: feedback.join('\n') }] })
+            continue
+          }
+        }
+      }
       break
     }
     const results: NeutralToolResult[] = []
