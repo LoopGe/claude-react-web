@@ -231,7 +231,9 @@ async function scanPlugin(entry: EnabledPluginEntry, seen: Set<string>): Promise
   }
   // Fallback: no skills/ dir AND no manifest skills declaration AND a root
   // SKILL.md → the plugin dir itself is a single skill dir (§5.8 branch 3).
-  if (!defaultExists && !manifest?.skillsDeclared && (await isFile(join(dir, SKILL_FILE)))) {
+  // Marketplace-root entries are excluded — the CLI guards this branch
+  // `else if(!wt&&gt!==Ff)`, so a single-plugin repo's root SKILL.md is hidden.
+  if (!isRoot && !defaultExists && !manifest?.skillsDeclared && (await isFile(join(dir, SKILL_FILE)))) {
     const record = await readPluginSkill(join(dir, SKILL_FILE), dir, prefix, seen, (fmName, skillDir) =>
       singleDirSkillName(prefix, fmName, skillDir),
     )

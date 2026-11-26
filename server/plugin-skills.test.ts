@@ -209,6 +209,22 @@ describe('listPluginSkills — fallback and prefix authority', () => {
     expect(records[0]!.plugin).toBe('solo')
   })
 
+  it('marketplace-root entry suppresses the fallback; a non-root twin still surfaces', async () => {
+    // CLI §5.8: the fallback branch is guarded `else if(!wt&&gt!==Ff)` — a
+    // single-plugin repo (dir === cloneDir) with a root SKILL.md, no skills/
+    // dir and no manifest skills yields NOTHING, while the same layout in a
+    // non-root plugin dir still surfaces via fallback.
+    const dir = resolve(root, 'single-repo')
+    const atRoot = await makePlugin('rooted', { relDir: 'single-repo', cloneDir: dir })
+    await writeFile(join(atRoot.dir, 'SKILL.md'), skillMd({ description: 'Root skill' }), 'utf8')
+    const nonRoot = await makePlugin('subdir', { relDir: 'subdir-plugin' })
+    await writeFile(join(nonRoot.dir, 'SKILL.md'), skillMd({ description: 'Root skill' }), 'utf8')
+
+    const records = await listPluginSkills(stub([atRoot, nonRoot]))
+
+    expect(records.map((r) => r.name)).toEqual(['subdir:subdir-plugin'])
+  })
+
   it('no fallback when a skills/ dir exists or manifest skills is declared', async () => {
     const withRoot = await makePlugin('with-root', { relDir: 'with-root' })
     await writeFile(join(withRoot.dir, 'SKILL.md'), skillMd({ description: 'd' }), 'utf8')
