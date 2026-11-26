@@ -98,6 +98,16 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
     }
     // GC external clones no longer referenced by any enabled plugin.
     await store.pruneExternalClones()
+    // The pull (and any external re-clone above) mutated plugin dirs on disk,
+    // so live skill catalogs are stale — native sessions discover plugin
+    // skills through their catalog, and a re-read broadcasts commands-changed
+    // so an open picker updates without a respawn. reloadSkillsForCwd contains
+    // per-session failures and returns them; log them so a stuck session is
+    // visible without failing the refresh response.
+    const { failed } = await sm.reloadSkillsForCwd()
+    for (const f of failed) {
+      log.warn(`refresh skill reload failed for session ${f.id}: ${f.error}`)
+    }
     return c.json({
       ok: true,
       entry: toMpListItem(next, store),

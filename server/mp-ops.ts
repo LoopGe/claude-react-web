@@ -171,29 +171,37 @@ export async function checkMarketplaceUpdates(store: MpStore): Promise<MpUpdateS
 /** Walk every live session and push the plugin toggle through. Failures on a
  *  single session are swallowed (logged) so one stuck session can't block
  *  toggles for the rest. The next spawn of any failed session will pick up the
- *  persisted state via spawn-time injection anyway. */
+ *  persisted state via spawn-time injection anyway.
+ *
+ *  Provider branch: claude sessions get the SDK plugin-flag toggle; native
+ *  sessions have no SDK plugin flags — their skill catalog reads the store's
+ *  global enabled set directly, so a catalog re-read is the whole live push. */
 export async function applyPluginToggleToLiveSessions(
   sm: SessionManager,
   pluginKey: string,
   enabled: boolean,
 ): Promise<void> {
-  // Iterate via the SessionManager's public surface. We need ids of running
-  // sessions only — list() returns hibernated ones too.
-  const ids: string[] = []
-  for (const info of sm.list()) {
-    if (info.running) ids.push(info.id)
-  }
-  for (const id of ids) {
+  // Iterate via the SessionManager's public surface. We need running sessions
+  // only — list() returns hibernated ones too.
+  const running = sm.list().filter((info) => info.running)
+  for (const info of running) {
     try {
-      await sm.togglePlugin(id, pluginKey, enabled)
-      // togglePlugin already calls applyFlagSettings; reloadPlugins picks up
-      // changes that came from disk-side plugin path mutations. For a pure
-      // enable-flag toggle on a path the SDK already knows, it's a no-op — but
-      // cheap, and required when the underlying plugin set changed (e.g.
-      // immediately after `marketplace refresh` adds a new plugin).
-      await sm.reloadPlugins(id)
+      if (info.provider === 'native') {
+        // The store's enabled flag was persisted before this call, so the
+        // re-read sees the new global set; reloadSkills also broadcasts
+        // commands-changed so an open picker updates live.
+        await sm.reloadSkills(info.id)
+      } else {
+        await sm.togglePlugin(info.id, pluginKey, enabled)
+        // togglePlugin already calls applyFlagSettings; reloadPlugins picks up
+        // changes that came from disk-side plugin path mutations. For a pure
+        // enable-flag toggle on a path the SDK already knows, it's a no-op — but
+        // cheap, and required when the underlying plugin set changed (e.g.
+        // immediately after `marketplace refresh` adds a new plugin).
+        await sm.reloadPlugins(info.id)
+      }
     } catch (err) {
-      log.warn(`live toggle failed for session ${id}: ${(err as Error).message}`)
+      log.warn(`live toggle failed for session ${info.id}: ${(err as Error).message}`)
     }
   }
 }
@@ -274,6 +282,20 @@ export async function removeMarketplace(store: MpStore, sm: SessionManager, id: 
   }
 
   await store.removeEntry(id)
+
+  // The disable pass pushed SDK toggles to claude sessions, but a native
+  // catalog re-read during it still saw the persisted enabled flags (pushing
+  // a disable does not clear them — only removeEntry just did). Re-read native
+  // catalogs now so their pickers drop the removed marketplace's skills.
+  // Claude sessions need no second push: their SDK toggle already landed.
+  for (const info of sm.list()) {
+    if (!info.running || info.provider !== 'native') continue
+    try {
+      await sm.reloadSkills(info.id)
+    } catch (err) {
+      log.warn(`skill reload failed for session ${info.id} after marketplace removal: ${(err as Error).message}`)
+    }
+  }
 }
 
 /** Ensure the external repo backing a git-subdir plugin is cloned and checked

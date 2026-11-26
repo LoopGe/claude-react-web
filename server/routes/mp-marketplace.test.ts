@@ -402,6 +402,54 @@ describe('mp-marketplace routes', () => {
     expect(body.entry.lastSha).toBe(FAKE_SHA_2)
   })
 
+  it('refresh re-reads live skill catalogs AFTER the store mutation', async () => {
+    const add = await jsonOf<{ entry: { id: string } }>(
+      await app.request('/mp/marketplaces', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com/owner/test.git' }),
+      }),
+    )
+    const id = add.entry.id
+
+    // Capture the stored SHA at fan-out time: the catalog re-read must see
+    // the refreshed entry, not the pre-pull one.
+    let shaAtReload: string | undefined
+    const reload = vi.spyOn(sm, 'reloadSkillsForCwd').mockImplementation(async () => {
+      shaAtReload = store.get(id)?.lastSha
+      return { reloaded: [], failed: [] }
+    })
+
+    pullSha = FAKE_SHA_2
+    pullUpdated = true
+    const ref = await app.request(`/mp/marketplaces/${id}/refresh`, { method: 'POST' })
+    expect(ref.status).toBe(200)
+    // No cwd filter — every live session's catalog is re-read.
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(reload).toHaveBeenCalledWith()
+    expect(shaAtReload).toBe(FAKE_SHA_2)
+  })
+
+  it('a failed per-session skill reload does not fail the refresh response', async () => {
+    const add = await jsonOf<{ entry: { id: string } }>(
+      await app.request('/mp/marketplaces', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com/owner/test.git' }),
+      }),
+    )
+    const id = add.entry.id
+    vi.spyOn(sm, 'reloadSkillsForCwd').mockResolvedValue({
+      reloaded: [],
+      failed: [{ id: 's1', error: 'wedged' }],
+    })
+
+    const ref = await app.request(`/mp/marketplaces/${id}/refresh`, { method: 'POST' })
+    expect(ref.status).toBe(200)
+    const body = await jsonOf<{ ok: boolean }>(ref)
+    expect(body.ok).toBe(true)
+  })
+
   it('persists the resolved branch at add time and does not re-derive it on list', async () => {
     const add = await jsonOf<{ entry: { id: string; source: { branch?: string } } }>(
       await app.request('/mp/marketplaces', {
