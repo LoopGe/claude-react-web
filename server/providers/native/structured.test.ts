@@ -11,6 +11,13 @@ describe('attachStructuredRuntime', () => {
     expect(a.tool.name).toBe('StructuredOutput')
     expect(a.tool.schema).toEqual(schema)
   })
+  it('declares the capture tool read-only (permission-gate evidence)', () => {
+    // The capture records the answer without touching the filesystem; the
+    // hint is the plan gate's read-only evidence and the headless one-shot
+    // gate's auto-allow channel.
+    const a = attachStructuredRuntime(schema)
+    expect(a.tool.readOnlyHint).toBe(true)
+  })
   it('captures a conforming value', async () => {
     const a = attachStructuredRuntime(schema)
     const out = await a.tool.run({ result: 'ok' }, ctx)

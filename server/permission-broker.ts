@@ -103,6 +103,14 @@ const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   // Assumes the CLI's own skill load has no side effect; a forked skill's
   // inner tool calls are still classified individually.
   'Skill',
+  // The native structured-output terminal capture: it records the run's
+  // answer (no filesystem mutation, no network), so a structured run must
+  // be able to finish under CI lockdown. Inert for claude — no such tool
+  // exists there (the CLI's structured output rides outputFormat, not a
+  // tool). Deliberately a name-set entry, NOT a dontAsk readOnlyHint
+  // exemption: the hint channel would also admit native WebFetch/WebSearch
+  // (readOnlyHint: true), which dontAsk excludes as network ops.
+  'StructuredOutput',
 ])
 
 /** Read-only built-ins the plan gate passes through. A SUPERSET of the

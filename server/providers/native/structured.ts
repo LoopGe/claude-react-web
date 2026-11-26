@@ -59,6 +59,12 @@ export function attachStructuredRuntime(schema: Record<string, unknown>): Struct
     guidance: STRUCTURED_OUTPUT_GUIDANCE,
     // Trailing: the finish demand reads after every other tool guidance.
     promptOrder: 210,
+    // The capture records the run's answer — no filesystem mutation, no
+    // network. Read-only evidence for the permission gates: the broker's
+    // plan gate and the headless one-shot gate auto-allow on this hint, so
+    // a structured run can finish without a prompt. (dontAsk consults the
+    // broker's READONLY_TOOL_NAMES set, which also lists StructuredOutput.)
+    readOnlyHint: true,
     schema,
     async run(input) {
       if (captured !== undefined) {

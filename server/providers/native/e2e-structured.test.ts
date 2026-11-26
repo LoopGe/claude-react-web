@@ -133,6 +133,7 @@ afterEach(async () => {
 interface Fixture {
   sm: SessionManager
   store: SessionStore
+  provider: NativeProvider
   requests: StreamRequest[]
   scripts: CanonicalEvent[][]
 }
@@ -146,7 +147,7 @@ async function makeEnv(): Promise<{ project: string; stateDir: string }> {
   return { project, stateDir }
 }
 
-async function makeFixture(stateDir: string): Promise<Fixture> {
+async function makeFixture(stateDir: string, opts: { defaultProvider?: string } = {}): Promise<Fixture> {
   const store = new SessionStore({ stateDir })
   await store.load()
   const provider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir }) })
@@ -161,9 +162,9 @@ async function makeFixture(stateDir: string): Promise<Fixture> {
   }
   const registry = new ProviderRegistry()
   registry.register(provider)
-  const sm = new SessionManager({ store, providers: registry })
+  const sm = new SessionManager({ store, providers: registry, defaultProvider: opts.defaultProvider })
   managers.push(sm)
-  return { sm, store, requests, scripts }
+  return { sm, store, provider, requests, scripts }
 }
 
 async function createAllowedSession(
@@ -452,5 +453,220 @@ describe('native Agent/Task outputSchema end to end through SessionManager', () 
     expect(result.is_error).toBe(true)
     expect(result.text).toContain('schema must be an object')
     unsubscribe()
+  })
+})
+
+// The app-level one-shot entry: a transient runTurn context (no NativeSession,
+// no durable log) with the same terminal StructuredOutput runtime attached.
+// Provider-direct tests drive the seam; one manager-level test proves the
+// native-default delegation path (SessionManager.runStructured → provider).
+describe('native one-shot runStructured', () => {
+  it('returns ok:true with the captured value and writes no durable log', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(
+      toolUseTurn('s1', 'StructuredOutput', JSON.stringify({ result: 'x' })),
+      textTurn('done'),
+    )
+
+    const res = await fx.provider.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project })
+
+    expect(res.ok).toBe(true)
+    expect(res.structuredOutput).toEqual({ result: 'x' })
+    expect(res.rawText).toBe('done')
+    expect(res.numTurns).toBe(2)
+    // The terminal tool rides the request and the finish demand reads LAST.
+    expect(fx.requests[0].tools.map((t) => t.name)).toContain('StructuredOutput')
+    expect(fx.requests[0].system.endsWith(STRUCTURED_OUTPUT_GUIDANCE)).toBe(true)
+    // One-shot means non-persisted: no native session log directory appears.
+    expect(existsSync(join(stateDir, 'native-sessions'))).toBe(false)
+  })
+
+  it('returns ok:false error_max_turns when the cap lands before any capture', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    // Round 1 is a tool call; with maxTurns 1 the cap syntheses an error
+    // result instead of executing it, and the run ends without a capture.
+    fx.scripts.push(toolUseTurn('t1', 'Bash', JSON.stringify({ command: 'ls' })))
+
+    const res = await fx.provider.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project, maxTurns: 1 })
+
+    expect(res.ok).toBe(false)
+    expect(res.errorSubtype).toBe('error_max_turns')
+  })
+
+  it('returns ok:false when the run ends without a valid capture', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(textTurn('just a plain text answer'))
+
+    const res = await fx.provider.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project })
+
+    expect(res.ok).toBe(false)
+    expect(res.errorSubtype).toBe('error_during_execution')
+    expect(res.errors?.join(' ')).toContain('StructuredOutput')
+  })
+
+  it('a valid capture stands even when a later round hits the turn cap', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(
+      toolUseTurn('s1', 'StructuredOutput', JSON.stringify({ result: 'first' })),
+      toolUseTurn('b1', 'Bash', JSON.stringify({ command: 'ls' })),
+    )
+
+    const res = await fx.provider.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project, maxTurns: 2 })
+
+    expect(res.ok).toBe(true)
+    expect(res.structuredOutput).toEqual({ result: 'first' })
+  })
+
+  it('aborts on signal', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    // A stream that hangs until the abort lands, then fails like a real
+    // aborted fetch — the run must settle with an aborted error result.
+    fx.provider._testStream = async function* (req: { signal: AbortSignal }) {
+      yield* [] as CanonicalEvent[] // no events: the stream hangs until abort, then rejects
+      await new Promise<void>((resolve) => {
+        if (req.signal.aborted) resolve()
+        else req.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+      throw new DOMException('The operation was aborted.', 'AbortError')
+    }
+    const controller = new AbortController()
+    const p = fx.provider.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project }, controller.signal)
+    controller.abort()
+    const res = await p
+    expect(res.ok).toBe(false)
+    expect(res.errors).toContain('run aborted')
+  })
+
+  it('returns aborted without a round when the signal is already aborted', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    const controller = new AbortController()
+    controller.abort()
+
+    const res = await fx.provider.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project }, controller.signal)
+
+    expect(res.ok).toBe(false)
+    expect(res.errors).toContain('run aborted')
+    expect(fx.requests).toHaveLength(0)
+  })
+
+  it('advertises supportsStructuredOutput', async () => {
+    const { stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    expect(fx.provider.capabilities.supportsStructuredOutput).toBe(true)
+  })
+
+  it.each(['default', 'dontAsk', 'acceptEdits', 'bypassPermissions'] as const)(
+    'captures under %s permission mode',
+    async (permissionMode) => {
+      const { project, stateDir } = await makeEnv()
+      const fx = await makeFixture(stateDir)
+      fx.scripts.push(
+        toolUseTurn('s1', 'StructuredOutput', JSON.stringify({ result: 'x' })),
+        textTurn('done'),
+      )
+
+      const res = await fx.provider.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project, permissionMode })
+
+      expect(res.ok).toBe(true)
+      expect(res.structuredOutput).toEqual({ result: 'x' })
+    },
+  )
+
+  it('dontAsk auto-denies a mutating tool while the capture still succeeds', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(
+      toolUseTurn('w1', 'Write', JSON.stringify({ file_path: join(project, 'denied.txt'), content: 'x' })),
+      toolUseTurn('s1', 'StructuredOutput', JSON.stringify({ result: 'x' })),
+      textTurn('done'),
+    )
+
+    const res = await fx.provider.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project, permissionMode: 'dontAsk' })
+
+    // The lockdown gate is live (Write denied, body never ran)…
+    const denied = toolResultAcross(fx.requests, 'w1')
+    expect(denied.is_error).toBe(true)
+    expect(denied.text).toContain('dontAsk')
+    expect(existsSync(join(project, 'denied.txt'))).toBe(false)
+    // …and the read-only capture flows through it.
+    expect(res.ok).toBe(true)
+    expect(res.structuredOutput).toEqual({ result: 'x' })
+  })
+
+  it('acceptEdits auto-allows an in-cwd edit on the way to the capture', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(
+      toolUseTurn('w1', 'Write', JSON.stringify({ file_path: join(project, 'out.txt'), content: 'hello' })),
+      toolUseTurn('s1', 'StructuredOutput', JSON.stringify({ result: 'x' })),
+      textTurn('done'),
+    )
+
+    const res = await fx.provider.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project, permissionMode: 'acceptEdits' })
+
+    expect(res.ok).toBe(true)
+    expect(toolResultAcross(fx.requests, 'w1').is_error).toBe(false)
+    expect(existsSync(join(project, 'out.txt'))).toBe(true)
+  })
+
+  it('acceptEdits still denies an edit outside cwd (no prompt surface)', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    const outside = join(root, 'outside.txt')
+    fx.scripts.push(
+      toolUseTurn('w1', 'Write', JSON.stringify({ file_path: outside, content: 'x' })),
+      toolUseTurn('s1', 'StructuredOutput', JSON.stringify({ result: 'x' })),
+      textTurn('done'),
+    )
+
+    const res = await fx.provider.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project, permissionMode: 'acceptEdits' })
+
+    expect(res.ok).toBe(true)
+    expect(toolResultAcross(fx.requests, 'w1').is_error).toBe(true)
+    expect(existsSync(outside)).toBe(false)
+  })
+
+  it('SessionManager.runStructured delegates to the native default provider', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir, { defaultProvider: 'native' })
+    fx.scripts.push(
+      toolUseTurn('s1', 'StructuredOutput', JSON.stringify({ result: 'x' })),
+      textTurn('done'),
+    )
+
+    const res = await fx.sm.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project })
+
+    expect(res.ok).toBe(true)
+    expect(res.structuredOutput).toEqual({ result: 'x' })
+  })
+
+  it('rejects maxBudgetUsd loudly (native has no USD cost model)', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    await expect(
+      fx.provider.runStructured({ prompt: 'p', schema: RESULT_SCHEMA, cwd: project, maxBudgetUsd: 1 }),
+    ).rejects.toThrow('maxBudgetUsd')
+  })
+
+  it('surfaces an unsupported schema as a narrowed execution error before any round', async () => {
+    const { project, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+
+    const res = await fx.provider.runStructured({
+      prompt: 'p',
+      schema: { type: 'object', properties: { x: { anyOf: [{ type: 'string' }] } } },
+      cwd: project,
+    })
+
+    expect(res.ok).toBe(false)
+    expect(res.errorSubtype).toBe('error_during_execution')
+    expect(res.errors?.join(' ')).toContain('Unsupported structured-output schema')
+    expect(fx.requests).toHaveLength(0)
   })
 })

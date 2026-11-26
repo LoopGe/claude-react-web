@@ -122,8 +122,11 @@ interface PendingDurableInitial {
 
 const log = createLogger('native')
 
-const DEFAULT_MODEL = 'claude-sonnet-4-5'
-const DEFAULT_MAX_TOKENS = 16384
+/** The native default model and per-round output cap. Exported so the
+ *  one-shot structured runner (structured-run.ts / NativeProvider.runStructured)
+ *  shares the session defaults instead of duplicating them. */
+export const DEFAULT_MODEL = 'claude-sonnet-4-5'
+export const DEFAULT_MAX_TOKENS = 16384
 
 /** The aux prompt for `generateTitle`. The manager trims and persists the
  *  caller's first text block, so the model must answer with the title alone. */

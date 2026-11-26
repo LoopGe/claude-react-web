@@ -464,6 +464,17 @@ describe('PermissionBroker', () => {
       expect(session.pending.size).toBe(0)
     })
 
+    it('dontAsk auto-allows the native StructuredOutput capture tool', async () => {
+      // The terminal capture records the run's answer — no filesystem
+      // mutation — so a structured run (nested or one-shot) can finish under
+      // CI lockdown. Inert for claude: no such tool exists there.
+      const session = makeFakeSession({ permissionMode: 'dontAsk' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('StructuredOutput', { result: 'x' }, ctx())
+      expect(result).toMatchObject({ behavior: 'allow' })
+      expect(session.pending.size).toBe(0)
+    })
+
     it('auto auto-allows the Skill tool without consulting the classifier', async () => {
       // A skill load is read-only, so it belongs in SAFE_AUTO_TOOLS like
       // Read/Grep — no classifier round-trip, no prompt.
@@ -923,6 +934,18 @@ describe('PermissionBroker', () => {
       expect(decision).toBeNull()
       expect(session.pending.size).toBe(1)
       expect(Array.from(session.pending.values())[0].toolName).toBe('Read')
+    })
+
+    it('passes StructuredOutput with its readOnlyHint through the plan gate', async () => {
+      // The capture tool is read-only evidence (ToolDef.readOnlyHint), so the
+      // plan gate must not hard-deny it; it reaches the normal pipeline like
+      // the built-in reads (a live plan session still reviews the call).
+      const { decision, session } = await callBroker({
+        toolName: 'StructuredOutput', input: { result: 'x' }, sessionMode: 'plan', ctxMode: 'plan', readOnlyHint: true,
+      })
+      expect(decision).toBeNull()
+      expect(session.pending.size).toBe(1)
+      expect(Array.from(session.pending.values())[0].toolName).toBe('StructuredOutput')
     })
 
     it('denies mutating Bash in plan mode', async () => {

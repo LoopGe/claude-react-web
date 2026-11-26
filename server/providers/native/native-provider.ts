@@ -21,7 +21,9 @@ import type { NativeHostPorts } from './ports.js'
 import { NativeMcpConnections } from './mcp/connections.js'
 import { SharedRegistry } from './mcp/shared-registry.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
-import { NativeSession } from './native-session.js'
+import { NativeSession, DEFAULT_MODEL } from './native-session.js'
+import { runStructuredOnce } from './structured-run.js'
+import type { StructuredRunRequest, StructuredRunResult } from '../../../shared/structured.js'
 import { wrapNativeCore, projectFileBlocksForProvider, type NativeHostCallbacks } from '../native-host-frame-adapter.js'
 import { NativeModelContextResolver } from './model-context.js'
 import { AnthropicModelDiscovery } from './model-discovery.js'
@@ -131,7 +133,7 @@ export class NativeProvider implements AgentProvider {
     supportsAccountInfo: true,
     supportsSessionTitle: true,
     supportsTaskControl: true,
-    supportsStructuredOutput: false,
+    supportsStructuredOutput: true,
     supportsReadFile: true,
     supportsSubagentTranscripts: true,
     supportsSteering: true,
@@ -324,6 +326,29 @@ export class NativeProvider implements AgentProvider {
       void mcp.closeAll()
       throw err
     }
+  }
+
+  /** One-shot headless structured run: a transient neutral runTurn context
+   *  with the terminal StructuredOutput runtime attached — no session, no
+   *  durable log (structured-run.ts owns the run and the headless permission
+   *  policy). The profile resolves exactly like createSession; the model
+   *  falls back to the native default. */
+  async runStructured(req: StructuredRunRequest, signal?: AbortSignal): Promise<StructuredRunResult> {
+    const configPort = this.ports.config
+    const profile = configPort.hasProfiles ? configPort.activeProfile() : configPort.fallbackProfile()
+    if (!profile.authToken) {
+      throw new HttpError(401, 'authToken is not configured. Set `authToken` in config.json (and optionally `baseUrl`).')
+    }
+    return runStructuredOnce(
+      req,
+      {
+        cwd: req.cwd ?? process.cwd(),
+        model: req.model ?? DEFAULT_MODEL,
+        credentials: { baseUrl: profile.baseUrl, authToken: profile.authToken },
+        stream: this._testStream,
+      },
+      signal,
+    )
   }
 
   readHistoryPage(
