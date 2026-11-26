@@ -4,8 +4,8 @@ import type { HookEvent } from './types.js'
 
 const log = createLogger('native-hooks')
 
-/** Literal-list charset (RS §4.1 `Nvr`/`u2e`): a matcher composed only of
- *  these characters is a name list, not a regular expression. */
+/** Literal-list charset (RS §4.1; the CLI's `tEn` gate): a matcher composed
+ *  only of these characters is a name list, not a regular expression. */
 const LITERAL_LIST = /^[a-zA-Z0-9_|, -]+$/
 
 /** Evaluate one hook matcher against an event's matcher target (RS §4.1).
