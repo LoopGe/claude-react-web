@@ -528,6 +528,27 @@ describe('session log format v3 (neutral)', () => {
     expectCorruptV3({ ...base, data: {} })
   })
 
+  it('parseEventLineV3 preserves session/compact retainHistory + summaryUuid', () => {
+    const raw = {
+      type: 'session/compact', seq: 5, time: 1795661986714,
+      data: { text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: '2026-11-26T02:59:46.714Z', retainHistory: true, summaryUuid: 'sum-1' },
+    }
+    const ev = parseEventLineV3(raw, 5, 's1', '/log') as any
+    expect(ev.type).toBe('session/compact')
+    expect(ev.data.retainHistory).toBe(true)
+    expect(ev.data.summaryUuid).toBe('sum-1')
+  })
+
+  it('parseEventLineV3 session/compact without markers yields undefined fields (legacy)', () => {
+    const raw = {
+      type: 'session/compact', seq: 5, time: 0,
+      data: { text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' },
+    }
+    const ev = parseEventLineV3(raw, 5, 's1', '/log') as any
+    expect(ev.data.retainHistory).toBeUndefined()
+    expect(ev.data.summaryUuid).toBeUndefined()
+  })
+
   it('enforces the dt[0]=0 inter-arrival convention and texts/dt alignment', () => {
     const assistant = neutralEvents[1] as Record<string, unknown>
     const data = assistant.data as { stream: unknown[] }

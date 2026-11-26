@@ -1072,6 +1072,8 @@ export function parseEventLineV3(
           context: requireV3NonEmptyString(data, 'context', type, sessionId, path),
           uuid: requireV3NonEmptyString(data, 'uuid', type, sessionId, path),
           timestamp: requireV3NonEmptyString(data, 'timestamp', type, sessionId, path),
+          ...(data.retainHistory === true ? { retainHistory: true } : {}),
+          ...(typeof data.summaryUuid === 'string' && data.summaryUuid !== '' ? { summaryUuid: data.summaryUuid } : {}),
         },
       } as NativeSessionEvent
     case 'session/supplement':

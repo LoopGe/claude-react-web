@@ -104,7 +104,7 @@ export interface SessionEventMap {
   /** Append-only compaction boundary (v1/v2 `session/compact`): `text` is
    *  the summary the model continues from, `context` the system-reminder
    *  snapshot captured at compaction time. */
-  'session/compact': { text: string; context: string; uuid: string; timestamp: string }
+  'session/compact': { text: string; context: string; uuid: string; timestamp: string; retainHistory?: boolean; summaryUuid?: string }
   /** A mid-run steering supplement, persisted as the WRAPPED guidance the
    *  model saw (v1/v2 `session/supplement`). */
   'session/supplement': { uuid: string; text: string; timestamp: string }
