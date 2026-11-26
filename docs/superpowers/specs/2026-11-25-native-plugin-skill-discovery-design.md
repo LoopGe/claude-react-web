@@ -55,6 +55,10 @@ Research basis: `docs/research/2026-11-25-native-slash-skill-discovery.md`
   provider-hardcoded (`SettingsPanel.tsx:258` `provider !== 'native'`); plugin
   enable/disable stays in the global marketplace panel. This design does not
   restore a native Plugins tab.
+- **Not plugin skills in the skill-manager UI (decision Q1=b).** `GET /skills` and
+  the read route `GET /skills/:scope/:name` stay user/project; plugin skills reach
+  only the native catalog + the policy keyspace. Read-only UI display of plugin
+  skills (and a plugin read path) is a separate future change.
 - **Not bare-name allowlist suffix matching.** The policy allowlist matches the
   exact composed `plugin:skill` name. The CLI's `:name` suffix matching
   (§5.1) is a deferred nicety, not required for parity of visibility.
@@ -92,26 +96,44 @@ Research basis: `docs/research/2026-11-25-native-slash-skill-discovery.md`
 
 ## Decided approach
 
-### Source and wiring
+### Source and wiring (one opt-in merge point; UI unchanged — decision Q1=b)
 
-- New host function `listPluginSkills(mpStore, enabledPlugins?: string[])`
-  (in `server/skills.ts` or a sibling `server/plugin-skills.ts`): resolves enabled
-  plugin dirs via mp-store, scans each (§ Scan shape), returns `SkillRecord[]`
-  with the plugin source marker, composed name, owning plugin name, and
-  `readOnly: true`. `enabledPlugins === undefined` = all enabled; `[]` = none
-  (mirrors `CreateSessionOptions.enabledPlugins` semantics, `providers/types.ts:68`).
-- The native skill port binding merges user/project + plugin records:
-  `listSkills(cwd, enabledPlugins?)` → `listSkills(cwd)` ++ `listPluginSkills(mpStore, enabledPlugins)`.
-  `NativeSkillPort.listSkills` gains the optional `enabledPlugins` parameter; the
+- Host `listSkills(cwd?, pluginOpts?: { mpStore: MpStore; enabledPlugins?: string[] })`
+  gains an OPT-IN plugin parameter. Without `pluginOpts` it returns user/project
+  records exactly as today — the skill-manager UI `GET /skills` keeps this call, so
+  the UI is unchanged. With `pluginOpts` it appends plugin records from a new
+  `listPluginSkills(mpStore, enabledPlugins)` scanner. `enabledPlugins === undefined`
+  = all enabled; `[]` = none (mirrors `CreateSessionOptions.enabledPlugins`,
+  `providers/types.ts:68`).
+- Plugin-aware callers: (1) the native skill port binding
+  (`native-host-adapters.ts:91-93`) calls `listSkills(cwd, { mpStore, enabledPlugins })`;
+  (2) the policy keyspace build `applyDynamicSkillOverrides`
+  (`session-manager-skills.ts:161-176`) and `reapplyGlobalSkillsToInheritingSessions`
+  call `listSkills(s.cwd, { mpStore: deps.mpStore, enabledPlugins: s.enabledPlugins })`,
+  so mid-session disabled / allowlist / all cover plugin skills (this closes the
+  policy hole — the keyspace and the catalog read the SAME plugin-aware source).
+  The plain `GET /skills` UI route and the read route `GET /skills/:scope/:name`
+  stay user/project; plugin skills are not listed or previewed there.
+- `listPluginSkills` iterates enabled plugin ENTRIES via
+  `mpStore.resolveEnabledPlugin(key)` (`mp-store.ts:303-313`), yielding
+  `ParsedPlugin { name, dir, source }` — not the path-only
+  `getEnabledPluginAbsolutePaths` — so the scanner has the catalog name, the plugin
+  dir, and the source kind (needed for the marketplace-root exception and the
+  prefix fallback). git-subdir dirs are existence-guarded (lazy clone).
+- `NativeSkillPort.listSkills` gains the optional `enabledPlugins` parameter; the
   binding closure captures `mpStore` (injected into `NativeProvider`, mirroring
-  claude's `opts.mpStore`).
-- `NativeSessionOptions` carries `enabledPlugins`; the session passes it to the
-  catalog, which forwards it to `port.listSkills` on reload. `NativeProvider`
-  gains an optional `mpStore` (absent → no plugin skills, native still works).
+  claude's `opts.mpStore`). `NativeSessionOptions` carries `enabledPlugins`; the
+  session stores it and forwards it to the catalog → port on reload.
+  `NativeProvider` gains an optional `mpStore` (absent → no plugin skills, native
+  still works).
 
 ### Scan shape (CLI-faithful, §5.8)
 
-Per enabled plugin dir `P` with manifest name `N`:
+Per enabled plugin entry (catalog name `C`, dir `P`, source kind): the composed
+prefix `N` = the plugin's own `.claude-plugin/plugin.json` `name` read fresh,
+falling back to the catalog name `C` when plugin.json is absent (the CLI composes
+from the plugin-manifest name, §5.8; CRW admits manifest-less plugin dirs, so the
+catalog name is the fallback). `record.plugin` and the picker group label use `N`.
 1. **Default root** `P/skills/` (if it exists): one-level `readdir`,
    directories/symlinks only, each `<entry>/SKILL.md`. Skill name = sanitized dir
    basename (`[^a-zA-Z0-9_-] → -`); `frontmatter.name` IGNORED (root-scan branch).
@@ -120,7 +142,11 @@ Per enabled plugin dir `P` with manifest name `N`:
    Auto-detect each: `SKILL.md` directly inside → single skill dir (name =
    `frontmatter.name` ?? basename, strip a leading `N:` prefix, sanitize); else →
    subdirs-root (name = sanitized basename per subdir). Loaded IN ADDITION to the
-   default root (manifest does not shadow `skills/`).
+   default root — EXCEPT the CLI's marketplace-root case (§5.8): when the plugin
+   source resolves to the marketplace/clone root (single-plugin repo,
+   `ParsedPlugin.dir === cloneDir`), a manifest `skills` subdirectory declaration
+   REPLACES the default `skills/` scan. The scanner detects this from the entry's
+   source kind + dir vs the marketplace cloneDir.
 3. **Fallback**: no `skills/` dir AND no manifest `skills` AND `P/SKILL.md`
    present → `P` itself is a single skill dir.
 4. Composed name = `` `${N}:${skillName}` `` (join `rP`, §5.8).
@@ -129,6 +155,13 @@ Per enabled plugin dir `P` with manifest name `N`:
 6. Read each `SKILL.md` (≤ `MAX_SKILL_BYTES`), parse frontmatter for
    description / disable-model-invocation / user-invocable / argument-hint;
    per-plugin/per-skill read failures contained (omit, warn, continue).
+   **Plugin record validity is description + structure only** — frontmatter
+   delimiter presence and a non-empty description. NAME-validation errors are
+   EXCLUDED: the name is derived independently per branch, so the shared parser's
+   bare `VALID_SKILL_NAME` check (`shared/skills.ts:93`) must not drop a root-scan
+   (frontmatter.name ignored) or prefix-stripped skill. `parseSkillFrontmatter`'s
+   name error is ignored for plugin records; its other errors (missing description,
+   bad delimiters) still invalidate.
 
 ### Source marker, read-only, picker
 
@@ -147,12 +180,13 @@ Per enabled plugin dir `P` with manifest name `N`:
 
 ### Policy
 
-- Plugin records returned by `listSkills` automatically enter the policy keyspace
-  under their exact composed name (`session-manager-skills.ts:161-176` builds the
-  override map from `listSkills(cwd).skills.map(name)`; `stateOf` matches
-  `policy.includes(name)`, `native/skills.ts:297-300`). An allowlist must list the
-  literal `plugin:skill`. `disable-model-invocation` / `user-invocable` frontmatter
-  flags clamp exactly as for user/project skills (A-batch visibility model).
+- Plugin records enter the policy keyspace under their exact composed name because
+  `applyDynamicSkillOverrides` calls the PLUGIN-AWARE
+  `listSkills(s.cwd, { mpStore, enabledPlugins })` (§ Source and wiring), so the
+  override map covers `plugin:skill` names; `stateOf` matches `policy.includes(name)`
+  (`native/skills.ts:297-300`). An allowlist must list the literal `plugin:skill`.
+  `disable-model-invocation` / `user-invocable` frontmatter flags clamp exactly as
+  for user/project skills (A-batch visibility model).
 
 ### Live invalidation (G4)
 
@@ -168,14 +202,18 @@ Per enabled plugin dir `P` with manifest name `N`:
 
 ## Left to builder
 
-- Exact wiring of `mpStore` + `enabledPlugins` through `NativeProvider` →
-  `NativeSession` → catalog → port (and the port signature widening).
-- Manifest `skills` parse (string|string[]) + auto-detect + traversal containment;
-  the per-branch name derivation and sanitization.
+- The opt-in `listSkills` parameter threading through `NativeProvider` →
+  `NativeSession` → catalog → port, and the policy callers' access to
+  `deps.mpStore` + `s.enabledPlugins` (exact hook points).
+- Manifest `skills` parse (string|string[]) + auto-detect + traversal containment
+  implementation; the marketplace-root detection (dir vs cloneDir).
+- A fresh per-scan read of `P/.claude-plugin/plugin.json` for the prefix name
+  (mp-store caches only catalog metadata for marketplace-form repos).
 - realpath dedup implementation (against user/project + cross-plugin).
 - The plugin toggle/refresh → native skill-reload fan-out path (which route hooks
   it; whether `reloadSkillsForCwd` suffices or a plugin-specific fan-out is needed).
 - `SkillScope 'plugin'` guard updates across write/import/delete + `isSkillScope`.
-- Tests: scan shape (default root, manifest single-dir + root, fallback), name
-  derivation per branch, dedup, read-only guards, policy keyspace, picker tag,
-  toggle invalidation; neutrality/host-free pins stay green.
+- Tests: scan shape (default root, manifest single-dir + root, marketplace-root
+  exception, fallback), name derivation per branch + prefix authority, dedup,
+  validity (name errors excluded), read-only guards, policy keyspace coverage,
+  picker tag, toggle invalidation; neutrality/host-free pins stay green.
