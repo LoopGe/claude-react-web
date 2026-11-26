@@ -5847,6 +5847,40 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('compactInPlace without summaryUuid persists retainHistory and omits the summaryUuid key', async () => {
+    const dir = await tempDir('native-retain-omission-')
+    const provider = providerWithStreamer([textTurn('first reply')], dir)
+    const session = provider.createSession({ id: 'retain-omission', cwd: dir })
+    const compactable = coreOf(session) as unknown as {
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
+      log: NativeSessionLog
+    }
+    void (async () => { for await (const _ of session.messages) { /* drain */ } })()
+    session.enqueueUserMessage(userMsg('pre-compact turn') as never)
+    await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
+
+    await compactable.compactInPlace('S', { uuid: 'c1', timestamp: '2026-11-26T02:59:46.714Z' })
+
+    const compact = neutralEventsOf(compactable.log).find((e) => e.type === 'session/compact') as
+      Extract<NativeSessionEvent, { type: 'session/compact' }>
+    expect(compact).toBeDefined()
+    expect(compact.data.retainHistory).toBe(true)
+    // The key is ABSENT, not present-with-undefined: the writer's conditional
+    // spread omits it entirely when no summaryUuid is supplied.
+    expect(Object.hasOwn(compact.data, 'summaryUuid')).toBe(false)
+    await session.destroy()
+
+    // The persisted line itself carries the same shape (flush ran inside
+    // compactInPlace; destroy flushed + closed before this read).
+    const raw = await readFile(nativeSessionLogPath(dir, 'retain-omission'), 'utf8')
+    const compactLine = raw.split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as { type?: string; data?: Record<string, unknown> })
+      .find((event) => event.type === 'session/compact')
+    expect(compactLine).toBeDefined()
+    expect(compactLine!.data!.retainHistory).toBe(true)
+    expect(Object.hasOwn(compactLine!.data!, 'summaryUuid')).toBe(false)
+  })
+
   it('reconcile snapshot emits compact boundary + summary as two occurrences with sourceOrdinal', async () => {
     const dir = await tempDir('native-snap-')
     const provider = providerWithStreamer([textTurn('first reply')], dir)
