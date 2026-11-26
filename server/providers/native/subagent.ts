@@ -17,6 +17,11 @@ import {
   EXPLORE_AGENT_NAME,
   filterExploreTools,
 } from './explore.js'
+import {
+  attachStructuredRuntime,
+  STRUCTURED_OUTPUT_GUIDANCE,
+  type StructuredAttachment,
+} from './structured.js'
 
 /** Everything the Agent tool needs from the session that owns it. All fields
  *  are read at call time (except frameCtx, which is the session's frame
@@ -79,6 +84,12 @@ interface AgentToolInput {
   prompt: unknown
   subagent_type?: unknown
   model?: string
+  /** The caller's output contract: when present, the nested run must finish by
+   *  calling StructuredOutput with arguments matching this schema, and the
+   *  captured value (not the last assistant text) becomes this tool's result.
+   *  Model-emitted, so a non-object value reaches the attach-time scan, which
+   *  rejects it loudly. */
+  outputSchema?: Record<string, unknown>
 }
 
 /** Shared Agent/Task guidance. The provider registers only `tool:Agent`; nested
@@ -109,6 +120,13 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
           description: 'Agent definition to run as. Defaults to general-purpose.',
         },
         model: { type: 'string', description: 'Model override for the subagent.' },
+        outputSchema: {
+          type: 'object',
+          description:
+            'Optional JSON Schema for the subagent result. When set, the subagent must finish by ' +
+            'calling StructuredOutput with arguments matching this schema, and that captured value ' +
+            '(as JSON) becomes this tool result instead of the final text report.',
+        },
       },
       required: ['description', 'prompt'],
     },
@@ -151,9 +169,22 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
         return { text: 'maxTurns must be a positive integer', isError: true }
       }
 
+      // The caller's output contract, attached BEFORE any durable append or
+      // stream. An unsupported or malformed schema throws here (a caller/wiring
+      // error no corrected arguments can satisfy); the loop surfaces the throw
+      // as an error tool result naming the construct — never a retry instruction.
+      const structured: StructuredAttachment | undefined = input.outputSchema !== undefined
+        ? attachStructuredRuntime(input.outputSchema)
+        : undefined
+
       const instruction = profile?.instruction ?? DEFAULT_AGENT_INSTRUCTION
       const skillView = deps.skillView(profile?.skills)
-      const nestedSystem = `${deps.system(skillView)}\n\n${instruction}`
+      // The finish demand reads LAST (after the instruction), independent of any
+      // MCP guidance ordering in the inherited system — promptOrder alone cannot
+      // guarantee that once MCP tools are connected.
+      const nestedSystem = structured
+        ? `${deps.system(skillView)}\n\n${instruction}\n\n${STRUCTURED_OUTPUT_GUIDANCE}`
+        : `${deps.system(skillView)}\n\n${instruction}`
       // Depth is capped at one by construction. Replace the stateful Skill
       // instance BEFORE filtering so the scoped view and allow/deny/MCP policy
       // both apply to the complete current nested snapshot.
@@ -164,9 +195,13 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
         profile ?? {},
         deps.mcpToolServers(),
       )
-      const nestedTools = requested === EXPLORE_AGENT_NAME
+      const filteredTools = requested === EXPLORE_AGENT_NAME
         ? filterExploreTools(profileTools)
         : profileTools
+      // The terminal capture tool is the run's contract, not a profile tool: it
+      // rides AFTER allow/deny/MCP/Explore filtering so the subagent can always
+      // finish, whatever tool subset the profile selected.
+      const nestedTools = structured ? [...filteredTools, structured.tool] : filteredTools
       // The schema declares a string, but a model can still emit a number or
       // blank string. Treat both as absent so the nested run inherits the
       // definition/parent model instead of sending an invalid id to the API.
@@ -215,8 +250,19 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
             maxTurns: profile?.maxTurns,
             tasks: deps.tasks,
             cwd: deps.cwd,
-            requestPermission: (toolName, toolInput, toolUseId, signal, readOnlyHint) =>
-              deps.requestPermission(toolName, toolInput, toolUseId, signal, nestedPermissionMode, readOnlyHint),
+            requestPermission: async (toolName, toolInput, toolUseId, signal, readOnlyHint) => {
+              // Terminal guard: once a value is captured the run is complete, so
+              // every further nested tool call is denied without consulting the
+              // broker (the StructuredOutput tool also blocks a second capture).
+              if (structured?.isClosed()) {
+                return {
+                  allowed: false,
+                  input: toolInput,
+                  message: 'Structured output already recorded: the run is complete, so this tool call is not executed.',
+                }
+              }
+              return deps.requestPermission(toolName, toolInput, toolUseId, signal, nestedPermissionMode, readOnlyHint)
+            },
             emit: (frame) => {
               if ('type' in frame && frame.type === 'assistant-frame') {
                 const content = frame.message.content
@@ -253,6 +299,19 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
           finalReport = assistantTexts[i]
           break
         }
+      }
+      if (structured) {
+        const captured = structured.captured()
+        // The captured value IS the result the parent continuation reads,
+        // projected as JSON text (native ToolOutcome has no structured field).
+        // A valid capture stands even if the run later hit its turn cap.
+        if (captured) return { text: JSON.stringify(captured.value) }
+        // No capture: the run failed its output contract — a failure, not a
+        // silent text success. The partial report rides along for the parent.
+        const failure = turn.isError
+          ? `max turns reached (${turn.numTurns})`
+          : 'subagent ended without calling StructuredOutput'
+        return { text: finalReport ? `${failure}\n\n${finalReport}` : failure, isError: true }
       }
       if (turn.isError) {
         const cutoff = `max turns reached (${turn.numTurns})`

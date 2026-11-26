@@ -156,6 +156,7 @@ describe('createAgentTool', () => {
         prompt: { type: 'string', description: expect.any(String) },
         subagent_type: { type: 'string', description: expect.any(String) },
         model: { type: 'string', description: expect.any(String) },
+        outputSchema: { type: 'object', description: expect.any(String) },
       },
       required: ['description', 'prompt'],
     })
