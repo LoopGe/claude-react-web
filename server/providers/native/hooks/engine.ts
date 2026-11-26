@@ -5,8 +5,10 @@
 // by the matcher, runs the matched hooks with the CLI concurrency discipline
 // (command/http parallel capped at 12, prompt/agent serial), merges the results
 // into one decision, and emits started/completed activity per hook. `once` is
-// inert (settings-shaped hooks have no removal path, RS §4.3) and `if` is wired
-// by a later task. The per-event ACTION mapping of a decision (does exit-2 block
+// inert (settings-shaped hooks have no removal path, RS §4.3); `if` is a
+// permission-rule filter evaluated per hook AFTER the matcher on the five tool
+// events, and a hook carrying `if` on any other event is skipped + logged
+// (RS §4.2). The per-event ACTION mapping of a decision (does exit-2 block
 // this event, deny-vs-erase-vs-continue, rewrite merge) belongs to the calling
 // seams; the engine returns the merged decision facts.
 import { randomUUID } from 'node:crypto'
@@ -24,6 +26,7 @@ import type {
 import type { LoopDeps } from '../loop.js'
 import type { ToolDef } from '../tools/types.js'
 import { collectForEvent } from './collection.js'
+import { evaluateIf, TOOL_HOOK_EVENTS } from './if-condition.js'
 import { matches, matcherTarget } from './matcher.js'
 import { applyOnFailure, type HookExecResult } from './output.js'
 import { runCommandHook, type HookExecContext } from './command-executor.js'
@@ -357,10 +360,26 @@ export class HookEngine {
     // Fresh per-event collection (RS §12.3) — never a cached snapshot.
     const groups = collectForEvent(this.opts.sources(), event)
     const target = matcherTarget(event, input)
+    const isToolEvent = TOOL_HOOK_EVENTS.has(event)
+    const toolName = typeof input.tool_name === 'string' ? input.tool_name : ''
+    const toolInput = isPlainObject(input.tool_input) ? input.tool_input : {}
     const matched: HookConfig[] = []
     for (const group of groups) {
       // matches(m, undefined)===true encodes "no-target event ignores matcher".
-      if (matches(group.matcher, target)) matched.push(...group.hooks)
+      if (!matches(group.matcher, target)) continue
+      for (const hook of group.hooks) {
+        // `if` filters per hook AFTER the matcher (RS §4.2). Only the five
+        // tool events can evaluate it; on any other event a set `if` skips
+        // the hook (CLI: "cannot be evaluated for non-tool event").
+        if (hook.if) {
+          if (!isToolEvent) {
+            log.warn(`Hook if condition ${JSON.stringify(hook.if)} cannot be evaluated for non-tool event ${event}; hook skipped`)
+            continue
+          }
+          if (!evaluateIf(hook.if, toolName, toolInput)) continue
+        }
+        matched.push(hook)
+      }
     }
     if (matched.length === 0) return { action: 'continue', additionalContext: [] }
 

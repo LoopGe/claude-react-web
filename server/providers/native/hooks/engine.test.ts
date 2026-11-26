@@ -1,5 +1,5 @@
 // server/providers/native/hooks/engine.test.ts
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { CommandHookConfig, HookConfig, HookMatcherConfig, HookRuntimeEvent } from '../../../../shared/hooks.js'
 import { HookEngine, type HookExecutor } from './engine.js'
 import type { HookExecResult } from './output.js'
@@ -119,6 +119,80 @@ describe('HookEngine.dispatch — collection + matching', () => {
     await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())
     await engine.dispatch('PreToolUse', { tool_name: 'Bash' }, ctx())
     expect(calls).toHaveLength(3)
+  })
+})
+
+describe('HookEngine.dispatch — if condition (RS §4.2, tool events only)', () => {
+  it('a tool-event hook whose if matches runs; a failing if skips it', async () => {
+    const { executor, calls } = fixedExecutor(SUCCESS)
+    const engine = engineWith({ command: executor }, [
+      { matcher: 'Bash', hooks: [command('git-only.sh', { if: 'Bash(git *)' }), command('always.sh')] },
+    ])
+    await engine.dispatch('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'git status' } }, ctx())
+    expect(calls.map((c) => (c.hook as CommandHookConfig).command)).toEqual(['git-only.sh', 'always.sh'])
+    calls.length = 0
+    await engine.dispatch('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'rm -rf' } }, ctx())
+    expect(calls.map((c) => (c.hook as CommandHookConfig).command)).toEqual(['always.sh'])
+  })
+
+  it('if is evaluated per hook on every tool event', async () => {
+    const { executor, calls } = fixedExecutor(SUCCESS)
+    const engine = engineWith({ command: executor }, [
+      { hooks: [command('git-only.sh', { if: 'Bash(git *)' })] },
+    ])
+    const input = { tool_name: 'Bash', tool_input: { command: 'git status' } }
+    for (const event of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'PermissionDenied'] as const) {
+      await engine.dispatch(event, input, ctx())
+    }
+    expect(calls).toHaveLength(5)
+    calls.length = 0
+    for (const event of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'PermissionDenied'] as const) {
+      await engine.dispatch(event, { tool_name: 'Bash', tool_input: { command: 'rm -rf' } }, ctx())
+    }
+    expect(calls).toHaveLength(0)
+  })
+
+  it('a non-tool event skips a hook with if (and logs), running its if-less siblings', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { executor, calls } = fixedExecutor(SUCCESS)
+      const engine = engineWith({ command: executor }, [
+        { hooks: [command('tool-only.sh', { if: 'Bash(git *)' }), command('stop.sh')] },
+      ])
+      const decision = await engine.dispatch('Stop', {}, ctx())
+      expect(calls.map((c) => (c.hook as CommandHookConfig).command)).toEqual(['stop.sh'])
+      expect(decision).toEqual({ action: 'continue', additionalContext: [] })
+      expect(warnSpy).toHaveBeenCalled()
+      const logged = warnSpy.mock.calls.map((call) => call.join(' ')).join('\n')
+      expect(logged).toContain('cannot be evaluated for non-tool event')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('a skipped if hook emits no activity record', async () => {
+    const events: HookRuntimeEvent[] = []
+    const { executor } = fixedExecutor(SUCCESS)
+    const engine = engineWith({ command: executor }, [
+      { hooks: [command('git-only.sh', { if: 'Bash(git *)' })] },
+    ], (e) => events.push(e))
+    await engine.dispatch('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'rm -rf' } }, ctx())
+    expect(events).toHaveLength(0)
+  })
+
+  it('a malformed if skips the hook on a tool event (never throws)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { executor, calls } = fixedExecutor(SUCCESS)
+      const engine = engineWith({ command: executor }, [
+        { hooks: [command('broken.sh', { if: 'Bash(git *' })] },
+      ])
+      const decision = await engine.dispatch('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'git status' } }, ctx())
+      expect(calls).toHaveLength(0)
+      expect(decision).toEqual({ action: 'continue', additionalContext: [] })
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 })
 
