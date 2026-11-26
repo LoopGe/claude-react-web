@@ -1,7 +1,7 @@
 # Native compact 保留可见历史 设计
 
 日期：2026-11-26
-状态：待评审
+状态：已实现（`docs/superpowers/plans/2026-11-26-native-compact-retain-history.md`）
 范围：native provider 的自动 in-place compact（`runAutoCompact` / `compactInPlace` / native session-log reader）
 
 ## 1. 背景与意图
