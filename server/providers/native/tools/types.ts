@@ -60,5 +60,10 @@ export interface ToolDef<In = Record<string, unknown>> {
      *  acknowledgement, not the run's output). Absent = host-detach only. */
     shouldBackground?(input: In): boolean
   }
+  /** Optional pre-execution input validation. The loop calls this BEFORE
+   *  registering a backgroundable task or running the tool, so malformed input
+   *  throws ToolInputError as a clean error tool result — never a backgrounded
+   *  record whose describe()/completion would read undefined fields. */
+  validate?(input: In): void
   run(input: In, ctx: ToolContext): Promise<ToolOutcome>
 }

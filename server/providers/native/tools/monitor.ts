@@ -35,6 +35,21 @@ const MAX_TIMEOUT_MS = 1_800_000
 /** Events arriving within this window ride ONE notification (one model wake),
  *  not one turn per line. */
 export const MONITOR_BATCH_MS = 200
+/** Per-event character cap (the repo's bounded-buffer discipline: 64KiB terminal
+ *  input, 128Ki task-result pages). Bounds BOTH the partial-line buffer (a
+ *  no-newline flood cannot grow it without bound across batch windows) and each
+ *  emitted event (a single minified/multi-MB line is truncated, not injected
+ *  verbatim). Excess is dropped with a truncation marker. */
+export const MAX_EVENT_CHARS = 64 * 1024
+const TRUNCATION_MARKER = '...[line truncated]'
+
+/** Cap one event line, marking it when content was dropped — either the line
+ *  itself exceeds the cap, or its partial buffer was already truncated. */
+function capEvent(line: string, truncated: boolean): string {
+  return truncated || line.length > MAX_EVENT_CHARS
+    ? line.slice(0, MAX_EVENT_CHARS) + TRUNCATION_MARKER
+    : line
+}
 
 export const MONITOR_GUIDANCE =
   'Filter at the source (grep/awk in the command, a filtered WS feed) so only lines you would act on become events — every event batch wakes the model. ' +
@@ -74,6 +89,37 @@ export interface MonitorToolDeps {
   spawn: MonitorSpawnPort
 }
 
+/** Total input validation, shared by the loop's pre-registration `validate`
+ *  hook and `run` (direct calls). Throws ToolInputError on malformed input so a
+ *  bad call never registers a background record (the loop validates before
+ *  describe()/runForeground). */
+function validateMonitorInput(input: MonitorInput): void {
+  if (typeof input.description !== 'string' || input.description.trim() === '') {
+    throw new ToolInputError('description is required')
+  }
+  const hasCommand = input.command !== undefined
+  const hasWs = input.ws !== undefined
+  if (hasCommand === hasWs) {
+    throw new ToolInputError('provide exactly one of command or ws')
+  }
+  if (hasCommand) {
+    if (typeof input.command !== 'string' || input.command.trim() === '') {
+      throw new ToolInputError('command must be a non-empty string')
+    }
+  } else {
+    const ws = input.ws!
+    if (typeof ws.url !== 'string' || ws.url.trim() === '') {
+      throw new ToolInputError('ws.url must be a non-empty string')
+    }
+    if (ws.protocols !== undefined && (!Array.isArray(ws.protocols) || ws.protocols.some((p) => typeof p !== 'string'))) {
+      throw new ToolInputError('ws.protocols must be an array of strings')
+    }
+  }
+  if (input.timeout_ms !== undefined && (typeof input.timeout_ms !== 'number' || !Number.isFinite(input.timeout_ms))) {
+    throw new ToolInputError('timeout_ms must be a finite number')
+  }
+}
+
 export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> {
   return {
     name: 'Monitor',
@@ -110,28 +156,12 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
       // Every Monitor call backgrounds immediately: the watch outlives the call.
       shouldBackground: () => true,
     },
+    validate: validateMonitorInput,
     async run(input, ctx) {
-      if (typeof input.description !== 'string' || input.description.trim() === '') {
-        throw new ToolInputError('description is required')
-      }
-      const hasCommand = input.command !== undefined
-      const hasWs = input.ws !== undefined
-      if (hasCommand === hasWs) {
-        throw new ToolInputError('provide exactly one of command or ws')
-      }
-      let target: MonitorTarget
-      if (hasCommand) {
-        if (typeof input.command !== 'string' || input.command.trim() === '') {
-          throw new ToolInputError('command must be a non-empty string')
-        }
-        target = { kind: 'command', command: input.command, cwd: ctx.cwd }
-      } else {
-        const ws = input.ws!
-        if (typeof ws.url !== 'string' || ws.url.trim() === '') {
-          throw new ToolInputError('ws.url must be a non-empty string')
-        }
-        target = { kind: 'ws', url: ws.url, ...(ws.protocols !== undefined ? { protocols: ws.protocols } : {}) }
-      }
+      validateMonitorInput(input)
+      const target: MonitorTarget = input.command !== undefined
+        ? { kind: 'command', command: input.command, cwd: ctx.cwd }
+        : { kind: 'ws', url: input.ws!.url, ...(input.ws!.protocols !== undefined ? { protocols: input.ws!.protocols } : {}) }
       const timeoutMs = Math.min(MAX_TIMEOUT_MS, Math.max(1, Math.floor(input.timeout_ms ?? DEFAULT_TIMEOUT_MS)))
       // The loop always anchors a backgroundable call to its tool_use id; the
       // task record (and the event deliveries' task-id) key on it.
@@ -143,6 +173,7 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
         let settled = false
         let timedOut = false
         let buffer = ''
+        let bufferTruncated = false
         let pending: string[] = []
         let batchTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -181,14 +212,23 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
           onEvent: (event) => {
             if (target.kind === 'command') {
               buffer += event as string
+              // Extract complete lines FIRST (so a newline is never lost to the
+              // remainder cap), then bound the partial remainder: a no-newline
+              // flood cannot grow the buffer past the cap across batch windows.
               let nl = buffer.indexOf('\n')
               while (nl >= 0) {
-                pushEvent(buffer.slice(0, nl).replace(/\r$/, ''))
+                const line = buffer.slice(0, nl).replace(/\r$/, '')
+                pushEvent(capEvent(line, bufferTruncated))
+                bufferTruncated = false
                 buffer = buffer.slice(nl + 1)
                 nl = buffer.indexOf('\n')
               }
+              if (buffer.length > MAX_EVENT_CHARS) {
+                buffer = buffer.slice(0, MAX_EVENT_CHARS)
+                bufferTruncated = true
+              }
             } else if (typeof event === 'string') {
-              pushEvent(event)
+              pushEvent(capEvent(event, false))
             } else {
               pushEvent(`[binary frame, ${event.byteLength} bytes]`)
             }
@@ -196,7 +236,7 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
           onEnd: (end) => {
             if (timedOut || settled) return
             if (target.kind === 'command' && buffer !== '') {
-              pushEvent(buffer.replace(/\r$/, ''))
+              pushEvent(capEvent(buffer.replace(/\r$/, ''), bufferTruncated))
               buffer = ''
             }
             if (end.error !== undefined) {

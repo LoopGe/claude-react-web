@@ -9,8 +9,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NativeTaskManager, type TaskNotificationFacts } from '../task-manager.js'
 import type { OperationalFrame } from '../vocabulary/live-frame.js'
+import { runTurn, type LoopDeps } from '../loop.js'
+import { defaultFrameContext } from '../../native-frames.js'
+import type { CanonicalEvent } from '../canonical.js'
 import {
   createMonitorTool,
+  MAX_EVENT_CHARS,
   MONITOR_BATCH_MS,
   MONITOR_GUIDANCE,
   type MonitorSpawnPort,
@@ -19,6 +23,8 @@ import {
 } from './monitor.js'
 import { createTaskStopTool } from './task-stop.js'
 import { ToolInputError, type ToolContext } from './types.js'
+
+const TRUNCATION_MARKER = '...[line truncated]'
 
 interface StubCall {
   target: MonitorTarget
@@ -84,6 +90,21 @@ describe('Monitor input validation', () => {
 
   it('rejects a ws target without a url', async () => {
     await expect(tool().run({ description: 'd', ws: {} as never }, ctx())).rejects.toThrow(ToolInputError)
+  })
+
+  it('rejects a non-number or non-finite timeout_ms', async () => {
+    await expect(tool().run({ description: 'd', command: 'c', timeout_ms: 'fast' as never }, ctx())).rejects.toThrow(ToolInputError)
+    await expect(tool().run({ description: 'd', command: 'c', timeout_ms: NaN }, ctx())).rejects.toThrow(ToolInputError)
+    await expect(tool().run({ description: 'd', command: 'c', timeout_ms: Infinity }, ctx())).rejects.toThrow(ToolInputError)
+  })
+
+  it('exposes a total validate hook the loop calls before registration', () => {
+    const t = tool()
+    expect(() => t.validate!({ command: 'c' } as never)).toThrow(ToolInputError)
+    expect(() => t.validate!({ description: 'd' } as never)).toThrow(ToolInputError)
+    expect(() => t.validate!({ description: 'd', command: 'c', timeout_ms: NaN })).toThrow(ToolInputError)
+    expect(() => t.validate!({ description: 'd', command: 'c' })).not.toThrow()
+    expect(() => t.validate!({ description: 'd', ws: { url: 'wss://x' } })).not.toThrow()
   })
 })
 
@@ -223,7 +244,7 @@ describe('Monitor background-task lifecycle', () => {
     expect(calls[0].handle.killed).toBe(true)
     const final = injected.find((n) => n.toolUseId === 'tu-stop')
     expect(final).toMatchObject({ status: 'stopped' })
-    expect(manager.output('tu-stop', {}, ctx().signal)).resolves.toMatchObject({ text: expect.stringContaining('stopped') })
+    await expect(manager.output('tu-stop', {}, ctx().signal)).resolves.toMatchObject({ text: expect.stringContaining('stopped') })
   })
 
   it('injects a foldable expiry notification when the deadline fires', async () => {
@@ -270,5 +291,119 @@ describe('Monitor background-task lifecycle', () => {
     })
     // The event delivery preceded the foldable completion, both on the sink.
     expect(injected.some((n) => n.events?.includes('done') && n.toolUseId === undefined)).toBe(true)
+  })
+})
+
+describe('Monitor bounded buffers', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('bounds a no-newline flood to a single truncated event', async () => {
+    const { port, calls } = stubSpawn()
+    const injected: TaskNotificationFacts[] = []
+    const tool = createMonitorTool({ inject: (n) => injected.push(n), spawn: port })
+    const running = tool.run({ description: 'watch', command: 'c' }, ctx())
+
+    // 200k characters with no newline — well past the cap, across many chunks.
+    for (let i = 0; i < 20; i++) calls[0].events.onEvent('x'.repeat(10_000))
+    calls[0].events.onEvent('\n')
+    await vi.advanceTimersByTimeAsync(MONITOR_BATCH_MS)
+    expect(injected).toHaveLength(1)
+    expect(injected[0].events).toEqual(['x'.repeat(MAX_EVENT_CHARS) + TRUNCATION_MARKER])
+
+    calls[0].events.onEnd({ code: 0 })
+    await running
+  })
+
+  it('truncates a single oversized complete line', async () => {
+    const { port, calls } = stubSpawn()
+    const injected: TaskNotificationFacts[] = []
+    const tool = createMonitorTool({ inject: (n) => injected.push(n), spawn: port })
+    const running = tool.run({ description: 'watch', command: 'c' }, ctx())
+
+    calls[0].events.onEvent('y'.repeat(MAX_EVENT_CHARS + 5_000) + '\n')
+    await vi.advanceTimersByTimeAsync(MONITOR_BATCH_MS)
+    expect(injected[0].events).toEqual(['y'.repeat(MAX_EVENT_CHARS) + TRUNCATION_MARKER])
+
+    calls[0].events.onEnd({ code: 0 })
+    await running
+  })
+
+  it('caps an oversized WS text frame', async () => {
+    const { port, calls } = stubSpawn()
+    const injected: TaskNotificationFacts[] = []
+    const tool = createMonitorTool({ inject: (n) => injected.push(n), spawn: port })
+    const running = tool.run({ description: 'watch', ws: { url: 'wss://x' } }, ctx())
+
+    calls[0].events.onEvent('z'.repeat(MAX_EVENT_CHARS + 100))
+    await vi.advanceTimersByTimeAsync(MONITOR_BATCH_MS)
+    expect(injected[0].events).toEqual(['z'.repeat(MAX_EVENT_CHARS) + TRUNCATION_MARKER])
+
+    calls[0].events.onEnd({ code: null })
+    await running
+  })
+})
+
+describe('Monitor input validation through the real loop', () => {
+  it('a missing description is a clean error tool result — no background record, no injection', async () => {
+    const { port } = stubSpawn()
+    const injected: TaskNotificationFacts[] = []
+    const managerFrames: OperationalFrame[] = []
+    const manager = new NativeTaskManager((f) => managerFrames.push(f), (n) => injected.push(n))
+    const tool = createMonitorTool({ inject: (n) => injected.push(n), spawn: port })
+
+    const start: CanonicalEvent = { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } }
+    const scripts: CanonicalEvent[][] = [
+      [
+        start,
+        { kind: 'block_start', index: 0, block: { type: 'tool_use', id: 'mon-1', name: 'Monitor' } },
+        { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: JSON.stringify({ command: 'tail -f log' }) } },
+        { kind: 'block_end', index: 0 },
+        { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+      ],
+      [
+        start,
+        { kind: 'block_start', index: 0, block: { type: 'text' } },
+        { kind: 'block_delta', index: 0, delta: { type: 'text', text: 'recovered' } },
+        { kind: 'block_end', index: 0 },
+        { kind: 'message_end', stopReason: 'end_turn', usage: { output_tokens: 5 } },
+      ],
+    ]
+    let call = 0
+    const requests: unknown[] = []
+    const deps: LoopDeps = {
+      stream: async function* (req) {
+        requests.push(structuredClone(req.messages))
+        for (const ev of scripts[call++] ?? []) yield ev
+      },
+      tools: [tool],
+      cwd: '/work',
+      tasks: manager,
+      requestPermission: async (_t, input) => ({ allowed: true, input }),
+      emit: () => {},
+      persistToolResult: () => {},
+      attachmentProjection: {},
+      system: 'SYS',
+    }
+
+    const res = await runTurn(
+      deps, defaultFrameContext('sess'), [],
+      { role: 'user', content: [{ type: 'text', text: 'go' }] }, 'm1', new AbortController().signal,
+    )
+
+    // The turn recovers via an error tool result, not an errored wake turn.
+    expect(res.isError).toBe(false)
+    expect(res.finalText).toBe('recovered')
+    // The wire carries a clean ToolInputError tool result for the Monitor call.
+    const lastMsg = (requests[1] as Array<{ role: string; content: Array<{ type: string; tool_use_id?: string; is_error?: boolean; content?: Array<{ text: string }> }> }>).at(-1)!
+    const tr = lastMsg.content.find((b) => b.type === 'tool_result')!
+    expect(tr.tool_use_id).toBe('mon-1')
+    expect(tr.is_error).toBe(true)
+    expect(tr.content![0].text).toContain('description is required')
+    // Nothing was registered or injected: no lost injection, no undefined-field wake.
+    expect(managerFrames.some((f) => f.type === 'task/started')).toBe(false)
+    expect(injected).toHaveLength(0)
+    await expect(manager.output('mon-1', {}, new AbortController().signal))
+      .resolves.toMatchObject({ text: expect.stringContaining('Unknown'), isError: true })
   })
 })

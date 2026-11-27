@@ -454,6 +454,13 @@ export async function runTurn(
       // return — only a genuine throw sets this.
       let toolThrew = false
       try {
+        // Pre-execution input validation. A backgroundable tool's describe()
+        // reads the input BEFORE run() validates, so malformed input must be
+        // rejected here — before runForeground registers/detaches a record —
+        // to surface as a clean error tool result, not a backgrounded record
+        // that injects undefined completion fields. A throw lands in the catch
+        // below (error tool result + PostToolUseFailure), registering nothing.
+        tool.validate?.(toolInput as never)
         const execute = (taskSignal: AbortSignal) =>
           tool.run(toolInput as never, {
             cwd: deps.cwd,
