@@ -910,6 +910,55 @@ describe('NativeSession', () => {
     }
   })
 
+  it('Memory Files row present with memory', async () => {
+    const dir = await tempDir('native-composition-memory-')
+    const memory: NativeMemoryPort = {
+      read: async () => ({
+        files: [{ path: join(dir, 'CLAUDE.md'), scope: 'project', content: 'COMPOSITION-MEMORY-FIXTURE' }],
+        isGitRepo: true,
+      }),
+    }
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir, memory }) })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of pricedTurn('ok', 100_000)) yield ev
+    }
+    const session = provider.createSession({ id: 'comp-memory', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      // Bare fixture: no skills, no MCP — the memory row slots in after
+      // System tools (the Skills position) and before Messages.
+      expect(usage.categories!.map((c) => c.name)).toEqual([
+        'System prompt', 'System tools', 'Memory Files', 'Messages', 'Autocompact buffer', 'Free space',
+      ])
+      expect(usage.categories!.find((c) => c.name === 'Memory Files')!.tokens).toBeGreaterThan(0)
+      const used = usage.categories!.filter((c) => c.kind === 'used')
+      expect(used.reduce((s, c) => s + c.tokens, 0)).toBe(100_000)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('Memory Files row omitted when empty', async () => {
+    const dir = await tempDir('native-composition-memory-empty-')
+    // The hermetic default stub reads an empty chain.
+    const provider = providerWithStreamer([pricedTurn('ok', 100_000)], dir)
+    const session = provider.createSession({ id: 'comp-memory-empty', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage.categories!.some((c) => c.name === 'Memory Files')).toBe(false)
+    } finally {
+      await session.destroy()
+    }
+  })
+
   it('renders categories before any turn with no negative rows', async () => {
     const dir = await tempDir('native-composition-fresh-')
     const provider = providerWithStreamer([], dir)

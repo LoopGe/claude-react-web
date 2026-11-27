@@ -26,14 +26,22 @@ neutral core, from the parts the next request will send:
   `{ name, description, input_schema }`, so Chinese descriptions ride the
   CJK arm too.
 - Categories follow the CLI's display names and order: System prompt
-  (base system + current persona instruction), System tools and MCP tools
-  (the EFFECTIVE `this.tools` list, split by `mcpToolServers` ownership —
-  a restrictive persona prices only the schemas actually injected),
-  Skills (the `<available_skills>` section), Messages, Autocompact buffer
-  (`maxTokens − autoCompactThreshold`, omitted at threshold 0), Free space.
-  Empty MCP/Skills rows are omitted; native loads no memory files and its
-  MCP connections surface no instructions, so those categories are absent
-  rather than fabricated as zero rows.
+  (base system + current persona instruction + the environment block),
+  System tools and MCP tools (the EFFECTIVE `this.tools` list, split by
+  `mcpToolServers` ownership — a restrictive persona prices only the
+  schemas actually injected), Skills (the `<available_skills>` section),
+  Memory Files (the CLAUDE.md chain loaded through the memory port),
+  Messages, Autocompact buffer (`maxTokens − autoCompactThreshold`,
+  omitted at threshold 0), Free space. Empty MCP/Skills/Memory Files rows
+  are omitted rather than fabricated as zero rows; native's MCP
+  connections surface no instructions, so that category stays absent.
+- Memory and environment price the cached `memorySnapshot` — the memory
+  port's read result, refreshed on every turn and seeded fire-and-forget
+  in the constructor. The Memory Files row prices `renderMemorySection`
+  with the same density rule (+ one role overhead); the environment block
+  rides inside the System prompt row. A probe before the seed lands
+  (snapshot null) omits both — the same display-only non-atomicity
+  documented below, with the constructor seed keeping the window small.
 - **Messages is a residual**: `max(0, totalTokens − Σ the other used
   estimates)`, anchored to the last real API usage sample. The used rows
   sum to `totalTokens` by construction; only the split is heuristic. With
@@ -123,6 +131,9 @@ would block the manager's post-turn probe on a slow server.
 
 ## Related
 
+- Memory loading behind the Memory Files row (memory port, per-turn
+  overlay, constructor seed): `2026-11-27-native-memory-and-behavior.md`
+  in this directory.
 - Capacity resolution for the same payload's `maxTokens` /
   `autoCompactThreshold`: [native model context resolution](../architecture/2026-11-14-native-model-context-resolution.md).
 - Design spec: `docs/superpowers/specs/2026-11-25-native-context-composition-design.md`.

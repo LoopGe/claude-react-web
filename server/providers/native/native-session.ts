@@ -3203,8 +3203,16 @@ export class NativeSession implements NativeSessionCore {
     const skillView = this.currentSkillView()
     const skillSection = skillView.section()
     const persona = this.currentProfile?.instruction
-    const system = persona ? `${this.baseSystem}\n\n${persona}` : this.baseSystem
+    // Memory and environment price the cached per-turn snapshot; a null
+    // snapshot (read probe before the constructor seed lands) omits both.
+    const memory = this.memorySnapshot
+    const memorySection = memory ? renderMemorySection(memory.files) : ''
+    const envSection = memory
+      ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
+      : ''
+    const system = joinPromptParts(persona ? `${this.baseSystem}\n\n${persona}` : this.baseSystem, envSection)
     const systemTokens = estimateText(system) + ROLE_OVERHEAD
+    const memoryTokens = memorySection ? estimateText(memorySection) + ROLE_OVERHEAD : 0
     const skillTokens = skillSection ? estimateText(skillSection) + ROLE_OVERHEAD : 0
     const builtinTools = this.tools.filter((t) => !this.mcpToolServers.has(t.name))
     const mcpTools = this.tools.filter((t) => this.mcpToolServers.has(t.name))
@@ -3212,7 +3220,7 @@ export class NativeSession implements NativeSessionCore {
     // Per-FQN prices computed ONCE, shared by the MCP row and the payload.
     const mcpPrices = new Map(mcpTools.map((t) => [t.name, estimateToolSchema(t)]))
     const mcpToolsTokens = [...mcpPrices.values()].reduce((s, n) => s + n, 0)
-    const estimated = systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens
+    const estimated = systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens + memoryTokens
     const messagesTokens = totalTokens > 0
       ? Math.max(0, totalTokens - estimated)
       : this.history.reduce((s, m) => s + estimateMessage(m), 0)
@@ -3224,6 +3232,7 @@ export class NativeSession implements NativeSessionCore {
       { name: 'System tools', tokens: systemToolsTokens, kind: 'used' },
       ...(mcpToolsTokens > 0 ? [{ name: 'MCP tools', tokens: mcpToolsTokens, kind: 'used' as const }] : []),
       ...(skillTokens > 0 ? [{ name: 'Skills', tokens: skillTokens, kind: 'used' as const }] : []),
+      ...(memoryTokens > 0 ? [{ name: 'Memory Files', tokens: memoryTokens, kind: 'used' as const }] : []),
       { name: 'Messages', tokens: messagesTokens, kind: 'used' },
       ...(bufferTokens > 0 ? [{ name: 'Autocompact buffer', tokens: bufferTokens, kind: 'buffer' as const }] : []),
       { name: 'Free space', tokens: freeTokens, kind: 'free' },
