@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "echo fired > session-start-marker.txt", "shell": "bash" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "echo plugin-block >&2; exit 2", "shell": "bash" }
+        ]
+      }
+    ]
+  }
+}

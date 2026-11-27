@@ -1,0 +1,5 @@
+{
+  "name": "parity",
+  "description": "Fixture plugin carrying all five contribution types for the native parity e2e.",
+  "version": "1.0.0"
+}
