@@ -434,8 +434,9 @@ export interface ProviderCapabilities {
   /** Hook engine (claude's settings hooks). Native has none — a hooks config
    *  edited there would never execute, so the surface locks. */
   supportsHooks: boolean
-  /** Auto-memory settings (claude's flag-settings memory layer). Native
-   *  rejects the memory keys in applyFlagSettings, so the surface locks. */
+  /** Auto-memory settings (the flag-settings memory layer). Both providers
+   *  accept the memory keys in applyFlagSettings; native validates the directory
+   *  override through its auto-memory port's realpath resolve. */
   supportsMemory: boolean
   /** Background tasks survive a server restart (the claude CLI resumes its
    *  own). When false, the host reconciles non-terminal task records to

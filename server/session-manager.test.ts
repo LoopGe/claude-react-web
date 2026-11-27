@@ -659,14 +659,16 @@ describe('SessionManager', () => {
     expect(sm.list().find((session) => session.id === native.id)?.taskControlSupported).toBe(true)
   })
 
-  it('projects locked-feature booleans for native (plugins supported) and claude (live and dormant)', async () => {
+  it('projects locked-feature booleans for native (plugins + memory supported) and claude (live and dormant)', async () => {
     const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
     const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
-    // Plugins are supported on native too (the T6 capability flip); the other
-    // four locked features stay claude-only.
-    const keys = ['hooksSupported', 'memorySupported', 'sandboxSupported', 'accountInfoSupported'] as const
+    // Plugins and memory are supported on native too (the T6 / Task 4 capability
+    // flips); the other three locked features stay claude-only.
+    const keys = ['hooksSupported', 'sandboxSupported', 'accountInfoSupported'] as const
     expect(claude.pluginsSupported).toBe(true)
     expect(native.pluginsSupported).toBe(true)
+    expect(claude.memorySupported).toBe(true)
+    expect(native.memorySupported).toBe(true)
     for (const k of keys) {
       expect(claude[k]).toBe(true)
       expect(native[k]).toBe(false)
@@ -679,6 +681,8 @@ describe('SessionManager', () => {
     const dormantClaude = sm.list().find((session) => session.id === claude.id)
     expect(dormantNative?.pluginsSupported).toBe(true)
     expect(dormantClaude?.pluginsSupported).toBe(true)
+    expect(dormantNative?.memorySupported).toBe(true)
+    expect(dormantClaude?.memorySupported).toBe(true)
     for (const k of keys) {
       expect(dormantNative?.[k]).toBe(false)
       expect(dormantClaude?.[k]).toBe(true)

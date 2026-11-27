@@ -1,6 +1,6 @@
 // server/providers/native/native-session.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -10,6 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts as makeHostPorts } from '../native-host-adapters.js'
+import { createAutoMemoryPort } from '../native-host-auto-memory.js'
 import type { NativeHostPortsDeps } from '../native-host-adapters.js'
 import type { NativeAuxLlmPort, NativeHostPorts, NativeMemoryPort, NativeMemoryReadResult } from './ports.js'
 import type { NativeMcpConnections, NativeMcpServerInstance } from './mcp/connections.js'
@@ -7756,6 +7757,186 @@ describe('NativeSession', () => {
       expect((caught as Error).message).toBe('provider native does not support sandbox')
       // Rejected before the session log was opened.
       expect(loadNativeSessionLogSync(dir, 'sandboxed')).toBeNull()
+    })
+  })
+
+  describe('auto-memory settings and spawn seed (Task 4)', () => {
+    /** The live core fields Task 4 adds: the memory intent and the validated
+     *  roots the spawn/settings seed stores. Structural cast (the core seam). */
+    type MemoryCore = {
+      memorySettings: { autoMemoryEnabled?: boolean; autoMemoryDirectory?: string; autoDreamEnabled?: boolean }
+      autoMemoryRoots: { ownDir: string; claudeDir: string | null } | null
+    }
+    const memoryCoreOf = (handle: unknown): MemoryCore => coreOf(handle) as unknown as MemoryCore
+
+    /** A provider wired with the REAL auto-memory port (configDir seam) so the
+     *  realpath write-isolation guard runs; the CLAUDE.md memory reader stays the
+     *  hermetic empty stub. stateDir/configDir are real temp dirs. */
+    async function memoryFixture(): Promise<{ root: string; stateDir: string; configDir: string; provider: NativeProvider }> {
+      const root = await tempDir('native-auto-memory-')
+      const stateDir = join(root, 'state')
+      const configDir = join(root, 'claude-config')
+      await mkdir(stateDir, { recursive: true })
+      await mkdir(configDir, { recursive: true })
+      const provider = new NativeProvider({
+        stateDir,
+        ports: makeNativePorts({ stateDir, autoMemory: createAutoMemoryPort({ stateDir, configDir }) }),
+      })
+      return { root, stateDir, configDir, provider }
+    }
+
+    it('accepts the three memory keys and stores them on the live field', async () => {
+      const { root, provider } = await memoryFixture()
+      const session = provider.createSession({ id: 'mem-keys', cwd: root })
+      try {
+        await session.applyFlagSettings?.({ autoMemoryEnabled: true, autoDreamEnabled: true })
+        const core = memoryCoreOf(session)
+        expect(core.memorySettings.autoMemoryEnabled).toBe(true)
+        expect(core.memorySettings.autoDreamEnabled).toBe(true)
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('null clears each memory key back to unset', async () => {
+      const { root, provider } = await memoryFixture()
+      const override = join(root, 'custom-mem')
+      const session = provider.createSession({
+        id: 'mem-clear', cwd: root,
+        memory: { autoMemoryEnabled: true, autoDreamEnabled: true, autoMemoryDirectory: override },
+      })
+      try {
+        expect(memoryCoreOf(session).memorySettings).toEqual({ autoMemoryEnabled: true, autoDreamEnabled: true, autoMemoryDirectory: override })
+        await session.applyFlagSettings?.({ autoMemoryEnabled: null, autoDreamEnabled: null, autoMemoryDirectory: null })
+        expect(memoryCoreOf(session).memorySettings).toEqual({})
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('validates a directory override through the port and stores the resolved roots', async () => {
+      const { root, provider } = await memoryFixture()
+      const session = provider.createSession({ id: 'mem-dir', cwd: root })
+      try {
+        const override = join(root, 'custom-mem')
+        await session.applyFlagSettings?.({ autoMemoryDirectory: override })
+        const core = memoryCoreOf(session)
+        expect(core.memorySettings.autoMemoryDirectory).toBe(override)
+        expect(core.autoMemoryRoots?.ownDir).toBe(override)
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('rejects an override inside the claude config dir with the port HttpError, before mutating', async () => {
+      const { root, configDir, provider } = await memoryFixture()
+      const session = provider.createSession({ id: 'mem-bad-dir', cwd: root })
+      try {
+        await session.applyFlagSettings?.({ autoMemoryEnabled: true })
+        const bad = join(configDir, 'projects', 'x', 'memory')
+        let caught: unknown
+        try {
+          await session.applyFlagSettings?.({ autoMemoryEnabled: false, autoMemoryDirectory: bad })
+        } catch (err) {
+          caught = err
+        }
+        expect(caught).toBeInstanceOf(HttpError)
+        expect((caught as HttpError).status).toBe(400)
+        expect((caught as Error).message).toMatch(/Claude config directory/)
+        // Validate-all-before-mutate: the combined call changed nothing.
+        const core = memoryCoreOf(session)
+        expect(core.memorySettings.autoMemoryEnabled).toBe(true)
+        expect(core.memorySettings.autoMemoryDirectory).toBeUndefined()
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('rejects a symlink alias whose realpath lands inside the claude config dir', async () => {
+      const { root, configDir, provider } = await memoryFixture()
+      const target = join(configDir, 'mem-target')
+      await mkdir(target, { recursive: true })
+      const alias = join(root, 'alias')
+      await symlink(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
+      const session = provider.createSession({ id: 'mem-symlink', cwd: root })
+      try {
+        await expect(session.applyFlagSettings?.({ autoMemoryDirectory: alias })).rejects.toThrow(/Claude config directory/)
+        expect(memoryCoreOf(session).memorySettings.autoMemoryDirectory).toBeUndefined()
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('type-checks the memory keys (boolean|null switches, string|null directory)', async () => {
+      const { root, provider } = await memoryFixture()
+      const session = provider.createSession({ id: 'mem-types', cwd: root })
+      try {
+        await expect(session.applyFlagSettings?.({ autoMemoryEnabled: 'true' })).rejects.toThrow(/autoMemoryEnabled/)
+        await expect(session.applyFlagSettings?.({ autoDreamEnabled: 1 })).rejects.toThrow(/autoDreamEnabled/)
+        await expect(session.applyFlagSettings?.({ autoMemoryDirectory: 123 })).rejects.toThrow(/autoMemoryDirectory/)
+        // The supported-set fence stays: an unknown key alongside a valid memory
+        // key still fails loudly.
+        await expect(session.applyFlagSettings?.({ autoMemoryEnabled: true, bogusKey: 1 })).rejects.toThrow(/bogusKey/)
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('seeds the live field and validated roots from the spawn memory option', async () => {
+      const { root, provider } = await memoryFixture()
+      const override = join(root, 'spawn-mem')
+      const session = provider.createSession({
+        id: 'mem-spawn', cwd: root,
+        memory: { autoMemoryEnabled: true, autoMemoryDirectory: override },
+      })
+      try {
+        expect(memoryCoreOf(session).memorySettings).toEqual({ autoMemoryEnabled: true, autoMemoryDirectory: override })
+        await vi.waitFor(() => expect(memoryCoreOf(session).autoMemoryRoots?.ownDir).toBe(override))
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('a bad spawn override fails the first turn loudly (no tool ran); a settings fix heals the next turn', async () => {
+      const { root, configDir, provider } = await memoryFixture()
+      const origConfig = { ...config }
+      __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+      streamAnthropicMessagesMock.mockImplementation(async function* () {
+        for (const ev of textTurn('ok')) yield ev
+      })
+      // A symlink alias whose realpath lands inside the claude config dir: the
+      // manager's lexical roots would pass it; the port's realpath guard rejects.
+      const target = join(configDir, 'mem-target')
+      await mkdir(target, { recursive: true })
+      const alias = join(root, 'alias')
+      await symlink(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
+      // Create SUCCEEDS (the seed is async, awaited at the first turn — option A).
+      const session = provider.createSession({ id: 'mem-bad-spawn', cwd: root, memory: { autoMemoryDirectory: alias } })
+      const frames: Frame[] = []
+      void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+      try {
+        session.enqueueUserMessage(userMsg('first') as never)
+        await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+        const first = frames.filter((f) => f.type === 'result')[0]
+        expect(first.is_error).toBe(true)
+        expect(String(first.result)).toMatch(/Claude config directory/)
+        // No model round and no tool dispatch happened under the bad override.
+        expect(frames.filter((f) => f.type === 'assistant')).toHaveLength(0)
+        expect(frames.filter((f) => f.type === 'stream_event')).toHaveLength(0)
+
+        // Fix the override via the settings path: re-validates and heals the seed.
+        const valid = join(root, 'valid-mem')
+        await session.applyFlagSettings?.({ autoMemoryDirectory: valid })
+        expect(memoryCoreOf(session).autoMemoryRoots?.ownDir).toBe(valid)
+        // The next turn proceeds (the parked first prompt retries under the healed seed).
+        session.enqueueUserMessage(userMsg('second') as never)
+        await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.subtype === 'success')).toBe(true))
+      } finally {
+        await session.destroy()
+        streamAnthropicMessagesMock.mockReset()
+        streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
+        __setConfigForTest(origConfig)
+      }
     })
   })
 })

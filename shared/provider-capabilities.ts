@@ -10,7 +10,7 @@
  *
  * The map MUST agree with the server's `ProviderCapabilities` flags
  * (`server/providers/types.ts`) — claude supports all five; native supports
- * plugins and locks hooks/memory/sandbox/account. Agreement is guarded by a
+ * plugins and memory and locks hooks/sandbox/account. Agreement is guarded by a
  * server-side pin
  * (`server/providers/provider-capabilities-pin.test.ts`) that compares this map
  * against the real provider capability literals, so the two cannot drift
@@ -30,7 +30,7 @@ export type LockedFeature = (typeof LOCKED_FEATURES)[number]
  */
 const PROVIDER_LOCKED_FEATURE_SUPPORT = new Map<string, Record<LockedFeature, boolean>>([
   ['claude', { plugins: true, hooks: true, memory: true, sandbox: true, account: true }],
-  ['native', { plugins: true, hooks: false, memory: false, sandbox: false, account: false }],
+  ['native', { plugins: true, hooks: false, memory: true, sandbox: false, account: false }],
 ])
 
 /**

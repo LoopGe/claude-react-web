@@ -88,7 +88,7 @@ import { filterToolsForProfile } from './agent-tools.js'
 import type { SessionToolProfile } from '../../../shared/tool-profile.js'
 import { formatSupplementInstruction, type SupplementOutcome } from '../steering-format.js'
 import { isQuestionResult } from '../../../shared/question-result.js'
-import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
+import type { SessionMemorySettings, ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import type { UploadStore } from '../../upload-store.js'
 import type { NativeAttachmentReferenceIndex } from './attachment-reference-index.js'
 import {
@@ -418,6 +418,11 @@ export interface NativeSessionOptions {
   /** Fast-mode intent carried over from `SessionMeta.fastMode`. Only the
    *  starting point: `applyFlagSettings({fastMode})` keeps a live field. */
   fastMode?: boolean
+  /** Auto-memory intent carried over from `SessionMeta.memory`. Only the
+   *  starting point: `applyFlagSettings` keeps a live `memorySettings` field.
+   *  The directory override is validated through the auto-memory port's
+   *  realpath resolve at the spawn seed (awaited before the first turn). */
+  memory?: SessionMemorySettings
   /** The resolved provider profile, threaded from the manager. `supportedModels`
    *  prefers its model list; absent = the ConfigPort's active profile / model list. */
   profile?: ProviderProfile
@@ -699,6 +704,22 @@ export class NativeSession implements NativeSessionCore {
   private effortLevel: EffortLevel | undefined
   /** Live fast-mode intent, read when the next request is built. */
   private fastMode: boolean
+  /** Live auto-memory intent (the shared SessionMemorySettings shape). Seeded
+   *  from opts.memory at spawn; the applyFlagSettings memory keys replace keys
+   *  live (null clears). Per-turn consumers read this field, never the spawn
+   *  snapshot. */
+  private memorySettings: SessionMemorySettings
+  /** The validated auto-memory roots from the spawn/settings seed — null until
+   *  the seed settles. `ownDir` is the writable CRW-managed store (default or
+   *  the validated override); `claudeDir` the read-only CLI compat root when it
+   *  exists. Stored for the session's live use (the prompt section / recall). */
+  private resolvedMemoryRoots: { ownDir: string; claudeDir: string | null } | null = null
+  /** The auto-memory spawn/settings validation seed. The first turn awaits it
+   *  BEFORE any tool dispatch (the sessionStartInit precedent): a rejected
+   *  directory override fails every turn loudly with the port's HttpError until
+   *  applyFlagSettings re-validates and replaces the seed. A resolved promise on
+   *  every later turn — no per-turn cost. */
+  private memorySettingsSeed: Promise<void>
   /** Live flag-source hooks config. Seeded from opts.hooks at spawn;
    *  applyFlagSettings({hooks}) REPLACES it (never merges). The flag HookSource
    *  reads this field on every collection, so a replacement takes effect on
@@ -801,6 +822,16 @@ export class NativeSession implements NativeSessionCore {
     this.thinkingDisplay = opts.thinking && 'display' in opts.thinking ? opts.thinking.display : undefined
     this.effortLevel = this.baseEffortLevel
     this.fastMode = opts.fastMode === true
+    this.memorySettings = { ...opts.memory }
+    // Validate the effective memory directory through the auto-memory port's
+    // realpath resolve and store the roots. Fire-and-forget here (the ctor is
+    // sync); the first turn awaits the seed before any tool dispatch, so a bad
+    // override fails loudly rather than letting a tool run under unvalidated
+    // roots. The no-op catch only marks the promise handled for the case where
+    // no turn ever runs (destroy before first send) — the stored promise still
+    // rejects for the turn's await.
+    this.memorySettingsSeed = this.seedAutoMemoryRoots()
+    void this.memorySettingsSeed.catch(() => {})
     this.pdfBudgets = opts.pdfBudgets ?? new PdfBudgetLedger()
     this.preparedPdfs = opts.preparedPdfs ?? new PreparedPdfStore(this.pdfBudgets)
     this.hooksConfig = opts.hooks ?? {}
@@ -1051,6 +1082,20 @@ export class NativeSession implements NativeSessionCore {
       this._closed = true
       throw err
     }
+  }
+
+  /** Resolve the effective auto-memory directory (default or the live override)
+   *  through the host port's realpath write-isolation guard and store the roots.
+   *  The port throws HttpError(400) for an override that resolves inside the
+   *  claude config dir (symlink aliases included); the core never imports
+   *  HttpError — it just awaits the port and lets the rejection propagate. A
+   *  live settings change supersedes an in-flight seed: the roots are stored
+   *  only when the directory this seed resolved is still the live one (the
+   *  settings path's own resolve is authoritative). */
+  private async seedAutoMemoryRoots(): Promise<void> {
+    const override = this.memorySettings.autoMemoryDirectory
+    const roots = await this.opts.ports.autoMemory.resolve(this.opts.cwd, override)
+    if (this.memorySettings.autoMemoryDirectory === override) this.resolvedMemoryRoots = roots
   }
 
   private currentSkillView(): ReturnType<NativeSkillCatalog['view']> {
@@ -1428,6 +1473,14 @@ export class NativeSession implements NativeSessionCore {
 
   get closed(): boolean {
     return this._closed
+  }
+
+  /** The validated auto-memory roots (null until the spawn/settings seed
+   *  settles). The neutral read surface for the per-turn memory consumers:
+   *  `ownDir` is the writable store the prompt section names and recall scans;
+   *  `claudeDir` the read-only CLI compat root when present. */
+  get autoMemoryRoots(): { ownDir: string; claudeDir: string | null } | null {
+    return this.resolvedMemoryRoots
   }
 
   private requestPermission = async (
@@ -2259,6 +2312,12 @@ export class NativeSession implements NativeSessionCore {
         // UserPromptSubmit so its context/seed lead this turn's messages. A
         // resolved promise on every later turn — no per-turn cost.
         await this.sessionStartInit
+        // The auto-memory seed must settle before any tool dispatch: a rejected
+        // directory override fails this turn loudly (the port's HttpError) and
+        // parks the prompt for durable retry, so no tool ever runs under an
+        // unvalidated override. A settings fix replaces the seed with a resolved
+        // promise; every later turn awaits that resolved promise — no cost.
+        await this.memorySettingsSeed
         let turnSkillView: NativeSkillInvocationView | undefined
         // `/compact` control-action flag: the user branch's catalog discovery
         // sets it; the shared tail reads it to route the control turn (no model
@@ -3704,14 +3763,17 @@ export class NativeSession implements NativeSessionCore {
    *  replacement live on the next dispatch (RS §12.3); `enabledPlugins` takes
    *  the SDK's `{[pluginKey]: boolean}` toggle dict, pins the post-toggle
    *  subset and re-resolves every contribution type through the shared
-   *  discovery commit.
+   *  discovery commit; `autoMemoryEnabled` / `autoDreamEnabled` take a boolean
+   *  or null (clear) and `autoMemoryDirectory` a string or null (clear back to
+   *  the default root), the directory validated through the auto-memory port's
+   *  realpath resolve and the live roots/seed refreshed on change.
    *
    *  Every key and any incoming definition is validated BEFORE state changes.
    *  Agent/base snapshots take effect on the next turn; fast mode and skill
    *  overrides keep their existing live-field behavior. Every other key fails
    *  loudly rather than reporting a change the native provider cannot honor. */
   async applyFlagSettings(settings: Record<string, unknown>): Promise<void> {
-    const supported = new Set(['skillOverrides', 'effortLevel', 'fastMode', 'agent', 'hooks', 'enabledPlugins'])
+    const supported = new Set(['skillOverrides', 'effortLevel', 'fastMode', 'agent', 'hooks', 'enabledPlugins', 'autoMemoryEnabled', 'autoMemoryDirectory', 'autoDreamEnabled'])
     const unknownKeys = Object.keys(settings).filter((key) => !supported.has(key))
     if (unknownKeys.length > 0) {
       throw new Error(`native provider does not support flag settings: ${unknownKeys.join(', ')}`)
@@ -3732,6 +3794,30 @@ export class NativeSession implements NativeSessionCore {
     const fastMode = settings.fastMode
     if (fastMode !== undefined && fastMode !== null && typeof fastMode !== 'boolean') {
       throw new Error(`native provider does not support fast mode: ${String(fastMode)}`)
+    }
+
+    // Auto-memory intent: boolean|null for the two switches, string|null for the
+    // directory. The directory is validated through the auto-memory port's
+    // realpath resolve — the SAME write-isolation guard as the spawn seed — so an
+    // override resolving inside the claude config dir (symlink aliases included)
+    // rejects with the port's HttpError(400), which propagates to the route. The
+    // resolve also provisions the root and yields the roots to store on mutation.
+    // null clears the override back to the default root (re-resolved here).
+    const memoryEnabled = settings.autoMemoryEnabled
+    if (memoryEnabled !== undefined && memoryEnabled !== null && typeof memoryEnabled !== 'boolean') {
+      throw new Error(`native provider does not support autoMemoryEnabled: ${String(memoryEnabled)}`)
+    }
+    const dreamEnabled = settings.autoDreamEnabled
+    if (dreamEnabled !== undefined && dreamEnabled !== null && typeof dreamEnabled !== 'boolean') {
+      throw new Error(`native provider does not support autoDreamEnabled: ${String(dreamEnabled)}`)
+    }
+    const memoryDirectory = settings.autoMemoryDirectory
+    if (memoryDirectory !== undefined && memoryDirectory !== null && typeof memoryDirectory !== 'string') {
+      throw new Error(`native provider does not support autoMemoryDirectory: ${String(memoryDirectory)}`)
+    }
+    let nextMemoryRoots: { ownDir: string; claudeDir: string | null } | undefined
+    if (memoryDirectory !== undefined) {
+      nextMemoryRoots = await this.opts.ports.autoMemory.resolve(this.opts.cwd, memoryDirectory ?? undefined)
     }
 
     // Hooks: validate at the unknown boundary BEFORE any state change (the
@@ -3804,6 +3890,25 @@ export class NativeSession implements NativeSessionCore {
       await this.updateAgentBase({ effortLevel: nextEffort })
     }
     if (fastMode !== undefined) this.fastMode = fastMode === true
+    // Auto-memory: replace keys live (null clears). A directory change stores the
+    // roots the validation resolve already proved and replaces the spawn seed
+    // with a resolved promise — healing a failed seed so the next turn proceeds.
+    // The equality guard in seedAutoMemoryRoots discards any in-flight spawn seed
+    // whose directory this change superseded.
+    if (memoryEnabled !== undefined) {
+      if (memoryEnabled === null) delete this.memorySettings.autoMemoryEnabled
+      else this.memorySettings.autoMemoryEnabled = memoryEnabled
+    }
+    if (dreamEnabled !== undefined) {
+      if (dreamEnabled === null) delete this.memorySettings.autoDreamEnabled
+      else this.memorySettings.autoDreamEnabled = dreamEnabled
+    }
+    if (memoryDirectory !== undefined) {
+      if (memoryDirectory === null) delete this.memorySettings.autoMemoryDirectory
+      else this.memorySettings.autoMemoryDirectory = memoryDirectory
+      this.resolvedMemoryRoots = nextMemoryRoots!
+      this.memorySettingsSeed = Promise.resolve()
+    }
     // Replace (never merge): the flag source re-collects per dispatch, so the
     // next hook event observes exactly this config (RS §12.3).
     if (nextHooks !== undefined) this.hooksConfig = nextHooks
