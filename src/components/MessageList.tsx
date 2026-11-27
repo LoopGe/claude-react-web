@@ -43,6 +43,7 @@ import {
   buildDraftRows,
   buildTranscriptRows,
   initialRowAnchor,
+  mergeFrozenDraftRows,
   shouldLoadOlder,
   type RowAnchor,
   type TranscriptRow,
@@ -650,26 +651,35 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   const thinkingDraftKey = useOptionalSessionField(draftSessionId, 'thinkingDraftKey')
   const { rows: renderableItems, firstItemId, lastItemId, nextItemTypeMap } = useMemo(() => {
     const base = builtRows
-    const drafts = showsRootDrafts
-      ? buildDraftRows(
-          draftKey != null ? { key: draftKey, text: '' } : null,
-          frozenDrafts ?? [],
-          thinkingDraftKey != null ? { key: thinkingDraftKey, text: '', done: false } : null,
-        )
-      : []
-    if (drafts.length === 0) return base
-    const offset = base.rows.length
-    const rows = [
-      ...base.rows,
-      ...drafts.map((r, i) => ({ ...r, renderableIndex: offset + i })),
-    ]
-    // Tail bookkeeping for the appended rows: the base tail is no longer
-    // last, and every draft row but the real last has a next row.
-    const nextItemTypeMap = new Map(base.nextItemTypeMap)
-    if (base.rows.length > 0) nextItemTypeMap.set(base.rows[base.rows.length - 1]!.id, 'assistant')
-    for (let i = 0; i < drafts.length - 1; i++) nextItemTypeMap.set(drafts[i]!.id, 'assistant')
-    return { rows, firstItemId: base.firstItemId, lastItemId: rows[rows.length - 1]!.id, nextItemTypeMap }
-  }, [builtRows, showsRootDrafts, draftKey, frozenDrafts, thinkingDraftKey])
+    if (!showsRootDrafts) return base
+    const liveDrafts = buildDraftRows(
+      draftKey != null ? { key: draftKey, text: '' } : null,
+      thinkingDraftKey != null ? { key: thinkingDraftKey, text: '', done: false } : null,
+    )
+    // Frozen TEXT half-cards are anchored to the result that closed their
+    // turn; re-insert them there instead of appending them after the settled
+    // transcript (which left them stuck at the bottom across later turns).
+    const merged = mergeFrozenDraftRows(base.rows, frozenDrafts ?? [], items)
+    if (liveDrafts.length === 0 && merged === base.rows) return base
+    const rows: TranscriptRow[] = liveDrafts.length === 0
+      ? merged
+      : [
+        ...merged,
+        ...liveDrafts.map((r, i) => ({ ...r, renderableIndex: merged.length + i })),
+      ]
+    // First/last and next-row bookkeeping describe the FINAL array: frozen
+    // rows are inserted mid-list, live drafts extend the tail.
+    const nextItemTypeMap = new Map<string, string>()
+    for (let i = 0; i < rows.length - 1; i++) {
+      nextItemTypeMap.set(rows[i]!.id, rows[i + 1]!.msg.type)
+    }
+    return {
+      rows,
+      firstItemId: rows[0]?.id ?? base.firstItemId,
+      lastItemId: rows[rows.length - 1]?.id,
+      nextItemTypeMap,
+    }
+  }, [builtRows, showsRootDrafts, draftKey, frozenDrafts, thinkingDraftKey, items])
 
   // The easter-egg game can only open from the default empty state, so fetch
   // its lazy chunk once that state is on screen: the triple-click then swaps
