@@ -199,6 +199,7 @@ describe('StopFailure fires on a turn error (RS §3 / §9.1)', () => {
   it('matcher target is the error value — a matching matcher fires, a non-matching one does not', async () => {
     const dir = await tempDir('stopfailure-matcher-')
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    // eslint-disable-next-line require-yield -- throwing streamer: simulates an API failure before any yield
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       throw new Error('boom-api-failure')
     }
