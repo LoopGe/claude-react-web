@@ -13711,7 +13711,7 @@ describe('SessionManager', () => {
       const compacted = await within(sm.compact(a))
       expect(compacted.id).not.toBe(a)
 
-      // setProfile → setModel + restart
+      // setProfile → restart
       const before = { profiles: defaultConfig.profiles, activeProfileId: defaultConfig.activeProfileId }
       const profile = (id: string): import('./config.js').ProviderProfile => ({
         id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
@@ -16181,6 +16181,109 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       const s = sm.get(info.id)
       expect(s.terminated).toBe(false)
       expect(s.running).toBe(true)
+    })
+
+    // setProfile('now') regression (observed in the field): the old endpoint
+    // refuses the new profile's model — quota-exhausted (429) or a model id it
+    // doesn't serve — and the whole "Restart now" call 502s, so the restart
+    // that swaps credentials can never happen. The feature blocked its own
+    // escape path. The pin + its default model are spawn-boundary state: they
+    // persist, and the respawn applies them under the NEW profile's env. No
+    // live setModel control request may touch the old endpoint.
+    describe('setProfile restart semantics', () => {
+      const profile = (id: string): import('./config.js').ProviderProfile => ({
+        id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
+        modelList: ['vendor/model-' + id], recapModel: '', commitMessageModel: '',
+      })
+
+      /** A live session pinned to profile A with one completed turn. */
+      async function livePinnedToA(): Promise<string> {
+        const info = await sm.create({
+          cwd: TEST_CWD, profileId: 'A', model: 'vendor/model-A',
+        } as Parameters<SessionManager['create']>[0])
+        await sm.send(info.id, 'hi')
+        mockHandles[0].emit({
+          type: 'result', subtype: 'success', session_id: info.id,
+          is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {},
+        })
+        await tick()
+        return info.id
+      }
+
+      it("restarts under the new profile WITHOUT a live setModel on the old endpoint", async () => {
+        const before = { profiles: defaultConfig.profiles, activeProfileId: defaultConfig.activeProfileId }
+        try {
+          __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A' })
+          const id = await livePinnedToA()
+          // The running CLI cannot switch to B's model: its env still points
+          // at A's endpoint, which is quota-exhausted. Pre-fix this rejection
+          // aborted setProfile with a 502 before persist and before restart.
+          mockHandles[0].setModel.mockRejectedValue(
+            new Error('API error: 429 You have exceeded the 5-hour usage quota'),
+          )
+
+          const updated = await sm.setProfile(id, 'B', 'now')
+
+          expect(updated.profileId).toBe('B')
+          expect(updated.model).toBe('vendor/model-B')
+          expect(mockHandles[0].setModel).not.toHaveBeenCalled()
+          // Pin + model persisted, so the next respawn (even a crash before
+          // this one) can never leave the store half-switched.
+          expect(store.get(id)?.profileId).toBe('B')
+          expect(store.get(id)?.model).toBe('vendor/model-B')
+          // The restart respawned under B's credentials and default model.
+          expect(mockHandles).toHaveLength(2)
+          const env = mockHandles[1].options.env as Record<string, string>
+          expect(env.ANTHROPIC_BASE_URL).toBe('https://gw-B')
+          expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-B')
+          expect(mockHandles[1].options.model).toBe('vendor/model-B')
+        } finally {
+          __setConfigForTest({ ...before })
+        }
+      })
+
+      it('re-stamps spawnProfileId so aux calls follow the respawned profile', async () => {
+        const before = { profiles: defaultConfig.profiles, activeProfileId: defaultConfig.activeProfileId }
+        try {
+          __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A' })
+          const id = await livePinnedToA()
+          await sm.setProfile(id, 'B', 'now')
+          await tick()
+          // auxTargetFor resolves a LIVE session's endpoint from the profile
+          // its subprocess was actually spawned with (spawnProfileId). After
+          // the restart that is B — pre-fix the stale A stamp kept routing
+          // recap / commit-message to the OLD endpoint.
+          expect(sm.auxTargetFor(id, 'recap')).toMatchObject({
+            model: 'vendor/model-B', baseUrl: 'https://gw-B', authToken: 'sk-B',
+          })
+        } finally {
+          __setConfigForTest({ ...before })
+        }
+      })
+
+      it("deferred pins profile + model without touching the live process", async () => {
+        const before = { profiles: defaultConfig.profiles, activeProfileId: defaultConfig.activeProfileId }
+        try {
+          __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A' })
+          const id = await livePinnedToA()
+          mockHandles[0].setModel.mockRejectedValue(new Error('Model not found'))
+
+          const updated = await sm.setProfile(id, 'B', 'deferred')
+
+          expect(updated.profileId).toBe('B')
+          expect(updated.model).toBe('vendor/model-B')
+          expect(mockHandles[0].setModel).not.toHaveBeenCalled()
+          // No restart: the same handle keeps running until the next respawn.
+          expect(mockHandles).toHaveLength(1)
+          expect(store.get(id)?.profileId).toBe('B')
+          expect(store.get(id)?.model).toBe('vendor/model-B')
+          // The live subprocess still runs A's credentials, and aux routing
+          // must mirror the PROCESS, not the pin.
+          expect(sm.auxTargetFor(id, 'recap')).toMatchObject({ baseUrl: 'https://gw-A' })
+        } finally {
+          __setConfigForTest({ ...before })
+        }
+      })
     })
   })
 
