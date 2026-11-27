@@ -95,7 +95,7 @@ import {
   RECALL_DEADLINE_MS,
   type RecallState,
 } from './memory.js'
-import { startDreamRun as startDreamRunCore, type DreamRunHandle } from './dream.js'
+import { startDreamRun as startDreamRunCore, runDreamTrigger, type DreamRunHandle } from './dream.js'
 import { isQuestionResult } from '../../../shared/question-result.js'
 import type { SessionMemorySettings, ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import type { UploadStore } from '../../upload-store.js'
@@ -2909,6 +2909,10 @@ export class NativeSession implements NativeSessionCore {
       // and turn/end persistence. The gate reads turnResult (null on the catch
       // path → last_response_error); a spawned fork never blocks the next turn.
       void this.maybeSuggestPrompt(turnResult)
+      // Turn-end dream consolidation: fire-and-forget on the same seam. The
+      // per-cwd trigger owns its failure contract (log + release, never a user-
+      // turn error), so this detached call can never strand the pump.
+      void this.maybeDream(turnResult)
       // Park even when later input is already queued. Only an enqueue observed
       // after this failure (including during turn/end finalization) releases
       // the pause, exactly once; older queued input cannot drive a retry loop.
@@ -3366,15 +3370,41 @@ export class NativeSession implements NativeSessionCore {
     }
   }
 
-  /** Launch a background dream consolidation run (the Task 10 mechanism; the
-   *  turn-end trigger that decides WHEN to call it is Task 11). Binds the
+  /** Turn-end dream trigger (spec §8). Fire-and-forget after turn settlement:
+   *  gate on the auto-memory master switch and the dream switch (both default
+   *  ON, the `=== false` convention), then delegate the per-cwd lease lifecycle
+   *  to the neutral core's runDreamTrigger. The dream key is the raw session cwd
+   *  (opaque to the port — no slug derivation in the core). `turnResult` is
+   *  accepted for placement parity with maybeSuggestPrompt; consolidation is
+   *  periodic, so it does not gate on the last turn's success. The trigger owns
+   *  its failure contract (log + release), so this never errors the user turn. */
+  private async maybeDream(_turnResult: TurnResult | null): Promise<void> {
+    if (this.memorySettings.autoMemoryEnabled === false) return
+    if (this.memorySettings.autoDreamEnabled === false) return
+    const roots = this.resolvedMemoryRoots
+    if (!roots) return
+    await runDreamTrigger({
+      port: this.opts.ports.autoMemory,
+      cwd: this.opts.cwd,
+      sessionId: this.opts.id,
+      ownDir: roots.ownDir,
+      cfg: {
+        afterMs: this.opts.ports.config.nativeDreamAfterMs,
+        sessionCount: this.opts.ports.config.nativeDreamSessionCount,
+      },
+      startRun: (input) => this.startDreamRun(input),
+    })
+  }
+
+  /** Launch a background dream consolidation run (the Task 10 mechanism),
+   *  called by the turn-end trigger (maybeDream → runDreamTrigger). Binds the
    *  session-owned seams the dream core needs — the same live getters and
    *  stream / permission / persist+push paths the Agent tool uses — and resolves
    *  the dream model (the profile's recapModel, empty → the session's own model).
    *  The caller supplies the resolved own root, the touched session-log paths
    *  and the current index snapshot. Returns once the task is registered (not
    *  once the run finishes); await the handle's `settled` for the outcome. */
-  startDreamRun(input: { ownDir: string; logPaths: string[]; index: string | null }): Promise<DreamRunHandle> {
+  private startDreamRun(input: { ownDir: string; logPaths: string[]; index: string | null }): Promise<DreamRunHandle> {
     const memory = this.memorySnapshot
     const system = joinPromptParts(
       this.opts.subagentSystem ?? this.baseSystem,

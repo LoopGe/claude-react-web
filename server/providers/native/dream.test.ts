@@ -6,12 +6,14 @@ import {
   DREAM_PROMPT,
   dreamToolFilter,
   startDreamRun,
+  runDreamTrigger,
   type DreamRunDeps,
   type DreamRunInput,
+  type DreamTriggerDeps,
 } from './dream.js'
 import { NativeTaskManager } from './task-manager.js'
 import { defaultFrameContext } from './vocabulary/frame-context.js'
-import type { ToolContext, ToolDef } from './tools/types.js'
+import type { ToolContext, ToolDef, ToolOutcome } from './tools/types.js'
 import type { CanonicalEvent } from './canonical.js'
 import type { NativeLoopFrame } from './loop.js'
 import type { OperationalFrame } from './vocabulary/live-frame.js'
@@ -344,5 +346,206 @@ describe('startDreamRun', () => {
     const outcome = await handle.settled
     expect(outcome.isError).toBe(true)
     expect(outcome.text).toContain('boom')
+  })
+})
+
+// --- turn-end trigger orchestration (Task 11) --------------------------------
+
+describe('runDreamTrigger', () => {
+  const CWD = '/work/proj'
+  const OWN_DIR = '/state/native-memory/proj-abc'
+  const SESSION = 'sess-1'
+  const ROW_A = { id: 'other-a', logPath: '/state/native-sessions/a/session.v1.jsonl' }
+  const ROW_B = { id: 'other-b', logPath: '/state/native-sessions/b/session.v1.jsonl' }
+  // afterMs 0 → the window gate is always met, so the count gate binds alone.
+  const CFG = { afterMs: 0, sessionCount: 2 }
+
+  /** A faithful in-memory stand-in for the port's dream lease surface: claim is
+   *  a per-cwdKey check-and-set (false when already claimed), release frees the
+   *  lease AND persists lastDreamAt — the real port's contract (Task 9). */
+  function mockPort(over: {
+    state?: Record<string, { lastDreamAt: number }>
+    touched?: Array<{ id: string; logPath: string }>
+    index?: string | null
+    claimAlwaysFalse?: boolean
+  } = {}) {
+    const state: Record<string, { lastDreamAt: number }> = { ...(over.state ?? {}) }
+    const claims = new Set<string>()
+    const calls = {
+      scan: [] as Array<{ cwd: string; since: number }>,
+      claim: [] as string[],
+      release: [] as Array<{ cwd: string; lastDreamAt: number }>,
+    }
+    const port: DreamTriggerDeps['port'] = {
+      readDreamState: async () => ({ ...state }),
+      listSessionsTouchedSince: async (cwd, since) => {
+        calls.scan.push({ cwd, since })
+        return over.touched ?? []
+      },
+      readIndex: async () => over.index ?? null,
+      claimDream: async (cwd) => {
+        calls.claim.push(cwd)
+        if (over.claimAlwaysFalse || claims.has(cwd)) return false
+        claims.add(cwd)
+        return true
+      },
+      releaseDream: async (cwd, lastDreamAt) => {
+        calls.release.push({ cwd, lastDreamAt })
+        claims.delete(cwd)
+        state[cwd] = { lastDreamAt }
+      },
+    }
+    return { port, calls, state }
+  }
+
+  /** A startRun seam recording each launch and returning a handle whose settled
+   *  outcome the test controls ('ok' / 'error' resolve; 'reject' rejects; a
+   *  deferred holds the run open so the lease stays claimed). */
+  function mockStartRun(mode: 'ok' | 'error' | 'reject' | { hold: Promise<ToolOutcome> }) {
+    const calls: Array<{ ownDir: string; logPaths: string[]; index: string | null }> = []
+    const startRun: DreamTriggerDeps['startRun'] = async (input) => {
+      calls.push(input)
+      const toolUseId = `dream-${calls.length}`
+      if (mode === 'reject') throw new Error('launch boom')
+      const settled: Promise<ToolOutcome> = typeof mode === 'object'
+        ? mode.hold
+        : Promise.resolve(mode === 'error' ? { text: 'run boom', isError: true } : { text: 'consolidated' })
+      return { toolUseId, settled }
+    }
+    return { startRun, calls }
+  }
+
+  function deps(over: {
+    port: DreamTriggerDeps['port']
+    startRun: DreamTriggerDeps['startRun']
+    cfg?: { afterMs: number; sessionCount: number }
+    sessionId?: string
+    now?: () => number
+  }): DreamTriggerDeps {
+    return {
+      port: over.port,
+      cwd: CWD,
+      sessionId: over.sessionId ?? SESSION,
+      ownDir: OWN_DIR,
+      cfg: over.cfg ?? CFG,
+      startRun: over.startRun,
+      ...(over.now ? { now: over.now } : {}),
+    }
+  }
+
+  it('thresholds met + claim success → launches the run with ownDir/logPaths/index, then releases', async () => {
+    const { port, calls } = mockPort({ touched: [ROW_A, ROW_B], index: '- x.md: hi' })
+    const { startRun, calls: runCalls } = mockStartRun('ok')
+    await runDreamTrigger(deps({ port, startRun }))
+    expect(runCalls).toEqual([{ ownDir: OWN_DIR, logPaths: [ROW_A.logPath, ROW_B.logPath], index: '- x.md: hi' }])
+    expect(calls.claim).toEqual([CWD])
+    expect(calls.release).toHaveLength(1)
+    expect(calls.release[0].cwd).toBe(CWD)
+    expect(typeof calls.release[0].lastDreamAt).toBe('number')
+  })
+
+  it('count gate unmet → no scan claim, no run, no release', async () => {
+    const { port, calls } = mockPort({ touched: [ROW_A] })
+    const { startRun, calls: runCalls } = mockStartRun('ok')
+    await runDreamTrigger(deps({ port, startRun }))
+    expect(runCalls).toEqual([])
+    expect(calls.claim).toEqual([])
+    expect(calls.release).toEqual([])
+  })
+
+  it('window gate unmet → skips the scan entirely (no run)', async () => {
+    const { port, calls } = mockPort({ state: { [CWD]: { lastDreamAt: 1_000 } }, touched: [ROW_A, ROW_B] })
+    const { startRun, calls: runCalls } = mockStartRun('ok')
+    // 1ms short of the 24h window.
+    await runDreamTrigger(deps({ port, startRun, cfg: { afterMs: DAY, sessionCount: 2 }, now: () => 1_000 + DAY - 1 }))
+    expect(calls.scan).toEqual([])
+    expect(runCalls).toEqual([])
+    expect(calls.release).toEqual([])
+  })
+
+  it('claim false (another session dreaming) → no run, no release', async () => {
+    const { port, calls } = mockPort({ touched: [ROW_A, ROW_B], claimAlwaysFalse: true })
+    const { startRun, calls: runCalls } = mockStartRun('ok')
+    await runDreamTrigger(deps({ port, startRun }))
+    expect(calls.claim).toEqual([CWD])
+    expect(runCalls).toEqual([])
+    expect(calls.release).toEqual([])
+  })
+
+  it('excludes the triggering session from the touched count and the log paths', async () => {
+    // own row + two others → count 2 (met), logPaths carry only the two others.
+    const own = { id: SESSION, logPath: '/state/native-sessions/self/session.v1.jsonl' }
+    const { port } = mockPort({ touched: [own, ROW_A, ROW_B] })
+    const { startRun, calls: runCalls } = mockStartRun('ok')
+    await runDreamTrigger(deps({ port, startRun }))
+    expect(runCalls).toHaveLength(1)
+    expect(runCalls[0].logPaths).toEqual([ROW_A.logPath, ROW_B.logPath])
+  })
+
+  it('own row does not count toward the threshold (own + one other < 2 → no run)', async () => {
+    const own = { id: SESSION, logPath: '/state/native-sessions/self/session.v1.jsonl' }
+    const { port, calls } = mockPort({ touched: [own, ROW_A] })
+    const { startRun, calls: runCalls } = mockStartRun('ok')
+    await runDreamTrigger(deps({ port, startRun }))
+    expect(runCalls).toEqual([])
+    expect(calls.claim).toEqual([])
+  })
+
+  it('a launch rejection releases the lease, never throws, and the next window retries', async () => {
+    const { port, calls } = mockPort({ touched: [ROW_A, ROW_B] })
+    const failing = mockStartRun('reject')
+    // First trigger: startRun rejects → release still runs, no propagation.
+    await expect(runDreamTrigger(deps({ port, startRun: failing.startRun }))).resolves.toBeUndefined()
+    expect(failing.calls).toHaveLength(1)
+    expect(calls.release).toHaveLength(1)
+    // Lease freed + window still met (afterMs 0) → a fresh trigger runs again.
+    const retry = mockStartRun('ok')
+    await runDreamTrigger(deps({ port, startRun: retry.startRun }))
+    expect(retry.calls).toHaveLength(1)
+    expect(calls.release).toHaveLength(2)
+  })
+
+  it('a mid-flight error outcome still releases the lease', async () => {
+    const { port, calls } = mockPort({ touched: [ROW_A, ROW_B] })
+    const { startRun, calls: runCalls } = mockStartRun('error')
+    await runDreamTrigger(deps({ port, startRun }))
+    expect(runCalls).toHaveLength(1)
+    expect(calls.release).toHaveLength(1)
+  })
+
+  it('release persists lastDreamAt so the window gate binds on the next trigger', async () => {
+    const { port, state } = mockPort({ touched: [ROW_A, ROW_B] })
+    const { startRun } = mockStartRun('ok')
+    let clock = 10_000
+    await runDreamTrigger(deps({ port, startRun, now: () => clock }))
+    expect(state[CWD]).toEqual({ lastDreamAt: 10_000 })
+    // Advance inside the window → the next trigger skips (no second run).
+    const second = mockStartRun('ok')
+    clock = 10_000 + DAY - 1
+    await runDreamTrigger(deps({ port, startRun: second.startRun, cfg: { afterMs: DAY, sessionCount: 2 }, now: () => clock }))
+    expect(second.calls).toEqual([])
+  })
+
+  it('two sessions sharing a cwd → only one dream (per-cwd single-flight)', async () => {
+    const { port, calls } = mockPort({ touched: [ROW_A, ROW_B] })
+    // The first run holds its settle open, so the lease stays claimed while the
+    // second session's turn-end fires.
+    let releaseFirst!: (outcome: ToolOutcome) => void
+    const hold = new Promise<ToolOutcome>((res) => { releaseFirst = res })
+    const first = mockStartRun({ hold })
+    const second = mockStartRun('ok')
+    const firstTrigger = runDreamTrigger(deps({ port, startRun: first.startRun, sessionId: 'sess-1' }))
+    // Let the first trigger claim + launch before the second checks the lease.
+    await vi.waitFor(() => expect(first.calls).toHaveLength(1))
+    await runDreamTrigger(deps({ port, startRun: second.startRun, sessionId: 'sess-2' }))
+    expect(second.calls).toEqual([])
+    expect(calls.release).toEqual([])
+    // Settle the first → release frees the lease; a later trigger can run again.
+    releaseFirst({ text: 'consolidated' })
+    await firstTrigger
+    expect(calls.release).toHaveLength(1)
+    const third = mockStartRun('ok')
+    await runDreamTrigger(deps({ port, startRun: third.startRun, sessionId: 'sess-2' }))
+    expect(third.calls).toHaveLength(1)
   })
 })

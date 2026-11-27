@@ -8044,6 +8044,198 @@ describe('dream run wiring (Task 10)', () => {
   })
 })
 
+describe('dream turn-end trigger (Task 11)', () => {
+  type TriggerCore = {
+    startDreamRun(input: { ownDir: string; logPaths: string[]; index: string | null }): Promise<{ toolUseId: string; settled: Promise<ToolOutcome> }>
+    maybeDream(turnResult: unknown): Promise<void>
+  }
+  const triggerCoreOf = (handle: unknown): TriggerCore => coreOf(handle) as unknown as TriggerCore
+
+  const ROW_A = { id: 'other-a', logPath: '/state/native-sessions/a/session.v1.jsonl' }
+  const ROW_B = { id: 'other-b', logPath: '/state/native-sessions/b/session.v1.jsonl' }
+
+  function dreamDescriptorOf(session: unknown) {
+    return neutralLogEvents(session).find(
+      (e) => e.type === 'subagent/descriptor' && e.data.toolUseId.startsWith('dream-'),
+    )
+  }
+
+  /** Real auto-memory port (real claim/release/state) with a stubbed touched
+   *  scan so the count gate is driven without seeding session logs. The config
+   *  thresholds are injected low by the caller. promptSuggestions is off so the
+   *  suggestion fork never consumes a dream stream script. */
+  async function setup(over: {
+    touched?: Array<{ id: string; logPath: string }>
+    memory?: { autoMemoryEnabled?: boolean; autoDreamEnabled?: boolean }
+    scripts?: CanonicalEvent[][]
+    id?: string
+    cwd?: string
+    stateDir?: string
+    autoMemory?: ReturnType<typeof createAutoMemoryPort>
+    provider?: NativeProvider
+  } = {}) {
+    const cwd = over.cwd ?? await tempDir('native-dream-trig-cwd-')
+    const stateDir = over.stateDir ?? await tempDir('native-dream-trig-state-')
+    const configDir = join(stateDir, 'claude-config')
+    await mkdir(configDir, { recursive: true })
+    const autoMemory = over.autoMemory ?? (() => {
+      const base = createAutoMemoryPort({ stateDir, configDir })
+      const touched = over.touched ?? [ROW_A, ROW_B]
+      return { ...base, listSessionsTouchedSince: async () => touched }
+    })()
+    const provider = over.provider ?? new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir, autoMemory }) })
+    if (!over.provider) {
+      const scripts = over.scripts ?? [textTurn('main answer'), textTurn('consolidated')]
+      ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+        for (const ev of scripts.shift() ?? []) yield ev
+      }
+    }
+    const session = provider.createSession({
+      id: over.id ?? 'dream-trigger', cwd, permissionMode: 'bypassPermissions', promptSuggestions: false,
+      ...(over.memory ? { memory: over.memory } : {}),
+    })
+    return { cwd, stateDir, provider, session, autoMemory }
+  }
+
+  function collectFrames(session: { messages: AsyncIterable<unknown> }): Frame[] {
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    return frames
+  }
+
+  it('turn-end with thresholds met fires a dream run (descriptor + task) and releases the lease', async () => {
+    const previous = config
+    __setConfigForTest({ nativeDreamAfterMs: 0, nativeDreamSessionCount: 2 })
+    const { cwd, session, autoMemory } = await setup()
+    const frames = collectFrames(session)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      // The fire-and-forget trigger launched a dream: durable descriptor lands.
+      await vi.waitFor(() => expect(dreamDescriptorOf(session)).toBeDefined())
+      // The run settled and released: completion timestamp persisted for the cwd.
+      await vi.waitFor(async () => {
+        expect((await autoMemory.readDreamState())[cwd]?.lastDreamAt).toBeTypeOf('number')
+      })
+      // The user turn itself stayed clean (no error frame from the dream).
+      expect(frames.filter((f) => f.type === 'result').every((f) => !(f as Frame).is_error)).toBe(true)
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('count gate unmet → no dream run', async () => {
+    const previous = config
+    __setConfigForTest({ nativeDreamAfterMs: 0, nativeDreamSessionCount: 2 })
+    const { session, autoMemory } = await setup({ touched: [ROW_A], scripts: [textTurn('ok')] })
+    const frames = collectFrames(session)
+    const runSpy = vi.spyOn(triggerCoreOf(session), 'startDreamRun')
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      // Re-run the trigger deterministically now the memory seed has settled.
+      await triggerCoreOf(session).maybeDream(null)
+      expect(runSpy).not.toHaveBeenCalled()
+      expect(dreamDescriptorOf(session)).toBeUndefined()
+      expect(await autoMemory.readDreamState()).toEqual({})
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('autoDreamEnabled:false → never triggers', async () => {
+    const previous = config
+    __setConfigForTest({ nativeDreamAfterMs: 0, nativeDreamSessionCount: 2 })
+    const { session, autoMemory } = await setup({ memory: { autoDreamEnabled: false }, scripts: [textTurn('ok')] })
+    const frames = collectFrames(session)
+    const runSpy = vi.spyOn(triggerCoreOf(session), 'startDreamRun')
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      await triggerCoreOf(session).maybeDream(null)
+      expect(runSpy).not.toHaveBeenCalled()
+      expect(dreamDescriptorOf(session)).toBeUndefined()
+      expect(await autoMemory.readDreamState()).toEqual({})
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('autoMemoryEnabled:false → never triggers (dream is the write half of auto-memory)', async () => {
+    const previous = config
+    __setConfigForTest({ nativeDreamAfterMs: 0, nativeDreamSessionCount: 2 })
+    const { session, autoMemory } = await setup({ memory: { autoMemoryEnabled: false }, scripts: [textTurn('ok')] })
+    const frames = collectFrames(session)
+    const runSpy = vi.spyOn(triggerCoreOf(session), 'startDreamRun')
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      await triggerCoreOf(session).maybeDream(null)
+      expect(runSpy).not.toHaveBeenCalled()
+      expect(dreamDescriptorOf(session)).toBeUndefined()
+      expect(await autoMemory.readDreamState()).toEqual({})
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('two sessions sharing a cwd → only one dream (per-cwd claim)', async () => {
+    const previous = config
+    __setConfigForTest({ nativeDreamAfterMs: 0, nativeDreamSessionCount: 2 })
+    const cwd = await tempDir('native-dream-two-cwd-')
+    const stateDir = await tempDir('native-dream-two-state-')
+    const configDir = join(stateDir, 'claude-config')
+    await mkdir(configDir, { recursive: true })
+    const base = createAutoMemoryPort({ stateDir, configDir })
+    const autoMemory = { ...base, listSessionsTouchedSince: async () => [ROW_A, ROW_B] }
+    const provider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir, autoMemory }) })
+    // The dream round blocks until released, so session A holds the lease while
+    // session B's turn-end fires. Main rounds answer immediately.
+    let openDream!: () => void
+    const dreamGate = new Promise<void>((res) => { openDream = res })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { messages: unknown[] }) {
+      if (JSON.stringify(req.messages).includes('memory consolidation agent')) {
+        await dreamGate
+        yield* textTurn('consolidated')
+      } else {
+        yield* textTurn('main answer')
+      }
+    }
+    const claimSpy = vi.spyOn(autoMemory, 'claimDream')
+    const a = provider.createSession({ id: 'dream-two-a', cwd, permissionMode: 'bypassPermissions', promptSuggestions: false })
+    const b = provider.createSession({ id: 'dream-two-b', cwd, permissionMode: 'bypassPermissions', promptSuggestions: false })
+    const framesA = collectFrames(a)
+    const framesB = collectFrames(b)
+    try {
+      a.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(framesA.some((f) => f.type === 'result')).toBe(true))
+      // A claimed the lease and its dream is now running (blocked).
+      await vi.waitFor(() => expect(dreamDescriptorOf(a)).toBeDefined())
+      b.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(framesB.some((f) => f.type === 'result')).toBe(true))
+      // B attempted the claim (2 total) but lost → no dream in B.
+      await vi.waitFor(() => expect(claimSpy).toHaveBeenCalledTimes(2))
+      expect(dreamDescriptorOf(b)).toBeUndefined()
+      // Let A's dream finish → release stamps the cwd.
+      openDream()
+      await vi.waitFor(async () => {
+        expect((await autoMemory.readDreamState())[cwd]?.lastDreamAt).toBeTypeOf('number')
+      })
+      expect(dreamDescriptorOf(a)).toBeDefined()
+      expect(dreamDescriptorOf(b)).toBeUndefined()
+    } finally {
+      openDream()
+      await a.destroy()
+      await b.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+})
+
 describe('live assistant emitter carries rawStopReason (T13)', () => {
   /** The neutral events of a session log (v3 canonical, or the lossless
    *  in-memory migration of a legacy view). */

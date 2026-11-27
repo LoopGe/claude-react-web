@@ -1,9 +1,9 @@
 // server/providers/native/dream.ts
 //
-// Dream consolidation run construction (core) for native auto-memory. The
-// trigger (when to fire) is the session's turn-end hook (Task 11); this module
-// owns the pure timing predicate, the consolidation prompt, the constrained
-// tool set, and the nested-run construction the trigger calls.
+// Dream consolidation run construction (core) for native auto-memory. This
+// module owns the pure timing predicate, the turn-end trigger orchestration
+// (when to fire + the per-cwd lease lifecycle), the consolidation prompt, the
+// constrained tool set, and the nested-run construction the trigger calls.
 //
 // A dream run is a fire-and-forget background subagent: it mirrors the Agent
 // tool's nested `runTurn` construction (subagent.ts) but is launched
@@ -27,6 +27,7 @@ import type { FrameContext } from './vocabulary/frame-context.js'
 import type { ToolDef, ToolOutcome } from './tools/types.js'
 import { filterToolsForProfile } from './agent-tools.js'
 import type { RequestMessage } from './vocabulary/message.js'
+import type { NativeAutoMemoryPort } from './ports.js'
 
 const log = createLogger('native-dream')
 
@@ -42,6 +43,65 @@ export function shouldDream(
 ): boolean {
   const windowMet = lastDreamAt === undefined || now - lastDreamAt >= cfg.afterMs
   return windowMet && touchedCount >= cfg.sessionCount
+}
+
+/** The seams the turn-end trigger needs: the port's dream lease + scan + index
+ *  surface, the per-cwd key facts, the live thresholds, and the run launcher
+ *  (the session's `startDreamRun` wiring). `cwd` is the dream key — the raw
+ *  session cwd, opaque to the port (the controller ruling: no slug derivation
+ *  in the core). `now` is a clock seam for tests; production uses Date.now. */
+export interface DreamTriggerDeps {
+  port: Pick<
+    NativeAutoMemoryPort,
+    'readDreamState' | 'listSessionsTouchedSince' | 'claimDream' | 'releaseDream' | 'readIndex'
+  >
+  cwd: string
+  sessionId: string
+  ownDir: string
+  cfg: { afterMs: number; sessionCount: number }
+  startRun: (input: { ownDir: string; logPaths: string[]; index: string | null }) => Promise<DreamRunHandle>
+  now?: () => number
+}
+
+/** Turn-end dream orchestration (spec §8). Fire-and-forget: NEVER rejects and
+ *  NEVER surfaces an error into the user turn — every failure is logged and the
+ *  per-cwd lease released so the next trigger window retries. The sequence:
+ *  read the cwd's last-consolidation timestamp → window pre-gate (skip the
+ *  filesystem scan when not yet due) → scan same-cwd touched sessions excluding
+ *  the triggering session → `shouldDream` count gate → per-cwd single-flight
+ *  claim (false = another session is dreaming) → launch the run → release the
+ *  lease in a `finally` on settle OR failure, stamping completion.
+ *
+ *  Dream runs are nested runs in the triggering session's own log (Task 10),
+ *  not separate native sessions, so excluding the triggering session id is the
+ *  complete dream exclusion — there are no separate dream-session rows. */
+export async function runDreamTrigger(deps: DreamTriggerDeps): Promise<void> {
+  const { port, cwd, sessionId, ownDir, cfg } = deps
+  const now = deps.now ?? Date.now
+  try {
+    const state = await port.readDreamState()
+    const lastDreamAt = state[cwd]?.lastDreamAt
+    const t = now()
+    // Window pre-gate (shouldDream's window clause): a cwd that dreamed too
+    // recently skips the scan entirely — no per-turn filesystem walk.
+    if (lastDreamAt !== undefined && t - lastDreamAt < cfg.afterMs) return
+    const touched = (await port.listSessionsTouchedSince(cwd, lastDreamAt ?? 0))
+      .filter((row) => row.id !== sessionId)
+    if (!shouldDream(lastDreamAt, t, touched.length, cfg)) return
+    // Per-cwd single-flight: a false claim means a same-cwd dream is running.
+    if (!(await port.claimDream(cwd))) return
+    try {
+      const index = await port.readIndex(ownDir)
+      const handle = await deps.startRun({ ownDir, logPaths: touched.map((row) => row.logPath), index })
+      await handle.settled
+    } finally {
+      // Release on settle OR failure and stamp completion, so the next window
+      // is afterMs out. A release rejection propagates to the outer catch.
+      await port.releaseDream(cwd, now())
+    }
+  } catch (err) {
+    log.warn(`[${sessionId}] dream trigger skipped: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 /** The consolidation instruction, verbatim from the design (CLI dream
