@@ -8503,3 +8503,212 @@ describe('NativeSession plugin commands', () => {
     await session.destroy()
   })
 })
+
+// ── Plugin hooks (plugin parity T4) ─────────────────────────────────────────
+// The plugin HookSource is exercised through the REAL host loader over a stub
+// marketplace source (the plugin-commands fixture shape), dispatching hooks
+// directly through the neutral core seam (the config-lifecycle.test.ts
+// pattern) — no model turn. The engine re-collects sources per dispatch, so a
+// reload's committed plugin config is live on the next event.
+describe('NativeSession plugin hooks', () => {
+  // Explicit bash shell (the command-executor convention) so the commands are
+  // identical on win32 (Git Bash) and posix.
+  const BLOCK_CMD = 'echo plugin-block >&2; exit 2'
+  const ALLOW_CMD = `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"plugin-allow"}}'`
+  const contextCmd = (label: string) =>
+    `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"${label}"}}'`
+
+  async function makePluginEntry(root: string, name: string): Promise<EnabledPluginEntry> {
+    const dir = join(root, 'plugins', name)
+    await mkdir(dir, { recursive: true })
+    return { key: `${name}@mp`, name, dir, cloneDir: join(root, 'mp-clone') }
+  }
+
+  /** Plant the plugin's convention hooks document (hooks/hooks.json). `doc`
+   *  is the full document — `{ hooks: matchers }` and/or `{ modules: … }`. */
+  async function writePluginHooks(entry: EnabledPluginEntry, doc: Record<string, unknown>): Promise<void> {
+    const file = join(entry.dir, 'hooks', 'hooks.json')
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, JSON.stringify(doc), 'utf8')
+  }
+
+  function portsWithPlugins(stateDir: string, entries: EnabledPluginEntry[]): NativeHostPorts {
+    const source = {
+      getEnabledPluginEntries: (keys?: string[]) =>
+        keys === undefined ? entries : entries.filter((entry) => keys.includes(entry.key)),
+    }
+    return {
+      ...makeNativePorts({ stateDir }),
+      plugin: { listContributions: (enabled) => listPluginContributions(source, enabled) },
+    }
+  }
+
+  /** Dispatch-only provider: the per-turn test seam stays empty (no turns). */
+  function makeProvider(stateDir: string, ports: NativeHostPorts): NativeProvider {
+    const provider = new NativeProvider({ stateDir, ports })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {}
+    return provider
+  }
+
+  interface HookCore {
+    dispatchHook(event: string, input: Record<string, unknown>, ctx: { signal: AbortSignal; hasContext: boolean }): Promise<{
+      action: string
+      block?: { reason: string; target: string }
+      permission?: { behavior: string; reason?: string }
+      additionalContext: string[]
+    }>
+    applyFlagSettings(settings: Record<string, unknown>): Promise<void>
+  }
+  const hookCoreOf = (session: unknown) => coreOf(session) as unknown as HookCore
+
+  function collectFrames(session: { messages: AsyncIterable<unknown> }): Array<Record<string, unknown>> {
+    const frames: Array<Record<string, unknown>> = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Record<string, unknown>) })()
+    return frames
+  }
+  const hookFrames = (frames: Array<Record<string, unknown>>, subtype: string) =>
+    frames.filter((f) => f.type === 'system' && f.subtype === subtype)
+
+  const preToolUseInput = {
+    session_id: 'plugin-hooks',
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Bash',
+    tool_input: { command: 'ls' },
+  }
+  const dispatchCtx = () => ({ signal: new AbortController().signal, hasContext: true })
+  const bashMatchers = (command: string, extra: Record<string, unknown> = {}) => ({
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command, shell: 'bash', ...extra }] }] },
+  })
+
+  it('a plugin hook fires on its event (matcher-filtered)', async () => {
+    const dir = await tempDir('native-plugin-hook-fire-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginHooks(entry, bashMatchers(BLOCK_CMD))
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry]))
+    const session = provider.createSession({ id: 'plugin-hook-fire', cwd: dir })
+    const frames = collectFrames(session)
+    try {
+      // Gate the construction-time command reload (it commits the plugin
+      // contributions) before dispatching, exactly as a turn does.
+      await session.supportedCommands?.()
+      const decision = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      expect(decision.action).toBe('block')
+      expect(decision.block?.reason).toContain('plugin-block')
+      expect(decision.block?.target).toBe('model')
+      // The matcher filters: a Read call does not match the Bash group.
+      const other = await hookCoreOf(session).dispatchHook('PreToolUse', { ...preToolUseInput, tool_name: 'Read' }, dispatchCtx())
+      expect(other.action).toBe('continue')
+      await vi.waitFor(() => {
+        expect(hookFrames(frames, 'hook_started').length).toBe(1)
+        expect(hookFrames(frames, 'hook_response').length).toBe(1)
+      })
+    } finally {
+      await session.destroy()
+    }
+  }, 15_000)
+
+  it('flag→plugin precedence: the flag copy wins the identity dedupe', async () => {
+    const dir = await tempDir('native-plugin-hook-precedence-')
+    const entry = await makePluginEntry(dir, 'demo')
+    // Same hook identity (matcher + type + command) in both sources; `if` is
+    // NOT part of the identity, so the earlier (flag) copy wins wholesale —
+    // carrying its `if: 'Read'` gate, which skips it on a Bash dispatch.
+    await writePluginHooks(entry, bashMatchers(BLOCK_CMD))
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry]))
+    const session = provider.createSession({
+      id: 'plugin-hook-precedence', cwd: dir,
+      providerExtras: { sdkOptions: { settings: { hooks: bashMatchers(BLOCK_CMD, { if: 'Read' }).hooks } } },
+    })
+    const frames = collectFrames(session)
+    try {
+      await session.supportedCommands?.()
+      const shadowed = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      expect(shadowed.action).toBe('continue')
+      // Grace period for the async frame consumer: the gated flag copy never ran.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(hookFrames(frames, 'hook_started')).toEqual([])
+
+      // Clearing the flag source un-shadows the plugin copy — proving the
+      // continue above was the flag copy's `if` gate, not a missing plugin.
+      await hookCoreOf(session).applyFlagSettings({ hooks: {} })
+      const unshadowed = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      expect(unshadowed.action).toBe('block')
+      expect(unshadowed.block?.reason).toContain('plugin-block')
+    } finally {
+      await session.destroy()
+    }
+  }, 15_000)
+
+  it('a plugin hooks refresh takes effect on the next dispatch (live re-collection)', async () => {
+    const dir = await tempDir('native-plugin-hook-refresh-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginHooks(entry, bashMatchers(BLOCK_CMD))
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry]))
+    const session = provider.createSession({ id: 'plugin-hook-refresh', cwd: dir })
+    collectFrames(session)
+    try {
+      await session.supportedCommands?.()
+      const before = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      expect(before.action).toBe('block')
+
+      // Replacement, not merge: block outranks allow, so an allow decision
+      // proves the old matchers are gone from the plugin source.
+      await writePluginHooks(entry, bashMatchers(ALLOW_CMD))
+      await session.reloadSkills?.()
+      const after = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      expect(after.action).toBe('allow')
+      expect(after.permission?.behavior).toBe('allow')
+      expect(after.permission?.reason).toBe('plugin-allow')
+
+      // Removing the document clears the source wholesale on the next reload.
+      await rm(join(entry.dir, 'hooks', 'hooks.json'), { force: true })
+      await session.reloadSkills?.()
+      const cleared = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      expect(cleared).toEqual({ action: 'continue', additionalContext: [] })
+    } finally {
+      await session.destroy()
+    }
+  }, 15_000)
+
+  it('a modules-only plugin hook document contributes no matchers', async () => {
+    const dir = await tempDir('native-plugin-hook-modules-')
+    const entry = await makePluginEntry(dir, 'demo')
+    // Executable modules are refused at the loader (data-only); with no
+    // `hooks` matchers the plugin contributes nothing to dispatch.
+    await writePluginHooks(entry, { modules: ['./hook-module.mjs'] })
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry]))
+    const session = provider.createSession({ id: 'plugin-hook-modules', cwd: dir })
+    const frames = collectFrames(session)
+    try {
+      await session.supportedCommands?.()
+      const decision = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      expect(decision).toEqual({ action: 'continue', additionalContext: [] })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(hookFrames(frames, 'hook_started')).toEqual([])
+      expect(hookFrames(frames, 'hook_response')).toEqual([])
+    } finally {
+      await session.destroy()
+    }
+  }, 15_000)
+
+  it('two plugins merge their plugin hook matchers in key order', async () => {
+    const dir = await tempDir('native-plugin-hook-merge-')
+    const first = await makePluginEntry(dir, 'a')
+    const second = await makePluginEntry(dir, 'b')
+    await writePluginHooks(first, bashMatchers(contextCmd('from-a')))
+    await writePluginHooks(second, bashMatchers(contextCmd('from-b')))
+    const provider = makeProvider(dir, portsWithPlugins(dir, [first, second]))
+    const session = provider.createSession({ id: 'plugin-hook-merge', cwd: dir })
+    collectFrames(session)
+    try {
+      await session.supportedCommands?.()
+      const decision = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      // Both plugins' matchers collect; additionalContext accumulates in
+      // collection order (the port's enabled-entry order).
+      expect(decision.action).toBe('continue')
+      expect(decision.additionalContext).toEqual(['from-a', 'from-b'])
+    } finally {
+      await session.destroy()
+    }
+  }, 15_000)
+})

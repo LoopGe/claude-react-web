@@ -45,7 +45,7 @@ import { finishReasonOf, type ContentBlock, type TokenUsage, type Usage } from '
 import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './vocabulary/session-event.js'
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
-import type { NativeHostPorts, NativeMemoryReadResult } from './ports.js'
+import type { NativeHostPorts, NativeMemoryReadResult, PluginContributions } from './ports.js'
 import { joinPromptParts, renderMemorySection, renderEnvironment } from './prompt/overlay.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel, type RequestOutputFormat, type StreamRequest } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -127,7 +127,7 @@ import {
   sidechainTranscriptArtifactPath,
   transcriptArtifactPath,
 } from './hooks/transcript.js'
-import type { HookDecision, HookEvent, HookSource } from './hooks/types.js'
+import type { HookDecision, HookEvent, HookMatcherConfig, HookSource } from './hooks/types.js'
 import { formatHooksValidationErrors, validateSessionHooksConfig, type AgentHookConfig, type HttpHookConfig, type PromptHookConfig, type SessionHooksConfig } from '../../../shared/hooks.js'
 
 interface PendingDurableInitial {
@@ -343,6 +343,23 @@ function isPersonOnlyAsk(toolName: string, permissionMode: string): boolean {
  *  permission is surfaced in the denial message the model reads. */
 function withRetryPermission(message: string, retry: boolean): string {
   return retry ? `${message} You may retry this tool call.` : message
+}
+
+/** Merge the enabled plugins' validated hooks configs into the plugin-source
+ *  config: matcher groups concatenate per event in plugin key order (the
+ *  port's enabled-entry order). Identical hooks across plugins are NOT deduped
+ *  here — collectForEvent's earlier-wins identity dedupe resolves them at
+ *  collection time, so the earlier plugin's copy (with all its fields) wins. */
+function mergePluginHooks(contributions: readonly PluginContributions[]): SessionHooksConfig {
+  const merged: SessionHooksConfig = {}
+  for (const contribution of contributions) {
+    // validateSessionHooksConfig only ever sets matcher ARRAYS, so the partial
+    // record's entries are total here (the loader's mergeHooks convention).
+    for (const [event, matchers] of Object.entries(contribution.hooks) as Array<[HookEvent, HookMatcherConfig[]]>) {
+      merged[event] = [...(merged[event] ?? []), ...matchers]
+    }
+  }
+  return merged
 }
 
 export interface NativeSessionOptions {
@@ -573,6 +590,11 @@ export class NativeSession implements NativeSessionCore {
    *  merged agent lookup reads this live, so a reload reaches the next subagent
    *  dispatch and persona switch without a respawn. */
   private pluginAgentDefs: StoredAgentDefinition[] = []
+  /** Merged plugin hooks config projected from the plugin port's contributions
+   *  as of the last command reload. Replaced wholesale alongside `pluginCommands`
+   *  under the same generation fence; the plugin HookSource reads this live, so
+   *  a reload reaches the next dispatch without a respawn. */
+  private pluginHooks: SessionHooksConfig = {}
   /** The merged read-only agent resolution surface (user store + plugin defs)
    *  shared by the Agent tool and the main-thread persona path. */
   private readonly agentLookup: PluginAgentLookup
@@ -749,6 +771,11 @@ export class NativeSession implements NativeSessionCore {
     // dispatch time, and modelOpts observes a live model switch. Hook rounds
     // suppress retry frames (auxiliary rounds, the nested-runner convention).
     const flagHookSource: HookSource = { kind: 'flag', collect: (event) => this.hooksConfig[event] ?? [] }
+    // The plugin source reads the LIVE merged plugin config per collection, in
+    // CLI precedence order after flag (settings/agent slots arrive between them
+    // with their config seams). Executable hook modules never reach here — the
+    // loader refuses them per plugin (data-only).
+    const pluginHookSource: HookSource = { kind: 'plugin', collect: (event) => this.pluginHooks[event] ?? [] }
     // T22: the projection port is the only neutral path from the host history
     // seam into the core materializer (the core never imports the host adapter).
     this.transcriptMaterializer = new TranscriptMaterializer({
@@ -757,7 +784,7 @@ export class NativeSession implements NativeSessionCore {
       project: (event, sessionId) => opts.ports.transcript.projectEventToSdkLine(event, sessionId),
     })
     this.hookEngine = new HookEngine({
-      sources: () => [flagHookSource],
+      sources: () => [flagHookSource, pluginHookSource],
       // The dispatch's sidechain parent rides the frame envelope: main-thread
       // seams pass null, a subagent seam passes the spawning tool_use id so
       // its hook activity attributes to the sidechain (T18).
@@ -1962,6 +1989,7 @@ export class NativeSession implements NativeSessionCore {
       this.customCommands = commands
       this.pluginCommands = pluginCommandRows(contributions)
       this.pluginAgentDefs = pluginAgentDefs(contributions)
+      this.pluginHooks = mergePluginHooks(contributions)
       this.committedCommandGeneration = generation
     })
     void reload.catch((err) => log.warn(`[${this.opts.id}] command discovery failed:`, err))
@@ -3413,8 +3441,8 @@ export class NativeSession implements NativeSessionCore {
   }
 
   /** The single hook decision point for the trigger seams: delegates to the
-   *  engine, which re-collects the live flag config for EVERY event, so a
-   *  config replacement between dispatches is observed without a respawn
+   *  engine, which re-collects the live flag/plugin config for EVERY event, so
+   *  a config replacement between dispatches is observed without a respawn
    *  (RS §12.3). The per-event ACTION semantics of the returned multi-fact
    *  decision belong to the calling seam. */
   async dispatchHook(event: HookEvent, input: Record<string, unknown>, ctx: HookDispatchContext): Promise<HookDecision> {
