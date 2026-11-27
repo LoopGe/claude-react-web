@@ -7285,7 +7285,7 @@ export class SessionManager {
     // persists before the live push); the live push is skipped here and the
     // session picks up the persisted state via spawn-time injection on resume.
     this.assertRebuildAdmission(id)
-    return this.applyFlagSettingAndPersist(
+    const info = await this.applyFlagSettingAndPersist(
       id,
       { enabledPlugins: { [pluginName]: enabled } },
       'plugins',
@@ -7303,6 +7303,16 @@ export class SessionManager {
       },
       'supportsPlugins',
     )
+    // A plugin toggle mutates the slash surface, so the open `/` picker must
+    // refresh. The claude CLI pushes commands_changed through the stream (the
+    // pump relays it); native has no such push — its applyFlagSettings reload
+    // commits the catalog but nothing broadcasts it. Re-read the committed
+    // catalog and broadcast here, the same re-read + broadcast
+    // applyDynamicSkillOverrides uses for its catalog-mutating flag change.
+    // For claude this duplicates the CLI push harmlessly (the client replaces
+    // state on either frame).
+    this.broadcastCommandsChanged(id, (await this.supportedCommands(id)) as unknown[])
+    return info
   }
 
   /** Run a delegated SDK control request and log how long it took.

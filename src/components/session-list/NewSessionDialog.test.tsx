@@ -143,7 +143,7 @@ describe('NewSessionDialog plugin picker', () => {
       expect(box.checked).toBe(true)
     }
     expect(baseElement.querySelector('.requires-cli-notice')).toBeNull()
-    expect(baseElement.textContent).toContain("Plugins can't be added after the session starts")
+    expect(baseElement.textContent).toContain('plugins can be toggled live')
     // A click on a native row changes the selection exactly like claude.
     fireEvent.click(boxes[0])
     expect(boxes[0].checked).toBe(false)

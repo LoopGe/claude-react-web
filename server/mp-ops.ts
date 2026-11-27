@@ -173,11 +173,14 @@ export async function checkMarketplaceUpdates(store: MpStore): Promise<MpUpdateS
  *  toggles for the rest. The next spawn of any failed session will pick up the
  *  persisted state via spawn-time injection anyway.
  *
- *  Provider branch: claude sessions get the SDK plugin-flag toggle; native
- *  sessions have no SDK plugin flags — their discovery reads the store's
- *  global enabled set directly, and the shared reload commit re-composes ALL
- *  five contribution types (skills, commands, agents, hooks, MCP), so one
- *  catalog re-read is the whole live push. */
+ *  Both providers forward the toggle delta first (claude via the SDK plugin
+ *  flag, native via its own enabledPlugins flag) so a global enable reaches a
+ *  PINNED session live — a subset that excludes the newly-enabled key would
+ *  otherwise never see it. Neither path materializes, so the persisted spawn
+ *  pin is untouched and the live delta is transient until respawn. A catalog
+ *  reload then refreshes the discovery surface (and broadcasts commands-changed
+ *  for an open picker); for native it also covers the unpinned case, where the
+ *  delta is a content no-op against the fresh global set. */
 export async function applyPluginToggleToLiveSessions(
   sm: SessionManager,
   pluginKey: string,
@@ -189,11 +192,12 @@ export async function applyPluginToggleToLiveSessions(
   for (const info of running) {
     try {
       if (info.provider === 'native') {
-        // The store's enabled flag was persisted before this call, so the
-        // re-read sees the new global set. reloadSkills rides the shared
-        // discovery commit: it refreshes plugin skills AND commands/agents/
-        // hooks/MCP together, and broadcasts commands-changed so an open
-        // picker updates live.
+        // Forward the delta to the live subset (claude parity for pinned
+        // sessions), then re-read the catalog. The store's enabled flag was
+        // persisted before this call, so the re-read sees the new global set;
+        // reloadSkills rides the shared discovery commit, refreshing skills AND
+        // commands/agents/hooks/MCP together and broadcasting commands-changed.
+        await sm.togglePlugin(info.id, pluginKey, enabled)
         await sm.reloadSkills(info.id)
       } else {
         await sm.togglePlugin(info.id, pluginKey, enabled)

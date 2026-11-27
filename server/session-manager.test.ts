@@ -14562,6 +14562,28 @@ describe('native plugin toggle (capability flip)', () => {
     expect(restored).toContain('plugA:about')
   })
 
+  it('togglePlugin broadcasts commands-changed so the native picker refreshes without a CLI push', async () => {
+    const info = await sm.create({ provider: 'native', cwd: dir, model: 'test-model' } as any)
+    await sm.reloadSkills(info.id)
+    const changes: Array<{ commands?: Array<{ name: string }> }> = []
+    const sub = sm.subscribeCommandChanges(info.id)!
+    void (async () => {
+      for await (const change of sub.iterable) changes.push(change as { commands?: Array<{ name: string }> })
+    })()
+    try {
+      // Native has no CLI commands_changed push: the toggle itself must emit
+      // the refresh, carrying the post-toggle catalog (plugA revoked).
+      const before = changes.length
+      await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), false, { materialize: true })
+      await waitFor(() => changes.length > before)
+      const names = changes.at(-1)!.commands!.map((row) => row.name)
+      expect(names).not.toContain('plugA:about')
+      expect(names).toContain('plugB:about')
+    } finally {
+      sub.unsubscribe()
+    }
+  })
+
   it('reloadPlugins resolves on native and re-reads disk-side plugin changes', async () => {
     const info = await sm.create({ provider: 'native', cwd: dir, model: 'test-model' } as any)
     const result = await sm.reloadPlugins(info.id) as { skills: Array<{ name: string }> }

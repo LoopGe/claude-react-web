@@ -109,7 +109,7 @@ describe('mp-ops', () => {
     expect(sm.reloadPlugins).toHaveBeenCalledWith('live')
   })
 
-  it('applyPluginToggleToLiveSessions rides the shared catalog reload for native sessions, SDK toggle for claude', async () => {
+  it('applyPluginToggleToLiveSessions forwards the delta then reloads the catalog for native, SDK toggle + plugin reload for claude', async () => {
     const sm = {
       list: () => [
         { id: 'nat', running: true, provider: 'native' },
@@ -121,16 +121,16 @@ describe('mp-ops', () => {
       reloadSkills: vi.fn(async () => ({ skills: [] })),
     } as unknown as SessionManager
     await applyPluginToggleToLiveSessions(sm, 'p1@mp-id', true)
-    // Native has no SDK plugin flags: the shared discovery commit re-reads the
-    // store's global enabled set (persisted before this call) and re-composes
-    // ALL five contribution types — skills, commands, agents, hooks, MCP — so
-    // the one catalog reload IS the whole live push (and broadcasts
-    // commands-changed).
+    // Native forwards the delta to the live subset (so a global enable reaches
+    // a PINNED session, claude parity) then re-reads the catalog — the shared
+    // discovery commit re-composes ALL five contribution types and broadcasts
+    // commands-changed. The reload also covers the unpinned no-op-delta case.
+    expect(sm.togglePlugin).toHaveBeenCalledWith('nat', 'p1@mp-id', true)
     expect(sm.reloadSkills).toHaveBeenCalledTimes(1)
     expect(sm.reloadSkills).toHaveBeenCalledWith('nat')
     // Claude keeps the existing togglePlugin + reloadPlugins path.
-    expect(sm.togglePlugin).toHaveBeenCalledTimes(1)
     expect(sm.togglePlugin).toHaveBeenCalledWith('cl', 'p1@mp-id', true)
+    expect(sm.togglePlugin).toHaveBeenCalledTimes(2)
     expect(sm.reloadPlugins).toHaveBeenCalledTimes(1)
     expect(sm.reloadPlugins).toHaveBeenCalledWith('cl')
   })
@@ -151,6 +151,8 @@ describe('mp-ops', () => {
     } as unknown as SessionManager
     await expect(applyPluginToggleToLiveSessions(sm, 'p1@mp-id', false)).resolves.toBeUndefined()
     expect(sm.reloadSkills).toHaveBeenCalledWith('nat-ok')
+    expect(sm.togglePlugin).toHaveBeenCalledWith('nat-bad', 'p1@mp-id', false)
+    expect(sm.togglePlugin).toHaveBeenCalledWith('nat-ok', 'p1@mp-id', false)
     expect(sm.togglePlugin).toHaveBeenCalledWith('cl', 'p1@mp-id', false)
     expect(sm.reloadPlugins).toHaveBeenCalledWith('cl')
   })
@@ -243,8 +245,11 @@ describe('mp-ops', () => {
 
       // Disable-pass reload (flags still persisted) + post-removal reload.
       expect(catalogReads).toEqual(['p1-enabled', 'empty'])
-      // Claude keeps its pre-removal SDK toggle; no bogus post-removal push.
-      expect(sm.togglePlugin).toHaveBeenCalledTimes(1)
+      // Both providers get the pre-removal delta (native now forwards it too,
+      // for pinned-session parity); claude keeps its SDK toggle. No bogus
+      // post-removal push.
+      expect(sm.togglePlugin).toHaveBeenCalledTimes(2)
+      expect(sm.togglePlugin).toHaveBeenCalledWith('nat', 'p1@mp-id', false)
       expect(sm.togglePlugin).toHaveBeenCalledWith('cl', 'p1@mp-id', false)
     })
 

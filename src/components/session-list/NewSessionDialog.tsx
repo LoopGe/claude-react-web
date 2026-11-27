@@ -83,9 +83,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // pre-create capability source (no SessionInfo exists yet): locked features
   // gate on providerSupports below, not on a hardcoded provider check.
   const [provider, setProvider] = useState('claude')
-  // Show-but-locked plugin picker: native keeps the cluster visible with
-  // disabled checkboxes + a RequiresCliNotice; switching the provider
-  // selector re-renders and unlocks live.
+  // Show-but-locked plugin picker: a provider whose capability map lacks
+  // plugins keeps the cluster visible with disabled checkboxes + a
+  // RequiresCliNotice; switching the provider selector re-renders and unlocks
+  // live. Both shipped providers (claude, native) support plugins, so the
+  // picker is editable on either — the gate remains for any future provider.
   const pluginsLocked = !providerSupports(provider, 'plugins')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
@@ -1038,7 +1040,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                   <div className="settings-field" style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
                     <label style={{ margin: 0 }}>Plugins</label>
                     <span className="hint" style={{ marginTop: 4, display: 'block' }}>
-                      Plugins can't be added after the session starts — choose them here.
+                      Choose the starting set here — plugins can be toggled live in the session's Plugins settings.
                     </span>
                     {pluginsLocked && <RequiresCliNotice />}
                     {allPluginKeys.map((key) => {
