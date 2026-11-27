@@ -48,6 +48,18 @@ interface OperationalEnvelope {
   parentToolUseId: string | null
 }
 
+/** Which phase the turn loop is in: a model round is streaming, or the
+ *  assembled round's tools are executing. The settlement path reads this fact
+ *  to distinguish the SDK's aborted_streaming from aborted_tools (the SDK
+ *  vocabulary itself stays the host adapter's business). */
+export type TurnPhase = 'streaming' | 'tools'
+
+/** Neutral outcome of a terminal result. The SDK's `terminal_reason` family is
+ *  adapter-side vocabulary; this is the fact the core actually knows. A subset
+ *  of the durable turn/end reasons — 'forked' is a session-log-only outcome that
+ *  never reaches a live result frame. */
+export type TurnResultReason = 'completed' | 'interrupted' | 'error'
+
 /** The neutral live-operational frame language (R6: live-only, never durable).
  *  Field names are neutral facts; the host adapter maps them to the exact SDK
  *  system/result subtypes native emits. `time` is the ms-epoch fact the host
@@ -84,6 +96,16 @@ export type OperationalFrame =
       numTurns: number
       durationMs: number
       isError: boolean
+      /** Why the turn ended. `interrupted` means the user aborted it; the
+       *  adapter maps that (plus `abortPhase`) to the SDK's aborted_streaming /
+       *  aborted_tools. Absent = unclassified — the adapter then emits no
+       *  `terminal_reason`, which is also what an older producer implies. */
+      reason?: TurnResultReason
+      /** The loop phase at the instant the turn was interrupted — stamped by
+       *  the session's interrupt(), NOT re-read at settlement (the failure
+       *  often surfaces in a later round, after the phase flipped back to
+       *  streaming). Only set with reason 'interrupted'. */
+      abortPhase?: TurnPhase
       fastMode?: boolean
     } & OperationalEnvelope)
   // Live-only next-prompt prediction (R6: never persisted); parentToolUseId always null — main turn only.

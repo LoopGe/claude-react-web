@@ -591,7 +591,11 @@ describe('native /compact control action', () => {
       requests.push({ system: req.system, tools: req.tools, messages: structuredClone(req.messages) })
       yield* [] // the control turn must never reach the streamer
     }
-    const requestCompact = vi.fn(async () => {})
+    // A real in-flight interval: duration_ms must be MEASURED, not pass as
+    // any number (the old hardcoded 0 did).
+    const requestCompact = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    })
     const session = provider.createSession({ id: 'compact-cb', cwd: project, requestCompact })
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
@@ -606,6 +610,10 @@ describe('native /compact control action', () => {
       expect(result.subtype).toBe('success')
       expect(result.is_error).not.toBe(true)
       expect(result.num_turns).toBe(0)
+      // The control turn is a real settlement: measured duration + completed
+      // reason (the host callback held the turn for ≥100ms).
+      expect(result.duration_ms).toBeGreaterThanOrEqual(100)
+      expect(result.terminal_reason).toBe('completed')
       // The raw typed turn is durable; no hidden instruction was expanded.
       expect(rawUserEvents(stateDir, 'compact-cb').map((e) => e.text)).toEqual(['/compact'])
       expect(instructionEvents(stateDir, 'compact-cb')).toEqual([])
@@ -616,6 +624,48 @@ describe('native /compact control action', () => {
         expect(frames.filter((f) => f.type === 'result')).toHaveLength(2)
       }, { timeout: 5000 })
       expect(requestCompact).toHaveBeenCalledTimes(2)
+      expect(requests).toHaveLength(0)
+      const second = frames.filter((f) => f.type === 'result')[1]
+      expect(second.terminal_reason).toBe('completed')
+      expect(second.duration_ms).toBeGreaterThanOrEqual(100)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('/compact settles as interrupted when Stop lands while the host callback is in flight', async () => {
+    const { project, stateDir } = await makeEnv()
+    const provider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir }) })
+    const requests: StreamRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: StreamRequest) {
+      requests.push({ system: req.system, tools: req.tools, messages: structuredClone(req.messages) })
+      yield* [] // the control turn must never reach the streamer
+    }
+    let compactRequested!: () => void
+    const requested = new Promise<void>((resolve) => { compactRequested = resolve })
+    const requestCompact = vi.fn(async () => {
+      compactRequested()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    })
+    const session = provider.createSession({ id: 'compact-abort', cwd: project, requestCompact })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(providerUserMsg('/compact', 'u-compact-abort') as never)
+      await requested
+      await session.interrupt?.()
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+      }, { timeout: 5000 })
+      const result = frames.find((f) => f.type === 'result')!
+      // The Stop landed while the host callback was awaited: the control turn
+      // settles as the interrupt it is (one terminal frame), never as a
+      // completed turn that would render a green `ok`.
+      expect(result.result).toBe('interrupted by user')
+      expect(result.is_error).toBe(true)
+      expect(result.num_turns).toBe(0)
+      expect(result.duration_ms).toBeGreaterThanOrEqual(100)
+      expect(result.terminal_reason).toBe('aborted_streaming')
       expect(requests).toHaveLength(0)
     } finally {
       await session.destroy()

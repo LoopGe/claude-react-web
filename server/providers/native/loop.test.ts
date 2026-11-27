@@ -1,6 +1,6 @@
 // server/providers/native/loop.test.ts
 import { describe, expect, it, vi } from 'vitest'
-import { runTurn, type LoopDeps, type NativeLoopFrame } from './loop.js'
+import { runTurn, type LoopDeps, type NativeLoopFrame, type TurnStats } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
 import { assistantFrame, defaultFrameContext, isRetainedThinkingBlock, resultFrame, streamEventFrame, toolResultFrame, type Frame, type FrameContext } from '../native-frames.js'
 import { projectNativeFrameToSdk, projectNativeEventToSdk, type NativeFrameEnvelope } from '../native-host-frame-adapter.js'
@@ -272,7 +272,7 @@ describe('runTurn — neutral emission + neutral history', () => {
     expect(liveResults[0].content).toEqual([{ type: 'text', text: 'max turns reached (1); tool not executed' }])
     const terminal = emitted.filter(isResult)
     expect(terminal).toHaveLength(1)
-    expect(terminal[0]).toMatchObject({ isError: true })
+    expect(terminal[0]).toMatchObject({ isError: true, reason: 'error' })
   })
 
   it('completes normally when the final allowed round ends without tool calls', async () => {
@@ -654,6 +654,79 @@ describe('runTurn — neutral emission + neutral history', () => {
   })
 })
 
+describe('runTurn — TurnStats (shared per-turn facts)', () => {
+  const makeStats = (startedAt = Date.now()): TurnStats => ({
+    startedAt,
+    rounds: 0,
+    phase: 'streaming',
+    usage: { inputTokens: 0, outputTokens: 0 },
+  })
+
+  it('advances rounds, accumulated usage, and phase; the result frame reports them', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const stats = makeStats()
+    const phaseAtRun: string[] = []
+    const tool: ToolDef = {
+      name: 'Read', description: 'd', guidance: 'g', promptOrder: 1, schema: {},
+      async run() { phaseAtRun.push(stats.phase); return { text: 'body' } },
+    }
+    const emitted: NativeLoopFrame[] = []
+    const res = await runTurn(
+      baseDeps({ stream: s.stream.bind(s), tools: [tool], turnStats: stats, emit: (f) => emitted.push(f) }),
+      defaultFrameContext('sess-1'), [], userText('hi'), 'm1', new AbortController().signal,
+    )
+    expect(res.numTurns).toBe(2)
+    expect(stats.rounds).toBe(2)
+    // The tool observed the loop in its tools phase.
+    expect(phaseAtRun).toEqual(['tools'])
+    // The next round reset the phase before streaming again.
+    expect(stats.phase).toBe('streaming')
+    // Two rounds of {input 10, output 5} accumulated into the turn total.
+    expect(stats.usage).toEqual({ inputTokens: 20, outputTokens: 10 })
+    const terminal = emitted.find(isResult) as Extract<OperationalFrame, { type: 'result' }>
+    expect(terminal.numTurns).toBe(2)
+    expect(terminal.reason).toBe('completed')
+    expect(terminal.durationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('derives duration_ms from the session-stamped turn start', async () => {
+    const s = scriptedStreamer([[startStop, ...textBlock(0, 'hello'), deltaStop('end_turn')]])
+    const stats = makeStats(Date.now() - 5000)
+    const emitted: NativeLoopFrame[] = []
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s), turnStats: stats, emit: (f) => emitted.push(f) }),
+      defaultFrameContext('sess-1'), [], userText('hi'), 'm1', new AbortController().signal,
+    )
+    const terminal = emitted.find(isResult) as Extract<OperationalFrame, { type: 'result' }>
+    expect(terminal.durationMs).toBeGreaterThanOrEqual(5000)
+  })
+
+  it('keeps the completed rounds on the stats when a later round throws (the abort settlement reads it)', async () => {
+    let call = 0
+    const stream = async function* () {
+      call++
+      if (call > 1) throw new Error('stream aborted')
+      yield startStop
+      for (const ev of toolUseBlock(0, 't1', 'Read', '{"file_path":"a.txt"}')) yield ev
+      yield deltaStop('tool_use')
+    }
+    const stats = makeStats()
+    const emitted: NativeLoopFrame[] = []
+    await expect(runTurn(
+      baseDeps({ stream, turnStats: stats, emit: (f) => emitted.push(f) }),
+      defaultFrameContext('sess-1'), [], userText('hi'), 'm1', new AbortController().signal,
+    )).rejects.toThrow('stream aborted')
+    // Round 1 completed and settled its usage before the throw.
+    expect(stats.rounds).toBe(1)
+    expect(stats.usage).toEqual({ inputTokens: 10, outputTokens: 5 })
+    // No terminal frame: the failure settlement belongs to the session's catch.
+    expect(emitted.some(isResult)).toBe(false)
+  })
+})
+
 // ── Live pin: neutral emission projects (T6) to the SAME SDK frames ─────────
 // The legacy loop emitted SDK frames via frames.ts. The neutral loop emits
 // neutral frames; the host boundary projects them through the T6 adapter. This
@@ -682,9 +755,10 @@ function projectToSdk(frame: NativeLoopFrame, ctx: FrameContext): Frame {
   return projectNativeFrameToSdk(frame as never, env) as Frame
 }
 
-/** Normalize independently-minted identities so two emission paths compare on
- *  structure: top-level uuids and `msg_`-prefixed message ids. Meaningful ids
- *  (tool_use ids, tool_use_id) are preserved. */
+/** Normalize independently-minted values so two emission paths compare on
+ *  structure: top-level uuids, `msg_`-prefixed message ids, and the wall-clock
+ *  duration minted at emission. Meaningful ids (tool_use ids, tool_use_id) are
+ *  preserved. */
 function normalizeIds(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalizeIds)
   if (value && typeof value === 'object') {
@@ -692,6 +766,9 @@ function normalizeIds(value: unknown): unknown {
     for (const [key, val] of Object.entries(value)) {
       if (key === 'uuid') out[key] = '<uuid>'
       else if (key === 'id' && typeof val === 'string' && val.startsWith('msg_')) out[key] = '<msgid>'
+      // duration_ms is wall-clock minted at emission (like the uuids above),
+      // so the pin compares structure; the derivation is asserted separately.
+      else if (key === 'duration_ms') out[key] = '<duration>'
       else out[key] = normalizeIds(val)
     }
     return out
@@ -712,7 +789,7 @@ describe('live pin — neutral frames project to the legacy SDK frames', () => {
     const legacy = [
       ...events.map((ev) => streamEventFrame(ctx, ev.raw ?? ev)),
       assistantFrame(ctx, { model: 'm1', content: [{ type: 'text', text: 'hello' }], stopReason: 'end_turn', usage }),
-      resultFrame(ctx, { result: 'hello', usage, numTurns: 1, durationMs: 0, isError: false }),
+      resultFrame(ctx, { result: 'hello', usage, numTurns: 1, durationMs: 0, isError: false, terminalReason: 'completed' }),
     ].map((f) => normalizeIds(f))
     expect(projected).toEqual(legacy)
   })
@@ -737,7 +814,7 @@ describe('live pin — neutral frames project to the legacy SDK frames', () => {
       assistantFrame(ctx, { model: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'a.txt' } }], stopReason: 'tool_use', usage }),
       toolResultFrame(ctx, 't1', 'file body', false, toolUuid),
       assistantFrame(ctx, { model: 'm1', content: [{ type: 'text', text: 'done' }], stopReason: 'end_turn', usage }),
-      resultFrame(ctx, { result: 'done', usage, numTurns: 2, durationMs: 0, isError: false }),
+      resultFrame(ctx, { result: 'done', usage, numTurns: 2, durationMs: 0, isError: false, terminalReason: 'completed' }),
     ].map((f) => normalizeIds(f))
     expect(projected).toEqual(legacy)
   })
@@ -770,7 +847,7 @@ describe('live pin — neutral frames project to the legacy SDK frames', () => {
       assistantFrame(ctx, { model: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'AttachmentRead', input: { id: 'upload-1' } }], stopReason: 'tool_use', usage }),
       toolResultFrame(ctx, 't1', 'Read PDF document.pdf', false, toolUuid),
       assistantFrame(ctx, { model: 'm1', content: [{ type: 'text', text: 'done' }], stopReason: 'end_turn', usage }),
-      resultFrame(ctx, { result: 'done', usage, numTurns: 2, durationMs: 0, isError: false }),
+      resultFrame(ctx, { result: 'done', usage, numTurns: 2, durationMs: 0, isError: false, terminalReason: 'completed' }),
     ].map((f) => normalizeIds(f))
     expect(projected).toEqual(legacy)
     // The structured file never enters the live SDK frame; the persisted

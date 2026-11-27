@@ -37,7 +37,7 @@ import type {
   NativePersistenceOutcome,
   NativeDrainMode,
 } from './core-contract.js'
-import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult, type TurnResult } from './loop.js'
+import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult, type TurnResult, type TurnStats } from './loop.js'
 import { estimateText, estimateMessage, estimateToolSchema, ROLE_OVERHEAD } from './estimate.js'
 import { createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
@@ -464,6 +464,10 @@ export class NativeSession implements NativeSessionCore {
   private readonly sessionAbort = new AbortController()
   /** Per-turn abort, replaced by pumpLoop for every turn. */
   private turnAbort: AbortController | null = null
+  /** The in-flight turn's shared stats record (see TurnStats): created by
+   *  pumpLoop, advanced by runTurn, stamped by interrupt(), read by BOTH
+   *  settlement paths. Null while no turn is in flight. */
+  private turnStats: TurnStats | null = null
   /** Neutral conversation state sent to the API on every turn (mutated in place
    *  by runTurn; projected to the wire request by projectNativeHistoryToWire). */
   private readonly history: RequestMessage[] = []
@@ -1712,6 +1716,17 @@ export class NativeSession implements NativeSessionCore {
       // turn's write is in flight (the session survives for the next message).
       const turnAbort = new AbortController()
       this.turnAbort = turnAbort
+      // The turn's shared stats record. The loop advances rounds/phase/usage;
+      // both settlement paths read it, so an aborted turn reports what actually
+      // happened (completed rounds, elapsed wall time, partial usage) instead
+      // of the fabricated `0 turns / 0 ms`.
+      const turnStats: TurnStats = {
+        startedAt: Date.now(),
+        rounds: 0,
+        phase: 'streaming',
+        usage: { inputTokens: 0, outputTokens: 0 },
+      }
+      this.turnStats = turnStats
       // Fresh stream-packing clock per turn: a turn interrupted mid-stream
       // never persists an assistant frame, so its first-chunk time must not
       // leak into the next turn's packed records.
@@ -1864,6 +1879,10 @@ export class NativeSession implements NativeSessionCore {
           // REAL turn settlement — an empty bookend would skip queued-input
           // materialization and strand a prompt queued behind this one.
           await this.opts.requestCompact?.()
+          // A Stop can land while the host callback is in flight. Throw into
+          // the shared catch so the control turn settles as the interrupted
+          // turn it is (one terminal frame), never as a completed one.
+          if (turnAbort.signal.aborted) throw new Error('interrupted by user')
           this.output.push({
             type: 'result',
             sessionId: this.opts.id,
@@ -1871,9 +1890,10 @@ export class NativeSession implements NativeSessionCore {
             parentToolUseId: this.ctx.parentToolUseId ?? null,
             result: 'Compaction requested.',
             usage: neutralUsageOf({ input_tokens: 0, output_tokens: 0 }),
-            numTurns: 0,
-            durationMs: 0,
+            numTurns: turnStats.rounds,
+            durationMs: Date.now() - turnStats.startedAt,
             isError: false,
+            reason: 'completed',
             fastMode: this.fastMode,
           })
           endReason = 'completed'
@@ -1921,6 +1941,7 @@ export class NativeSession implements NativeSessionCore {
               },
               tools: [...turnTools],
               maxTurns: turnProfile?.maxTurns,
+              turnStats,
               tasks: this.tasks,
               cwd: this.opts.cwd,
               requestPermission: (toolName, input, toolUseId, signal, readOnlyHint) =>
@@ -1995,16 +2016,25 @@ export class NativeSession implements NativeSessionCore {
           uuid: this.ctx.uuid(),
           parentToolUseId: this.ctx.parentToolUseId ?? null,
           result: interrupted ? 'interrupted by user' : err instanceof Error ? err.message : String(err),
-          usage: neutralUsageOf(this.lastUsage),
-          numTurns: 0,
-          durationMs: 0,
+          // The interrupted turn's OWN completed-round usage — never the
+          // previous turn's `lastUsage` (the turn/end accounting above already
+          // documents why a failed turn must not inherit it). Zero before the
+          // first round completes.
+          usage: turnStats.usage,
+          numTurns: turnStats.rounds,
+          durationMs: Date.now() - turnStats.startedAt,
           isError: true,
+          reason: interrupted ? 'interrupted' : 'error',
+          // Stamped by interrupt(): the abort exception often surfaces in the
+          // NEXT round, after the loop's live phase flipped back to streaming.
+          ...(interrupted ? { abortPhase: turnStats.abortPhase ?? turnStats.phase } : {}),
           fastMode: this.fastMode,
         })
         endReason = interrupted ? 'interrupted' : 'error'
       } finally {
         this.preparedPdfs.clearHistory('main')
         this.turnAbort = null
+        this.turnStats = null
         this.activeTurnMode = null
       }
       // Exactly one turn/end per turn, OUTSIDE the turn try/catch: a flush
@@ -2329,6 +2359,10 @@ export class NativeSession implements NativeSessionCore {
     }
     // NO frame emission here — the pumpLoop catch emits the single
     // 'interrupted by user' result frame.
+    // Stamp the phase the user stopped IN. The abort exception usually
+    // surfaces in the NEXT round (already back to 'streaming'), so the
+    // settlement must not re-read the live phase.
+    if (this.turnStats) this.turnStats.abortPhase = this.turnStats.phase
     this.turnAbort?.abort(new Error('interrupted by user'))
     return cancelledQueued !== undefined ? { cancelledQueued } : undefined
   }
