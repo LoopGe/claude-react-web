@@ -95,6 +95,7 @@ import {
   RECALL_DEADLINE_MS,
   type RecallState,
 } from './memory.js'
+import { startDreamRun as startDreamRunCore, type DreamRunHandle } from './dream.js'
 import { isQuestionResult } from '../../../shared/question-result.js'
 import type { SessionMemorySettings, ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import type { UploadStore } from '../../upload-store.js'
@@ -3363,6 +3364,56 @@ export class NativeSession implements NativeSessionCore {
     } catch (err) {
       log.warn(`[${this.opts.id}] memory recall skipped: ${err instanceof Error ? err.message : String(err)}`)
     }
+  }
+
+  /** Launch a background dream consolidation run (the Task 10 mechanism; the
+   *  turn-end trigger that decides WHEN to call it is Task 11). Binds the
+   *  session-owned seams the dream core needs — the same live getters and
+   *  stream / permission / persist+push paths the Agent tool uses — and resolves
+   *  the dream model (the profile's recapModel, empty → the session's own model).
+   *  The caller supplies the resolved own root, the touched session-log paths
+   *  and the current index snapshot. Returns once the task is registered (not
+   *  once the run finishes); await the handle's `settled` for the outcome. */
+  startDreamRun(input: { ownDir: string; logPaths: string[]; index: string | null }): Promise<DreamRunHandle> {
+    const memory = this.memorySnapshot
+    const system = joinPromptParts(
+      this.opts.subagentSystem ?? this.baseSystem,
+      this.autoMemorySection(),
+      memory
+        ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
+        : '',
+    )
+    return startDreamRunCore({
+      cwd: this.opts.cwd,
+      frameCtx: this.ctx,
+      tasks: this.tasks,
+      tools: () => this.nestedTools,
+      permissionMode: () => this.permissionMode,
+      effortLevel: () => this.effortLevel,
+      streamFor: (req, streamOpts) => this.streamFor(req, { ...streamOpts, suppressRetryFrames: true }),
+      requestPermission: this.requestPermission,
+      emit: (frame, parentToolUseId) => {
+        this.persistFrame(frame, parentToolUseId)
+        this.emitFrame(frame, parentToolUseId)
+      },
+      persistToolResult: (result, parentToolUseId) => this.persistToolResult(result, parentToolUseId),
+      attachmentProjection: {
+        attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
+        preparedPdfs: this.preparedPdfs,
+      },
+      appendDescriptor: async (descriptor) => {
+        const appended = await this.log.appendDurable(descriptor)
+        return { ...descriptor, seq: appended.seq } as SessionEvent<'subagent/descriptor'>
+      },
+    }, {
+      ownDir: input.ownDir,
+      logPaths: input.logPaths,
+      index: input.index,
+      stateDir: this.opts.stateDir,
+      model: this.profile.recapModel || this.model,
+      system,
+      signal: this.sessionAbort.signal,
+    })
   }
 
   async backgroundTasks(toolUseId?: string): Promise<boolean> {

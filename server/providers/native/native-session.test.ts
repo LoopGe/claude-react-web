@@ -7943,6 +7943,107 @@ describe('NativeSession', () => {
     })
   })
 })
+describe('dream run wiring (Task 10)', () => {
+  /** The live core seam the wiring method exposes. */
+  type DreamCore = {
+    startDreamRun(input: { ownDir: string; logPaths: string[]; index: string | null }): Promise<{ toolUseId: string; settled: Promise<ToolOutcome> }>
+  }
+  const dreamCoreOf = (handle: unknown): DreamCore => coreOf(handle) as unknown as DreamCore
+
+  function readTurn(id: string, filePath: string): CanonicalEvent[] {
+    return [
+      { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+      { kind: 'block_start', index: 0, block: { type: 'tool_use', id, name: 'Read' } },
+      { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: JSON.stringify({ file_path: filePath }) } },
+      { kind: 'block_end', index: 0 },
+      { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+    ]
+  }
+  function writeTurn(id: string, filePath: string): CanonicalEvent[] {
+    return [
+      { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+      { kind: 'block_start', index: 0, block: { type: 'tool_use', id, name: 'Write' } },
+      { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: JSON.stringify({ file_path: filePath, content: 'consolidated fact' }) } },
+      { kind: 'block_end', index: 0 },
+      { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+    ]
+  }
+
+  /** A session whose dream run reads a fixture log under the native-sessions
+   *  read root, then writes into the own root. bypassPermissions lets the dream
+   *  tools run without a broker; the stream seam records each round's model. */
+  async function dreamFixture(recapModel: string) {
+    const cwd = await tempDir('native-dream-cwd-')
+    const stateDir = await tempDir('native-dream-state-')
+    const ownDir = join(stateDir, 'native-memory', 'proj-x')
+    await mkdir(ownDir, { recursive: true })
+    const logFixtureDir = join(stateDir, 'native-sessions', 'fixture')
+    await mkdir(logFixtureDir, { recursive: true })
+    const logFixture = join(logFixtureDir, 'session.v1.jsonl')
+    await writeFile(logFixture, 'LOG-LINE', 'utf8')
+    const provider = new NativeProvider({ stateDir, ports: makeNativePorts({ stateDir }) })
+    const scripts: CanonicalEvent[][] = [
+      readTurn('tu-read', logFixture),
+      writeTurn('tu-write', join(ownDir, 'new.md')),
+      textTurn('consolidated'),
+    ]
+    const models: string[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { model: string }) {
+      models.push(req.model)
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const session = provider.createSession({
+      id: 'dream-wire', cwd, permissionMode: 'bypassPermissions', model: 'session-model',
+      profile: { id: 'p', name: 'p', authToken: 'x', baseUrl: 'https://api.anthropic.com', modelList: ['session-model'], recapModel, commitMessageModel: '' },
+    })
+    return { ownDir, logFixture, session, models }
+  }
+
+  it('runs a background dream on the recapModel, confined to ownDir, reading the native-sessions tree', async () => {
+    const { ownDir, logFixture, session, models } = await dreamFixture('consolidate-model')
+    try {
+      const handle = await dreamCoreOf(session).startDreamRun({ ownDir, logPaths: [logFixture], index: '- x.md: hi' })
+      expect(handle.toolUseId.startsWith('dream-')).toBe(true)
+      const outcome = await handle.settled
+      expect(outcome.isError).not.toBe(true)
+      // The dream model is the profile recapModel, on every round.
+      expect(models.length).toBe(3)
+      expect(models.every((m) => m === 'consolidate-model')).toBe(true)
+      // Write landed inside ownDir (the write root).
+      expect(existsSync(join(ownDir, 'new.md'))).toBe(true)
+      // Read reached the native-sessions fixture (the read root): its content
+      // rides a dream-parented tool/result.
+      const dreamResults = neutralLogEvents(session).filter(
+        (e) => e.type === 'tool/result' && e.parentToolUseId === handle.toolUseId,
+      )
+      expect(JSON.stringify(dreamResults)).toContain('LOG-LINE')
+      // Durable descriptor: dream- prefix, top-level (parentToolUseId null), kind agent.
+      const descriptor = neutralLogEvents(session).find(
+        (e): e is Extract<NativeSessionEvent, { type: 'subagent/descriptor' }> =>
+          e.type === 'subagent/descriptor' && e.data.toolUseId === handle.toolUseId,
+      )
+      expect(descriptor).toBeDefined()
+      expect(descriptor!.data.parentToolUseId).toBeNull()
+      expect(descriptor!.data.kind).toBe('agent')
+      expect(descriptor!.data.toolName).toBe('Agent')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('falls back to the session model when the profile recapModel is empty', async () => {
+    const { ownDir, logFixture, session, models } = await dreamFixture('')
+    try {
+      const handle = await dreamCoreOf(session).startDreamRun({ ownDir, logPaths: [logFixture], index: null })
+      await handle.settled
+      expect(models.length).toBe(3)
+      expect(models.every((m) => m === 'session-model')).toBe(true)
+    } finally {
+      await session.destroy()
+    }
+  })
+})
+
 describe('live assistant emitter carries rawStopReason (T13)', () => {
   /** The neutral events of a session log (v3 canonical, or the lossless
    *  in-memory migration of a legacy view). */
