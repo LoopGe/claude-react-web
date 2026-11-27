@@ -542,6 +542,60 @@ describe('native background task acceptance through direct provider handles', ()
     }
   }, 30000)
 
+  it('stops a detached Bash through a model TaskStop call', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-model-task-stop-'))
+    dirs.push(dir)
+    const bash = await controlledBash(dir, 'model-task-stop')
+    const fx = await makeFixture(dir)
+    fx.setStream(async (_req, round) => {
+      if (round === 1) {
+        return toolUseTurn('model-task-stop', 'Bash', { command: bash.command, run_in_background: true })
+      }
+      if (round === 2) {
+        // The stop must land on a LIVE process: wait for the spawned shell's
+        // own start marker before the model asks to stop it.
+        await waitForFile(bash.started)
+        return toolUseTurn('stop-model-task', 'TaskStop', { task_id: 'model-task-stop' })
+      }
+      return textTurn('PARENT-AFTER-STOP')
+    })
+    const id = await createSession(fx, dir, 'model-task-stop')
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    try {
+      await fx.sm.send(id, 'run then stop a background command')
+      // No handle.stopTask / REST call anywhere in this test: the model's
+      // TaskStop tool call is the ONLY stop trigger.
+      await vi.waitFor(() => expect(fx.requests).toHaveLength(2), { timeout: 5000 })
+      expect(liveSession(fx.sm, id).tasks.get('model-task-stop')).toMatchObject({
+        status: 'running',
+        isBackgrounded: true,
+      })
+      await vi.waitFor(() => {
+        expect(topLevelResults(frames)).toHaveLength(1)
+        expect(taskNotifications(frames, 'model-task-stop')).toHaveLength(1)
+      }, { timeout: 5000 })
+      expect(taskNotifications(frames, 'model-task-stop')[0].status).toBe('stopped')
+      const stopResults = toolResultBlocks(frames, 'stop-model-task')
+      expect(stopResults).toHaveLength(1)
+      expect(stopResults[0].is_error).toBe(false)
+      expect(toolResultText(stopResults[0])).toContain('stopped')
+      expect(liveSession(fx.sm, id).tasks.get('model-task-stop')).toMatchObject({
+        status: 'stopped',
+        isBackgrounded: true,
+      })
+      // The Bash call keeps its single launch-ack tool_result; the stop never
+      // produces a second result for it.
+      expect(toolResultBlocks(frames, 'model-task-stop')).toHaveLength(1)
+      expect(toolResultText(toolResultBlocks(frames, 'model-task-stop')[0])).toContain('TaskOutput')
+      expect(topLevelResults(frames)).toHaveLength(1)
+      expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-STOP')
+    } finally {
+      await bash.release()
+      unsubscribe()
+    }
+  }, 30000)
+
   it('backgrounds Agent via run_in_background and publishes its real report on settle', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'native-model-bg-agent-'))
     dirs.push(dir)

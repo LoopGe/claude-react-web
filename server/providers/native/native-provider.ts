@@ -32,6 +32,7 @@ import { AnthropicModelDiscovery } from './model-discovery.js'
 import { AGENT_GUIDANCE } from './subagent.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
 import { TASK_OUTPUT_GUIDANCE } from './tools/task-output.js'
+import { TASK_STOP_GUIDANCE } from './tools/task-stop.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import { appendSessionTitle, deleteNativeSessionLog, hasNativeSessionLog } from './session-log/log.js'
 import { resolveNativeStateDir } from './session-log/paths.js'
@@ -84,6 +85,10 @@ const AGENT_SECTION: PromptSection = { name: 'tool:Agent', order: 80, text: AGEN
 /** TaskOutput is available to parent and nested loops through the shared manager. */
 const TASK_OUTPUT_SECTION: PromptSection = { name: 'tool:TaskOutput', order: 82, text: TASK_OUTPUT_GUIDANCE }
 
+/** TaskStop shares that manager, so its section rides the same unconditional
+ *  registration — a subagent can stop the session's backgrounded tasks too. */
+const TASK_STOP_SECTION: PromptSection = { name: 'tool:TaskStop', order: 83, text: TASK_STOP_GUIDANCE }
+
 /** The Skill tool's prompt section, same single-source rule. Registered in
  *  BOTH prompts: the Skill tool is still in a subagent's tool list. */
 const SKILL_SECTION: PromptSection = { name: 'tool:Skill', order: 85, text: SKILL_GUIDANCE }
@@ -129,6 +134,7 @@ function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: st
   registry.register(TASK_LIST_SECTION)
   if (opts.withAgentSection) registry.register(AGENT_SECTION)
   registry.register(TASK_OUTPUT_SECTION)
+  registry.register(TASK_STOP_SECTION)
   registry.register(SKILL_SECTION)
   const rendered = registry.render()
   return opts.systemPromptAppend ? `${rendered}\n\n${opts.systemPromptAppend}` : rendered

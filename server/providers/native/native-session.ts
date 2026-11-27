@@ -67,6 +67,7 @@ import { NativeSkillCatalog, LISTING_BUDGET_FRACTION, type NativeSkillCommand, t
 import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, type NativeCommand } from './commands.js'
 import { createSkillTool } from './tools/skill.js'
 import { createTaskOutputTool } from './tools/task-output.js'
+import { createTaskStopTool } from './tools/task-stop.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
 import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
@@ -544,6 +545,8 @@ export class NativeSession implements NativeSessionCore {
   private readonly taskTool: ToolDef
   /** Reads this session's detached Bash/Agent/Task outcomes through the shared manager. */
   private readonly taskOutputTool: ToolDef
+  /** Stops this session's backgrounded tasks through the same shared manager. */
+  private readonly taskStopTool: ToolDef
   /** Local SKILL.md catalog. Discovery is kicked off at construction and
    *  awaited per turn, the same shape as MCP's `whenReady`. */
   private readonly skills: NativeSkillCatalog
@@ -859,6 +862,7 @@ export class NativeSession implements NativeSessionCore {
     this.commandsReady = this.startCommandReload()
     this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
     this.taskOutputTool = createTaskOutputTool(this.tasks)
+    this.taskStopTool = createTaskStopTool(this.tasks)
     // Every session can delegate, MCP or not: `tools` is a live getter and the
     // `emit` path is the session's own persist+push, so a nested run's frames
     // land in the transcript with their real parent. Built after `ctx` exists.
@@ -2033,6 +2037,7 @@ export class NativeSession implements NativeSessionCore {
       this.agentTool,
       this.taskTool,
       this.taskOutputTool,
+      this.taskStopTool,
       skillTool,
       createEnterPlanModeTool({ enterPlanMode: () => this.enterPlanMode() }),
       createExitPlanModeTool(),

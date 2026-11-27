@@ -37,6 +37,7 @@ import { TASK_CREATE_GUIDANCE } from './tools/task-create.js'
 import { TASK_UPDATE_GUIDANCE } from './tools/task-update.js'
 import { TASK_GET_GUIDANCE } from './tools/task-get.js'
 import { TASK_LIST_GUIDANCE } from './tools/task-list.js'
+import { TASK_STOP_GUIDANCE } from './tools/task-stop.js'
 
 // T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
 // the legacy shape from the canonical neutral baseline via the pinned compat
@@ -294,6 +295,7 @@ describe('NativeProvider core + adapter composition (T14)', () => {
       expect(system).toContain(TASK_UPDATE_GUIDANCE)
       expect(system).toContain(TASK_GET_GUIDANCE)
       expect(system).toContain(TASK_LIST_GUIDANCE)
+      expect(system).toContain(TASK_STOP_GUIDANCE)
       expect(system).toContain(TODO_WRITE_GUIDANCE)
     }
   })
