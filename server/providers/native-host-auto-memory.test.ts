@@ -371,3 +371,88 @@ describe('createAutoMemoryPort.listSessionsTouchedSince', () => {
     expect(await port.listSessionsTouchedSince('D:\\repo', 0)).toEqual([])
   })
 })
+
+describe('createAutoMemoryPort dream state + lease', () => {
+  const dreamStateFile = (stateDir: string): string => join(stateDir, 'native-memory', 'dream-state.json')
+
+  it('readDreamState is {} when the state file is absent', async () => {
+    const stateDir = await tempDir()
+    const port = createAutoMemoryPort({ stateDir })
+    expect(await port.readDreamState()).toEqual({})
+  })
+
+  it('claimDream: first claim true, second false, other cwdKeys unaffected', async () => {
+    const stateDir = await tempDir()
+    const port = createAutoMemoryPort({ stateDir })
+    expect(await port.claimDream('D--repo')).toBe(true)
+    expect(await port.claimDream('D--repo')).toBe(false)
+    expect(await port.claimDream('D--other')).toBe(true)
+  })
+
+  it('claim does not persist running state (process-local lease)', async () => {
+    const stateDir = await tempDir()
+    const port = createAutoMemoryPort({ stateDir })
+    await port.claimDream('D--repo')
+    expect(await port.readDreamState()).toEqual({})
+    expect(existsSync(dreamStateFile(stateDir))).toBe(false)
+  })
+
+  it('releaseDream persists lastDreamAt to the state file and unlocks the lease', async () => {
+    const stateDir = await tempDir()
+    const port = createAutoMemoryPort({ stateDir })
+    await port.claimDream('D--repo')
+    await port.releaseDream('D--repo', 1_700_000_000_000)
+    expect(JSON.parse(await readFile(dreamStateFile(stateDir), 'utf8')))
+      .toEqual({ 'D--repo': { lastDreamAt: 1_700_000_000_000 } })
+    expect(await port.readDreamState()).toEqual({ 'D--repo': { lastDreamAt: 1_700_000_000_000 } })
+    expect(await port.claimDream('D--repo')).toBe(true)
+  })
+
+  it('releaseDream merges keys instead of clobbering other cwds', async () => {
+    const stateDir = await tempDir()
+    const port = createAutoMemoryPort({ stateDir })
+    await port.claimDream('D--a')
+    await port.releaseDream('D--a', 10)
+    await port.claimDream('D--b')
+    await port.releaseDream('D--b', 20)
+    expect(await port.readDreamState()).toEqual({ 'D--a': { lastDreamAt: 10 }, 'D--b': { lastDreamAt: 20 } })
+  })
+
+  it('concurrent releases for different cwdKeys both persist', async () => {
+    const stateDir = await tempDir()
+    const port = createAutoMemoryPort({ stateDir })
+    await port.claimDream('D--a')
+    await port.claimDream('D--b')
+    await Promise.all([port.releaseDream('D--a', 10), port.releaseDream('D--b', 20)])
+    expect(await port.readDreamState()).toEqual({ 'D--a': { lastDreamAt: 10 }, 'D--b': { lastDreamAt: 20 } })
+  })
+
+  it('a fresh port instance reads the persisted state and can claim again (crash resets the lease)', async () => {
+    const stateDir = await tempDir()
+    const port = createAutoMemoryPort({ stateDir })
+    await port.claimDream('D--repo')
+    await port.releaseDream('D--repo', 42)
+    const restarted = createAutoMemoryPort({ stateDir })
+    expect(await restarted.readDreamState()).toEqual({ 'D--repo': { lastDreamAt: 42 } })
+    expect(await restarted.claimDream('D--repo')).toBe(true)
+  })
+
+  it('a corrupt state file reads as absent and the next release rewrites it', async () => {
+    const stateDir = await tempDir()
+    const port = createAutoMemoryPort({ stateDir })
+    await mkdir(join(stateDir, 'native-memory'), { recursive: true })
+    await writeFile(dreamStateFile(stateDir), '{torn')
+    expect(await port.readDreamState()).toEqual({})
+    await port.claimDream('D--repo')
+    await port.releaseDream('D--repo', 7)
+    expect(await port.readDreamState()).toEqual({ 'D--repo': { lastDreamAt: 7 } })
+  })
+
+  it('a non-object state file reads as absent', async () => {
+    const stateDir = await tempDir()
+    const port = createAutoMemoryPort({ stateDir })
+    await mkdir(join(stateDir, 'native-memory'), { recursive: true })
+    await writeFile(dreamStateFile(stateDir), '[]')
+    expect(await port.readDreamState()).toEqual({})
+  })
+})

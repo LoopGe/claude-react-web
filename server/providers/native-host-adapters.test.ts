@@ -137,6 +137,8 @@ describe('ConfigPort adapter mirrors the provider resolution', () => {
       nativePdfDocuments: false,
       nativeAutoCompactRatio: 0.5,
       nativeDefaultContextWindow: 1_000_000,
+      nativeDreamAfterMs: 86400000,
+      nativeDreamSessionCount: 5,
       modelList: ['injected-model'],
       hasProfiles,
       smallFastModel: '',
@@ -177,6 +179,8 @@ describe('ConfigPort adapter cache + live-view semantics', () => {
       nativePdfDocuments: false,
       nativeAutoCompactRatio: 0.5,
       nativeDefaultContextWindow: 256_000,
+      nativeDreamAfterMs: 3_600_000,
+      nativeDreamSessionCount: 2,
       modelList: ['reloaded-model'],
       profiles: [],
     })
@@ -184,6 +188,8 @@ describe('ConfigPort adapter cache + live-view semantics', () => {
     expect(ports.config.nativePdfDocuments).toBe(false)
     expect(ports.config.nativeAutoCompactRatio).toBe(0.5)
     expect(ports.config.nativeDefaultContextWindow).toBe(256_000)
+    expect(ports.config.nativeDreamAfterMs).toBe(3_600_000)
+    expect(ports.config.nativeDreamSessionCount).toBe(2)
     expect(ports.config.modelList).toEqual(['reloaded-model'])
     expect(ports.config.hasProfiles).toBe(false)
     __setConfigForTest({
@@ -191,6 +197,8 @@ describe('ConfigPort adapter cache + live-view semantics', () => {
       nativePdfDocuments: true,
       nativeAutoCompactRatio: 0.9,
       nativeDefaultContextWindow: 1_000_000,
+      nativeDreamAfterMs: 86400000,
+      nativeDreamSessionCount: 5,
       profiles: [profileOf('reloaded')],
       activeProfileId: 'reloaded',
     })
@@ -198,6 +206,8 @@ describe('ConfigPort adapter cache + live-view semantics', () => {
     expect(ports.config.nativePdfDocuments).toBe(true)
     expect(ports.config.nativeAutoCompactRatio).toBe(0.9)
     expect(ports.config.nativeDefaultContextWindow).toBe(1_000_000)
+    expect(ports.config.nativeDreamAfterMs).toBe(86400000)
+    expect(ports.config.nativeDreamSessionCount).toBe(5)
     expect(ports.config.hasProfiles).toBe(true)
     expect(ports.config.activeProfile().id).toBe('reloaded')
   })
@@ -241,6 +251,8 @@ describe('host adapters aggregate', () => {
     expect(await ports.autoMemory.readDreamState()).toEqual({})
     expect(await ports.autoMemory.claimDream('key')).toBe(false)
     await ports.autoMemory.releaseDream('key', 1)
+    // The stub's dream no-ops never touch the state file either.
+    expect(existsSync(join(dir, 'native-memory', 'dream-state.json'))).toBe(false)
     const roots = await ports.autoMemory.resolve('D:\\codes\\repo')
     expect(roots.ownDir).toBe(join(dir, 'native-memory', 'D--codes-repo'))
     expect(roots.claudeDir).toBeNull()

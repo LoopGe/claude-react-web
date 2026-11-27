@@ -31,6 +31,12 @@ export interface NativeConfigPort {
   /** Fallback context window for routes with no override and no successful
    *  discovery — see ConfigFile.nativeDefaultContextWindow. */
   readonly nativeDefaultContextWindow: number
+  /** Minimum ms since a cwd's last dream consolidation before another may
+   *  fire — see ConfigFile.nativeDreamAfterMs. */
+  readonly nativeDreamAfterMs: number
+  /** Minimum same-cwd native sessions touched since the last dream — see
+   *  ConfigFile.nativeDreamSessionCount. */
+  readonly nativeDreamSessionCount: number
   readonly modelList: readonly string[]
   readonly hasProfiles: boolean
   /** Small-fast model for the prompt/agent hook evaluators (the CLI's

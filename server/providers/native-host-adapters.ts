@@ -69,6 +69,8 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
     get nativePdfDocuments() { return config.nativePdfDocuments },
     get nativeAutoCompactRatio() { return config.nativeAutoCompactRatio },
     get nativeDefaultContextWindow() { return config.nativeDefaultContextWindow },
+    get nativeDreamAfterMs() { return config.nativeDreamAfterMs },
+    get nativeDreamSessionCount() { return config.nativeDreamSessionCount },
     get modelList() { return config.modelList },
     get hasProfiles() { return config.profiles.length > 0 },
     get smallFastModel() { return config.smallFastModel },

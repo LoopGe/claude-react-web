@@ -20,6 +20,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { claudeConfigDir } from '../claude-config-dir.js'
 import { HttpError } from '../errors.js'
+import { writeAtomic } from '../json-file-store.js'
 import { createLogger } from '../log.js'
 import { listNativeResumableRows } from './native-resumable-listing.js'
 import { nativeSessionLogPath } from './native/session-log/paths.js'
@@ -239,6 +240,46 @@ async function collectCandidates(root: string, current: string, out: MemoryCandi
  *  resolution, read per call so a runtime CLAUDE_CONFIG_DIR change is picked up. */
 export function createAutoMemoryPort(deps: { stateDir: string; configDir?: string }): NativeAutoMemoryPort {
   const { stateDir } = deps
+
+  // Dream consolidation state: one file beside the per-cwd memory roots,
+  // keyed by cwdKey (the claudeProjectSlug of the cwd). Only completion
+  // timestamps are durable — the running lease below is process-local.
+  const dreamStateFile = join(stateDir, 'native-memory', 'dream-state.json')
+  // Per-cwd single-flight lease. Claim never persists running state: a crash
+  // resets the lock and the next trigger window retries (spec §8 failure
+  // posture). Cross-cwd claims never block each other.
+  const dreamClaims = new Map<string, boolean>()
+  // Serialize the release read-modify-writes so concurrent cross-cwd dreams
+  // cannot clobber each other's entries (the configWriteQueue precedent).
+  // The chain swallows failures to stay alive; each caller still sees its
+  // own write's outcome.
+  let dreamWrite: Promise<void> = Promise.resolve()
+
+  async function readDreamState(): Promise<Record<string, { lastDreamAt: number }>> {
+    let raw: string
+    try {
+      raw = await readFile(dreamStateFile, 'utf8')
+    } catch (err) {
+      if (isAbsent(err)) return {}
+      throw err
+    }
+    // Corrupt or non-object state reads as absent with one warn (the
+    // terminal-store.load precedent): a bad file must not wedge the cwd's
+    // dream loop — the next release rewrites it.
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch (err) {
+      log.warn(`dream state corrupt, treating as absent: ${dreamStateFile}: ${errMessage(err)}`)
+      return {}
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      log.warn(`dream state is not an object, treating as absent: ${dreamStateFile}`)
+      return {}
+    }
+    return parsed as Record<string, { lastDreamAt: number }>
+  }
+
   return {
     async resolve(cwd: string, override?: string): Promise<{ ownDir: string; claudeDir: string | null }> {
       const configDir = deps.configDir ?? claudeConfigDir()
@@ -303,14 +344,29 @@ export function createAutoMemoryPort(deps: { stateDir: string; configDir?: strin
         .map((row) => ({ id: row.sessionId, logPath: nativeSessionLogPath(stateDir, row.sessionId) }))
     },
 
-    // Dream state file + per-cwd lease: implemented by the dream host task
-    // (docs/superpowers/plans/2026-11-27-native-auto-memory.md, Task 9).
-    async readDreamState(): Promise<Record<string, { lastDreamAt: number }>> {
-      return {}
+    readDreamState,
+
+    async claimDream(cwdKey: string): Promise<boolean> {
+      if (dreamClaims.has(cwdKey)) return false
+      dreamClaims.set(cwdKey, true)
+      return true
     },
-    async claimDream(): Promise<boolean> {
-      return false
+
+    async releaseDream(cwdKey: string, lastDreamAt: number): Promise<void> {
+      const write = dreamWrite.then(async () => {
+        const state = await readDreamState()
+        state[cwdKey] = { lastDreamAt }
+        await writeAtomic(dirname(dreamStateFile), dreamStateFile, state)
+      })
+      dreamWrite = write.catch(() => {})
+      try {
+        await write
+      } finally {
+        // Free the lease even when persistence fails — the next trigger
+        // window retries (spec §8); the write error still surfaces to the
+        // caller, which logs it outside the user turn.
+        dreamClaims.delete(cwdKey)
+      }
     },
-    async releaseDream(): Promise<void> {},
   }
 }

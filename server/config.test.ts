@@ -348,6 +348,75 @@ describe('config', () => {
     expect(config.nativeDefaultContextWindow).toBe(1_000_000)
   })
 
+  it('exports sensible native dream defaults', async () => {
+    writeFileSync(join(dir, 'config.json'), '{}')
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.nativeDreamAfterMs).toBe(86400000)
+    expect(config.nativeDreamSessionCount).toBe(5)
+  })
+
+  it('loadConfig applies nativeDreamAfterMs and nativeDreamSessionCount', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativeDreamAfterMs: 3_600_000, nativeDreamSessionCount: 3 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.nativeDreamAfterMs).toBe(3_600_000)
+    expect(config.nativeDreamSessionCount).toBe(3)
+  })
+
+  it('loadConfig accepts zero nativeDreamAfterMs and rounds a fractional value', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativeDreamAfterMs: 0 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.nativeDreamAfterMs).toBe(0)
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativeDreamAfterMs: 1.5 }))
+    await loadConfig(dir)
+    expect(config.nativeDreamAfterMs).toBe(2)
+  })
+
+  it.each([
+    ['negative', -1],
+    // JSON has no NaN/Infinity — JSON.stringify writes null, which is the
+    // shape a real config.json can actually carry for a corrupt value.
+    ['null', null],
+    ['string', '3600000'],
+  ])('loadConfig keeps the default dream window for an invalid nativeDreamAfterMs (%s)', async (_name, value) => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativeDreamAfterMs: value }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.nativeDreamAfterMs).toBe(86400000)
+  })
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['null', null],
+    ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
+  ])('loadConfig keeps the default dream count for an invalid nativeDreamSessionCount (%s)', async (_name, value) => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativeDreamSessionCount: value }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.nativeDreamSessionCount).toBe(5)
+  })
+
+  it('dream thresholds revert to defaults when the keys are removed', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativeDreamAfterMs: 1000, nativeDreamSessionCount: 2 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.nativeDreamAfterMs).toBe(1000)
+    expect(config.nativeDreamSessionCount).toBe(2)
+    writeFileSync(join(dir, 'config.json'), '{}')
+    await loadConfig(dir)
+    expect(config.nativeDreamAfterMs).toBe(86400000)
+    expect(config.nativeDreamSessionCount).toBe(5)
+  })
+
+  it('dream threshold keys are not client-writable', () => {
+    expect(WRITABLE_CONFIG_KEYS).not.toContain('nativeDreamAfterMs')
+    expect(WRITABLE_CONFIG_KEYS).not.toContain('nativeDreamSessionCount')
+  })
+
   it('loadConfig reverts maxGroupPanels to default when config.json sets it to 0', async () => {
     // Same revert-to-default semantics as modelList: an explicit zero
     // means "no override", which falls back to the hardcoded default
