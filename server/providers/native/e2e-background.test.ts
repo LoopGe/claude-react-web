@@ -231,10 +231,11 @@ describe('native background task acceptance through direct provider handles', ()
       expect(acknowledgements[0].is_error).toBe(false)
       expect(toolResultText(acknowledgements[0])).toContain('TaskOutput')
       await bash.release()
-      // The settle injects a <task-notification> continuation turn (CLI
-      // parity), so the parent result plus the continuation result both land.
+      // The task settles while round 2's TaskOutput blocks, so the completion
+      // notification injects MID-TURN at round 3's boundary (Task 10) — one
+      // turn whose last request carries the XML, not a separate idle continuation.
       await vi.waitFor(() => {
-        expect(topLevelResults(frames)).toHaveLength(2)
+        expect(topLevelResults(frames)).toHaveLength(1)
         expect(taskNotifications(frames, 'bash-detach')).toHaveLength(1)
       }, { timeout: 5000 })
 
@@ -247,7 +248,7 @@ describe('native background task acceptance through direct provider handles', ()
       expect(toolResultText(outputResults[0])).toContain(panel!.result!)
       expect(toolResultBlocks(frames, 'bash-detach')).toHaveLength(1)
       expectNotificationInjection(fx, frames)
-      expect(topLevelResults(frames)).toHaveLength(2)
+      expect(topLevelResults(frames)).toHaveLength(1)
       expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-BASH')
     } finally {
       await bash.release()
@@ -543,10 +544,10 @@ describe('native background task acceptance through direct provider handles', ()
       expect(taskNotifications(frames, 'model-bg-bash')).toHaveLength(0)
 
       await bash.release()
-      // The settle injects a <task-notification> continuation turn (CLI
-      // parity), so the parent result plus the continuation result both land.
+      // The task settles while round 2's TaskOutput blocks → the completion
+      // notification injects MID-TURN at round 3's boundary (Task 10): one turn.
       await vi.waitFor(() => {
-        expect(topLevelResults(frames)).toHaveLength(2)
+        expect(topLevelResults(frames)).toHaveLength(1)
         expect(taskNotifications(frames, 'model-bg-bash')).toHaveLength(1)
       }, { timeout: 5000 })
       const panel = liveSession(fx.sm, id).tasks.get('model-bg-bash')
@@ -558,7 +559,7 @@ describe('native background task acceptance through direct provider handles', ()
       expect(toolResultText(outputResults[0])).toContain(panel!.result!)
       expect(toolResultBlocks(frames, 'model-bg-bash')).toHaveLength(1)
       expectNotificationInjection(fx, frames)
-      expect(topLevelResults(frames)).toHaveLength(2)
+      expect(topLevelResults(frames)).toHaveLength(1)
       expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-MODEL-BG')
     } finally {
       await bash.release()
@@ -595,10 +596,11 @@ describe('native background task acceptance through direct provider handles', ()
         status: 'running',
         isBackgrounded: true,
       })
-      // The stopped settle injects a <task-notification> continuation turn
-      // (CLI parity), so the parent result plus the continuation result land.
+      // The TaskStop call settles the task MID-TURN (round 2), so the stopped
+      // notification injects at round 3's boundary (Task 10): one turn whose
+      // last request carries the XML, not a separate idle continuation.
       await vi.waitFor(() => {
-        expect(topLevelResults(frames)).toHaveLength(2)
+        expect(topLevelResults(frames)).toHaveLength(1)
         expect(taskNotifications(frames, 'model-task-stop')).toHaveLength(1)
       }, { timeout: 5000 })
       expect(taskNotifications(frames, 'model-task-stop')[0].status).toBe('stopped')
@@ -615,7 +617,7 @@ describe('native background task acceptance through direct provider handles', ()
       expect(toolResultBlocks(frames, 'model-task-stop')).toHaveLength(1)
       expect(toolResultText(toolResultBlocks(frames, 'model-task-stop')[0])).toContain('TaskOutput')
       expectNotificationInjection(fx, frames)
-      expect(topLevelResults(frames)).toHaveLength(2)
+      expect(topLevelResults(frames)).toHaveLength(1)
       expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-STOP')
     } finally {
       await bash.release()
@@ -757,12 +759,14 @@ describe('native background task acceptance through direct provider handles', ()
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ toolUseId: 'route-stop' }),
       })
-      const stopResponse = await app.request(`/sessions/${id}/tasks/route-stop/stop`, { method: 'POST' })
-      expect({
-        backgroundStatus: backgroundResponse.status,
-        stopStatus: stopResponse.status,
-      }).toEqual({ backgroundStatus: 200, stopStatus: 200 })
+      expect(backgroundResponse.status).toBe(200)
       expect(await backgroundResponse.json()).toEqual({ ok: true, backgrounded: true })
+      // Let the parent turn settle BEFORE stopping, so the stopped notification
+      // delivers as a deterministic idle continuation turn — otherwise the stop
+      // settle races the parent's last round boundary (mid-turn vs idle).
+      await vi.waitFor(() => expect(topLevelResults(frames)).toHaveLength(1), { timeout: 5000 })
+      const stopResponse = await app.request(`/sessions/${id}/tasks/route-stop/stop`, { method: 'POST' })
+      expect(stopResponse.status).toBe(200)
       expect(await stopResponse.json()).toEqual({ ok: true })
 
       // The stopped settle injects a <task-notification> continuation turn

@@ -2567,6 +2567,7 @@ export class NativeSession implements NativeSessionCore {
               system: turnSystem,
               fastModeState: () => (this.fastMode ? 'on' : 'off'),
               drainSupplement: () => this.injectSupplements(),
+              drainInjection: () => this.injectTaskNotifications(),
               onInitialMessagesOwned: () => { initialMessagesOwned = true },
               // T23 (RS §4.4): only a hook-rewake turn IS stop-hook feedback —
               // its first Stop dispatch carries stop_hook_active:true so a
@@ -3098,6 +3099,59 @@ export class NativeSession implements NativeSessionCore {
       this.onSupplementDelivered?.(entry.uuid, { ok: true, boundary: 'PreToolUse' })
     }
     return retained
+  }
+
+  /** The loop's per-round MID-TURN injection drain (Task 10): pull ONLY
+   *  task-notification injections (Monitor event batches + backgrounded-task
+   *  settles) queued since the previous round, persist each as a durable
+   *  `user/message` (the XML body, so resume/replay rebuilds the same
+   *  conversation), await the flush barrier, then emit the user injection
+   *  conversation frame — the host classifies it by content, folds it into
+   *  session.tasks and rings it. The loop appends the returned text to history
+   *  before building the next request.
+   *
+   *  Hook-rewake wakes are NEVER drained here: they stay idle-only (the pump's
+   *  wake branch), so a mid-turn rewake waits for the next idle window. The
+   *  queue is cleared only AFTER the flush succeeds — a rejected flush throws
+   *  out of the turn (settling it as an error) with the batch still pending, so
+   *  the idle wake branch delivers it next; it is never silently dropped.
+   *  Mirrors injectSupplements' durability discipline; the queue is mutated in
+   *  place (its reference is readonly). */
+  private async injectTaskNotifications(): Promise<Array<{ uuid: string; text: string }>> {
+    // A COPY of the task-notification items: they stay queued until durable.
+    const batch = this.systemInjections.filter(
+      (item): item is Extract<PendingInjection, { kind: 'task-notification' }> => item.kind === 'task-notification',
+    )
+    if (batch.length === 0) return []
+    const prepared = batch.map((item) => {
+      const text = taskNotificationXml(item.notification)
+      const feedback = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+      return { item, text, feedback }
+    })
+    for (const { feedback } of prepared) {
+      this.log.append({
+        type: 'user/message',
+        time: Date.now(),
+        parentToolUseId: null,
+        data: {
+          role: 'user',
+          id: feedback.id,
+          content: feedback.content,
+          source: { kind: 'user' },
+        },
+      })
+    }
+    await this.log.flush()
+    // An item a concurrent path removed meanwhile is no longer ours to deliver.
+    const retained = prepared.filter(({ item }) => this.systemInjections.includes(item))
+    for (const item of batch) {
+      const at = this.systemInjections.indexOf(item)
+      if (at >= 0) this.systemInjections.splice(at, 1)
+    }
+    for (const { feedback } of retained) {
+      this.output.push({ type: 'enveloped-conversation', frame: feedback, parentToolUseId: null })
+    }
+    return retained.map(({ feedback, text }) => ({ uuid: feedback.id, text }))
   }
 
   async backgroundTasks(toolUseId?: string): Promise<boolean> {

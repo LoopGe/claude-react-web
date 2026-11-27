@@ -117,6 +117,15 @@ export interface LoopDeps {
    *  — the loop neither wraps nor reports. Absent for the nested Agent runner
    *  (a subagent never consumes main-thread steering). */
   drainSupplement?: () => Promise<Array<{ uuid: string; text: string }>>
+  /** Mid-turn task-notification delivery: drain background-task / Monitor
+   *  injections queued since the previous round. Called at the TOP of every
+   *  iteration (before the API request), sibling to drainSupplement. Each
+   *  entry's `text` is the durable `<task-notification>` XML body, appended to
+   *  history verbatim. The session's drain owns persistence and the conversation
+   *  frame emission — the loop neither wraps nor reports. Hook-rewake wakes are
+   *  NEVER drained here (the session filters them out); they stay idle-only via
+   *  the pump's wake branch. Absent for the nested Agent runner. */
+  drainInjection?: () => Promise<Array<{ uuid: string; text: string }>>
   /** Called synchronously after the initial user message(s) join history.
    *  The session uses this to distinguish pre-run failures (where its catch
    *  must restore them) from failures after the loop took ownership. */
@@ -238,6 +247,18 @@ export async function runTurn(
     if (deps.drainSupplement) {
       const entries = await deps.drainSupplement()
       for (const entry of entries) {
+        history.push({ role: 'user', content: [{ type: 'text', text: entry.text }] })
+      }
+    }
+    // Mid-turn task-notification / Monitor delivery: anything queued since the
+    // previous round joins the conversation as a user message BEFORE this
+    // round's request is built (the same pre-request boundary as steering, so a
+    // long turn sees a Monitor event at its next round rather than waiting for
+    // the turn to settle). `entry.text` is the durable XML body — never re-wrap
+    // it. The session's drain filters out hook-rewake wakes (idle-only).
+    if (deps.drainInjection) {
+      const injections = await deps.drainInjection()
+      for (const entry of injections) {
         history.push({ role: 'user', content: [{ type: 'text', text: entry.text }] })
       }
     }
