@@ -1,9 +1,12 @@
-// Time picker for scheduled sends. Rendered as a fixed-position popover
-// anchored near the Composer's clock button (anchorRect = its bounding box).
-// Backdrop click / Escape close. Confirm passes an epoch-ms fireAt upward.
+// Time picker for scheduled sends. A fixed-position popover portalled to
+// <body> (root stacking context) and anchored under the send control
+// (anchorRect = its bounding box). Backdrop click / Escape close. Confirm
+// passes an epoch-ms fireAt upward.
 
-import { useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { FloatingSurfaceProvider, useFloatingSurface } from '../hooks/useFloatingSurface'
+import { markPortaledSurface } from '../theme'
 import { IconClock, IconX } from './icons/ToolIcons'
 
 const PRESET_REL = [
@@ -39,14 +42,23 @@ function futureFloor(ms: number, nowMs: number): number {
 
 interface Props {
   anchorRect: DOMRect
+  /** The panel that opened the picker. The portal below breaks DOM ancestry,
+   *  so its `data-panel-id` is stamped via `[data-portaled]` for the
+   *  container-loss compensations and same-panel click attribution. */
+  ownerPanel?: Element | null
   onPick: (fireAtMs: number) => void
   onClose: () => void
 }
 
-export function SchedulePicker({ anchorRect, onPick, onClose }: Props) {
+export function SchedulePicker({ anchorRect, ownerPanel, onPick, onClose }: Props) {
   const [nowMs] = useState(() => Date.now())
   const [custom, setCustom] = useState('')
   const rootRef = useRef<HTMLDivElement>(null)
+  // The portal loses DOM ancestry; stamp the owning panel for the
+  // [data-portaled] wallpaper/scrollbar/attribution compensations.
+  useLayoutEffect(() => {
+    if (rootRef.current !== null) markPortaledSurface(rootRef.current, ownerPanel ?? null)
+  }, [ownerPanel])
   const { surfaceId } = useFloatingSurface({
     kind: 'dialog',
     active: true,
@@ -71,10 +83,10 @@ export function SchedulePicker({ anchorRect, onPick, onClose }: Props) {
   const confirmDisabled = !validCustom
 
   const style = {
-    // Center the panel under the clock button, then clamp BOTH edges. The
-    // right clamp is the important one: the clock sits beside the send
-    // button (bottom-right), so on a narrow viewport the centered `left`
-    // would push the panel past the right edge.
+    // Center the panel under the send control, then clamp BOTH edges. The
+    // right clamp is the important one: the control sits at the bottom-right,
+    // so on a narrow viewport the centered `left` would push the panel past
+    // the right edge.
     left: Math.max(
       EDGE,
       Math.min(
@@ -87,48 +99,53 @@ export function SchedulePicker({ anchorRect, onPick, onClose }: Props) {
 
   return (
     <FloatingSurfaceProvider surfaceId={surfaceId}>
-      <div className="schedule-backdrop" data-testid="schedule-backdrop" onClick={onClose} />
-      <div ref={rootRef} className="schedule-picker" style={style} role="dialog" aria-label="Schedule send">
-        <div className="schedule-picker-head">
-          <IconClock size={14} aria-hidden />
-          <span>Schedule send</span>
-          <button type="button" className="schedule-picker-close" aria-label="Close" onClick={onClose}>
-            <IconX size={14} />
-          </button>
-        </div>
-        <div className="schedule-picker-presets">
-          {presets.map((p) => (
-            <button
-              key={p.label}
-              type="button"
-              className="schedule-preset"
-              onClick={() => onPick(p.fireAt)}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-        <label className="schedule-custom">
-          <span>Custom time</span>
-          <input
-            type="datetime-local"
-            aria-label="Custom time"
-            value={custom}
-            onChange={(e) => setCustom(e.target.value)}
-          />
-        </label>
-        <div className="schedule-picker-actions">
-          <button type="button" className="btn" onClick={onClose}>Cancel</button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={confirmDisabled}
-            onClick={() => validCustom && onPick(customMs)}
-          >
-            Schedule send
-          </button>
-        </div>
-      </div>
+      {createPortal(
+        <>
+          <div className="schedule-backdrop" data-testid="schedule-backdrop" onClick={onClose} />
+          <div ref={rootRef} className="schedule-picker" style={style} role="dialog" aria-label="Schedule send">
+            <div className="schedule-picker-head">
+              <IconClock size={14} aria-hidden />
+              <span>Schedule send</span>
+              <button type="button" className="schedule-picker-close" aria-label="Close" onClick={onClose}>
+                <IconX size={14} />
+              </button>
+            </div>
+            <div className="schedule-picker-presets">
+              {presets.map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  className="schedule-preset"
+                  onClick={() => onPick(p.fireAt)}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <label className="schedule-custom">
+              <span>Custom time</span>
+              <input
+                type="datetime-local"
+                aria-label="Custom time"
+                value={custom}
+                onChange={(e) => setCustom(e.target.value)}
+              />
+            </label>
+            <div className="schedule-picker-actions">
+              <button type="button" className="btn" onClick={onClose}>Cancel</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={confirmDisabled}
+                onClick={() => validCustom && onPick(customMs)}
+              >
+                Schedule send
+              </button>
+            </div>
+          </div>
+        </>,
+        document.body,
+      )}
     </FloatingSurfaceProvider>
   )
 }

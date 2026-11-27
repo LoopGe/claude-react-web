@@ -45,6 +45,28 @@ describe('SchedulePicker', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
+  it('portals the panel and backdrop to the document body', () => {
+    // The picker lives inside a per-panel stacking context (.chat-bottom-stack
+    // z-index: 2); a fixed popover there cannot paint above an adjacent panel.
+    // Portalling to body puts it in the root stacking context.
+    const { container } = render(<SchedulePicker anchorRect={rect} onPick={() => {}} onClose={() => {}} />)
+    const panel = screen.getByRole('dialog', { name: 'Schedule send' })
+    const backdrop = screen.getByTestId('schedule-backdrop')
+    expect(container.contains(panel)).toBe(false)
+    expect(container.contains(backdrop)).toBe(false)
+    expect(panel.parentElement).toBe(document.body)
+    expect(panel.hasAttribute('data-portaled')).toBe(true)
+  })
+
+  it('stamps the portalled panel with the owning panel id', () => {
+    const owner = document.createElement('div')
+    owner.setAttribute('data-panel-id', 'panel-1')
+    render(
+      <SchedulePicker anchorRect={rect} ownerPanel={owner} onPick={() => {}} onClose={() => {}} />,
+    )
+    expect(screen.getByRole('dialog', { name: 'Schedule send' }).getAttribute('data-portaled')).toBe('panel-1')
+  })
+
   it('closes before its parent dialog on nested Escape', () => {
     const onParentClose = vi.fn()
     const onChildClose = vi.fn()
