@@ -76,9 +76,36 @@ describe('NativeModelContextResolver', () => {
       contextWindow: DEFAULT_CONTEXT_WINDOW,
       source: 'fallback',
     })
-    expect(DEFAULT_CONTEXT_WINDOW).toBe(200_000)
+    expect(DEFAULT_CONTEXT_WINDOW).toBe(1_000_000)
     expect(retrieve).not.toHaveBeenCalled()
     expect(route.credentials).not.toHaveBeenCalled()
+  })
+
+  it('uses the configured fallback window and reads it live on every fallback', async () => {
+    let configured = 256_000
+    const resolver = new NativeModelContextResolver({
+      discovery: { retrieve: vi.fn(async () => undefined) },
+      defaultContextWindow: () => configured,
+    })
+    const route = makeRoute()
+
+    await expect(resolver.resolve(route)).resolves.toEqual({ contextWindow: 256_000, source: 'fallback' })
+    // A config reload changes the getter's answer; the very next fallback
+    // (served from the failure cooldown) observes it without a new resolver.
+    configured = 512_000
+    await expect(resolver.resolve(route)).resolves.toEqual({ contextWindow: 512_000, source: 'fallback' })
+  })
+
+  it('an invalid configured fallback window keeps the module default', async () => {
+    const resolver = new NativeModelContextResolver({
+      discovery: { retrieve: vi.fn(async () => undefined) },
+      defaultContextWindow: () => 0,
+    })
+
+    await expect(resolver.resolve(makeRoute())).resolves.toEqual({
+      contextWindow: DEFAULT_CONTEXT_WINDOW,
+      source: 'fallback',
+    })
   })
 
   it('returns a reliable endpoint value unchanged', async () => {
@@ -195,9 +222,9 @@ describe('NativeModelContextResolver', () => {
     const resolver = new NativeModelContextResolver({ discovery: { retrieve }, now: () => now })
     const route = makeRoute()
 
-    await expect(resolver.resolve(route)).resolves.toEqual({ contextWindow: 200_000, source: 'fallback' })
+    await expect(resolver.resolve(route)).resolves.toEqual({ contextWindow: DEFAULT_CONTEXT_WINDOW, source: 'fallback' })
     now = 29_999
-    await expect(resolver.resolve(route)).resolves.toEqual({ contextWindow: 200_000, source: 'fallback' })
+    await expect(resolver.resolve(route)).resolves.toEqual({ contextWindow: DEFAULT_CONTEXT_WINDOW, source: 'fallback' })
     expect(retrieve).toHaveBeenCalledTimes(1)
 
     now = 30_000
@@ -218,7 +245,7 @@ describe('NativeModelContextResolver', () => {
     })
 
     await expect(resolver.resolve(makeRoute())).resolves.toEqual({
-      contextWindow: 200_000,
+      contextWindow: DEFAULT_CONTEXT_WINDOW,
       source: 'fallback',
     })
   })
@@ -229,7 +256,7 @@ describe('NativeModelContextResolver', () => {
     })
 
     await expect(resolver.resolve(makeRoute())).resolves.toEqual({
-      contextWindow: 200_000,
+      contextWindow: DEFAULT_CONTEXT_WINDOW,
       source: 'fallback',
     })
   })

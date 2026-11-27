@@ -6307,6 +6307,53 @@ describe('SessionManager', () => {
     sub.unsubscribe()
   })
 
+  it('a zero-total seed answer paints the window so the FIRST turn refreshes mid-turn (native)', async () => {
+    // Native's getContextUsage totalTokens comes from lastUsage, which is
+    // turn-end accounting — before the first turn it is always 0. The seed
+    // must still paint the resolved window: the pump's mid-turn assistant
+    // derivation needs a cached denominator, and without one a fresh native
+    // session's bar stayed empty until its first turn-end reconcile probe.
+    const info = await sm.create({})
+    await settleSpawnProbe(info.id)
+    const sub = sm.subscribeContextUsage(info.id)!
+    const it = sub.iterable[Symbol.asyncIterator]()
+    mockHandles[0].getContextUsage.mockClear()
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 0,
+      maxTokens: 1000000,
+      model: 'vendor/model',
+      autoCompactThreshold: 900000,
+    })
+    emitInit(info.id)
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id) === null; i++) await tick()
+    const seeded = sm.getCachedContextUsage(info.id)
+    expect(seeded!.totalTokens).toBe(0)
+    expect(seeded!.maxTokens).toBe(1000000)
+    expect(seeded!.autoCompactThreshold).toBe(900000)
+    const pushed = (await it.next()).value as { totalTokens?: number }
+    expect(pushed.totalTokens).toBe(0)
+
+    // The first turn's opening assistant frame now refreshes the bar instead
+    // of being refused for lack of a cached window.
+    mockHandles[0].emit({
+      type: 'assistant',
+      session_id: info.id,
+      uuid: 'a-1',
+      parent_tool_use_id: null,
+      message: {
+        role: 'assistant',
+        model: 'vendor/model',
+        content: [{ type: 'text', text: 'hi' }],
+        usage: { input_tokens: 100, cache_read_input_tokens: 5000, output_tokens: 20 },
+      },
+    })
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens === 0; i++) await tick()
+    const refreshed = sm.getCachedContextUsage(info.id)
+    expect(refreshed!.totalTokens).toBe(5100)
+    expect(refreshed!.source).toBe('assistant')
+    sub.unsubscribe()
+  })
+
   it('a garbage seed answer leaves the cache empty and the session unharmed', async () => {
     const info = await sm.create({})
     await settleSpawnProbe(info.id)

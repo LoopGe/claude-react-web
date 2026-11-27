@@ -25,6 +25,9 @@ export interface NativeConfigPort {
   readonly nativeAttachmentFidelity: boolean
   readonly nativePdfDocuments: boolean
   readonly nativeAutoCompactRatio: number
+  /** Fallback context window for routes with no override and no successful
+   *  discovery — see ConfigFile.nativeDefaultContextWindow. */
+  readonly nativeDefaultContextWindow: number
   readonly modelList: readonly string[]
   readonly hasProfiles: boolean
   /** Small-fast model for the prompt/agent hook evaluators (the CLI's

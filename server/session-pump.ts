@@ -2595,11 +2595,23 @@ export function applyContextUsage(session: Session, usage: LiteContextUsage): vo
  *  the carried window would both admit false-low readings and reject true
  *  over-window ones), or no model to attribute the reading to when no last
  *  snapshot exists — callers keep the derived snapshot, exactly as before.
+ *  The zero-total refusal has ONE exception: `opts.allowZeroTotal` (the
+ *  zero-turn SEED path only) accepts an EXACT zero total, because the cache
+ *  is empty by definition there — nothing to clobber — and the painted window
+ *  is what lets the mid-turn assistant derivation run before the first turn
+ *  ends (native's getContextUsage total is turn-end accounting, 0 pre-turn).
  *  @internal — exported for the SessionManager's reconcile probe and unit
  *              tests. */
 export function liteContextUsageFromSdkUsage(
   raw: unknown,
   last?: LiteContextUsage,
+  opts?: {
+    /** Accept an exact-zero totalTokens as a real pre-turn reading (seed
+     *  only). A fraction rounding to zero stays refused, and the reconcile
+     *  path never sets this — a mid-turn zero there would drag a healthy bar
+     *  down, which is the clobber the zero guard exists to prevent. */
+    allowZeroTotal?: boolean
+  },
 ): LiteContextUsage | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as {
@@ -2613,13 +2625,14 @@ export function liteContextUsageFromSdkUsage(
     isAutoCompactEnabled?: unknown
     apiUsage?: unknown
   }
-  if (typeof r.totalTokens !== 'number' || !Number.isFinite(r.totalTokens) || r.totalTokens <= 0) return null
+  if (typeof r.totalTokens !== 'number' || !Number.isFinite(r.totalTokens) || r.totalTokens < 0) return null
   if (typeof r.maxTokens !== 'number' || !Number.isFinite(r.maxTokens) || r.maxTokens <= 0) return null
   const totalTokens = Math.round(r.totalTokens)
   // A fractional total in (0, 0.5) passes the raw guard but rounds to 0 —
   // that would land a "0 / N · 0.0%" snapshot, the exact clobber shape Guard
-  // 2 prevents on the result path.
-  if (totalTokens <= 0) return null
+  // 2 prevents on the result path. An EXACT zero is a real pre-turn reading
+  // when the seed path opts in (see opts.allowZeroTotal).
+  if (totalTokens <= 0 && !(opts?.allowZeroTotal && r.totalTokens === 0)) return null
   const responseMax = Math.round(r.maxTokens)
   if (totalTokens > responseMax) return null
   const model = typeof r.model === 'string' && r.model.length > 0 ? r.model : last?.model

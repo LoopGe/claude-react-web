@@ -96,7 +96,7 @@ import {
   PreparedPdfStore,
   type PdfBudgetReservation,
 } from './pdf-documents.js'
-import { DEFAULT_CONTEXT_WINDOW, type NativeModelContextResolver } from './model-context.js'
+import { type NativeModelContextResolver } from './model-context.js'
 import {
   SUGGESTION_MAX_TOKENS,
   SUGGESTION_PROMPT,
@@ -3146,7 +3146,7 @@ export class NativeSession implements NativeSessionCore {
             api: 'anthropic-messages',
             credentials: this.opts.credentials,
           })).contextWindow
-        : DEFAULT_CONTEXT_WINDOW
+        : this.opts.ports.config.nativeDefaultContextWindow
       if (generation !== this.modelGeneration) continue
       // Refresh the skill-listing cap from the resolved window. The manager
       // fires this probe after every turn, so a model down-switch shrinks the

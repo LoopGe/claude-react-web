@@ -59,6 +59,7 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
     get nativeAttachmentFidelity() { return config.nativeAttachmentFidelity },
     get nativePdfDocuments() { return config.nativePdfDocuments },
     get nativeAutoCompactRatio() { return config.nativeAutoCompactRatio },
+    get nativeDefaultContextWindow() { return config.nativeDefaultContextWindow },
     get modelList() { return config.modelList },
     get hasProfiles() { return config.profiles.length > 0 },
     get smallFastModel() { return config.smallFastModel },

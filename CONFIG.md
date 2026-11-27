@@ -281,7 +281,7 @@ Read at trigger time, so a restart is not required.
 |         |          |
 | ------- | -------- |
 | Type    | `number` |
-| Default | `0.8`    |
+| Default | `0.9`    |
 
 Fraction used by the native provider's default auto-compact threshold. Native reserves its request output cap and returns `min(floor(maxTokens × ratio), maxTokens - 16384)`; when no positive proactive threshold is viable it returns `autoCompactThreshold: 0` and skips proactive compaction.
 
@@ -289,11 +289,32 @@ An explicit session `autoCompactWindow` wins over the provider threshold. The di
 
 ```json
 {
-  "nativeAutoCompactRatio": 0.8
+  "nativeAutoCompactRatio": 0.9
 }
 ```
 
-Must be greater than `0`; values above `1` are clamped to `1`. A value of `0` (or any non-positive number) is ignored and the default `0.8` applies.
+Must be greater than `0`; values above `1` are clamped to `1`. A value of `0` (or any non-positive number) is ignored and the default `0.9` applies.
+
+---
+
+### `nativeDefaultContextWindow`
+
+|         |           |
+| ------- | --------- |
+| Type    | `number`  |
+| Default | `1000000` |
+
+Context window (tokens) the **native provider** assumes when a model route has neither a `profiles[].modelContextWindows` override nor a successful endpoint discovery (`GET {baseUrl}/v1/models/{model}` → `max_input_tokens`). Gateways that do not implement the Models API — so every route falls back — are the main case: set this to the capacity your gateway actually serves. A guess by construction, which is why it is a config field rather than a buried constant; per-model `modelContextWindows` overrides remain the precise escape hatch.
+
+```json
+{
+  "nativeDefaultContextWindow": 1000000
+}
+```
+
+Must be a positive safe integer; anything else is ignored and the default applies. Read live (config reload-safe). The `claude` provider resolves capacity through the CLI and does not read this field.
+
+The fallback is an over-estimate for routes that are genuinely smaller AND fail discovery (a gateway without the Models API, or a transient discovery timeout): proactive compaction is skipped until the API rejects an over-window request. Set this to the capacity your gateway actually serves, and use per-model `modelContextWindows` overrides for mixed-capacity deployments.
 
 ---
 

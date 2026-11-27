@@ -7741,7 +7741,13 @@ export class SessionManager {
       label: 'context-usage seed probe',
       onResolved: (raw) => {
         if (s.lastContextUsage || s.lastTurnAt !== lastTurnAtFire) return
-        const seeded = liteContextUsageFromSdkUsage(raw)
+        // allowZeroTotal: native's pre-turn answer is an exact zero (its
+        // lastUsage is turn-end accounting). The cache is empty here by
+        // definition, so painting 0 / window is safe — and the window is
+        // what the pump's mid-turn assistant derivation divides against,
+        // so the FIRST turn refreshes per round instead of staying empty
+        // until the turn-end reconcile probe.
+        const seeded = liteContextUsageFromSdkUsage(raw, undefined, { allowZeroTotal: true })
         if (seeded) applyContextUsage(s, seeded)
         this.foldSdkAutoCompactFacts(s, raw)
       },

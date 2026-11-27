@@ -131,6 +131,7 @@ describe('ConfigPort adapter mirrors the provider resolution', () => {
       nativeAttachmentFidelity: false,
       nativePdfDocuments: false,
       nativeAutoCompactRatio: 0.5,
+      nativeDefaultContextWindow: 1_000_000,
       modelList: ['injected-model'],
       hasProfiles,
       smallFastModel: '',
@@ -170,24 +171,28 @@ describe('ConfigPort adapter cache + live-view semantics', () => {
       nativeAttachmentFidelity: false,
       nativePdfDocuments: false,
       nativeAutoCompactRatio: 0.5,
+      nativeDefaultContextWindow: 256_000,
       modelList: ['reloaded-model'],
       profiles: [],
     })
     expect(ports.config.nativeAttachmentFidelity).toBe(false)
     expect(ports.config.nativePdfDocuments).toBe(false)
     expect(ports.config.nativeAutoCompactRatio).toBe(0.5)
+    expect(ports.config.nativeDefaultContextWindow).toBe(256_000)
     expect(ports.config.modelList).toEqual(['reloaded-model'])
     expect(ports.config.hasProfiles).toBe(false)
     __setConfigForTest({
       nativeAttachmentFidelity: true,
       nativePdfDocuments: true,
       nativeAutoCompactRatio: 0.9,
+      nativeDefaultContextWindow: 1_000_000,
       profiles: [profileOf('reloaded')],
       activeProfileId: 'reloaded',
     })
     expect(ports.config.nativeAttachmentFidelity).toBe(true)
     expect(ports.config.nativePdfDocuments).toBe(true)
     expect(ports.config.nativeAutoCompactRatio).toBe(0.9)
+    expect(ports.config.nativeDefaultContextWindow).toBe(1_000_000)
     expect(ports.config.hasProfiles).toBe(true)
     expect(ports.config.activeProfile().id).toBe('reloaded')
   })

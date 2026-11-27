@@ -1,7 +1,7 @@
 import type { ProviderProfile } from '../../../shared/profile.js'
 import { AnthropicModelDiscovery } from './model-discovery.js'
 
-export const DEFAULT_CONTEXT_WINDOW = 200_000
+export const DEFAULT_CONTEXT_WINDOW = 1_000_000
 
 const SUCCESS_TTL_MS = 5 * 60_000
 const FAILURE_COOLDOWN_MS = 30_000
@@ -35,18 +35,30 @@ function isContextWindow(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0
 }
 
-function fallback(): NativeModelContext {
-  return { contextWindow: DEFAULT_CONTEXT_WINDOW, source: 'fallback' }
-}
-
 export class NativeModelContextResolver {
   private readonly discovery: NativeModelDiscovery
   private readonly now: () => number
+  private readonly defaultContextWindow: () => number
   private readonly profiles = new WeakMap<ProviderProfile, Map<string, CacheEntry>>()
 
-  constructor(opts: { discovery?: NativeModelDiscovery; now?: () => number } = {}) {
+  constructor(opts: {
+    discovery?: NativeModelDiscovery
+    now?: () => number
+    /** Live getter for the fallback window (config reload-safe, like the
+     *  host config port). Absent = DEFAULT_CONTEXT_WINDOW. */
+    defaultContextWindow?: () => number
+  } = {}) {
     this.discovery = opts.discovery ?? new AnthropicModelDiscovery()
     this.now = opts.now ?? Date.now
+    this.defaultContextWindow = opts.defaultContextWindow ?? (() => DEFAULT_CONTEXT_WINDOW)
+  }
+
+  private fallback(): NativeModelContext {
+    const value = this.defaultContextWindow()
+    return {
+      contextWindow: isContextWindow(value) ? value : DEFAULT_CONTEXT_WINDOW,
+      source: 'fallback',
+    }
   }
 
   async resolve(route: NativeModelRoute): Promise<NativeModelContext> {
@@ -54,7 +66,7 @@ export class NativeModelContextResolver {
     if (override !== undefined && isContextWindow(override)) {
       return { contextWindow: override, source: 'override' }
     }
-    if (route.api !== 'anthropic-messages') return fallback()
+    if (route.api !== 'anthropic-messages') return this.fallback()
 
     let entries = this.profiles.get(route.profile)
     if (!entries) {
@@ -77,10 +89,10 @@ export class NativeModelContextResolver {
       return { contextWindow: entry.lastGood, source: 'endpoint' }
     }
 
-    if (now < entry.nextRetryAt) return fallback()
+    if (now < entry.nextRetryAt) return this.fallback()
     const value = await (entry.inFlight ?? this.startQuery(route, entry))
     return value === undefined
-      ? fallback()
+      ? this.fallback()
       : { contextWindow: value, source: 'endpoint' }
   }
 

@@ -877,10 +877,10 @@ describe('NativeSession', () => {
     })
     const usage = (await session.getContextUsage?.()) as NativeContextUsage
     // Prompt tokens are input + cache (the scripted turn has input 10, no
-    // cache; output does not count). The default 200K window retains 160K.
+    // cache; output does not count). The default 1M window retains 900K.
     expect(usage.totalTokens).toBe(10)
-    expect(usage.maxTokens).toBe(200_000)
-    expect(usage.autoCompactThreshold).toBe(160_000)
+    expect(usage.maxTokens).toBe(1_000_000)
+    expect(usage.autoCompactThreshold).toBe(900_000)
     expect(typeof usage.model).toBe('string')
     await session.destroy()
   })
@@ -900,8 +900,8 @@ describe('NativeSession', () => {
       expect(usage.categories!.map((c) => c.name)).toEqual([
         'System prompt', 'System tools', 'Messages', 'Autocompact buffer', 'Free space',
       ])
-      expect(usage.categories!.find((c) => c.kind === 'buffer')!.tokens).toBe(40_000)
-      expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(60_000)
+      expect(usage.categories!.find((c) => c.kind === 'buffer')!.tokens).toBe(100_000) // 1M − 900K threshold
+      expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(800_000) // 1M − 100K used − 100K buffer
       const messages = used.find((c) => c.name === 'Messages')!
       const others = used.filter((c) => c.name !== 'Messages').reduce((s, c) => s + c.tokens, 0)
       expect(messages.tokens).toBe(100_000 - others)
@@ -1017,21 +1017,21 @@ describe('NativeSession', () => {
   })
 
   it('derives the threshold from min(window, pin) on a pinned session', async () => {
-    // Default 200K window, pin 150000 → effectiveWindow 150000.
+    // Default 1M window, pin 150000 → effectiveWindow 150000.
     const usage = await pinnedUsage(150_000)
-    expect(usage.maxTokens).toBe(200_000) // denominator stays the model window
-    expect(usage.autoCompactThreshold).toBe(120_000) // min(floor(150000×0.8)=120000, 150000−16384=133616)
+    expect(usage.maxTokens).toBe(1_000_000) // denominator stays the model window
+    expect(usage.autoCompactThreshold).toBe(133_616) // min(floor(150000×0.9)=135000, 150000−16384=133616)
   })
 
   it('leaves an unpinned session byte-identical', async () => {
     const usage = await pinnedUsage(undefined)
-    expect(usage.maxTokens).toBe(200_000)
-    expect(usage.autoCompactThreshold).toBe(160_000)
+    expect(usage.maxTokens).toBe(1_000_000)
+    expect(usage.autoCompactThreshold).toBe(900_000)
   })
 
   it('clamps a pin above the model window to a no-op', async () => {
-    const usage = await pinnedUsage(300_000) // ≥ 200K window
-    expect(usage.autoCompactThreshold).toBe(160_000)
+    const usage = await pinnedUsage(1_500_000) // ≥ 1M window
+    expect(usage.autoCompactThreshold).toBe(900_000)
   })
 
   it('disables compaction and omits the buffer row for a tiny pin', async () => {
@@ -1042,9 +1042,9 @@ describe('NativeSession', () => {
   })
 
   it('makes the composition buffer/free rows honest under a pin', async () => {
-    const usage = await pinnedUsage(150_000) // threshold 120000, totalTokens 100000
-    expect(usage.categories!.find((c) => c.kind === 'buffer')!.tokens).toBe(80_000) // 200000 − 120000
-    expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(20_000) // 200000 − 100000 − 80000
+    const usage = await pinnedUsage(150_000) // threshold 133616, totalTokens 100000
+    expect(usage.categories!.find((c) => c.kind === 'buffer')!.tokens).toBe(866_384) // 1000000 − 133616
+    expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(33_616) // 1000000 − 100000 − 866384
   })
 
   it('recomputes min(newWindow, pin) on a model down-switch', async () => {
@@ -1065,13 +1065,13 @@ describe('NativeSession', () => {
       session.enqueueUserMessage(userMsg('hi') as never)
       await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
       const before = (await session.getContextUsage?.()) as NativeContextUsage
-      expect(before.autoCompactThreshold).toBe(120_000)
+      expect(before.autoCompactThreshold).toBe(133_616)
       contextWindow = 100_000
       await session.setModel?.('model-small')
       const after = (await session.getContextUsage?.()) as NativeContextUsage
-      // effectiveWindow = min(100000, 150000) = 100000 → min(80000, 83616) = 80000.
+      // effectiveWindow = min(100000, 150000) = 100000 → min(90000, 83616) = 83616.
       expect(after.maxTokens).toBe(100_000)
-      expect(after.autoCompactThreshold).toBe(80_000)
+      expect(after.autoCompactThreshold).toBe(83_616)
     } finally {
       await session.destroy()
     }
@@ -1280,9 +1280,11 @@ describe('NativeSession', () => {
   })
 
   it.each([
-    { model: 'model-a', contextWindow: 1_000_000, autoCompactThreshold: 800_000 },
-    { model: 'model-b', contextWindow: 200_000, autoCompactThreshold: 160_000 },
-    { model: 'model-c', contextWindow: 128_000, autoCompactThreshold: 102_400 },
+    { model: 'model-a', contextWindow: 1_000_000, autoCompactThreshold: 900_000 },
+    { model: 'model-b', contextWindow: 200_000, autoCompactThreshold: 180_000 },
+    // 128K: floor(128000×0.9)=115200 exceeds the output reserve
+    // (128000−16384=111616), so the reserve clamps the threshold.
+    { model: 'model-c', contextWindow: 128_000, autoCompactThreshold: 111_616 },
     { model: 'model-d', contextWindow: 16_000, autoCompactThreshold: 0 },
   ])('uses the resolved $contextWindow-token window for $model', async ({ model, contextWindow, autoCompactThreshold }) => {
     const dir = await tempDir('native-context-window-')
@@ -1315,7 +1317,7 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
       resolution.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
       await expect(pending).resolves.toMatchObject({
-        totalTokens: 10, model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 800_000,
+        totalTokens: 10, model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 900_000,
       })
     } finally {
       resolution.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
@@ -1337,11 +1339,11 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1))
       await session.setModel?.('model-b')
       const second = (await session.getContextUsage?.()) as NativeContextUsage
-      expect(second).toMatchObject({ model: 'model-b', maxTokens: 128_000, autoCompactThreshold: 102_400 })
+      expect(second).toMatchObject({ model: 'model-b', maxTokens: 128_000, autoCompactThreshold: 111_616 })
 
       modelA.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
       await expect(first).resolves.toMatchObject({
-        model: 'model-b', maxTokens: 128_000, autoCompactThreshold: 102_400,
+        model: 'model-b', maxTokens: 128_000, autoCompactThreshold: 111_616,
       })
       expect(resolve.mock.calls.map(([route]) => route.model)).toEqual(['model-a', 'model-b', 'model-b'])
     } finally {
@@ -1393,7 +1395,7 @@ describe('NativeSession', () => {
     try {
       const before = structuredClone(legacyViewOf(logOf(restored)))
       const usage = (await restored.getContextUsage?.()) as NativeContextUsage
-      expect(usage).toMatchObject({ model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 800_000 })
+      expect(usage).toMatchObject({ model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 900_000 })
       expect(legacyViewOf(logOf(restored))).toEqual(before)
       expect(resolve).toHaveBeenCalledWith(expect.objectContaining({
         model: 'model-a', providerId: 'default', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages',
@@ -1438,7 +1440,7 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'context-discovery', cwd: dir, model: 'model-a' })
     try {
       const usage = (await session.getContextUsage?.()) as NativeContextUsage
-      expect(usage).toMatchObject({ model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 800_000 })
+      expect(usage).toMatchObject({ model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 900_000 })
       expect(discovery).toHaveBeenCalledTimes(1)
     } finally {
       await session.destroy()
@@ -1539,7 +1541,7 @@ describe('NativeSession', () => {
     if (late) (provider as unknown as { _testStream: unknown })._testStream = scripted
     try {
       const usage = (await session.getContextUsage?.()) as NativeContextUsage
-      expect(usage).toMatchObject({ maxTokens: 200_000, autoCompactThreshold: 160_000 })
+      expect(usage).toMatchObject({ maxTokens: 1_000_000, autoCompactThreshold: 900_000 })
       expect(discovery).not.toHaveBeenCalled()
     } finally {
       await session.destroy()

@@ -215,6 +215,7 @@ export class NativeProvider implements AgentProvider {
       discovery: {
         retrieve: async (route) => this._testStream ? undefined : discovery.retrieve(route),
       },
+      defaultContextWindow: () => this.ports.config.nativeDefaultContextWindow,
     })
     this.attachmentReferences = opts.uploadStore?.attachmentReferences
       ?? new NativeAttachmentReferenceIndex({ stateDir: this.stateDir })
