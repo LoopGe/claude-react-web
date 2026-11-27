@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, fireEvent, waitFor, screen } from '@testing-library/react'
 import { NewSessionDialog } from './NewSessionDialog'
 import type { NewSessionForm } from '../../types'
+import { fetchConfig, resetModelOptionsStoreForTest } from '../../state/modelOptionsStore'
 
 vi.mock('../../hooks/useApi', () => ({
   api: {
@@ -42,7 +43,7 @@ const agentDefs = [
 ]
 
 describe('NewSessionDialog custom agent', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
@@ -50,6 +51,10 @@ describe('NewSessionDialog custom agent', () => {
       if (url === '/agent-definitions') return Promise.resolve({ agents: agentDefs })
       return Promise.resolve({})
     })
+    // Warm the shared /config cache so the dialog's provider preselect
+    // resolves synchronously (App fetches /config on mount). {} → claude.
+    resetModelOptionsStoreForTest()
+    await fetchConfig()
   })
 
   it('renders an agent field picker with custom definitions and prefills model', async () => {

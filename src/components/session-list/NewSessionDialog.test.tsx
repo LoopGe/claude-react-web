@@ -3,6 +3,7 @@ import { render, fireEvent, waitFor, screen, act } from '@testing-library/react'
 import { NewSessionDialog } from './NewSessionDialog'
 import type { NewSessionForm } from '../../types'
 import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../../test/resize-observer-stub'
+import { fetchConfig, resetModelOptionsStoreForTest } from '../../state/modelOptionsStore'
 
 // Cleanup is registered globally in src/test-setup.ts — do not re-add a
 // per-file afterEach(cleanup) (CLAUDE.md).
@@ -43,8 +44,17 @@ const baseProps = {
   maxGroupSize: 10,
 }
 
+/** Warm the shared /config cache so the dialog's provider preselect resolves
+ *  synchronously — App fetches /config on mount before any dialog opens, so
+ *  this is the production-faithful fixture for form-behavior tests. The mock
+ *  answers /config with {} (no defaultProvider) → the claude fallback. */
+async function warmConfigCache() {
+  resetModelOptionsStoreForTest()
+  await fetchConfig()
+}
+
 describe('NewSessionDialog plugin picker', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url === '/mp/enabled-plugins') {
@@ -59,6 +69,7 @@ describe('NewSessionDialog plugin picker', () => {
       return Promise.resolve({})
     })
     ;(api.post as ReturnType<typeof vi.fn>).mockResolvedValue({ session: { id: 's1' } })
+    await warmConfigCache()
   })
 
   it('renders all enabled plugins pre-checked and omits enabledPlugins when all checked', async () => {
@@ -191,13 +202,14 @@ describe('NewSessionDialog plugin picker', () => {
 })
 
 describe('NewSessionDialog first-party tools picker', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
       if (url === '/mcp-config') return Promise.resolve({ servers: [] })
       return Promise.resolve({})
     })
+    await warmConfigCache()
   })
 
   // Both helpers take the element to search from — the dialog portals to
@@ -270,7 +282,7 @@ describe('NewSessionDialog first-party tools picker', () => {
 })
 
 describe('NewSessionDialog provider picker', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     window.localStorage.clear()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
@@ -282,6 +294,7 @@ describe('NewSessionDialog provider picker', () => {
       if (url === '/mcp-config') return Promise.resolve({ servers: [] })
       return Promise.resolve({})
     })
+    await warmConfigCache()
   })
   afterEach(() => window.localStorage.clear())
 
@@ -375,8 +388,137 @@ describe('NewSessionDialog provider picker', () => {
   })
 })
 
-describe('NewSessionDialog field pickers (model / permission mode / group)', () => {
+describe('NewSessionDialog effective-default preselect', () => {
+  const providerTrigger = () => screen.getByLabelText('Provider') as HTMLButtonElement
+  const createButton = () =>
+    Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Create',
+    ) as HTMLButtonElement
+  const providerRow = (label: string) =>
+    Array.from(document.querySelectorAll('.field-picker-item')).find(
+      (el) => el.querySelector('.field-picker-item-name')?.textContent === label,
+    )!
+
+  /** Answer /config with the given body; every other mount fetch stays empty. */
+  const mockConfig = (configBody: unknown) => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/config') return Promise.resolve(configBody)
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+  }
+
   beforeEach(() => {
+    vi.clearAllMocks()
+    resetModelOptionsStoreForTest()
+    mockConfig({ configured: true, defaults: {}, defaultProvider: 'native' })
+  })
+  afterEach(() => resetModelOptionsStoreForTest())
+
+  it('preselects the effective default (native when configured)', async () => {
+    const onSubmit = vi.fn()
+    render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(providerTrigger().textContent).toContain('Native in-process'))
+
+    fireEvent.click(createButton())
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    expect((onSubmit.mock.calls[0][0] as NewSessionForm).provider).toBe('native')
+  })
+
+  it('falls back to claude when the config has no defaultProvider (legacy server)', async () => {
+    mockConfig({ configured: true, defaults: {} })
+    const onSubmit = vi.fn()
+    render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(createButton().disabled).toBe(false))
+    expect(providerTrigger().textContent).toContain('Claude CLI')
+
+    fireEvent.click(createButton())
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    expect((onSubmit.mock.calls[0][0] as NewSessionForm).provider).toBe('claude')
+  })
+
+  it('gates Create until the effective default resolves', async () => {
+    let release!: (body: { defaultProvider: string }) => void
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/config') return new Promise((resolve) => { release = resolve })
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+    const onSubmit = vi.fn()
+    render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+
+    // Unresolved default: Create is disabled and a click cannot submit the
+    // placeholder provider.
+    expect(createButton().disabled).toBe(true)
+    fireEvent.click(createButton())
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    await act(async () => { release({ defaultProvider: 'native' }) })
+    await waitFor(() => expect(createButton().disabled).toBe(false))
+    expect(providerTrigger().textContent).toContain('Native in-process')
+
+    fireEvent.click(createButton())
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    expect((onSubmit.mock.calls[0][0] as NewSessionForm).provider).toBe('native')
+  })
+
+  it('a manual provider pick before resolve wins over the late default', async () => {
+    let release!: (body: { defaultProvider: string }) => void
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/config') return new Promise((resolve) => { release = resolve })
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+    const onSubmit = vi.fn()
+    render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+
+    // The user picks Claude while the config fetch is still in flight.
+    fireEvent.click(providerTrigger())
+    fireEvent.click(providerRow('Claude CLI'))
+
+    await act(async () => { release({ defaultProvider: 'native' }) })
+    await waitFor(() => expect(createButton().disabled).toBe(false))
+    // The late default must not clobber the deliberate pick.
+    expect(providerTrigger().textContent).toContain('Claude CLI')
+
+    fireEvent.click(createButton())
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    expect((onSubmit.mock.calls[0][0] as NewSessionForm).provider).toBe('claude')
+  })
+
+  it('falls back to claude and unlocks Create when the config fetch fails', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/config') return Promise.reject(new Error('config offline'))
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+    render(<NewSessionDialog {...baseProps} />)
+    await waitFor(() => expect(createButton().disabled).toBe(false))
+    expect(providerTrigger().textContent).toContain('Claude CLI')
+  })
+
+  it('seeds synchronously from a warm config cache (no loading gate)', async () => {
+    // App fetches /config on mount, so the cache is normally warm before the
+    // dialog opens — the preselect then lands in the first render, exactly
+    // like the other mount-seeded fields.
+    await fetchConfig()
+    const onSubmit = vi.fn()
+    render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    expect(providerTrigger().textContent).toContain('Native in-process')
+    expect(createButton().disabled).toBe(false)
+
+    fireEvent.click(createButton())
+    expect(onSubmit).toHaveBeenCalled()
+    expect((onSubmit.mock.calls[0][0] as NewSessionForm).provider).toBe('native')
+  })
+})
+
+describe('NewSessionDialog field pickers (model / permission mode / group)', () => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     window.localStorage.clear()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
@@ -384,6 +526,7 @@ describe('NewSessionDialog field pickers (model / permission mode / group)', () 
       if (url === '/mcp-config') return Promise.resolve({ servers: [] })
       return Promise.resolve({})
     })
+    await warmConfigCache()
   })
   afterEach(() => window.localStorage.clear())
 
@@ -861,7 +1004,7 @@ describe('NewSessionDialog field pickers (model / permission mode / group)', () 
 })
 
 describe('NewSessionDialog worktree isolation', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     window.localStorage.clear()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
@@ -869,6 +1012,7 @@ describe('NewSessionDialog worktree isolation', () => {
       if (url === '/mcp-config') return Promise.resolve({ servers: [] })
       return Promise.resolve({})
     })
+    await warmConfigCache()
   })
   afterEach(() => window.localStorage.clear())
 
@@ -910,7 +1054,7 @@ describe('NewSessionDialog worktree isolation', () => {
 })
 
 describe('NewSessionDialog project prefill', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     window.localStorage.clear()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
@@ -918,6 +1062,7 @@ describe('NewSessionDialog project prefill', () => {
       if (url === '/mcp-config') return Promise.resolve({ servers: [] })
       return Promise.resolve({})
     })
+    await warmConfigCache()
   })
   afterEach(() => window.localStorage.clear())
 
@@ -976,7 +1121,7 @@ describe('NewSessionDialog project prefill', () => {
 })
 
 describe('NewSessionDialog auto-compact window', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     window.localStorage.clear()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
@@ -984,6 +1129,7 @@ describe('NewSessionDialog auto-compact window', () => {
       if (url === '/mcp-config') return Promise.resolve({ servers: [] })
       return Promise.resolve({})
     })
+    await warmConfigCache()
   })
   afterEach(() => window.localStorage.clear())
 
@@ -1094,7 +1240,7 @@ describe('NewSessionDialog auto-compact window', () => {
 })
 
 describe('NewSessionDialog synchronous Create double-write', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     window.localStorage.clear()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
@@ -1102,6 +1248,7 @@ describe('NewSessionDialog synchronous Create double-write', () => {
       if (url === '/mcp-config') return Promise.resolve({ servers: [] })
       return Promise.resolve({})
     })
+    await warmConfigCache()
   })
   afterEach(() => window.localStorage.clear())
 

@@ -7,6 +7,7 @@ import type { FieldPickerOption } from '../FieldPicker'
 import { IconX, IconPencil } from '../icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from '../permission-mode-display'
 import { api } from '../../hooks/useApi'
+import { fetchConfig, peekConfig } from '../../state/modelOptionsStore'
 import { useRecentCwds, useRecentModels } from '../../hooks/useRecentItems'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import { parseTaskBudgetInput } from '../../../shared/session-info'
@@ -78,11 +79,38 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const [cwd, setCwd] = useState<string>(initialCwd ?? recentCwds[0] ?? defaults.cwd ?? '')
   // Opt-in worktree isolation — off by default; only sent when checked.
   const [isolate, setIsolate] = useState(false)
-  // Which agent runtime backs the session. `claude` (the CLI subprocess) is
-  // the historical default; `native` runs in-process. The draft name is the
-  // pre-create capability source (no SessionInfo exists yet): locked features
-  // gate on providerSupports below, not on a hardcoded provider check.
-  const [provider, setProvider] = useState('claude')
+  // Which agent runtime backs the session. Seeded from the server's effective
+  // default (GET /config `defaultProvider`: native when an API token is
+  // configured, else claude). A warm config cache — App fetches /config on
+  // mount — seeds synchronously; a cold cache resolves through the shared
+  // store fetch below, and Create stays disabled until it lands so a quick
+  // click cannot submit the placeholder. Legacy/missing field → claude. The
+  // draft name is the pre-create capability source (no SessionInfo exists
+  // yet): locked features gate on providerSupports below, not on a hardcoded
+  // provider check.
+  const [provider, setProvider] = useState(() => peekConfig()?.defaultProvider ?? 'claude')
+  const [providerResolved, setProviderResolved] = useState(() => peekConfig() != null)
+  // A manual pick while the cold fetch is in flight wins over the late
+  // default — same principle as the agent-prefill revert below.
+  const providerTouchedRef = useRef(false)
+  useEffect(() => {
+    if (providerResolved) return
+    let cancelled = false
+    fetchConfig()
+      .then((r) => {
+        if (cancelled) return
+        if (!providerTouchedRef.current) setProvider(r.defaultProvider ?? 'claude')
+        setProviderResolved(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        // Config unreachable: keep the historical default so the form stays
+        // usable (App's own mount fetch treats a failed /config the same way).
+        if (!providerTouchedRef.current) setProvider('claude')
+        setProviderResolved(true)
+      })
+    return () => { cancelled = true }
+  }, [providerResolved])
   // Show-but-locked plugin picker: native keeps the cluster visible with
   // disabled checkboxes + a RequiresCliNotice; switching the provider
   // selector re-renders and unlocks live.
@@ -415,18 +443,18 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       key: 'claude',
       label: PROVIDER_LABELS.claude,
       selected: provider === 'claude',
-      onSelect: () => setProvider('claude'),
+      onSelect: () => { providerTouchedRef.current = true; setProvider('claude') },
     },
     {
       key: 'native',
       label: PROVIDER_LABELS.native,
       selected: provider === 'native',
-      onSelect: () => setProvider('native'),
+      onSelect: () => { providerTouchedRef.current = true; setProvider('native') },
     },
   ]
 
   const submit = () => {
-    if (submitting) return
+    if (submitting || !providerResolved) return
     setSubmitting(true)
     rememberModel(model)
     rememberCwd(cwd)
@@ -1141,7 +1169,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
               <button className="btn" onClick={onCancel} disabled={submitting}>
                 Cancel
               </button>
-              <button className="btn btn-primary" onClick={submit} disabled={submitting}>
+              <button className="btn btn-primary" onClick={submit} disabled={submitting || !providerResolved}>
                 {submitting ? 'Creating…' : 'Create'}
               </button>
             </div>
