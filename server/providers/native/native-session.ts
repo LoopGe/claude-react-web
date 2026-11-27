@@ -46,7 +46,7 @@ import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
 import type { NativeHostPorts, NativeMemoryReadResult, PluginContributions } from './ports.js'
-import { joinPromptParts, renderMemorySection, renderEnvironment } from './prompt/overlay.js'
+import { joinPromptParts, renderMemorySection, renderAutoMemorySection, renderEnvironment } from './prompt/overlay.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel, type RequestOutputFormat, type StreamRequest } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, type FrameContext } from './vocabulary/frame-context.js'
@@ -714,6 +714,13 @@ export class NativeSession implements NativeSessionCore {
    *  the validated override); `claudeDir` the read-only CLI compat root when it
    *  exists. Stored for the session's live use (the prompt section / recall). */
   private resolvedMemoryRoots: { ownDir: string; claudeDir: string | null } | null = null
+  /** The session-level auto-memory index snapshot (spec §6): the validated
+   *  ownDir plus the MEMORY.md index text, loaded once at the spawn/settings
+   *  seed. The per-turn render reads THIS — never a fresh readIndex — so
+   *  directory CONTENT changes (model writes, dream) become visible next
+   *  session; only a memory-settings change reloads it. Null until the seed
+   *  settles. */
+  private autoMemorySnapshot: { ownDir: string; index: string | null } | null = null
   /** The auto-memory spawn/settings validation seed. The first turn awaits it
    *  BEFORE any tool dispatch (the sessionStartInit precedent): a rejected
    *  directory override fails every turn loudly with the port's HttpError until
@@ -1095,7 +1102,16 @@ export class NativeSession implements NativeSessionCore {
   private async seedAutoMemoryRoots(): Promise<void> {
     const override = this.memorySettings.autoMemoryDirectory
     const roots = await this.opts.ports.autoMemory.resolve(this.opts.cwd, override)
-    if (this.memorySettings.autoMemoryDirectory === override) this.resolvedMemoryRoots = roots
+    if (this.memorySettings.autoMemoryDirectory !== override) return
+    this.resolvedMemoryRoots = roots
+    // Load the session-level index snapshot once (spec §6). readIndex is bounded
+    // and never throws (the port returns null on an unreadable index). The guard
+    // is re-checked after the read so a settings change landing mid-read supersedes
+    // this snapshot — the settings path loads its own.
+    const index = await this.opts.ports.autoMemory.readIndex(roots.ownDir)
+    if (this.memorySettings.autoMemoryDirectory === override) {
+      this.autoMemorySnapshot = { ownDir: roots.ownDir, index }
+    }
   }
 
   private currentSkillView(): ReturnType<NativeSkillCatalog['view']> {
@@ -1481,6 +1497,15 @@ export class NativeSession implements NativeSessionCore {
    *  `claudeDir` the read-only CLI compat root when present. */
   get autoMemoryRoots(): { ownDir: string; claudeDir: string | null } | null {
     return this.resolvedMemoryRoots
+  }
+
+  /** The `# Memory` auto-memory section for the per-turn overlay, or '' when
+   *  disabled (`autoMemoryEnabled === false`; default on, CLI parity) or the
+   *  session-level snapshot has not settled. Reads the snapshot — never a fresh
+   *  index read (spec §6: content changes surface next session). */
+  private autoMemorySection(): string {
+    if (this.memorySettings.autoMemoryEnabled === false) return ''
+    return this.autoMemorySnapshot ? renderAutoMemorySection(this.autoMemorySnapshot) : ''
   }
 
   private requestPermission = async (
@@ -2158,6 +2183,7 @@ export class NativeSession implements NativeSessionCore {
       joinPromptParts(
         this.opts.subagentSystem ?? this.baseSystem,
         memory ? renderMemorySection(memory.files) : '',
+        this.autoMemorySection(),
         memory
           ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
           : '',
@@ -2643,6 +2669,7 @@ export class NativeSession implements NativeSessionCore {
                 ? `${this.baseSystem}\n\n${turnProfile.instruction}`
                 : this.baseSystem,
               renderMemorySection(memory.files),
+              this.autoMemorySection(),
               renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() }),
             ),
             skillView.section(),
@@ -3398,12 +3425,16 @@ export class NativeSession implements NativeSessionCore {
     // snapshot (read probe before the constructor seed lands) omits both.
     const memory = this.memorySnapshot
     const memorySection = memory ? renderMemorySection(memory.files) : ''
+    // The auto-memory section prices the same session-level snapshot the per-turn
+    // overlay renders (its own category, distinct from the instruction chain).
+    const autoMemorySection = this.autoMemorySection()
     const envSection = memory
       ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
       : ''
     const system = joinPromptParts(persona ? `${this.baseSystem}\n\n${persona}` : this.baseSystem, envSection)
     const systemTokens = estimateText(system) + ROLE_OVERHEAD
     const memoryTokens = memorySection ? estimateText(memorySection) + ROLE_OVERHEAD : 0
+    const autoMemoryTokens = autoMemorySection ? estimateText(autoMemorySection) + ROLE_OVERHEAD : 0
     const skillTokens = skillSection ? estimateText(skillSection) + ROLE_OVERHEAD : 0
     const builtinTools = this.tools.filter((t) => !this.mcpToolServers.has(t.name))
     const mcpTools = this.tools.filter((t) => this.mcpToolServers.has(t.name))
@@ -3411,7 +3442,7 @@ export class NativeSession implements NativeSessionCore {
     // Per-FQN prices computed ONCE, shared by the MCP row and the payload.
     const mcpPrices = new Map(mcpTools.map((t) => [t.name, estimateToolSchema(t)]))
     const mcpToolsTokens = [...mcpPrices.values()].reduce((s, n) => s + n, 0)
-    const estimated = systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens + memoryTokens
+    const estimated = systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens + memoryTokens + autoMemoryTokens
     const messagesTokens = totalTokens > 0
       ? Math.max(0, totalTokens - estimated)
       : this.history.reduce((s, m) => s + estimateMessage(m), 0)
@@ -3424,6 +3455,7 @@ export class NativeSession implements NativeSessionCore {
       ...(mcpToolsTokens > 0 ? [{ name: 'MCP tools', tokens: mcpToolsTokens, kind: 'used' as const }] : []),
       ...(skillTokens > 0 ? [{ name: 'Skills', tokens: skillTokens, kind: 'used' as const }] : []),
       ...(memoryTokens > 0 ? [{ name: 'Memory Files', tokens: memoryTokens, kind: 'used' as const }] : []),
+      ...(autoMemoryTokens > 0 ? [{ name: 'Memory', tokens: autoMemoryTokens, kind: 'used' as const }] : []),
       { name: 'Messages', tokens: messagesTokens, kind: 'used' },
       ...(bufferTokens > 0 ? [{ name: 'Autocompact buffer', tokens: bufferTokens, kind: 'buffer' as const }] : []),
       { name: 'Free space', tokens: freeTokens, kind: 'free' },
@@ -3766,7 +3798,8 @@ export class NativeSession implements NativeSessionCore {
    *  discovery commit; `autoMemoryEnabled` / `autoDreamEnabled` take a boolean
    *  or null (clear) and `autoMemoryDirectory` a string or null (clear back to
    *  the default root), the directory validated through the auto-memory port's
-   *  realpath resolve and the live roots/seed refreshed on change.
+   *  realpath resolve and the live roots/seed refreshed plus the session-level
+   *  index snapshot reloaded on change.
    *
    *  Every key and any incoming definition is validated BEFORE state changes.
    *  Agent/base snapshots take effect on the next turn; fast mode and skill
@@ -3908,6 +3941,25 @@ export class NativeSession implements NativeSessionCore {
       else this.memorySettings.autoMemoryDirectory = memoryDirectory
       this.resolvedMemoryRoots = nextMemoryRoots!
       this.memorySettingsSeed = Promise.resolve()
+    }
+    // Settings invalidation reloads the session-level index snapshot (spec §6):
+    // ANY memory-settings change re-reads MEMORY.md so the next turn renders
+    // fresh — a directory change (or re-set) picks up the new root's index, an
+    // enabled/dream toggle re-reads the current root. Directory CONTENT changes
+    // (model writes, dream) never reach here, so they stay visible only next
+    // session. A directory change stored the freshly resolved roots above; an
+    // enabled/dream-only change reuses the live roots (null until the spawn seed
+    // settles, which loads the snapshot itself). readIndex never throws (port
+    // contract); the reference guard discards a load a later settings change
+    // superseded mid-read (the seed's supersede model).
+    if (memoryEnabled !== undefined || dreamEnabled !== undefined || memoryDirectory !== undefined) {
+      const roots = this.resolvedMemoryRoots
+      if (roots) {
+        const index = await this.opts.ports.autoMemory.readIndex(roots.ownDir)
+        if (this.resolvedMemoryRoots === roots) {
+          this.autoMemorySnapshot = { ownDir: roots.ownDir, index }
+        }
+      }
     }
     // Replace (never merge): the flag source re-collects per dispatch, so the
     // next hook event observes exactly this config (RS §12.3).

@@ -903,8 +903,10 @@ describe('NativeSession', () => {
       const usage = (await session.getContextUsage?.()) as NativeContextUsage
       const used = usage.categories!.filter((c) => c.kind === 'used')
       expect(used.reduce((s, c) => s + c.tokens, 0)).toBe(100_000)
+      // The default-on auto-memory section (Task 5) prices a Memory row even
+      // with an empty index; the hermetic stub resolves a lexical ownDir.
       expect(usage.categories!.map((c) => c.name)).toEqual([
-        'System prompt', 'System tools', 'Messages', 'Autocompact buffer', 'Free space',
+        'System prompt', 'System tools', 'Memory', 'Messages', 'Autocompact buffer', 'Free space',
       ])
       expect(usage.categories!.find((c) => c.kind === 'buffer')!.tokens).toBe(100_000) // 1M − 900K threshold
       expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(800_000) // 1M − 100K used − 100K buffer
@@ -935,10 +937,11 @@ describe('NativeSession', () => {
       session.enqueueUserMessage(userMsg('hi') as never)
       await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
       const usage = (await session.getContextUsage?.()) as NativeContextUsage
-      // Bare fixture: no skills, no MCP — the memory row slots in after
-      // System tools (the Skills position) and before Messages.
+      // Bare fixture: no skills, no MCP — the instruction-chain Memory Files row
+      // slots in after System tools (the Skills position), then the default-on
+      // auto-memory Memory row (Task 5), then Messages.
       expect(usage.categories!.map((c) => c.name)).toEqual([
-        'System prompt', 'System tools', 'Memory Files', 'Messages', 'Autocompact buffer', 'Free space',
+        'System prompt', 'System tools', 'Memory Files', 'Memory', 'Messages', 'Autocompact buffer', 'Free space',
       ])
       expect(usage.categories!.find((c) => c.name === 'Memory Files')!.tokens).toBeGreaterThan(0)
       const used = usage.categories!.filter((c) => c.kind === 'used')
@@ -8385,6 +8388,268 @@ describe('per-turn memory + environment overlay', () => {
       expect(requests[0].system).toContain('MEM-FIXTURE')
       expect(requests[0].system).toContain('# Environment')
       expect(requests[0].system).toContain(AGENT_GUIDANCE)
+    } finally {
+      await session.destroy()
+    }
+  })
+})
+
+describe('auto-memory prompt section (Task 5)', () => {
+  /** The live core fields Task 5 adds: the session-level index snapshot. */
+  type MemoryCore = {
+    memorySettings: { autoMemoryEnabled?: boolean; autoMemoryDirectory?: string }
+    autoMemoryRoots: { ownDir: string; claudeDir: string | null } | null
+    autoMemorySnapshot: { ownDir: string; index: string | null } | null
+  }
+  const memoryCoreOf = (handle: unknown): MemoryCore => coreOf(handle) as unknown as MemoryCore
+
+  /** Real auto-memory port (configDir seam) so resolve provisions the root and
+   *  readIndex reads the real MEMORY.md; the CLAUDE.md chain stays the hermetic
+   *  empty stub. */
+  async function fixture(): Promise<{ root: string; provider: NativeProvider }> {
+    const root = await tempDir('native-auto-mem-section-')
+    const stateDir = join(root, 'state')
+    const configDir = join(root, 'claude-config')
+    await mkdir(stateDir, { recursive: true })
+    await mkdir(configDir, { recursive: true })
+    const provider = new NativeProvider({
+      stateDir,
+      ports: makeNativePorts({ stateDir, autoMemory: createAutoMemoryPort({ stateDir, configDir }) }),
+    })
+    return { root, provider }
+  }
+
+  function streamerOf(provider: NativeProvider, scripts: CanonicalEvent[][], requests: CapturedRequest[]): void {
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(scripts, requests)
+  }
+  async function drain(session: { messages: AsyncIterable<unknown> }, frames: Frame[]): Promise<void> {
+    for await (const f of session.messages) frames.push(f as Frame)
+  }
+  async function writeIndex(dir: string, content: string): Promise<void> {
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'MEMORY.md'), content, 'utf8')
+  }
+
+  it('renders the # Memory section with the directory and index at spawn (default on)', async () => {
+    const { root, provider } = await fixture()
+    const dirA = join(root, 'mem-a')
+    await writeIndex(dirA, '- [A](a.md) — hook')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'mem-section-spawn', cwd: root, memory: { autoMemoryDirectory: dirA } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const own = memoryCoreOf(session).autoMemoryRoots!.ownDir
+      const sys = requests[0].system
+      expect(sys).toContain('# Memory\n')
+      expect(sys).toContain('persistent file-based memory')
+      expect(sys).toContain(own)
+      expect(sys).toContain('- [A](a.md) — hook')
+      expect(sys).toContain('frontmatter')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('autoMemoryEnabled:false omits the section', async () => {
+    const { root, provider } = await fixture()
+    const dirA = join(root, 'mem-a')
+    await writeIndex(dirA, 'INDEX-A')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'mem-section-off', cwd: root, memory: { autoMemoryEnabled: false, autoMemoryDirectory: dirA } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      expect(requests[0].system).not.toContain('# Memory\n')
+      expect(requests[0].system).not.toContain('persistent file-based memory')
+      expect(requests[0].system).not.toContain('INDEX-A')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('an absent index renders the "(empty index)" placeholder', async () => {
+    const { root, provider } = await fixture()
+    const dirA = join(root, 'mem-a') // no MEMORY.md authored; resolve provisions an empty one
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'mem-section-empty', cwd: root, memory: { autoMemoryDirectory: dirA } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      expect(requests[0].system).toContain('# Memory\n')
+      expect(requests[0].system).toContain('(empty index)')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('a directory settings change re-renders the next turn with the new directory and a freshly loaded index', async () => {
+    const { root, provider } = await fixture()
+    const dirA = join(root, 'mem-a')
+    const dirB = join(root, 'mem-b')
+    await writeIndex(dirA, 'INDEX-A')
+    await writeIndex(dirB, 'INDEX-B')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('one'), textTurn('two')], requests)
+    const session = provider.createSession({ id: 'mem-section-change', cwd: root, memory: { autoMemoryDirectory: dirA } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      const ownA = memoryCoreOf(session).autoMemoryRoots!.ownDir
+      expect(requests[0].system).toContain(ownA)
+      expect(requests[0].system).toContain('INDEX-A')
+
+      await session.applyFlagSettings?.({ autoMemoryDirectory: dirB })
+      const ownB = memoryCoreOf(session).autoMemoryRoots!.ownDir
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+      expect(requests[1].system).toContain(ownB)
+      expect(requests[1].system).toContain('INDEX-B')
+      expect(requests[1].system).not.toContain('INDEX-A')
+      expect(requests[1].system).not.toContain(ownA)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('a mid-session memory write does NOT change the rendered index next turn (session-level snapshot)', async () => {
+    const { root, provider } = await fixture()
+    const dirA = join(root, 'mem-a')
+    await writeIndex(dirA, 'INDEX-ORIGINAL')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('one'), textTurn('two')], requests)
+    const session = provider.createSession({ id: 'mem-section-snapshot', cwd: root, memory: { autoMemoryDirectory: dirA } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      expect(requests[0].system).toContain('INDEX-ORIGINAL')
+      // Model writes a new memory + updates the index mid-session (no settings change).
+      await writeFile(join(dirA, 'new-fact.md'), '---\nname: new-fact\ndescription: d\nmetadata:\n  type: project\n---\nbody\n', 'utf8')
+      await writeIndex(dirA, 'INDEX-CHANGED')
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+      expect(requests[1].system).toContain('INDEX-ORIGINAL')
+      expect(requests[1].system).not.toContain('INDEX-CHANGED')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('a settings invalidation reloads the snapshot even when the directory is unchanged', async () => {
+    const { root, provider } = await fixture()
+    const dirA = join(root, 'mem-a')
+    await writeIndex(dirA, 'INDEX-ORIGINAL')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('one'), textTurn('two')], requests)
+    const session = provider.createSession({ id: 'mem-section-invalidate', cwd: root, memory: { autoMemoryDirectory: dirA } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      expect(requests[0].system).toContain('INDEX-ORIGINAL')
+      await writeIndex(dirA, 'INDEX-RELOADED')
+      // Re-apply the SAME directory: a settings event invalidates + reloads the snapshot.
+      await session.applyFlagSettings?.({ autoMemoryDirectory: dirA })
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+      expect(requests[1].system).toContain('INDEX-RELOADED')
+      expect(requests[1].system).not.toContain('INDEX-ORIGINAL')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('an enabled-toggle settings change flips the gate AND reloads the snapshot', async () => {
+    const { root, provider } = await fixture()
+    const dirA = join(root, 'mem-a')
+    await writeIndex(dirA, 'INDEX-ORIGINAL')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('one'), textTurn('two')], requests)
+    const session = provider.createSession({ id: 'mem-section-toggle', cwd: root, memory: { autoMemoryEnabled: false, autoMemoryDirectory: dirA } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      expect(requests[0].system).not.toContain('# Memory\n')
+      // Content change + enable: the settings event reloads the snapshot, so the
+      // newly enabled section renders the fresh index (not the spawn snapshot).
+      await writeIndex(dirA, 'INDEX-RELOADED')
+      await session.applyFlagSettings?.({ autoMemoryEnabled: true })
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+      expect(requests[1].system).toContain('# Memory\n')
+      expect(requests[1].system).toContain('INDEX-RELOADED')
+      expect(requests[1].system).not.toContain('INDEX-ORIGINAL')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('the subagent system inherits the auto-memory section', async () => {
+    const { root, provider } = await fixture()
+    const dirA = join(root, 'mem-a')
+    await writeIndex(dirA, 'INDEX-A')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [
+      agentTurn('agent-1', { description: 'd', prompt: 'do it' }),
+      textTurn('NESTED-REPORT'),
+      textTurn('PARENT-DONE'),
+    ], requests)
+    const session = provider.createSession({
+      id: 'mem-section-subagent', cwd: root,
+      memory: { autoMemoryDirectory: dirA },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('delegate') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      const own = memoryCoreOf(session).autoMemoryRoots!.ownDir
+      const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))
+      expect(nested, 'a nested subagent request (no Agent tool) must be captured').toBeDefined()
+      expect(nested!.system).toContain('# Memory\n')
+      expect(nested!.system).toContain(own)
+      expect(nested!.system).toContain('INDEX-A')
+      expect(requests[0].system).toContain('# Memory\n')
+      expect(requests[0].system).toContain('INDEX-A')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('context composition prices the auto-memory section as a Memory category', async () => {
+    const { root, provider } = await fixture()
+    const dirA = join(root, 'mem-a')
+    await writeIndex(dirA, 'INDEX-A')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [pricedTurn('ok', 100_000)], requests)
+    const session = provider.createSession({ id: 'mem-section-usage', cwd: root, memory: { autoMemoryDirectory: dirA } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      const row = usage.categories?.find((c) => c.name === 'Memory')
+      expect(row, 'a Memory category must be priced').toBeDefined()
+      expect(row!.tokens).toBeGreaterThan(0)
+      expect(row!.kind).toBe('used')
     } finally {
       await session.destroy()
     }
