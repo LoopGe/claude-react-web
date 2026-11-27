@@ -45,7 +45,7 @@ import { finishReasonOf, type ContentBlock, type TokenUsage, type Usage } from '
 import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './vocabulary/session-event.js'
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
-import type { NativeHostPorts, NativeMemoryReadResult, PluginContributions } from './ports.js'
+import type { MemoryCandidate, NativeHostPorts, NativeMemoryReadResult, PluginContributions } from './ports.js'
 import { joinPromptParts, renderMemorySection, renderAutoMemorySection, renderEnvironment } from './prompt/overlay.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel, type RequestOutputFormat, type StreamRequest } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -86,7 +86,15 @@ import {
 } from './agent-profile.js'
 import { filterToolsForProfile } from './agent-tools.js'
 import type { SessionToolProfile } from '../../../shared/tool-profile.js'
-import { formatSupplementInstruction, type SupplementOutcome } from '../steering-format.js'
+import { formatSupplementInstruction, formatMemoryRecallInstruction, type SupplementOutcome } from '../steering-format.js'
+import {
+  newRecallState,
+  excludeCandidates,
+  selectMemories,
+  buildRecallText,
+  RECALL_DEADLINE_MS,
+  type RecallState,
+} from './memory.js'
 import { isQuestionResult } from '../../../shared/question-result.js'
 import type { SessionMemorySettings, ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import type { UploadStore } from '../../upload-store.js'
@@ -771,8 +779,17 @@ export class NativeSession implements NativeSessionCore {
    *  landing between the manager's turn-end drain and the pump's `finally`
    *  would then be admitted with no round left to inject it into (stranded). */
   private steeringOpen = false
-  /** Supplements admitted during the current turn, not yet injected. */
-  private supplementQueue: Array<{ uuid: string; text: string }> = []
+  /** Supplements admitted during the current turn, not yet injected. `kind`
+   *  selects the wrap template at injection: 'memory' (turn-start recall) uses
+   *  the recall wrapper and skips the steering delivery callback; absent /
+   *  'steering' is the mid-run user-guidance path. */
+  private supplementQueue: Array<{ uuid: string; text: string; kind?: 'steering' | 'memory' }> = []
+  /** Session-level recall state (spec §7/§10): the paths already surfaced and
+   *  the cumulative surfaced bytes (the budget walk). Fresh per session
+   *  instance — resume/clear/fork each construct a new NativeSession, so the
+   *  field initializer IS the reset; in-place compact preserves the instance
+   *  (and thus the budget set), matching the read-state preservation precedent. */
+  private recallState: RecallState = newRecallState()
   /** T23 (RS §4.4): asyncRewake exit-2 wakes awaiting idle delivery. The
    *  engine's background completion enqueues here; the pump injects each wake
    *  as a system turn only when no user input is pending — a mid-turn wake
@@ -2618,6 +2635,12 @@ export class NativeSession implements NativeSessionCore {
           this.steeringOpen = true
           await this.log.flush()
           if (catalogError !== undefined) throw catalogError
+          // Turn-start recall (spec §7): main user turns only. The wake branch
+          // never reaches here; the compact-control turn is gated out below.
+          // Runs AFTER steering opens (so the memory supplement is admitted)
+          // and BEFORE runTurn (so the round-start drain injects it ahead of
+          // the first model round). Fail-soft — never blocks the turn.
+          if (!compactControl) await this.runMemoryRecall(promptTextOf(next.content))
         }
         if (compactControl) {
           // Control turn: no model round for the literal text. Request the
@@ -2701,6 +2724,17 @@ export class NativeSession implements NativeSessionCore {
               turnStats,
               tasks: this.tasks,
               cwd: this.opts.cwd,
+              // Main-turn tool roots (spec §5.4): the validated own root is
+              // writable, own + claude compat roots readable. Live read so a
+              // mid-turn settings change tracks the broker's exemption roots.
+              memoryRoots: () => {
+                const roots = this.resolvedMemoryRoots
+                if (!roots) return undefined
+                return {
+                  write: [roots.ownDir],
+                  read: [roots.ownDir, roots.claudeDir].filter((dir): dir is string => dir !== null),
+                }
+              },
               requestPermission: (toolName, input, toolUseId, signal, readOnlyHint) =>
                 this.requestPermission(toolName, input, toolUseId, signal, turnMode.mode, readOnlyHint),
               dispatchHook: async (event, input, hookCtx) => {
@@ -3188,7 +3222,7 @@ export class NativeSession implements NativeSessionCore {
    *  the pump consumed its prompt and before the manager settles the turn.
    *  False means "not now", and the manager transparently falls back to its
    *  normal next-turn queue. */
-  enqueueSupplement(entry: { uuid: string; text: string }): boolean {
+  enqueueSupplement(entry: { uuid: string; text: string; kind?: 'steering' | 'memory' }): boolean {
     if (!this.steeringOpen) return false
     this.supplementQueue.push(entry)
     return true
@@ -3224,7 +3258,10 @@ export class NativeSession implements NativeSessionCore {
     const timestamp = new Date().toISOString()
     const wrapped = batch.map((entry) => ({
       uuid: entry.uuid,
-      text: formatSupplementInstruction(entry.text),
+      text: entry.kind === 'memory'
+        ? formatMemoryRecallInstruction(entry.text)
+        : formatSupplementInstruction(entry.text),
+      kind: entry.kind,
     }))
     for (const entry of wrapped) {
       this.log.append({
@@ -3239,9 +3276,78 @@ export class NativeSession implements NativeSessionCore {
     const retained = wrapped.filter((_entry, index) => this.supplementQueue.includes(batch[index]))
     this.supplementQueue = this.supplementQueue.filter((entry) => !batch.includes(entry))
     for (const entry of retained) {
+      // Memory recall is a core-owned injection, not a host steered message:
+      // it has no host bubble to settle, so the delivery callback (which drives
+      // the manager's steered-message ledger) never fires for it.
+      if (entry.kind === 'memory') continue
       this.onSupplementDelivered?.(entry.uuid, { ok: true, boundary: 'PreToolUse' })
     }
     return retained
+  }
+
+  /** Turn-start memory recall (spec §7): enumerate the validated roots' topic
+   *  files, exclude already-surfaced / already-read paths and the exhausted
+   *  budget, ask the aux selector which are relevant, read the selections
+   *  (bounded host-side) and enqueue ONE memory-kind supplement drained before
+   *  the first model round. Main user turns only — the caller gates wake /
+   *  compact-control / aux / subagent paths out.
+   *
+   *  Fail-soft (spec §7.2): ANY failure (enumeration, aux, abort, read) skips
+   *  recall for this turn with a log.warn and NEVER blocks or fails the user
+   *  turn. No frame is emitted here — the user-visible recall card is Task 8.
+   *  The surfaced-path/byte state advances only after a successful enqueue, so
+   *  a skipped or unadmitted turn leaves the budget untouched. */
+  private async runMemoryRecall(queryText: string): Promise<void> {
+    if (this.memorySettings.autoMemoryEnabled === false) return
+    const roots = this.resolvedMemoryRoots
+    if (!roots) return
+    try {
+      const dirs = [roots.ownDir, roots.claudeDir].filter((dir): dir is string => dir !== null)
+      const candidates = await this.opts.ports.autoMemory.listCandidates(dirs)
+      const eligible = excludeCandidates(candidates, this.recallState, this.opts.readState.readPaths())
+      if (eligible.length === 0) return
+      const selected = await selectMemories(
+        {
+          auxLlm: this.opts.ports.auxLlm,
+          model: this.opts.profile?.recapModel || this.model,
+          credentials: this.opts.credentials,
+        },
+        queryText,
+        eligible,
+        AbortSignal.timeout(RECALL_DEADLINE_MS),
+      )
+      if (selected.length === 0) return
+      // Resolve filenames → candidates, first match in the port's returned
+      // order (mtime-desc) winning a cross-root filename collision, then dedup
+      // by resolved path so a repeated selector name never double-injects or
+      // double-counts.
+      const byFilename = new Map<string, MemoryCandidate>()
+      for (const candidate of eligible) {
+        if (!byFilename.has(candidate.filename)) byFilename.set(candidate.filename, candidate)
+      }
+      const chosen: MemoryCandidate[] = []
+      const seen = new Set<string>()
+      for (const name of selected) {
+        const candidate = byFilename.get(name)
+        if (!candidate || seen.has(candidate.path)) continue
+        seen.add(candidate.path)
+        chosen.push(candidate)
+      }
+      const items: Array<{ filename: string; content: string; truncated: boolean; path: string }> = []
+      for (const candidate of chosen) {
+        const { content, truncated } = await this.opts.ports.autoMemory.readMemoryFile(candidate.path)
+        items.push({ filename: candidate.filename, content, truncated, path: candidate.path })
+      }
+      if (items.length === 0) return
+      const text = buildRecallText(items)
+      if (!this.enqueueSupplement({ uuid: this.ctx.uuid(), text, kind: 'memory' })) return
+      for (const item of items) {
+        this.recallState.surfacedPaths.add(item.path)
+        this.recallState.surfacedBytes += Buffer.byteLength(item.content, 'utf8')
+      }
+    } catch (err) {
+      log.warn(`[${this.opts.id}] memory recall skipped: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   async backgroundTasks(toolUseId?: string): Promise<boolean> {

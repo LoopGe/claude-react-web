@@ -150,6 +150,14 @@ export class NativeReadState {
     delete entry.candidate
   }
 
+  /** The resolved paths this session has tracked reads for (host or model).
+   *  Recall exclusion consumes this: a memory file already read this session is
+   *  never re-injected (spec §7.1, CLI `lZe` precedent). A snapshot copy — the
+   *  caller must not mutate the LRU through it. */
+  readPaths(): ReadonlySet<string> {
+    return new Set(this.entries.keys())
+  }
+
   clear(): void {
     this.entries.clear()
   }

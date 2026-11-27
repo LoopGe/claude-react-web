@@ -112,14 +112,16 @@ export async function selectMemories(
 
 /** Assemble the model-visible recall text: a per-file header (filename) plus
  *  the bounded content. A truncated file carries a hint naming the Read tool
- *  and the file so the model can fetch the full body (CLI `Fwr` precedent). The
- *  item carries only the root-relative filename, so that is the path the hint
- *  names; the absolute memory directory is in the # Memory prompt section. */
-export function buildRecallText(items: Array<{ filename: string; content: string; truncated: boolean }>): string {
+ *  and the file so the model can fetch the full body (CLI `Fwr` precedent).
+ *  When the item carries its absolute `path`, the hint names THAT — memory
+ *  files live outside the session cwd, so the absolute path is the only
+ *  Read-recoverable address; without it the hint falls back to the root-relative
+ *  filename (the caller then relies on the # Memory prompt section's directory). */
+export function buildRecallText(items: Array<{ filename: string; content: string; truncated: boolean; path?: string }>): string {
   return items
     .map((item) => {
       const body = item.truncated
-        ? `${item.content}\n\nThis memory file was truncated. Use the Read tool to view the complete file at: ${item.filename}`
+        ? `${item.content}\n\nThis memory file was truncated. Use the Read tool to view the complete file at: ${item.path ?? item.filename}`
         : item.content
       return `## ${item.filename}\n\n${body}`
     })

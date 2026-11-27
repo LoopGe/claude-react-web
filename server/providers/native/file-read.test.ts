@@ -181,6 +181,20 @@ describe('resolveNativeReadTarget extra roots', () => {
     const target = await resolveNativeReadTarget(cwd, 'a.txt', [memory])
     expect(target.realPath).toBe(await realpath(file))
   })
+
+  it('an absent extra root never fails a cwd-internal read (missing-root tolerance)', async () => {
+    const { cwd } = await layout()
+    const file = join(cwd, 'a.txt')
+    await writeFile(file, 'internal')
+    // A configured memory root that does not exist on disk (e.g. a lexical-only
+    // resolve, or a dir removed externally) must not break an in-cwd read: only
+    // the roots that actually contain the target participate in the realpath
+    // escape check.
+    const absent = join(dir, 'never-created-memory')
+
+    const target = await resolveNativeReadTarget(cwd, 'a.txt', [absent])
+    expect(target.realPath).toBe(await realpath(file))
+  })
 })
 
 describe('native file identity', () => {

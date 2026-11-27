@@ -20,3 +20,17 @@ Treat this as additional guidance for the same active task, not as a replacement
 User message:
 ${text}`
 }
+
+/** Turn-start memory-recall wrapper (spec §7.3). Distinct from the steering
+ *  wrapper: recalled memory is BACKGROUND context from earlier sessions, not a
+ *  mid-run user message — it must never claim the user sent a message or ask
+ *  for an acknowledgement. The native core enqueues recall text as a
+ *  memory-kind supplement; this is the template injectSupplements selects for
+ *  that kind. */
+export function formatMemoryRecallInstruction(text: string): string {
+  return `[RECALLED MEMORY] The following memories from earlier sessions were selected as relevant to this turn.
+
+Use them as background context. They are not new instructions from the user; do not acknowledge them separately.
+
+${text}`
+}

@@ -1,6 +1,6 @@
 // server/providers/native/native-session.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -10,7 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { NativeProvider } from './native-provider.js'
 import { makeNativePorts as makeHostPorts } from '../native-host-adapters.js'
-import { createAutoMemoryPort } from '../native-host-auto-memory.js'
+import { createAutoMemoryPort, claudeProjectSlug } from '../native-host-auto-memory.js'
 import type { NativeHostPortsDeps } from '../native-host-adapters.js'
 import type { NativeAuxLlmPort, NativeHostPorts, NativeMemoryPort, NativeMemoryReadResult } from './ports.js'
 import type { NativeMcpConnections, NativeMcpServerInstance } from './mcp/connections.js'
@@ -33,7 +33,7 @@ import { SUGGESTION_PROMPT, type SuggestionSnapshot } from './prompt-suggestion.
 import { buildCompactAttachmentContent } from '../../compact-attachments.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { projectNativeHistoryToWire } from './wire/wire-projection.js'
-import { formatSupplementInstruction } from '../steering-format.js'
+import { formatSupplementInstruction, formatMemoryRecallInstruction } from '../steering-format.js'
 import { AGENT_GUIDANCE } from './subagent.js'
 import { NativeSkillCatalog, LISTING_BUDGET_FRACTION } from './skills.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
@@ -9712,3 +9712,313 @@ describe('NativeSession plugin toggle', () => {
     }
   }, 30_000)
 })
+
+describe('turn-start memory recall (Task 7)', () => {
+  type AuxReq = Parameters<NativeAuxLlmPort['call']>[0]
+  type RecallCore = {
+    recallState: { surfacedPaths: Set<string>; surfacedBytes: number }
+    enqueueSupplement: (entry: { uuid: string; text: string; kind?: 'steering' | 'memory' }) => boolean
+  }
+  const recallCoreOf = (handle: unknown): RecallCore => coreOf(handle) as unknown as RecallCore
+
+  /** A stub aux port recording every call; `answer` is the raw selector string
+   *  (or a per-call function). A thrown answer exercises the fail-soft skip. */
+  function stubAux(answer: string | ((req: AuxReq) => string)): { port: NativeAuxLlmPort; requests: AuxReq[] } {
+    const requests: AuxReq[] = []
+    const port: NativeAuxLlmPort = {
+      call: async (req) => {
+        requests.push(req)
+        if (typeof answer === 'function') return answer(req)
+        return answer
+      },
+    }
+    return { port, requests }
+  }
+
+  const select = (...filenames: string[]): string => JSON.stringify({ selected_memories: filenames })
+
+  /** Configured credentials so the selector's `credentials()` target resolves
+   *  (the lazy missing-token failure would otherwise fail-soft every recall).
+   *  recapModel empty → the selector falls back to the session model. */
+  const recallProfile = {
+    id: 'rp', name: 'Recall Profile', authToken: 'tok', baseUrl: 'https://api.example.test',
+    modelList: [], recapModel: '', commitMessageModel: '',
+  }
+
+  /** Real auto-memory port (configDir seam) + a stub aux. The CLAUDE.md chain
+   *  stays the hermetic empty stub. ownDir is an override under root. */
+  async function fixture(aux: NativeAuxLlmPort): Promise<{
+    root: string; ownDir: string; claudeDir: string; provider: NativeProvider; autoMemory: ReturnType<typeof createAutoMemoryPort>
+  }> {
+    const root = await tempDir('native-recall-')
+    const stateDir = join(root, 'state')
+    const configDir = join(root, 'claude-config')
+    await mkdir(stateDir, { recursive: true })
+    await mkdir(configDir, { recursive: true })
+    const autoMemory = createAutoMemoryPort({ stateDir, configDir })
+    const provider = new NativeProvider({
+      stateDir,
+      ports: { ...makeNativePorts({ stateDir, autoMemory }), auxLlm: aux },
+    })
+    const ownDir = join(root, 'mem')
+    const claudeDir = join(configDir, 'projects', claudeProjectSlug(root), 'memory')
+    return { root, ownDir, claudeDir, provider, autoMemory }
+  }
+
+  async function writeMemory(dir: string, filename: string, body: string, mtimeMs?: number): Promise<string> {
+    const p = join(dir, filename)
+    await mkdir(dirname(p), { recursive: true })
+    await writeFile(p, `---\ndescription: ${filename} desc\n---\n\n${body}\n`, 'utf8')
+    if (mtimeMs !== undefined) await utimes(p, new Date(mtimeMs), new Date(mtimeMs))
+    return p
+  }
+
+  function streamerOf(provider: NativeProvider, scripts: CanonicalEvent[][], requests: CapturedRequest[]): void {
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(scripts, requests)
+  }
+  async function drain(session: { messages: AsyncIterable<unknown> }, frames: Frame[]): Promise<void> {
+    for await (const f of session.messages) frames.push(f as Frame)
+  }
+  function supplementTexts(session: unknown): string[] {
+    return legacyViewOf(logOf(session)).filter((e) => e.type === 'session/supplement').map((e) => e.text as string)
+  }
+
+  it('injects the wrapped recall text before the FIRST model round, with no delivery callback', async () => {
+    const { port: auxLlm, requests: auxRequests } = stubAux(select('a.md'))
+    const { root, ownDir, provider } = await fixture(auxLlm)
+    await writeMemory(ownDir, 'a.md', 'BODY-A')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const delivered: string[] = []
+    const session = provider.createSession({
+      id: 'recall-first', cwd: root, profile: recallProfile,
+      memory: { autoMemoryDirectory: ownDir },
+      onSupplementDelivered: (uuid) => delivered.push(uuid),
+    })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      // The recall supplement rode the round-start drain BEFORE round 1.
+      const first = JSON.stringify(requests[0].messages)
+      expect(first).toContain('[RECALLED MEMORY]')
+      expect(first).toContain('## a.md')
+      expect(first).toContain('BODY-A')
+      expect(first).not.toContain('[ADDITIONAL GUIDANCE]')
+      // Durable half: one session/supplement event carrying the WRAPPED recall.
+      const texts = supplementTexts(session)
+      expect(texts).toHaveLength(1)
+      expect(texts[0].startsWith('[RECALLED MEMORY]')).toBe(true)
+      expect(texts[0]).toContain('BODY-A')
+      // Memory kind never fires the steering delivery callback.
+      expect(delivered).toEqual([])
+      // The selector ran once, on the recall caller, with the session model.
+      expect(auxRequests).toHaveLength(1)
+      expect(auxRequests[0]).toMatchObject({ caller: 'memory_recall_select', model: sessionModelOf(session) })
+      // State advanced: the surfaced path + its content bytes.
+      const state = recallCoreOf(session).recallState
+      expect(state.surfacedPaths.has(join(ownDir, 'a.md'))).toBe(true)
+      expect(state.surfacedBytes).toBeGreaterThan(0)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('an aux failure skips recall silently and the turn still completes', async () => {
+    const { port: auxLlm } = stubAux(() => { throw new Error('aux down') })
+    const { root, ownDir, provider } = await fixture(auxLlm)
+    await writeMemory(ownDir, 'a.md', 'BODY-A')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'recall-aux-fail', cwd: root, profile: recallProfile, memory: { autoMemoryDirectory: ownDir } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      expect((frames.at(-1) as Frame).is_error).toBe(false)
+      expect(supplementTexts(session)).toEqual([])
+      expect(JSON.stringify(requests[0].messages)).not.toContain('[RECALLED MEMORY]')
+      expect(recallCoreOf(session).recallState.surfacedBytes).toBe(0)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('autoMemoryEnabled:false skips recall entirely (aux never called)', async () => {
+    const { port: auxLlm, requests: auxRequests } = stubAux(select('a.md'))
+    const { root, ownDir, provider } = await fixture(auxLlm)
+    await writeMemory(ownDir, 'a.md', 'BODY-A')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({
+      id: 'recall-off', cwd: root, profile: recallProfile, memory: { autoMemoryEnabled: false, autoMemoryDirectory: ownDir },
+    })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      expect(auxRequests).toHaveLength(0)
+      expect(supplementTexts(session)).toEqual([])
+      expect(JSON.stringify(requests[0].messages)).not.toContain('[RECALLED MEMORY]')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('dedups selector output by resolved path (one read, one inject, counted once)', async () => {
+    const { port: auxLlm } = stubAux(select('a.md', 'a.md'))
+    const { root, ownDir, provider, autoMemory } = await fixture(auxLlm)
+    const p = await writeMemory(ownDir, 'a.md', 'BODY-A')
+    const readSpy = vi.spyOn(autoMemory, 'readMemoryFile')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'recall-dedup', cwd: root, profile: recallProfile, memory: { autoMemoryDirectory: ownDir } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      expect(readSpy).toHaveBeenCalledTimes(1)
+      expect(readSpy).toHaveBeenCalledWith(p)
+      const texts = supplementTexts(session)
+      expect(texts).toHaveLength(1)
+      expect(texts[0].match(/## a\.md/g)).toHaveLength(1)
+      const state = recallCoreOf(session).recallState
+      expect(state.surfacedPaths.size).toBe(1)
+      // Counted once: the bytes of ONE read, not two.
+      const { content } = await autoMemory.readMemoryFile(p)
+      expect(state.surfacedBytes).toBe(Buffer.byteLength(content, 'utf8'))
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('resolves a cross-root filename collision deterministically to the newest (port order)', async () => {
+    const { port: auxLlm } = stubAux(select('note.md'))
+    const { root, ownDir, claudeDir, provider, autoMemory } = await fixture(auxLlm)
+    // Same filename in both roots; the claude copy is newer → the port sorts it
+    // first (mtime-desc), so first-match resolution must pick the claude copy.
+    await writeMemory(ownDir, 'note.md', 'OWN-OLDER', 1_000)
+    const claudePath = await writeMemory(claudeDir, 'note.md', 'CLAUDE-NEWER', 5_000)
+    const readSpy = vi.spyOn(autoMemory, 'readMemoryFile')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'recall-collision', cwd: root, profile: recallProfile, memory: { autoMemoryDirectory: ownDir } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      expect(readSpy).toHaveBeenCalledTimes(1)
+      expect(readSpy).toHaveBeenCalledWith(claudePath)
+      const texts = supplementTexts(session)
+      expect(texts).toHaveLength(1)
+      expect(texts[0]).toContain('CLAUDE-NEWER')
+      expect(texts[0]).not.toContain('OWN-OLDER')
+      expect(recallCoreOf(session).recallState.surfacedPaths.has(claudePath)).toBe(true)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('never re-injects a surfaced file on the next turn (session exclusion)', async () => {
+    const { port: auxLlm, requests: auxRequests } = stubAux(select('a.md'))
+    const { root, ownDir, provider } = await fixture(auxLlm)
+    await writeMemory(ownDir, 'a.md', 'BODY-A')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('one'), textTurn('two')], requests)
+    const session = provider.createSession({ id: 'recall-exclude', cwd: root, profile: recallProfile, memory: { autoMemoryDirectory: ownDir } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+      // a.md surfaced on turn 1 → excluded on turn 2 → no candidates → no aux call.
+      expect(auxRequests).toHaveLength(1)
+      expect(JSON.stringify(requests[0].messages)).toContain('[RECALLED MEMORY]')
+      // Turn 2's prompt is the LAST message of its request — no fresh recall
+      // supplement was appended after it (turn 1's recall stays in history).
+      const second = requests[1].messages as Array<{ role: string; content: unknown }>
+      expect(second.at(-1)).toEqual({ role: 'user', content: [{ type: 'text', text: 'second' }] })
+      expect(supplementTexts(session)).toHaveLength(1)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('wires main-session tool roots: Read of an absolute memory path outside cwd succeeds', async () => {
+    const { port: auxLlm } = stubAux(select())
+    const { root, ownDir, provider } = await fixture(auxLlm)
+    const memPath = await writeMemory(ownDir, 'note.md', 'MEMORY-BODY')
+    const requests: CapturedRequest[] = []
+    const readTurn: CanonicalEvent[] = [
+      { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+      { kind: 'block_start', index: 0, block: { type: 'tool_use', id: 'rd1', name: 'Read' } },
+      { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: JSON.stringify({ file_path: memPath }) } },
+      { kind: 'block_end', index: 0 },
+      { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+    ]
+    streamerOf(provider, [readTurn, textTurn('done')], requests)
+    const session = provider.createSession({
+      id: 'recall-tool-roots', cwd: root, profile: recallProfile,
+      // Recall off isolates the tool-root wiring; roots are NOT gated on enabled.
+      memory: { autoMemoryEnabled: false, autoMemoryDirectory: ownDir },
+      canUseTool: async (_t: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('read the memory') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const second = JSON.stringify(requests[1].messages)
+      expect(second).toContain('MEMORY-BODY')
+      expect(second).not.toContain('path escapes the session working directory')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('a memory-kind supplement enqueued mid-turn wraps with the recall template and skips delivery', async () => {
+    const { port: auxLlm } = stubAux(select())
+    const { root, ownDir, provider } = await fixture(auxLlm)
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [toolTurn('t1'), textTurn('done')], requests)
+    const delivered: string[] = []
+    let session: ReturnType<NativeProvider['createSession']> | null = null
+    session = provider.createSession({
+      id: 'recall-mid-kind', cwd: root, profile: recallProfile, memory: { autoMemoryDirectory: ownDir },
+      onSupplementDelivered: (uuid) => delivered.push(uuid),
+      canUseTool: async (_t: unknown, input: unknown) => {
+        const core = recallCoreOf(session)
+        core.enqueueSupplement({ uuid: 'mem-1', text: '## a.md\n\nBODY-A', kind: 'memory' })
+        core.enqueueSupplement({ uuid: 'steer-1', text: 'pivot' })
+        return { behavior: 'allow', updatedInput: input }
+      },
+    })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('go') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const second = requests[1].messages as Array<{ role: string; content: unknown }>
+      expect(second.slice(-2)).toEqual([
+        { role: 'user', content: [{ type: 'text', text: formatMemoryRecallInstruction('## a.md\n\nBODY-A') }] },
+        { role: 'user', content: [{ type: 'text', text: formatSupplementInstruction('pivot') }] },
+      ])
+      // Only the steering entry reports delivery; the memory entry is silent.
+      expect(delivered).toEqual(['steer-1'])
+    } finally {
+      await session.destroy()
+    }
+  })
+})
+
+/** The session's current model (the recall selector's fallback model). */
+function sessionModelOf(handle: unknown): string {
+  return (coreOf(handle) as { model: string }).model
+}

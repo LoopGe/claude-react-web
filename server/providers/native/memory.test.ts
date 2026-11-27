@@ -279,4 +279,18 @@ describe('buildRecallText', () => {
   it('returns an empty string for no items', () => {
     expect(buildRecallText([])).toBe('')
   })
+
+  it('names the ABSOLUTE path in the truncation hint when the item carries one (Read-recoverable)', () => {
+    const text = buildRecallText([
+      { filename: 'a.md', content: 'partial', truncated: true, path: '/store/mem/a.md' },
+    ])
+    expect(text).toContain('Use the Read tool to view the complete file at: /store/mem/a.md')
+    // The header still names the root-relative filename.
+    expect(text).toContain('## a.md')
+  })
+
+  it('falls back to the filename in the hint when no absolute path is given', () => {
+    const text = buildRecallText([{ filename: 'a.md', content: 'partial', truncated: true }])
+    expect(text).toContain('Use the Read tool to view the complete file at: a.md')
+  })
 })

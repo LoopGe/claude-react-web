@@ -98,17 +98,23 @@ export async function resolveNativeReadTarget(cwd: string, path: string, extraRo
   const root = resolve(cwd)
   const absolutePath = isAbsolute(path) ? resolve(path) : resolve(root, path)
   const roots = [root, ...(extraRoots ?? []).map((extra) => resolve(extra))]
-  if (!roots.some((candidate) => inside(candidate, absolutePath))) {
+  // Only the roots that LEXICALLY contain the target participate in the escape
+  // double-check below. An extra root that does not contain the target (and may
+  // not even exist on disk — a lexical-only resolve, or a memory dir removed
+  // externally) is irrelevant to this read and must never fail it.
+  const candidates = roots.filter((candidate) => inside(candidate, absolutePath))
+  if (candidates.length === 0) {
     throw new NativeFileUnavailableError(`path escapes the session working directory: ${path}`)
   }
 
-  // Double-check on the real paths: realpath BOTH each root and the target, so
-  // a symlinked root or a junction inside a root cannot turn the allowance
-  // into an escape. The extra roots widen the allowed set, never the check.
+  // Double-check on the real paths: realpath BOTH each containing root and the
+  // target, so a symlinked root or a junction inside a root cannot turn the
+  // allowance into an escape. The extra roots widen the allowed set, never the
+  // check.
   let realPath: string
   let realRoots: string[]
   try {
-    ;[realPath, ...realRoots] = await Promise.all([realpath(absolutePath), ...roots.map((candidate) => realpath(candidate))])
+    ;[realPath, ...realRoots] = await Promise.all([realpath(absolutePath), ...candidates.map((candidate) => realpath(candidate))])
   } catch (err) {
     mapUnavailable(err, path)
   }
