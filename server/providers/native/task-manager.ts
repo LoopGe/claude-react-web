@@ -193,6 +193,7 @@ export class NativeTaskManager {
       taskType: record.metadata.taskType === 'shell' ? 'local_bash' : 'local_agent',
       description: record.metadata.description,
       ...(record.metadata.subagentType !== undefined ? { subagentType: record.metadata.subagentType } : {}),
+      isBackgrounded: true,
       time: record.startedAt,
     })
     record.resolveLoop({

@@ -300,7 +300,24 @@ export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalF
         task_type: event.taskType,
         description: event.description,
         ...(event.subagentType !== undefined ? { subagent_type: event.subagentType } : {}),
-        is_backgrounded: true,
+        is_backgrounded: event.isBackgrounded,
+        receivedAt: event.time,
+      } as unknown as AgentMessage
+    case 'task/progress':
+      return {
+        type: 'system',
+        subtype: 'task_progress',
+        task_id: event.taskId,
+        tool_use_id: event.toolUseId,
+        description: event.description,
+        ...(event.subagentType !== undefined ? { subagent_type: event.subagentType } : {}),
+        usage: {
+          total_tokens: event.usage.totalTokens,
+          tool_uses: event.usage.toolUses,
+          duration_ms: event.usage.durationMs,
+        },
+        ...(event.lastToolName !== undefined ? { last_tool_name: event.lastToolName } : {}),
+        ...(event.summary !== undefined ? { summary: event.summary } : {}),
         receivedAt: event.time,
       } as unknown as AgentMessage
     case 'task/notification':
@@ -657,6 +674,7 @@ function isOperationalFrame(frame: NativeCoreFrame): frame is OperationalFrame {
     case 'api/retry':
     case 'informational':
     case 'task/started':
+    case 'task/progress':
     case 'task/notification':
     case 'result':
     case 'prompt/suggestion':

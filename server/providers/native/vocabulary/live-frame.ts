@@ -78,6 +78,18 @@ export type OperationalFrame =
       taskType: 'local_bash' | 'local_agent'
       description: string
       subagentType?: string
+      isBackgrounded: boolean
+      time: number
+    }
+  | {
+      type: 'task/progress'
+      taskId: string
+      toolUseId: string
+      description: string
+      subagentType?: string
+      usage: { totalTokens: number; toolUses: number; durationMs: number }
+      lastToolName?: string
+      summary?: string
       time: number
     }
   | {
