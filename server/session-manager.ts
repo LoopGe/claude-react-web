@@ -185,6 +185,7 @@ import { jsonlPageCache } from './jsonl-cache.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createDefaultProviders } from './providers/default-providers.js'
 import type { AgentProvider, ProviderCapabilities, ProviderCompactSeed, ProviderInterruptReceipt, ProviderSessionHandle, SupplementOutcome } from './providers/types.js'
+import { resolveMemoryRoots } from './providers/native-host-auto-memory.js'
 import { findRanges } from '../shared/search/match.js'
 import { extractMessageSearchSegments } from '../shared/search/extract.js'
 import { countMessageSearchMatches, locateMessageSearchMatch } from '../shared/search/segments.js'
@@ -3741,6 +3742,11 @@ export class SessionManager {
       slept: false,
     }
 
+    // Resolve the native auto-memory containment roots before the broker
+    // closure is built (native only; claude leaves them undefined). Covers
+    // every spawn path through this funnel — create / resume / fork / clear.
+    this.refreshMemoryRoots(session)
+
     if (!fullOpts.canUseTool) {
       const broker = this.permBroker.buildCanUseTool(
         session,
@@ -7090,7 +7096,36 @@ export class SessionManager {
         else next[k] = value as boolean
       }
       s.memory = Object.keys(next).length > 0 ? next : undefined
+      // The directory override may have changed — re-resolve the broker's
+      // containment roots so the exemption tracks the new ownDir (native only;
+      // a claude session keeps memoryRoots undefined).
+      this.refreshMemoryRoots(s)
     })
+  }
+
+  /** Resolve the native auto-memory containment roots for the permission
+   *  broker (`Session.memoryRoots`). Native-only: claude sessions keep their
+   *  CLI-managed memory and leave this undefined, so the broker's root-scoped
+   *  exemption is inert for them. Runtime-derived (never persisted) — called at
+   *  spawn and whenever the memory directory setting changes.
+   *
+   *  Fail-closed: a cwd-less session, or an override that fails lexical
+   *  validation (inside the claude config dir, raw `..` segments), leaves the
+   *  roots undefined → no exemption, every memory tool call prompts. The
+   *  override is independently rejected by the native port's realpath resolve at
+   *  settings time; this guard keeps a bad create-body/persisted intent from
+   *  crashing the spawn or granting access. */
+  private refreshMemoryRoots(s: Session): void {
+    if (s.provider !== 'native' || !s.cwd || !this.store) {
+      s.memoryRoots = undefined
+      return
+    }
+    try {
+      s.memoryRoots = resolveMemoryRoots(s.cwd, this.store.getDir(), s.memory?.autoMemoryDirectory)
+    } catch (err) {
+      s.memoryRoots = undefined
+      log.warn(`[session ${s.id}] auto-memory roots unavailable: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   /** Set the per-session sandbox config. `setting` is a validated

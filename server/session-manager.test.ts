@@ -368,6 +368,7 @@ import { ensureWorktreeForResume } from './session-worktree.js'
 import type { Session } from './session-types.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
+import { resolveMemoryRoots } from './providers/native-host-auto-memory.js'
 import { AgentDefinitionStore } from './agent-definition-store.js'
 import { __setConfigForTest, config as defaultConfig } from './config.js'
 import { McpConfigStore } from './mcp-config.js'
@@ -7561,6 +7562,49 @@ describe('SessionManager', () => {
     expect(mockHandles[1].applyFlagSettings).toHaveBeenCalledWith({
       autoMemoryEnabled: true,
       autoMemoryDirectory: '~/mem',
+    })
+  })
+
+  describe('native auto-memory roots wiring (Session.memoryRoots)', () => {
+    // memoryRoots is internal broker state on the live Session, not a wire
+    // field — read the live session map, not the SessionInfo projection.
+    function liveRoots(id: string): Session['memoryRoots'] {
+      return (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)?.memoryRoots
+    }
+
+    it('native spawn resolves the default roots; claude leaves them undefined', async () => {
+      const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+      expect(liveRoots(native.id)).toEqual(resolveMemoryRoots(TEST_CWD, store.getDir()))
+      expect(liveRoots(claude.id)).toBeUndefined()
+    })
+
+    it('native spawn honors a create-body autoMemoryDirectory override', async () => {
+      const override = join(dir, 'custom-mem')
+      const native = await sm.create({
+        provider: 'native', cwd: TEST_CWD, model: 'test-model',
+        memory: { autoMemoryDirectory: override },
+      } as unknown as Parameters<typeof sm.create>[0])
+      expect(liveRoots(native.id)?.own).toBe(override)
+    })
+
+    it('native spawn fails closed on an override inside the claude config dir (no exemption roots)', async () => {
+      const roots = resolveMemoryRoots(TEST_CWD, store.getDir())
+      // roots.claude is inside the claude config dir — an override there is
+      // rejected by resolveMemoryRoots, so the spawn must not crash and must
+      // leave memoryRoots undefined (every memory tool call then prompts).
+      const badOverride = roots.claude!
+      const native = await sm.create({
+        provider: 'native', cwd: TEST_CWD, model: 'test-model',
+        memory: { autoMemoryDirectory: badOverride },
+      } as unknown as Parameters<typeof sm.create>[0])
+      expect(liveRoots(native.id)).toBeUndefined()
+    })
+
+    it('claude setMemorySettings leaves memoryRoots undefined (no behavior change)', async () => {
+      const info = await sm.create({})
+      await sm.setMemorySettings(info.id, { autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
+      expect(liveRoots(info.id)).toBeUndefined()
     })
   })
 

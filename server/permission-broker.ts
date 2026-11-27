@@ -28,6 +28,7 @@ import { HttpError } from './errors.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { createLogger } from './log.js'
 import { isAutoApprovableEditBash, isInScopeEditTool, isSensitiveAutoEditPath, EDIT_TOOL_PATH_FIELD } from './accept-edits-bash.js'
+import { isMemoryRootWrite, isMemoryRootRead } from './memory-permission.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 
 /** First-party read-only tool FQNs (e.g. `mcp__git-tools__git_status`).
@@ -410,6 +411,34 @@ export class PermissionBroker {
             behavior: 'deny',
             message: 'plan mode is active — present a plan via ExitPlanMode before making changes',
             interrupt: false,
+            toolUseID: ctx.toolUseID,
+          } satisfies PermissionResult
+        }
+      }
+      // Native auto-memory root-scoped exemption. The memory store lives
+      // OUTSIDE the session cwd, so acceptEdits' in-cwd auto-approve never
+      // covers it and every "save what I learned" write would prompt (a
+      // background dream run would stall on a permission decision). Auto-allow
+      // ONLY targets whose REALPATH lands inside the session's resolved memory
+      // roots: writes inside ownDir, reads inside ownDir or the claude compat
+      // dir. claudeDir NEVER gets a write exemption (write-isolation invariant —
+      // the write helper checks own only). Realpath, not lexical, so a symlink
+      // inside a root cannot escape it. Placed AFTER the plan hard gate (plan
+      // stays fail-closed) and gated off dontAsk (CI lockdown keeps its
+      // restrictive posture); bypassPermissions is unaffected. Inert when
+      // session.memoryRoots is undefined (claude sessions).
+      if (session.memoryRoots && mode !== 'plan' && mode !== 'dontAsk') {
+        if (await isMemoryRootWrite(toolName, toolInput, session.memoryRoots)) {
+          return {
+            behavior: 'allow',
+            updatedInput: toolInput,
+            toolUseID: ctx.toolUseID,
+          } satisfies PermissionResult
+        }
+        if (await isMemoryRootRead(toolName, toolInput, session.memoryRoots)) {
+          return {
+            behavior: 'allow',
+            updatedInput: toolInput,
             toolUseID: ctx.toolUseID,
           } satisfies PermissionResult
         }

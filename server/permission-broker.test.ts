@@ -1,4 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { PermissionBroker, firstPartyReadOnlyTools, isQuestionResult, type BrokerPermissionResult } from './permission-broker.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 import type { Session, PendingPermission } from './session-types.js'
@@ -1487,5 +1490,164 @@ describe('firstPartyReadOnlyTools (dynamic lookup)', () => {
       readOnlyToolNames: new Set(['probe']),
     })
     expect(firstPartyReadOnlyTools().has('mcp__regtest-late__probe')).toBe(true)
+  })
+})
+
+// ─── Memory-root exemption (native auto-memory) ─────────────────────────────
+//
+// The exemption is REALPATH-based, so these fixtures are real tmpdirs (the
+// lexical broker fixtures above cannot exercise it). The broker is built with
+// () => false (no CLI-side plan steering — the native shape), so the host plan
+// gate applies and the plan-mode denial pin is meaningful.
+
+describe('memory-root exemption', () => {
+  const memDirs: string[] = []
+  let broker: PermissionBroker
+
+  beforeEach(() => {
+    broker = new PermissionBroker(() => undefined, () => false)
+  })
+
+  afterEach(async () => {
+    __setConfigForTest({ allowSensitivePathEdits: false })
+    for (const dir of memDirs.splice(0)) {
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
+  })
+
+  async function memoryLayout(): Promise<{ own: string; claude: string; outside: string }> {
+    const base = await mkdtemp(join(tmpdir(), 'broker-memory-'))
+    memDirs.push(base)
+    const own = join(base, 'own')
+    const claude = join(base, 'claude')
+    const outside = join(base, 'outside')
+    await mkdir(own)
+    await mkdir(claude)
+    await mkdir(outside)
+    await writeFile(join(own, 'existing.md'), 'own')
+    await writeFile(join(claude, 'existing.md'), 'claude')
+    return { own, claude, outside }
+  }
+
+  function nativeSession(roots: { own: string; claude: string | null }, mode: string, cwd: string): Session {
+    return makeFakeSession({ provider: 'native', permissionMode: mode as Session['permissionMode'], cwd, memoryRoots: roots })
+  }
+
+  function ctx(toolUseID: string) {
+    return {
+      toolUseID,
+      requestId: `req-${toolUseID}`,
+      signal: new AbortController().signal,
+      title: '', displayName: '', description: '', suggestions: [],
+    }
+  }
+
+  it('default mode: Write inside ownDir is allowed without a prompt', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    const input = { file_path: join(own, 'existing.md'), content: 'x' }
+    const result = await canUseTool('Write', input, ctx('tu-own'))
+    expect(result).toEqual({ behavior: 'allow', updatedInput: input, toolUseID: 'tu-own' })
+    expect(session.pending.size).toBe(0)
+  })
+
+  it('default mode: Write to a NEW file inside ownDir is allowed (first-time save)', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    const result = await canUseTool('Write', { file_path: join(own, 'new.md'), content: 'x' }, ctx('tu-new'))
+    expect(result.behavior).toBe('allow')
+    expect(session.pending.size).toBe(0)
+  })
+
+  it('default mode: Write inside claudeDir still prompts (write isolation)', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    canUseTool('Write', { file_path: join(claude, 'existing.md'), content: 'x' }, ctx('tu-claude'))
+    // The realpath exemption checks are async, so the pending request lands
+    // after they resolve — wait for it rather than reading synchronously.
+    await vi.waitFor(() => expect(session.pending.size).toBe(1))
+    expect(Array.from(session.pending.values())[0].toolName).toBe('Write')
+  })
+
+  it('default mode: Write outside cwd and both roots still prompts', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    canUseTool('Write', { file_path: join(outside, 'elsewhere.md'), content: 'x' }, ctx('tu-out'))
+    await vi.waitFor(() => expect(session.pending.size).toBe(1))
+  })
+
+  it('default mode: Read inside claudeDir is allowed', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    const input = { file_path: join(claude, 'existing.md') }
+    const result = await canUseTool('Read', input, ctx('tu-read'))
+    expect(result).toEqual({ behavior: 'allow', updatedInput: input, toolUseID: 'tu-read' })
+    expect(session.pending.size).toBe(0)
+  })
+
+  it('default mode: Read inside ownDir is allowed', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    const result = await canUseTool('Read', { file_path: join(own, 'existing.md') }, ctx('tu-read-own'))
+    expect(result.behavior).toBe('allow')
+    expect(session.pending.size).toBe(0)
+  })
+
+  it('plan mode: Write inside ownDir is DENIED (plan gate stays fail-closed)', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'plan', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    const result = await canUseTool('Write', { file_path: join(own, 'existing.md'), content: 'x' }, ctx('tu-plan'))
+    expect(result.behavior).toBe('deny')
+    expect(session.pending.size).toBe(0)
+  })
+
+  it('dontAsk mode: Write inside ownDir is DENIED (restrictive posture unchanged)', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'dontAsk', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    const result = await canUseTool('Write', { file_path: join(own, 'existing.md'), content: 'x' }, ctx('tu-dontask'))
+    expect(result.behavior).toBe('deny')
+    expect(session.pending.size).toBe(0)
+  })
+
+  it('acceptEdits mode: Write inside ownDir is allowed', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'acceptEdits', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    const result = await canUseTool('Write', { file_path: join(own, 'existing.md'), content: 'x' }, ctx('tu-accept'))
+    expect(result.behavior).toBe('allow')
+    expect(session.pending.size).toBe(0)
+  })
+
+  it('acceptEdits mode: Write inside claudeDir still prompts (write isolation)', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'acceptEdits', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    canUseTool('Write', { file_path: join(claude, 'existing.md'), content: 'x' }, ctx('tu-accept-claude'))
+    await vi.waitFor(() => expect(session.pending.size).toBe(1))
+  })
+
+  it('bypassPermissions mode: Write inside ownDir is allowed', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'bypassPermissions', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    const result = await canUseTool('Write', { file_path: join(own, 'existing.md'), content: 'x' }, ctx('tu-bypass'))
+    expect(result.behavior).toBe('allow')
+    expect(session.pending.size).toBe(0)
+  })
+
+  it('no memoryRoots (claude session): out-of-cwd Write behavior is unchanged (prompts)', async () => {
+    const { own, outside } = await memoryLayout()
+    const session = makeFakeSession({ provider: 'claude', permissionMode: 'default', cwd: outside })
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    canUseTool('Write', { file_path: join(own, 'existing.md'), content: 'x' }, ctx('tu-claude-session'))
+    expect(session.pending.size).toBe(1)
   })
 })
