@@ -22,6 +22,7 @@ import type { NativeHostPorts } from './ports.js'
 import { NativeMcpConnections } from './mcp/connections.js'
 import { SharedRegistry } from './mcp/shared-registry.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
+import { BEHAVIOR_SECTIONS } from './prompt/behavior.js'
 import { NativeSession, DEFAULT_MODEL } from './native-session.js'
 import { runStructuredOnce } from './structured-run.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../../shared/structured.js'
@@ -100,6 +101,8 @@ const TODO_WRITE_SECTION: PromptSection = { name: 'tool:TodoWrite', order: 180, 
 function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: string }, tools: readonly ToolDef[]): string {
   const registry = new PromptSectionRegistry()
   registry.register(IDENTITY_SECTION)
+  // Behavior/tone guidance rides both prompt variants (parent and subagent).
+  for (const section of BEHAVIOR_SECTIONS) registry.register(section)
   for (const tool of tools) {
     registry.register({ name: `tool:${tool.name}`, order: tool.promptOrder, text: tool.guidance })
   }

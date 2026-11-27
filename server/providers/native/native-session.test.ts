@@ -2131,7 +2131,7 @@ describe('NativeSession', () => {
       expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Skill'])
       expect(requests[0].system).toContain('REVIEW-PROMPT')
       expect(requests[0].system).toContain('- demo: demo description')
-      expect(requests[0].system).not.toContain('- other')
+      expect(requests[0].system).not.toContain('- other: other description')
       const skillResult = legacyViewOf(logOf(session)).find((event) =>
         event.type === 'user' && event.parent_tool_use_id === 'tu-parent')
       expect(skillResult?.message?.content?.[0]).toMatchObject({
@@ -2419,7 +2419,7 @@ describe('NativeSession', () => {
     expect(requests[0].model).toBe('reviewer-model')
     expect(requests[0].system).toContain('REVIEW-PROMPT')
     expect(requests[0].system).toContain('- demo: demo description')
-    expect(requests[0].system).not.toContain('- other')
+    expect(requests[0].system).not.toContain('- other: other description')
     // Persona fields win field-wise over the base tool profile: the base
     // disallowedTools ['Read'] must not remove the persona-allowed Read tool.
     expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read', 'Skill'])
@@ -2717,7 +2717,7 @@ describe('NativeSession', () => {
     expect(requests[0].model).toBe('base-model')
     expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read'])
     expect(requests[0].system).toContain('- demo: demo description')
-    expect(requests[0].system).not.toContain('- other')
+    expect(requests[0].system).not.toContain('- other: other description')
     expect(effectiveSettingsOf(session)).toEqual({
       model: 'base-model',
       permissionMode: 'acceptEdits',
@@ -2781,7 +2781,7 @@ describe('NativeSession', () => {
     expect(requests[0].system).toContain('OLD-REVIEW-PROMPT')
     expect(requests[0].system).not.toContain('NEW-REVIEW-PROMPT')
     expect(requests[0].system).toContain('- demo: demo description')
-    expect(requests[0].system).not.toContain('- other')
+    expect(requests[0].system).not.toContain('- other: other description')
     expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read'])
     expect(effectiveSettingsOf(resumed)).toEqual({
       model: 'reviewer-old',
@@ -3735,7 +3735,7 @@ describe('NativeSession', () => {
       expect(requests[0].system).toContain('FIRST-PERSONA')
       expect(requests[0].system).toContain('- demo: demo description')
       expect(requests[0].system).not.toContain('SECOND-PERSONA')
-      expect(requests[0].system).not.toContain('- other')
+      expect(requests[0].system).not.toContain('- other: other description')
       expect(permissionModes).toEqual(['plan'])
       expect(efforts).toEqual(['low', 'low'])
     } finally {
