@@ -139,30 +139,28 @@ describe('NewSessionDialog plugin picker', () => {
       .filter((l) => l.querySelector('input[type="checkbox"]') && /plug[AB]/.test(l.textContent ?? ''))
       .map((l) => l.querySelector('input[type="checkbox"]') as HTMLInputElement)
 
-  it('native draft: plugin picker shown but locked — disabled checkboxes + requires-CLI notice', async () => {
+  it('native draft: plugin picker is functional — enabled checkboxes, no requires-CLI notice', async () => {
     const { baseElement } = render(<NewSessionDialog {...baseProps} />)
     await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
 
     selectProvider('Native in-process')
 
-    // Show-but-locked: the rows stay visible with their pre-checked state…
+    // Native consumes enabledPlugins for selective plugin-skill discovery,
+    // so the picker is a real control: rows visible, pre-checked, editable.
     const boxes = pluginCheckboxes(baseElement)
     expect(boxes).toHaveLength(2)
     for (const box of boxes) {
-      expect(box.disabled).toBe(true)
+      expect(box.disabled).toBe(false)
       expect(box.checked).toBe(true)
     }
-    // …the notice explains the lock, and the choose-here hint survives.
-    expect(baseElement.querySelector('.requires-cli-notice')?.textContent).toContain(
-      'This feature requires the Claude CLI.',
-    )
+    expect(baseElement.querySelector('.requires-cli-notice')).toBeNull()
     expect(baseElement.textContent).toContain("Plugins can't be added after the session starts")
-    // A click on a locked row cannot change the selection.
+    // A click narrows the selection — the narrowing is the user's choice.
     fireEvent.click(boxes[0])
-    expect(boxes[0].checked).toBe(true)
+    expect(boxes[0].checked).toBe(false)
   })
 
-  it('claude draft: picker enabled with no notice; switching providers toggles the lock live', async () => {
+  it('picker stays enabled with no notice across provider switches', async () => {
     const { baseElement } = render(<NewSessionDialog {...baseProps} />)
     await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
 
@@ -170,14 +168,94 @@ describe('NewSessionDialog plugin picker', () => {
     for (const box of pluginCheckboxes(baseElement)) expect(box.disabled).toBe(false)
     expect(baseElement.querySelector('.requires-cli-notice')).toBeNull()
 
+    // Native: equally functional (plugin skills), still no notice.
     selectProvider('Native in-process')
-    for (const box of pluginCheckboxes(baseElement)) expect(box.disabled).toBe(true)
-    expect(baseElement.querySelector('.requires-cli-notice')).not.toBeNull()
+    for (const box of pluginCheckboxes(baseElement)) expect(box.disabled).toBe(false)
+    expect(baseElement.querySelector('.requires-cli-notice')).toBeNull()
 
-    // Switching back to Claude unlocks live — same mounted dialog.
+    // And back to Claude — same mounted dialog, no lock in either direction.
     selectProvider('Claude CLI')
     for (const box of pluginCheckboxes(baseElement)) expect(box.disabled).toBe(false)
     expect(baseElement.querySelector('.requires-cli-notice')).toBeNull()
+  })
+
+  const clickCreate = async (root: HTMLElement, onSubmit: ReturnType<typeof vi.fn>) => {
+    const createBtn = Array.from(root.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Create',
+    )!
+    fireEvent.click(createBtn)
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    return onSubmit.mock.calls[0][0] as NewSessionForm
+  }
+  const pluginBox = (root: HTMLElement, name: 'plugA' | 'plugB') =>
+    pluginCheckboxes(root)[name === 'plugA' ? 0 : 1]
+
+  it('native create carries the intentional enabledPlugins selection', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
+
+    selectProvider('Native in-process')
+    fireEvent.click(pluginBox(baseElement, 'plugB'))
+
+    const form = await clickCreate(baseElement, onSubmit)
+    expect(form.provider).toBe('native')
+    expect(form.enabledPlugins).toEqual(['plugA@mp1'])
+  })
+
+  it('native create omits enabledPlugins when all plugins stay selected', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
+
+    selectProvider('Native in-process')
+    const form = await clickCreate(baseElement, onSubmit)
+    expect(form.provider).toBe('native')
+    // All-selected sentinel: undefined = every enabled plugin (skill).
+    expect(form.enabledPlugins).toBeUndefined()
+  })
+
+  it('native create sends enabledPlugins: [] when all unchecked', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
+
+    selectProvider('Native in-process')
+    fireEvent.click(pluginBox(baseElement, 'plugA'))
+    fireEvent.click(pluginBox(baseElement, 'plugB'))
+
+    const form = await clickCreate(baseElement, onSubmit)
+    expect(form.provider).toBe('native')
+    expect(form.enabledPlugins).toEqual([])
+  })
+
+  it('claude-unchecked subset survives the switch to native (payload pin)', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
+
+    // Narrow under Claude, then switch — the selection is the user's, not
+    // the provider's, so it must ride the create payload unchanged.
+    fireEvent.click(pluginBox(baseElement, 'plugB'))
+    selectProvider('Native in-process')
+
+    const form = await clickCreate(baseElement, onSubmit)
+    expect(form.provider).toBe('native')
+    expect(form.enabledPlugins).toEqual(['plugA@mp1'])
+  })
+
+  it('native-unchecked subset survives the switch back to claude (payload pin)', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
+
+    selectProvider('Native in-process')
+    fireEvent.click(pluginBox(baseElement, 'plugB'))
+    selectProvider('Claude CLI')
+
+    const form = await clickCreate(baseElement, onSubmit)
+    expect(form.provider).toBe('claude')
+    expect(form.enabledPlugins).toEqual(['plugA@mp1'])
   })
 
   it('sends enabledPlugins: [] when all unchecked', async () => {
@@ -333,7 +411,7 @@ describe('NewSessionDialog provider picker', () => {
     expect(form.provider).toBe('claude')
   })
 
-  it('submits provider: native and shows the plugin cluster locked', async () => {
+  it('submits provider: native and keeps the plugin cluster functional', async () => {
     const onSubmit = vi.fn()
     const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
     await waitFor(() => expect(pluginCluster(baseElement)).toBeDefined())
@@ -342,28 +420,28 @@ describe('NewSessionDialog provider picker', () => {
     fireEvent.click(providerRow('Native in-process'))
     expect(providerTrigger().textContent).toContain('Native in-process')
 
-    // Native locks plugins — the cluster stays visible (rows included),
-    // disabled, with the requires-CLI notice explaining the lock.
+    // Native selects plugin skills through the same cluster — visible,
+    // enabled, no requires-CLI notice (the picker is functional on both).
     expect(pluginCluster(baseElement)).toBeDefined()
     expect(pluginCluster(baseElement)!.parentElement!.textContent).toContain('plugA')
     const box = pluginCluster(baseElement)!.parentElement!.querySelector(
       'input[type="checkbox"]',
     ) as HTMLInputElement
-    expect(box.disabled).toBe(true)
-    expect(baseElement.querySelector('.requires-cli-notice')).not.toBeNull()
+    expect(box.disabled).toBe(false)
+    expect(baseElement.querySelector('.requires-cli-notice')).toBeNull()
 
     const form = await clickCreate(onSubmit)
     expect(form.provider).toBe('native')
   })
 
-  it('unlocks the plugin cluster when switching back to Claude', async () => {
+  it('keeps the plugin cluster enabled when switching back to Claude', async () => {
     const onSubmit = vi.fn()
     const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
     await waitFor(() => expect(pluginCluster(baseElement)).toBeDefined())
 
     fireEvent.click(providerTrigger())
     fireEvent.click(providerRow('Native in-process'))
-    await waitFor(() => expect(baseElement.querySelector('.requires-cli-notice')).not.toBeNull())
+    expect(baseElement.querySelector('.requires-cli-notice')).toBeNull()
 
     fireEvent.click(providerTrigger())
     fireEvent.click(providerRow('Claude CLI'))

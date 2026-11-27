@@ -31,7 +31,6 @@ import { clamp } from '../../utils/clamp'
 import { groupNameIssue } from '../../utils/group-name'
 import { PROVIDER_LABELS, providerLabel } from '../../utils/provider-display'
 import { providerSupports } from '../../../shared/provider-capabilities'
-import { RequiresCliNotice } from '../RequiresCliNotice'
 
 /** The form seeds its state (group pre-target, cwd, model, …) on MOUNT and
  *  does not reset on an `open` rising edge. A host that keeps the component
@@ -111,10 +110,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       })
     return () => { cancelled = true }
   }, [providerResolved])
-  // Show-but-locked plugin picker: native keeps the cluster visible with
-  // disabled checkboxes + a RequiresCliNotice; switching the provider
-  // selector re-renders and unlocks live.
-  const pluginsLocked = !providerSupports(provider, 'plugins')
+  // The plugin picker is functional on both providers: claude selects full
+  // plugins, native selects plugin skills (selective discovery through the
+  // same enabledPlugins payload). The gate reads the pre-create capability
+  // map — only a provider without plugin-skill support would lock it.
+  const pluginPickerLocked = !providerSupports(provider, 'pluginSkills')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [systemPrompt, setSystemPrompt] = useState('')
@@ -633,8 +633,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
 
   // The dialog body grows after open as the MCP-server and plugin fetches land
   // (their sections mount inside Advanced options) and as fields toggle
-  // (thinking budget, env rows, the provider switch adding/removing the
-  // plugin picker's requires-CLI notice). Tween the
+  // (thinking budget, env rows). Tween the
   // body height instead of jumping. The measure caps at the `.modal` ceiling
   // (pin-independent); the observer watches the content-sized wrapper, which
   // also catches the uncontrolled <details> open/close. The nested
@@ -654,7 +653,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     if (!body || !content || !card) return null
     return measureCappedContentHeight(body, content, card)
   }, [])
-  const bodyAnimationKey = `${globalMcpServers.length}|${allPluginKeys.length}|${provider}|${thinkingMode}|${envRows.length}`
+  const bodyAnimationKey = `${globalMcpServers.length}|${allPluginKeys.length}|${thinkingMode}|${envRows.length}`
   useAutoHeightTransition(bodyRef, bodyAnimationKey, {
     measureTargetHeight: measureBodyHeight,
     observe: bodyContentRef,
@@ -1068,7 +1067,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                     <span className="hint" style={{ marginTop: 4, display: 'block' }}>
                       Plugins can't be added after the session starts — choose them here.
                     </span>
-                    {pluginsLocked && <RequiresCliNotice />}
                     {allPluginKeys.map((key) => {
                       // Compound key is "<plugin>@<marketplace>"; neither
                       // segment contains '@' (assertSafeName enforces
@@ -1077,12 +1075,12 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                       return (
                         <label
                           key={key}
-                          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', cursor: pluginsLocked ? 'default' : 'pointer' }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', cursor: pluginPickerLocked ? 'default' : 'pointer' }}
                         >
                           <input
                             type="checkbox"
                             checked={enabledPlugins.has(key)}
-                            disabled={pluginsLocked}
+                            disabled={pluginPickerLocked}
                             onChange={() => togglePlugin(key)}
                           />
                           <span style={{ flex: 1 }}>{pluginName}</span>
