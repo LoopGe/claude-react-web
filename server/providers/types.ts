@@ -10,8 +10,7 @@ import type { InProcessHookForward, InProcessSubagentStop, InProcessTaskSnapshot
 import type { SessionToolProfile } from '../../shared/tool-profile.js'
 import type { SupplementOutcome } from './steering-format.js'
 import type { NativeFileAttachment } from './attachment-types.js'
-import type { HookEvent } from '../../shared/hooks.js'
-import type { HookDecision } from './native/hooks/types.js'
+import type { HookEvent, HookDecision } from '../../shared/hooks.js'
 
 export interface ProviderAttachmentOccurrence {
   messageUuid: string
