@@ -134,7 +134,7 @@ describe('live-frame shapes (runtime)', () => {
     expect(frame.replayState).toBeUndefined()
   })
 
-  it('OperationalFrame covers the eight native live-only kinds with neutral discriminants', () => {
+  it('OperationalFrame covers the nine native live-only kinds with neutral discriminants', () => {
     const init: OperationalFrame = { type: 'init', sessionId: 's', uuid: 'u', parentToolUseId: null, fastMode: true }
     const retry: OperationalFrame = { type: 'api/retry', sessionId: 's', uuid: 'u', parentToolUseId: null, attempt: 1, maxRetries: 10, delayMs: 5 }
     const info: OperationalFrame = { type: 'informational', sessionId: 's', uuid: 'u', parentToolUseId: null, text: 'note' }
@@ -143,8 +143,13 @@ describe('live-frame shapes (runtime)', () => {
     const notified: OperationalFrame = { type: 'task/notification', taskId: 't', toolUseId: 'tu', description: 'd', status: 'completed', time: 2 }
     const result: OperationalFrame = { type: 'result', sessionId: 's', uuid: 'u', parentToolUseId: null, result: 'ok', usage, numTurns: 1, durationMs: 3, isError: false }
     const suggestion: OperationalFrame = { type: 'prompt/suggestion', sessionId: 's', uuid: 'u', parentToolUseId: null, suggestion: '跑测试' }
-    const kinds = [init, retry, info, started, progress, notified, result, suggestion].map((f) => f.type)
-    expect(kinds).toEqual(['init', 'api/retry', 'informational', 'task/started', 'task/progress', 'task/notification', 'result', 'prompt/suggestion'])
+    const hook: OperationalFrame = { type: 'hook/run', sessionId: 's', uuid: 'u', parentToolUseId: null, event: { kind: 'started', run: { id: 'r', hookId: 'h', hookName: 'n', event: 'PreToolUse', status: 'started', startedAt: 1, updatedAt: 1 } } }
+    const kinds = [init, retry, info, started, progress, notified, result, suggestion, hook].map((f) => f.type)
+    expect(kinds).toEqual(['init', 'api/retry', 'informational', 'task/started', 'task/progress', 'task/notification', 'result', 'prompt/suggestion', 'hook/run'])
+    // Compile-time exhaustiveness: a new union member must be enumerated here.
+    expectTypeOf<OperationalFrame['type']>().toEqualTypeOf<
+      'init' | 'api/retry' | 'informational' | 'task/started' | 'task/progress' | 'task/notification' | 'result' | 'prompt/suggestion' | 'hook/run'
+    >()
     expect(typeof suggestion.suggestion).toBe('string')
     expect(suggestion.parentToolUseId).toBeNull()
   })

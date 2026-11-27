@@ -92,6 +92,57 @@ describe('NativeTaskManager', () => {
     expect(started(frames)).toHaveLength(1)
   })
 
+  it('foreground subagent failure emits task/notification with status failed', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = {
+      toolUseId: 'tu-fg-fail', taskType: 'subagent', description: 'research', subagentType: 'Explore',
+    }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+
+    expect(started(frames)).toHaveLength(1)
+    expect(notifications(frames)).toHaveLength(0)
+
+    execution.resolve({ text: 'failure details', isError: true })
+    await expect(waiting).resolves.toEqual({ text: 'failure details', isError: true })
+    await flush()
+
+    expect(notifications(frames)).toHaveLength(1)
+    expect(notifications(frames)[0]).toMatchObject({
+      taskId: 'tu-fg-fail',
+      toolUseId: 'tu-fg-fail',
+      description: 'research',
+      status: 'failed',
+      result: 'failure details',
+    })
+    expect(started(frames)).toHaveLength(1)
+  })
+
+  it('foreground subagent stopped via destroy emits task/notification with status stopped', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = {
+      toolUseId: 'tu-fg-stop', taskType: 'subagent', description: 'research', subagentType: 'Explore',
+    }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+
+    // destroy() is the stopRequested path a still-foreground record can take
+    // (stop() itself rejects foreground tasks).
+    const destroyed = manager.destroy()
+    execution.resolve({ text: 'partial report' })
+    await expect(waiting).resolves.toEqual({ text: 'partial report' })
+    await destroyed
+    await flush()
+
+    expect(notifications(frames)).toHaveLength(1)
+    expect(notifications(frames)[0]).toMatchObject({
+      taskId: 'tu-fg-stop',
+      status: 'stopped',
+      result: 'partial report',
+    })
+    expect(started(frames)).toHaveLength(1)
+  })
+
   it('foreground shell emits no task frames and resolves the loop', async () => {
     const { manager, frames } = setup()
     const execution = deferred<ToolOutcome>()

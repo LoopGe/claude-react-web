@@ -181,7 +181,10 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
     },
     backgroundable: {
       taskType: 'subagent',
-      describe: (raw) => (raw as unknown as AgentToolInput).description,
+      describe: (raw) => {
+        const value = (raw as unknown as AgentToolInput).description
+        return typeof value === 'string' ? value.trim() : ''
+      },
       subagentType: (raw) => {
         const value = (raw as unknown as AgentToolInput).subagent_type
         return typeof value === 'string' && value.trim() ? value.trim() : 'general-purpose'

@@ -90,6 +90,32 @@ const blockedStream = (): { stream: (req: ForkReq) => AsyncIterable<CanonicalEve
   }
 }
 
+/** A stream that IGNORES its abort signal: it yields the full text turn, then
+ *  parks on a gate at the done turn, so the consumer's for-await loop finishes
+ *  only after release() — the abort lands while the loop awaits completion,
+ *  exercising the POST-loop aborted guard (not the in-loop one). */
+const abortIgnoringStream = (): {
+  stream: (req: ForkReq) => AsyncIterable<CanonicalEvent>
+  release: () => void
+  parked: Promise<void>
+} => {
+  let release!: () => void
+  let parked!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const parkedPromise = new Promise<void>((resolve) => { parked = resolve })
+  return {
+    release,
+    parked: parkedPromise,
+    stream: () => ({
+      async *[Symbol.asyncIterator]() {
+        yield* textEvents('late summary')
+        parked()
+        await gate
+      },
+    }),
+  }
+}
+
 interface Harness {
   tracker: SubagentProgress
   history: RequestMessage[]
@@ -275,6 +301,29 @@ describe('fork tail', () => {
     h.tracker.stop()
   })
 
+  it('an empty snapshot gets a prompt-only tail and a valid request (forkTail boundary)', async () => {
+    // history: () => [] with observed material — the fork fires against an
+    // empty nested snapshot; forkTail has no tail message to answer.
+    const h = makeHarness({ history: [] })
+    h.tracker.observe(assistantFrame([{ type: 'text', text: 'working' }]))
+    h.tracker.start()
+    await vi.advanceTimersByTimeAsync(PROGRESS_INTERVAL_MS)
+    expect(h.requests).toHaveLength(1)
+    const req = h.requests[0]
+    expect(req.messages).toEqual([])
+    // ONE prompt-only user message — no synthetic tool_result, request valid.
+    expect(req.appendMessages).toEqual([{
+      role: 'user',
+      content: [{ type: 'text', text: PROGRESS_SUMMARY_PROMPT }],
+    }])
+    expect(req.maxTokens).toBe(PROGRESS_MAX_TOKENS)
+    expect(req.forkProfile).toBe(true)
+    // The fork still completes and emits its summary frame.
+    expect(h.frames).toHaveLength(2)
+    expect(h.frames[1].summary).toBe('Reading the diff')
+    h.tracker.stop()
+  })
+
   it('omits thinking on a non-thinking model', async () => {
     const h = makeHarness({ model: 'claude-haiku-4-5', history: [userMessage('task')] })
     h.tracker.observe(assistantFrame([{ type: 'text', text: 'working' }]))
@@ -329,6 +378,28 @@ describe('lifecycle', () => {
     expect(h.frames).toHaveLength(1)
     expect(h.frames[0].summary).toBeUndefined()
     expect(h.requests).toHaveLength(1)
+    expect(counter('failed')).toBe(0)
+  })
+
+  it('an abort-ignoring stream completing after stop() stays silent (post-loop aborted guard)', async () => {
+    const ignoring = abortIgnoringStream()
+    const h = makeHarness({ stream: ignoring.stream, history: [userMessage('task')] })
+    h.tracker.observe(assistantFrame([{ type: 'text', text: 'working' }]))
+    h.tracker.start()
+    await vi.advanceTimersByTimeAsync(PROGRESS_INTERVAL_MS)
+    expect(h.requests).toHaveLength(1)
+    // The fork consumed the whole turn and parks at the loop's done turn.
+    await ignoring.parked
+    h.tracker.stop()
+    expect(h.requests[0].signal.aborted).toBe(true)
+    ignoring.release()
+    await vi.advanceTimersByTimeAsync(PROGRESS_INTERVAL_MS * 3)
+    // The loop completed AFTER the abort: the post-loop guard drops the
+    // summary, the cadence is dead, and the fire-and-forget fork never
+    // rejects (an unhandled rejection would fail this test).
+    expect(h.frames).toHaveLength(1)
+    expect(h.frames[0].summary).toBeUndefined()
+    expect(counter('generated')).toBe(0)
     expect(counter('failed')).toBe(0)
   })
 

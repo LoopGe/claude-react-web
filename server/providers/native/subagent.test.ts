@@ -173,6 +173,10 @@ describe('createAgentTool', () => {
     expect(agent.backgroundable?.taskType).toBe('subagent')
     expect(agent.backgroundable?.describe({ description: 'inspect the parser', prompt: 'p' }))
       .toBe('inspect the parser')
+    // Padded input trims exactly like the progress tracker's description, so
+    // the task record never flips padded→trimmed on the first progress tick.
+    expect(agent.backgroundable?.describe({ description: '  inspect the parser  ', prompt: 'p' }))
+      .toBe('inspect the parser')
     expect(agent.backgroundable?.subagentType?.({ description: 'd', prompt: 'p', subagent_type: ' reviewer ' }))
       .toBe('reviewer')
     expect(agent.backgroundable?.subagentType?.({ description: 'd', prompt: 'p' }))
@@ -1018,5 +1022,39 @@ describe('subagent progress wiring', () => {
     // Stopped after settle: no further frames on later ticks.
     await vi.advanceTimersByTimeAsync(PROGRESS_INTERVAL_MS * 3)
     expect(progressOf(emitted)).toHaveLength(2)
+  })
+
+  it('a thinking-capable model carries thinking:disabled on the fork request through the seam', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 'inner-1', 'Gated', '{}'), deltaStop('tool_use')],
+      // The fork's single round (consumed mid-run), then the nested final round.
+      [startStop, ...textBlock(0, 'Reading the diff'), deltaStop('end_turn')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const gated = gatedTool('Gated')
+    const agent = createAgentTool(baseDeps({
+      // Matches supportsThinkingForModel (sonnet family) — the fork must send
+      // the thinking-disabled override, not inherit the session's thinking.
+      model: () => 'claude-sonnet-4-5',
+      agentProgressSummaries: true,
+      tools: () => [gated.tool],
+      streamFor: s.streamFor.bind(s),
+    }))
+
+    const pending = runAgent(agent, { description: 'd', prompt: 'p' })
+    await gated.started
+    await vi.advanceTimersByTimeAsync(PROGRESS_INTERVAL_MS)
+
+    expect(s.calls).toHaveLength(2)
+    const fork = s.calls[1]
+    expect(fork.model).toBe('claude-sonnet-4-5')
+    expect(fork.thinking).toEqual({ type: 'disabled' })
+    // The nested round itself carries no thinking override — the fork alone
+    // disables thinking (the session seam owns the run's own thinking config).
+    expect(s.calls[0].thinking).toBeUndefined()
+
+    gated.release()
+    expect(await pending).toEqual({ text: 'done' })
+    expect(s.calls).toHaveLength(3)
   })
 })

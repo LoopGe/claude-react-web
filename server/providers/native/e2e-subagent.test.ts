@@ -459,6 +459,7 @@ describe('native synchronous Agent detach', () => {
     // foreground Agent announces its OWN running→terminal lifecycle (claude
     // parity), so the turn carries exactly one task_notification — the Agent's.
     expect(frames.some((f) => f.subtype === 'task_notification' && f.tool_use_id === 'nested-bash')).toBe(false)
+    expect(frames.filter((f) => f.subtype === 'task_notification')).toHaveLength(1)
     expect(liveSession(first.sm, info.id).tasks.has('nested-bash')).toBe(false)
     const agentNotification = frames.find((f) => f.subtype === 'task_notification' && f.tool_use_id === AGENT_ID)
     expect(agentNotification?.result).toBe('nested Bash complete')
