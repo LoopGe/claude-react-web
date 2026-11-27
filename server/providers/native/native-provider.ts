@@ -9,7 +9,7 @@ import { HttpError } from '../../errors.js'
 import { claudeConfigDir } from '../../claude-config-dir.js'
 import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../../../shared/transcript-format.js'
 import type { SessionMeta } from '../../persistence.js'
-import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef } from '../types.js'
+import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef, TasklistSource } from '../types.js'
 import type { ResumableSession } from '../../session-types.js'
 import {
   listNativeResumableRows,
@@ -471,5 +471,12 @@ export class NativeProvider implements AgentProvider {
    *  a missing log throws and the manager's best-effort seam catches it. */
   async renameSession(sessionId: string, title: string): Promise<void> {
     await appendSessionTitle(this.stateDir, sessionId, title)
+  }
+
+  /** Durable tasklist source for the host derive (server/tasklist-state.ts):
+   *  every session's neutral v3 log lives under this provider's state dir,
+   *  live or dormant — no session handle needed. */
+  tasklistSource(): TasklistSource {
+    return { stateDir: this.stateDir }
   }
 }

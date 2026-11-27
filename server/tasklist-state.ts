@@ -35,6 +35,7 @@ import {
   type TasklistSnapshotTask,
 } from '../shared/task-list.js'
 import { isHumanUserMessage } from '../shared/user-frames.js'
+import type { TasklistSource } from './providers/types.js'
 
 const log = createLogger('tasklist')
 
@@ -249,22 +250,20 @@ function parseSubagentFileLines(chunk: string): unknown[] {
 /** Production reader. */
 export const readSubagentTranscriptLines = createSubagentLineReader(subagentIo)
 
-/** Selects the native provider's transcript for the derive: the session's
- *  neutral v3 log lives under this app state dir (`native-sessions/<id>/`).
- *  The caller (SessionManager) resolves it from the session's provider —
- *  live or dormant — so this module stays free of session-pool knowledge. */
-export interface NativeTasklistSource {
-  stateDir: string
-}
+/** The provider-owned transcript source for the derive. The contract home
+ *  is the provider seam (AgentProvider.tasklistSource returns it); re-exported
+ *  here so the derive's host consumers (manager / broadcaster) take the type
+ *  from the derive module itself. */
+export type { TasklistSource } from './providers/types.js'
 
 /** Derive the snapshot for one session. [] payload on any failure — the
  *  client degrades to its window fold (today's behavior).
  *
- *  `native` selects the provider's transcript: a native session's durable
- *  log is the neutral v3 event log under `stateDir`, read through the SAME
- *  host read cache the history path uses (events projected to SDK RawLines
- *  at the adapter seam, renderable main + sidechain lines in seq order).
- *  Absent = the CLI JSONL path below, unchanged.
+ *  `source` selects a provider-owned durable log: the neutral v3 event log
+ *  under `stateDir`, read through the SAME host read cache the history path
+ *  uses (events projected to SDK RawLines at the adapter seam, renderable
+ *  main + sidechain lines in seq order). Absent = the CLI JSONL path below,
+ *  unchanged.
  *
  *  rev note: rev counts Task* tool_use events over main+sub lines, so a
  *  degraded derive (a subagent file unreadable → main-only) yields a LOWER
@@ -274,13 +273,13 @@ export interface NativeTasklistSource {
  *  recover and new events push rev back up to the high-water mark. */
 export async function deriveTaskListForSession(
   sessionId: string,
-  native?: NativeTasklistSource,
+  source?: TasklistSource,
 ): Promise<TasklistSnapshotPayload> {
   const t0 = performance.now()
   const observeMs = () => metrics.observe('tasklist_derive_ms', performance.now() - t0)
   try {
-    if (native) {
-      const loaded = await nativeHistoryCache.load(native.stateDir, sessionId)
+    if (source) {
+      const loaded = await nativeHistoryCache.load(source.stateDir, sessionId)
       // null = no log on disk (a session that never completed a turn).
       // Corruption THROWS in the cache (its contract, unlike readAll's
       // swallow-to-[]) and lands in the outer catch → degraded empty.

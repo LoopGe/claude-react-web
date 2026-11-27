@@ -141,7 +141,7 @@ import { DialogBroker } from './user-dialog-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
 import { SessionMcpManager } from './session-manager-mcp.js'
 import { SessionEventBroadcaster } from './session-broadcaster.js'
-import { deriveTaskListForSession, type NativeTasklistSource } from './tasklist-state.js'
+import { deriveTaskListForSession, type TasklistSource } from './tasklist-state.js'
 import {
   BackgroundWatcherRegistry,
   buildTaskNotificationFrame,
@@ -1363,7 +1363,7 @@ export class SessionManager {
       this.sessions,
       (id) => this.transcriptHead(id)?.generation,
       (id) => this.queuedStatusFrames(id),
-      (id) => this.nativeTasklistSource(id),
+      (id) => this.tasklistSource(id),
     )
 
     this.backgroundWatchers = new BackgroundWatcherRegistry({
@@ -8415,19 +8415,18 @@ export class SessionManager {
    *  (empty payload on failure). */
   async tasklistSnapshot(id: string): Promise<import('../shared/task-list.js').TasklistSnapshotPayload> {
     this.get(id)
-    return deriveTaskListForSession(id, this.nativeTasklistSource(id))
+    return deriveTaskListForSession(id, this.tasklistSource(id))
   }
 
-  /** The native transcript source for the tasklist derive, or undefined for
-   *  CLI sessions (the JSONL path). Resolved from the live session or the
-   *  persisted meta so DORMANT native sessions derive too. The native
-   *  provider's state dir is the app state dir — the constructor wires
-   *  createDefaultProviders({ stateDir: store.getDir() }). Shared with the
-   *  broadcaster so the live WS snapshot and the HTTP read take one path. */
-  private nativeTasklistSource(id: string): NativeTasklistSource | undefined {
+  /** The provider's durable transcript source for the tasklist derive, or
+   *  undefined for providers on the CLI JSONL path. Resolved from the live
+   *  session or the persisted meta so DORMANT sessions derive too, then asked
+   *  of the provider itself (method-gated — no provider-name branch). Shared
+   *  with the broadcaster so the live WS snapshot and the HTTP read take one
+   *  path. */
+  private tasklistSource(id: string): TasklistSource | undefined {
     const providerName = this.sessions.get(id)?.provider ?? this.store?.get(id)?.provider ?? this.defaultProvider
-    if (providerName !== 'native') return undefined
-    return { stateDir: this.store!.getDir() }
+    return this.providers.get(providerName).tasklistSource?.(id)
   }
 
   subscribeMessageStatus(id: string): {
