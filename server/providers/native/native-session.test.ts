@@ -8124,12 +8124,17 @@ describe('per-turn memory + environment overlay', () => {
     const frames: Frame[] = []
     void drain(session, frames)
     try {
+      // Freeze Date so a midnight crossing between the two turns cannot flake
+      // the byte-equality pin. vi.setSystemTime mocks Date worker-wide;
+      // vi.useRealTimers() in finally restores it (restoreAllMocks does not).
+      vi.setSystemTime(new Date(2026, 10, 27, 12, 0, 0))
       session.enqueueUserMessage(userMsg('first') as never)
       await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
       session.enqueueUserMessage(userMsg('second') as never)
       await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
       expect(requests[1].system).toBe(requests[0].system)
     } finally {
+      vi.useRealTimers()
       await session.destroy()
     }
   })
@@ -8174,7 +8179,9 @@ describe('per-turn memory + environment overlay', () => {
     try {
       session.enqueueUserMessage(userMsg('delegate') as never)
       await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
-      const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
+      const found = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))
+      expect(found, 'a nested subagent request (no Agent tool) must be captured').toBeDefined()
+      const nested = found!
       expect(nested.system).toContain('MEM-FIXTURE')
       expect(nested.system).toContain('# Environment')
       expect(nested.system).toContain(`Working directory: ${dir}`)

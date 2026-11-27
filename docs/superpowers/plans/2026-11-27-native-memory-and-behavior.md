@@ -211,14 +211,14 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
   ```
   Exact formats:
   - `renderMemorySection`: `''` when empty; else `'# Memory Files\n\n' + files.map(f => \`Contents of ${f.path} (${label}):\n${f.content}\`).join('\n\n')` where label = `'user instructions'` / `'project instructions'` / `'local project instructions'` by scope.
-  - `renderEnvironment`: `'# Environment\nWorking directory: ${cwd}\nIs a git repository: ${isGitRepo}\nPlatform: ${platform}\nToday's date: ${date.toISOString().slice(0, 10)}'` (day granularity — cache stability).
+  - `renderEnvironment`: `'# Environment\nWorking directory: ${cwd}\nIs a git repository: ${isGitRepo}\nPlatform: ${platform}\nToday's date: ${yyyy}-${mm}-${dd}'` where `yyyy-mm-dd` is the LOCAL calendar day via `getFullYear()` / `getMonth() + 1` / `getDate()`, zero-padded — NOT `date.toISOString().slice(0, 10)`, which renders the UTC day and misstates the date around local midnight (day granularity — cache stability).
 
 - [ ] **Step 1: Write the failing renderer tests** (`overlay.test.ts`)
 
   - `joinPromptParts drops empty parts` — `joinPromptParts('A', '', 'B')` = `'A\n\nB'`; all-empty = `''`.
   - `renderMemorySection empty → ''`.
   - `renderMemorySection formats labels and order` — two files (project, local) → exact string with `Contents of <path> (project instructions):` blocks in input order under `# Memory Files`.
-  - `renderEnvironment exact format` — fixed date `new Date('2026-11-27T15:00:00Z')` → `Today's date: 2026-11-27` (no time component).
+  - `renderEnvironment exact format` — fixed LOCAL date `new Date(2026, 10, 27, 15, 0, 0)` → `Today's date: 2026-11-27` (no time component). Local-time constructors keep the fixtures timezone-independent; a further pin renders the LOCAL day for constructs whose UTC day differs (local 00:30 east of UTC, local 23:30 west of UTC).
 
 - [ ] **Step 2: Run to verify fail**
 

@@ -122,7 +122,11 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
 /** Test entry point: builds the real host adapters for a test provider.
  *  Pass the same stateDir/uploadStore the provider itself receives so the
  *  ports stay consistent with its wiring; bare `makeNativePorts()` gives a
- *  config/aux/transcript-only setup for handle-only unit sessions. */
+ *  config/aux/transcript-only setup for handle-only unit sessions. Memory
+ *  defaults to an EMPTY stub here — never the real host reader — so test
+ *  ports stay hermetic on machines with a real ~/.claude/CLAUDE.md; inject
+ *  deps.memory for a fixture-backed chain. */
 export function makeNativePorts(deps: NativeHostPortsDeps = {}): NativeHostPorts {
-  return createNativeHostPorts(deps)
+  const ports = createNativeHostPorts(deps)
+  return deps.memory ? ports : { ...ports, memory: { read: async () => ({ files: [], isGitRepo: false }) } }
 }

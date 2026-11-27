@@ -26,13 +26,17 @@ export function renderMemorySection(files: readonly NativeMemoryFile[]): string 
   return `# Memory Files\n\n${blocks.join('\n\n')}`
 }
 
-/** The `# Environment` block. The date is day-granularity (no time component)
- *  so the system prefix stays byte-stable across same-day turns for prompt
- *  caching. */
+/** The `# Environment` block. The date is the LOCAL calendar day (local
+ *  getters, not toISOString's UTC day) at day granularity — no time
+ *  component — so the system prefix stays byte-stable across same-day
+ *  turns for prompt caching. */
 export function renderEnvironment(input: { cwd: string; isGitRepo: boolean; platform: string; date: Date }): string {
+  const y = input.date.getFullYear()
+  const m = String(input.date.getMonth() + 1).padStart(2, '0')
+  const d = String(input.date.getDate()).padStart(2, '0')
   return '# Environment\n'
     + `Working directory: ${input.cwd}\n`
     + `Is a git repository: ${input.isGitRepo}\n`
     + `Platform: ${input.platform}\n`
-    + `Today's date: ${input.date.toISOString().slice(0, 10)}`
+    + `Today's date: ${y}-${m}-${d}`
 }

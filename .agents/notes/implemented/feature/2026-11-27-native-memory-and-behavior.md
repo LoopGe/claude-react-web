@@ -90,12 +90,13 @@ no section and no stray separator. The memory section renders one block per
 file labelled with its absolute path and scope, in the order received (model
 precedence) — never re-sorted.
 
-The environment block states cwd, is-git-repo, platform, and the date at DAY
-granularity, so the system prefix stays byte-stable across unchanged same-day
-turns for prompt caching (pinned by a byte-equality test). The git fact rides
-the memory read result (`isGitRepo`): the ancestor walk already stats every
-`.git` marker, so no second git probe and no spawn-time cache are needed —
-this resolves the git-probe seam the design left to the builder.
+The environment block states cwd, is-git-repo, platform, and the LOCAL
+calendar date at DAY granularity, so the system prefix stays byte-stable
+across unchanged same-day turns for prompt caching (pinned by a byte-equality
+test with a frozen clock). The git fact rides the memory read result
+(`isGitRepo`): the ancestor walk already stats every `.git` marker, so no
+second git probe and no spawn-time cache are needed — this resolves the
+git-probe seam the design left to the builder.
 
 `memorySnapshot` caches the latest read: seeded fire-and-forget in the
 constructor (warn-only, closed-guarded) so pre-turn readers like
@@ -208,7 +209,10 @@ Knowingly left out, with the reason:
   additional-working-directories memory** — the CLI has them; local
   single-user usage here does not.
 - **The security-policy / URL-guessing section and Claude Code product
-  identity** — native keeps its own identity line.
+  identity** — the generic secure-coding bullet in Doing tasks stays, but
+  the CLI's security-policy / URL-guessing section is Claude Code harness
+  policy, not generic agent behavior; native keeps its own surface and its
+  own identity line.
 - **A file watcher** — the mtime check at turn boundaries is the freshness
   mechanism.
 - **A per-command permission mechanism for `cd` compounds** — it does not
@@ -231,12 +235,16 @@ the malformed-pointer boundary stop, and the fsRoot bound itself.
 < environment < skills), a memory edit landing on the next turn, byte-stable
 same-day system strings, empty-chain section omission, subagent inheritance
 (memory + environment + behavior, without the Agent guidance), and the Memory
-Files row summing into the used total / omitted when empty. Session tests
-default to an empty memory stub so they never read the real chain.
+Files row summing into the used total / omitted when empty. `makeNativePorts`
+(the test-only ports entry point) defaults memory to an empty stub for all
+test ports, so tests never read the real chain; `native-session.test.ts`
+additionally injects controllable fixtures.
 `behavior.test.ts`, `overlay.test.ts` and `bash.test.ts` pin section order and
-substance, the absence of product references, exact renderer formats, and the
-Bash semantics sentence (including the absence of the permission-prompt
-rationale). `host-free.test.ts` bans `native-host-memory` from core imports.
+substance, the absence of product references, exact renderer formats (the
+environment date is the LOCAL calendar day, pinned against UTC-day
+rendering), and the Bash semantics sentence (including the absence of the
+permission-prompt rationale). `host-free.test.ts` bans `native-host-memory`
+from core imports.
 
 ## Related
 

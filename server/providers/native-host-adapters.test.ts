@@ -212,4 +212,17 @@ describe('host adapters aggregate', () => {
     expect(ports.mcpTransport.isAuthError(authErr)).toBe(isMcpAuthError(authErr))
     expect(ports.mcpTransport.isAuthError(authErr)).toBe(true)
   })
+
+  it('makeNativePorts defaults memory to an empty stub, never the real host chain', async () => {
+    const ports = makeNativePorts()
+    // process.cwd() is this repo: the real reader would find its CLAUDE.md,
+    // so a non-empty result here means the test ports leaked the host chain.
+    expect(await ports.memory.read(process.cwd())).toEqual({ files: [], isGitRepo: false })
+  })
+
+  it('makeNativePorts passes an injected memory reader through', async () => {
+    const fixture = { files: [{ path: '/repo/CLAUDE.md', scope: 'project' as const, content: 'RULES' }], isGitRepo: true }
+    const ports = makeNativePorts({ memory: { read: async () => fixture } })
+    expect(await ports.memory.read('/repo')).toEqual(fixture)
+  })
 })
