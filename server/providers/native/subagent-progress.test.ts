@@ -14,25 +14,16 @@ import type { ContentBlock, TokenUsage, ToolCallBlock } from './vocabulary/types
 import type { CanonicalEvent } from './canonical.js'
 import type { OperationalFrame } from './vocabulary/live-frame.js'
 import type { ToolDef } from './tools/types.js'
+import type { AgentToolDeps } from './subagent.js'
 import { metrics } from '../../metrics.js'
 
 // ── helpers ─────────────────────────────────────────────────────────────
 
 type ProgressFrame = Extract<OperationalFrame, { type: 'task/progress' }>
 
-/** The widened fork request the seam actually receives (the optional fork
- *  overrides ride structurally through AgentToolDeps['streamFor']). */
-type ForkReq = {
-  model: string
-  system: string
-  tools: unknown[]
-  messages: unknown[]
-  signal: AbortSignal
-  appendMessages?: unknown[]
-  maxTokens?: number
-  forkProfile?: boolean
-  thinking?: { type: 'disabled' }
-}
+/** The fork request the seam receives — the AgentToolDeps streamFor request
+ *  contract, fork overrides included. */
+type ForkReq = Parameters<AgentToolDeps['streamFor']>[0]
 
 const toolCall = (id: string, name: string): ToolCallBlock => ({
   type: 'tool-call',

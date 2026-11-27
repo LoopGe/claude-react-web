@@ -430,6 +430,11 @@ export interface NativeSessionOptions {
    *  `undefined` = enabled; the provider normalizes the create-body value to
    *  an explicit boolean (`?? true`). */
   promptSuggestions?: boolean
+  /** Subagent progress-summary intent (SDK `Options.agentProgressSummaries`).
+   *  `undefined` = enabled; the provider normalizes the create-body value to
+   *  an explicit boolean (`?? true`). Gates ONLY the summary fork — the
+   *  mechanical task/progress frame is always on. */
+  agentProgressSummaries?: boolean
   system: string
   /** The prompt a nested (Agent/Task) run gets: the parent system WITHOUT the
    *  shared delegation section, since nested tools exclude both names and a
@@ -844,6 +849,9 @@ export class NativeSession implements NativeSessionCore {
       skillView: (policy) => this.skills.view(policy ?? this.baseSkillPolicy),
       skillToolFor: (view) => this.skillToolFor(view),
       tasks: this.tasks,
+      agentProgressSummaries: this.opts.agentProgressSummaries ?? true,
+      // The dep request (per-request + fork overrides) forwards unchanged
+      // into the session seam, which reads the optional fields.
       streamFor: (req, streamOpts) => this.streamFor(req, {
         ...streamOpts,
         suppressRetryFrames: true,

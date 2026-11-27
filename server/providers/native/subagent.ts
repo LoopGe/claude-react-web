@@ -5,7 +5,9 @@ import type { CanonicalEvent } from './canonical.js'
 import type { FrameContext } from './vocabulary/frame-context.js'
 import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
-import type { EffortLevel } from './anthropic-stream.js'
+import type { EffortLevel, RequestOutputFormat } from './anthropic-stream.js'
+import type { ThinkingSetting } from '../../../shared/session-info.js'
+import { SubagentProgress } from './subagent-progress.js'
 import { profileFromDefinition, type NativeAgentProfile } from './agent-profile.js'
 import { filterToolsForProfile } from './agent-tools.js'
 import type { NativeSkillView } from './skills.js'
@@ -53,8 +55,27 @@ export interface AgentToolDeps {
   /** Nested runs never retain the parent view's stateful Skill tool instance. */
   skillToolFor(view: NativeSkillView): ToolDef
   tasks: NativeTaskManager
+  /** Gates the progress tracker's summary fork (the mechanical task/progress
+   *  frame is always on). The session producer mirrors the claude provider's
+   *  `opts.agentProgressSummaries ?? true` default. */
+  agentProgressSummaries: boolean
+  /** The session's nested-stream seam. The request mirrors the session's
+   *  streamFor contract: `thinking`/`outputFormat` are per-request overrides,
+   *  `appendMessages`/`maxTokens`/`forkProfile` are the nested-fork overrides
+   *  (the progress-summary fork) — absent → session defaults. */
   streamFor(
-    req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
+    req: {
+      model: string
+      system: string
+      tools: unknown[]
+      messages: unknown[]
+      signal: AbortSignal
+      thinking?: ThinkingSetting
+      outputFormat?: RequestOutputFormat
+      appendMessages?: unknown[]
+      maxTokens?: number
+      forkProfile?: boolean
+    },
     opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined },
   ): AsyncIterable<CanonicalEvent>
   requestPermission(
@@ -253,6 +274,26 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
       // the next runTurn appends to the SAME history (the Stop seam's
       // continuation shape, one level up).
       const nestedHistory: RequestMessage[] = []
+      // Live task-panel progress for this run: observes the nested frames in
+      // the emit interceptor below, ticks on the CLI cadence while the run is
+      // in flight, and stops in the finally. The summary fork reuses this
+      // run's own model/system/tools so its prefix reads the prompt cache.
+      const progress = new SubagentProgress({
+        taskId: ctx.toolUseId,
+        toolUseId: ctx.toolUseId,
+        description: typeof input.description === 'string' ? input.description.trim() : '',
+        subagentType: agentType,
+        enabled: deps.agentProgressSummaries,
+        history: () => nestedHistory,
+        model: nestedModel,
+        system: nestedSystem,
+        tools: nestedTools,
+        streamFor: deps.streamFor,
+        attachmentProjection: deps.attachmentProjection,
+        emit: deps.emit,
+        parentToolUseId: nestedCtx.parentToolUseId ?? null,
+        signal: ctx.signal,
+      })
       const turnDeps: LoopDeps = {
         stream: (req) => deps.streamFor(req, {
           suppressRetryFrames: true,
@@ -276,6 +317,7 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
           return deps.requestPermission(toolName, toolInput, toolUseId, signal, nestedPermissionMode, readOnlyHint)
         },
         emit: (frame) => {
+          progress.observe(frame)
           if ('type' in frame && frame.type === 'assistant-frame') {
             const content = frame.message.content
             assistantTexts.push(content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join(''))
@@ -336,6 +378,9 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
         if (startContext.length > 0) {
           initialMessages.push({ role: 'user', content: [{ type: 'text', text: startContext.join('\n') }] })
         }
+        // The cadence covers the whole nested run, including any SubagentStop
+        // forced continuations below; the finally stops it once the run ends.
+        progress.start()
         turn = await runTurn(turnDeps, nestedCtx, nestedHistory, initialMessages, nestedModel, ctx.signal)
         if (ctx.signal.aborted) return { text: 'aborted', isError: true }
         // SubagentStop seam (RS §3/§9): dispatch at the final report, BEFORE
@@ -390,6 +435,7 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
       } catch (err) {
         return { text: err instanceof Error ? err.message : String(err), isError: true }
       } finally {
+        progress.stop()
         // A foreground child ends with its parent; a detached child reaches this
         // only when its own task ends. Neither may clear another history's reads.
         deps.attachmentProjection.preparedPdfs?.clearHistory(nestedCtx.parentToolUseId ?? 'main')

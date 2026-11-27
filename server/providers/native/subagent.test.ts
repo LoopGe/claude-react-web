@@ -1,8 +1,10 @@
 // server/providers/native/subagent.test.ts
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { createAgentTool, type AgentToolDeps } from './subagent.js'
+import { PROGRESS_INTERVAL_MS, PROGRESS_MAX_TOKENS, PROGRESS_SUMMARY_PROMPT } from './subagent-progress.js'
 import type { NativeLoopFrame } from './loop.js'
+import type { OperationalFrame } from './vocabulary/live-frame.js'
 import { projectNativeFrameToSdk, projectNativeEventToSdk } from '../native-host-frame-adapter.js'
 import { defaultFrameContext, type Frame } from '../native-frames.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -16,8 +18,10 @@ import { createSkillTool } from './tools/skill.js'
 import type { NativeSkillCatalog, NativeSkillView } from './skills.js'
 import type { EffortLevel } from './anthropic-stream.js'
 
-type StreamReq = { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal }
-type StreamOpts = { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined }
+/** The dep's stream request contract (base round fields + the optional
+ *  per-request / fork overrides the session seam accepts). */
+type StreamReq = Parameters<AgentToolDeps['streamFor']>[0]
+type StreamOpts = Parameters<AgentToolDeps['streamFor']>[1]
 
 /** One entry per nested API round-trip; captures the request and the opts so
  *  the tests can assert what the nested loop asked for. */
@@ -121,6 +125,7 @@ function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
     skillToolFor: (view) => createSkillTool(view as unknown as NativeSkillCatalog),
     tasks: new NativeTaskManager(() => {}),
     streamFor: async function* () { /* replaced by tests */ },
+    agentProgressSummaries: true,
     requestPermission: async (_t, input, _id, _signal) => ({ allowed: true, input }),
     emit: () => {},
     persistToolResult: () => {},
@@ -876,5 +881,142 @@ describe('createAgentTool', () => {
       { description: 'd', prompt: 'p' },
       { cwd: process.cwd(), signal: new AbortController().signal },
     )).rejects.toThrow('Agent requires a tool_use id')
+  })
+})
+
+/** A tool whose execution parks on a gate so a cadence tick can land MID-run
+ *  (the progress tracker only ticks while the nested turn is in flight). */
+function gatedTool(name: string) {
+  let release!: () => void
+  let started!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const startedPromise = new Promise<void>((resolve) => { started = resolve })
+  const tool: ToolDef = {
+    ...noopTool,
+    name,
+    async run() {
+      started()
+      await gate
+      return { text: 'tool done' }
+    },
+  }
+  return { tool, release, started: startedPromise }
+}
+
+type ProgressFrame = Extract<OperationalFrame, { type: 'task/progress' }>
+
+describe('subagent progress wiring', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  /** The neutral task/progress frames the session emit received, in order. */
+  function progressOf(emitted: Array<{ frame: NativeLoopFrame; parent: string | null }>): ProgressFrame[] {
+    return emitted
+      .filter((e): e is { frame: ProgressFrame; parent: string | null } =>
+        'type' in e.frame && e.frame.type === 'task/progress')
+      .map((e) => e.frame)
+  }
+
+  it('emits task/progress on the 30s cadence mid-run, never forks when disabled, and stops after settle', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 'inner-1', 'Gated', '{}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const gated = gatedTool('Gated')
+    const emitted: Array<{ frame: NativeLoopFrame; parent: string | null }> = []
+    const agent = createAgentTool(baseDeps({
+      agentProgressSummaries: false,
+      tools: () => [gated.tool],
+      streamFor: s.streamFor.bind(s),
+      emit: (frame, parent) => { emitted.push({ frame, parent }) },
+      agentStore: fakeStore({
+        reviewer: { name: 'reviewer', description: 'Reviews', prompt: 'REVIEW', enabled: true },
+      }),
+    }))
+
+    const pending = runAgent(agent, { description: '  inspect logs  ', prompt: 'p', subagent_type: 'reviewer' })
+    await gated.started
+    await vi.advanceTimersByTimeAsync(PROGRESS_INTERVAL_MS)
+
+    // One mechanical frame through the SESSION emit, stamped with the
+    // subagent's own tool_use id as both task identity and sidechain parent.
+    const progress = progressOf(emitted)
+    expect(progress).toHaveLength(1)
+    expect(progress[0]).toMatchObject({
+      type: 'task/progress',
+      taskId: 'tu-parent',
+      toolUseId: 'tu-parent',
+      description: 'inspect logs',
+      subagentType: 'reviewer',
+      lastToolName: 'Gated',
+    })
+    expect(progress[0].usage.toolUses).toBe(1)
+    expect(progress[0].usage.totalTokens).toBeGreaterThan(0)
+    expect(progress[0].usage.durationMs).toBeGreaterThanOrEqual(PROGRESS_INTERVAL_MS)
+    expect(emitted.find((e) => 'type' in e.frame && e.frame.type === 'task/progress')?.parent).toBe('tu-parent')
+    // Disabled option: the mechanical frame stands, no summary fork ran.
+    expect(progress[0].summary).toBeUndefined()
+    expect(s.calls).toHaveLength(1)
+
+    gated.release()
+    expect(await pending).toEqual({ text: 'done' })
+
+    // The tracker stopped with the run: later ticks emit nothing and the
+    // nested loop made exactly its two rounds (no fork).
+    await vi.advanceTimersByTimeAsync(PROGRESS_INTERVAL_MS * 3)
+    expect(progressOf(emitted)).toHaveLength(1)
+    expect(s.calls).toHaveLength(2)
+  })
+
+  it('runs the summary fork through the session seam when enabled and emits its summary frame', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 'inner-1', 'Gated', '{}'), deltaStop('tool_use')],
+      // The fork's single round (consumed mid-run), then the nested final round.
+      [startStop, ...textBlock(0, 'Reading the diff'), deltaStop('end_turn')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const gated = gatedTool('Gated')
+    const emitted: Array<{ frame: NativeLoopFrame; parent: string | null }> = []
+    const agent = createAgentTool(baseDeps({
+      agentProgressSummaries: true,
+      tools: () => [gated.tool],
+      streamFor: s.streamFor.bind(s),
+      emit: (frame, parent) => { emitted.push({ frame, parent }) },
+    }))
+
+    const pending = runAgent(agent, { description: 'd', prompt: 'p' })
+    await gated.started
+    await vi.advanceTimersByTimeAsync(PROGRESS_INTERVAL_MS)
+
+    // The fork rode the SAME dep seam with the nested run's model/system and
+    // the fork overrides: small cap, stripped profile, breakpoint-free tail
+    // synthesizing a result for the still-running tool call.
+    expect(s.calls).toHaveLength(2)
+    const fork = s.calls[1]
+    expect(fork.model).toBe(s.calls[0].model)
+    expect(fork.system).toBe(s.calls[0].system)
+    expect(fork.forkProfile).toBe(true)
+    expect(fork.maxTokens).toBe(PROGRESS_MAX_TOKENS)
+    expect(fork.appendMessages).toEqual([{
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'inner-1', content: '(tool still running)' },
+        { type: 'text', text: PROGRESS_SUMMARY_PROMPT },
+      ],
+    }])
+    // Mechanical frame + the fork's summary frame, both via the session emit.
+    const progress = progressOf(emitted)
+    expect(progress).toHaveLength(2)
+    expect(progress[0].summary).toBeUndefined()
+    expect(progress[1].summary).toBe('Reading the diff')
+    expect(progress[1].toolUseId).toBe('tu-parent')
+
+    gated.release()
+    expect(await pending).toEqual({ text: 'done' })
+    expect(s.calls).toHaveLength(3)
+
+    // Stopped after settle: no further frames on later ticks.
+    await vi.advanceTimersByTimeAsync(PROGRESS_INTERVAL_MS * 3)
+    expect(progressOf(emitted)).toHaveLength(2)
   })
 })

@@ -79,18 +79,6 @@ function forkTail(snapshot: readonly RequestMessage[]): { role: 'user'; content:
   return { role: 'user', content }
 }
 
-/** The fork overrides the widened nested-stream seam forwards (Task 2):
- *  a breakpoint-free tail, a small output cap, stripped effort/fast-mode, and
- *  the model-gated thinking-disabled config. `AgentToolDeps['streamFor']`'s
- *  request type widens to match in the wiring task; until then the overrides
- *  ride the request structurally (the session seam already reads them). */
-type ProgressForkRequest = Parameters<AgentToolDeps['streamFor']>[0] & {
-  appendMessages?: unknown[]
-  maxTokens?: number
-  forkProfile?: boolean
-  thinking?: { type: 'disabled' }
-}
-
 export interface SubagentProgressDeps {
   taskId: string
   toolUseId: string
@@ -206,7 +194,10 @@ export class SubagentProgress {
       const snapshot = this.deps.history().slice()
       const prefix = await projectNativeHistoryToWire(snapshot, this.deps.attachmentProjection, signal)
       if (signal.aborted) return
-      const req: ProgressForkRequest = {
+      // The fork overrides the session seam accepts on the dep request: a
+      // breakpoint-free tail, a small output cap, stripped effort/fast-mode,
+      // and the model-gated thinking-disabled config.
+      const req: Parameters<AgentToolDeps['streamFor']>[0] = {
         model: this.deps.model,
         system: this.deps.system,
         // IDENTICAL to the loop's per-round projection (loop.ts:208) so the

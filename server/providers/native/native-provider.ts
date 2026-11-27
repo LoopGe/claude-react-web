@@ -336,6 +336,7 @@ export class NativeProvider implements AgentProvider {
         commandsUserRoot: claudeConfigDir(),
         toolProfile: extractToolProfile(sdkOptions),
         promptSuggestions: opts.promptSuggestions ?? true,
+        agentProgressSummaries: opts.agentProgressSummaries ?? true,
         system,
         subagentSystem,
         canUseTool: opts.canUseTool,
