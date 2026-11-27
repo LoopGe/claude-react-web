@@ -13,6 +13,10 @@ describe('bashTool', () => {
   it('declares shell background metadata using the command as its description', () => {
     expect(bashTool.backgroundable?.taskType).toBe('shell')
     expect(bashTool.backgroundable?.describe({ command: 'sleep 10' })).toBe('sleep 10')
+    // Opt-in only: absent/false keeps the foreground wait-for-output contract.
+    expect(bashTool.backgroundable?.shouldBackground?.({ command: 'sleep 10', run_in_background: true })).toBe(true)
+    expect(bashTool.backgroundable?.shouldBackground?.({ command: 'sleep 10', run_in_background: false })).toBe(false)
+    expect(bashTool.backgroundable?.shouldBackground?.({ command: 'sleep 10' })).toBe(false)
   })
 
   it('description states execution semantics', () => {

@@ -343,6 +343,43 @@ describe('runTurn — neutral emission + neutral history', () => {
     await expect(waiting).resolves.toMatchObject({ finalText: 'done' })
   })
 
+  it('auto-detaches when shouldBackground is true, with no host detach call', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 'tu-auto', 'Detachable', '{"command":"go","run_in_background":true}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const execution = deferred<ToolOutcome>()
+    let taskSignal: AbortSignal | undefined
+    const tool: ToolDef<{ command: string; run_in_background?: boolean }> = {
+      name: 'Detachable', description: 'd', guidance: 'g', promptOrder: 1, schema: {},
+      backgroundable: {
+        taskType: 'shell',
+        describe: (input) => `run ${input.command}`,
+        shouldBackground: (input) => input.run_in_background === true,
+      },
+      async run(_input, ctx) { taskSignal = ctx.signal; return execution.promise },
+    }
+    const taskFrames: OperationalFrame[] = []
+    const tasks = new NativeTaskManager((frame) => taskFrames.push(frame))
+    const turn = new AbortController()
+    const waiting = runTurn(
+      baseDeps({ stream: s.stream.bind(s), tools: [tool], tasks }),
+      defaultFrameContext('sess-1'), [], userText('hi'), 'm1', turn.signal,
+    )
+    await vi.waitFor(() => expect(s.calls).toHaveLength(2))
+    const results = wireToolResults(s.calls[1])
+    expect(results).toEqual([expect.objectContaining({ tool_use_id: 'tu-auto', is_error: false })])
+    expect(results[0].content[0].text).toContain('TaskOutput')
+    expect(taskFrames).toEqual([
+      expect.objectContaining({ type: 'task/started', taskId: 'tu-auto', isBackgrounded: true }),
+    ])
+    // The detach resolves the loop, not the run: the task keeps its own live
+    // signal and settles later through the task manager.
+    expect(taskSignal!.aborted).toBe(false)
+    execution.resolve({ text: 'eventual output' })
+    await expect(waiting).resolves.toMatchObject({ finalText: 'done' })
+  })
+
   it('keeps non-backgroundable tools on the direct path with the original turn signal', async () => {
     const s = scriptedStreamer([
       [startStop, ...toolUseBlock(0, 'tu-direct', 'Direct', '{}'), deltaStop('tool_use')],

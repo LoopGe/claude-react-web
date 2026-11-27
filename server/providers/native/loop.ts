@@ -26,7 +26,7 @@ import type { CanonicalEvent, CanonicalUsagePartial } from './canonical.js'
 import { projectNativeHistoryToWire } from './wire/wire-projection.js'
 import type { FrameContext } from './vocabulary/frame-context.js'
 import type { NativeTaskManager } from './task-manager.js'
-import type { ToolDef } from './tools/types.js'
+import type { ToolDef, ToolOutcome } from './tools/types.js'
 import type { NativeProjectionOptions } from './attachment-projection.js'
 import type { HookDecision, HookEvent } from './hooks/types.js'
 import type { ThinkingSetting } from '../../../shared/session-info.js'
@@ -462,14 +462,23 @@ export async function runTurn(
             historyKey: ctx.parentToolUseId ?? 'main',
           })
         const backgroundable = tool.backgroundable
-        const outcome = backgroundable
-          ? await deps.tasks.runForeground({
-              toolUseId: call.id,
-              taskType: backgroundable.taskType,
-              description: backgroundable.describe(toolInput),
-              subagentType: backgroundable.subagentType?.(toolInput),
-            }, execute, signal, ctx.parentToolUseId ?? undefined)
-          : await execute(signal)
+        let outcome: ToolOutcome
+        if (backgroundable) {
+          const running = deps.tasks.runForeground({
+            toolUseId: call.id,
+            taskType: backgroundable.taskType,
+            description: backgroundable.describe(toolInput),
+            subagentType: backgroundable.subagentType?.(toolInput),
+          }, execute, signal, ctx.parentToolUseId ?? undefined)
+          // Model-initiated backgrounding: runForeground registers the record
+          // synchronously, so detaching here — BEFORE awaiting the loop
+          // promise — resolves it with the TaskOutput launch acknowledgement
+          // while the run continues on the task's own controller.
+          if (backgroundable.shouldBackground?.(toolInput)) deps.tasks.background(call.id)
+          outcome = await running
+        } else {
+          outcome = await execute(signal)
+        }
         text = outcome.text
         // Tools already emit neutral vocabulary content (text blocks + file
         // occurrences keeping their full resolved attachment), so it travels

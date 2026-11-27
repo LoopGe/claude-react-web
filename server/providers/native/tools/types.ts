@@ -55,6 +55,10 @@ export interface ToolDef<In = Record<string, unknown>> {
     taskType: 'shell' | 'subagent'
     describe(input: In): string
     subagentType?(input: In): string | undefined
+    /** Model-initiated backgrounding: when true, the loop detaches the call
+     *  immediately after launch (the tool_result is the TaskOutput launch
+     *  acknowledgement, not the run's output). Absent = host-detach only. */
+    shouldBackground?(input: In): boolean
   }
   run(input: In, ctx: ToolContext): Promise<ToolOutcome>
 }

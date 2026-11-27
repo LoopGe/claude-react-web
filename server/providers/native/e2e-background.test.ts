@@ -483,6 +483,175 @@ describe('native background task acceptance through direct provider handles', ()
     afterRestart.unsubscribe()
   }, 30000)
 
+  it('backgrounds Bash via run_in_background with no host detach call', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-model-bg-bash-'))
+    dirs.push(dir)
+    const bash = await controlledBash(dir, 'model-bg-bash')
+    const fx = await makeFixture(dir)
+    fx.setStream((_req, round) => {
+      if (round === 1) {
+        return toolUseTurn('model-bg-bash', 'Bash', { command: bash.command, run_in_background: true })
+      }
+      if (round === 2) {
+        return toolUseTurn('read-model-bg', 'TaskOutput', {
+          task_id: 'model-bg-bash', block: true, timeout: 5000,
+        })
+      }
+      return textTurn('PARENT-AFTER-MODEL-BG')
+    })
+    const id = await createSession(fx, dir, 'model-bg-bash')
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    try {
+      await fx.sm.send(id, 'run a command in the background')
+      // No handle.backgroundTasks / REST call anywhere in this test: the
+      // model's run_in_background:true is the ONLY detach trigger.
+      await waitForFile(bash.started)
+      await vi.waitFor(() => expect(fx.requests).toHaveLength(2), { timeout: 5000 })
+      const acknowledgements = toolResultBlocks(frames, 'model-bg-bash')
+      expect(acknowledgements).toHaveLength(1)
+      expect(acknowledgements[0].is_error).toBe(false)
+      expect(toolResultText(acknowledgements[0])).toContain('TaskOutput')
+      // A foreground shell emits NO task frame (claude parity), so a panel
+      // record at all proves the detach's task/started(isBackgrounded:true)
+      // was emitted and folded.
+      expect(liveSession(fx.sm, id).tasks.get('model-bg-bash')).toMatchObject({
+        status: 'running',
+        isBackgrounded: true,
+      })
+      expect(taskNotifications(frames, 'model-bg-bash')).toHaveLength(0)
+
+      await bash.release()
+      await vi.waitFor(() => {
+        expect(topLevelResults(frames)).toHaveLength(1)
+        expect(taskNotifications(frames, 'model-bg-bash')).toHaveLength(1)
+      }, { timeout: 5000 })
+      const panel = liveSession(fx.sm, id).tasks.get('model-bg-bash')
+      expect(panel).toMatchObject({ status: 'completed', isBackgrounded: true })
+      expect(panel?.result).toContain(bash.output)
+      const outputResults = toolResultBlocks(frames, 'read-model-bg')
+      expect(outputResults).toHaveLength(1)
+      expect(outputResults[0].is_error).toBe(false)
+      expect(toolResultText(outputResults[0])).toContain(panel!.result!)
+      expect(toolResultBlocks(frames, 'model-bg-bash')).toHaveLength(1)
+      expect(topLevelResults(frames)).toHaveLength(1)
+      expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-MODEL-BG')
+    } finally {
+      await bash.release()
+      unsubscribe()
+    }
+  }, 30000)
+
+  it('backgrounds Agent via run_in_background and publishes its real report on settle', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-model-bg-agent-'))
+    dirs.push(dir)
+    const fx = await makeFixture(dir)
+    let parentRounds = 0
+    let markNestedStarted!: () => void
+    const nestedStarted = new Promise<void>((resolve) => { markNestedStarted = resolve })
+    let releaseNested!: () => void
+    const nestedGate = new Promise<void>((resolve) => { releaseNested = resolve })
+    fx.setStream(async (req) => {
+      if (isNestedRequest(req)) {
+        markNestedStarted()
+        await nestedGate
+        return textTurn('MODEL-BG-AGENT-REPORT')
+      }
+      // The detach resolves the parent BEFORE the nested request starts, so
+      // the parent script keys on its own round count, not the nested one.
+      parentRounds++
+      return parentRounds === 1
+        ? toolUseTurn('model-bg-agent', 'Agent', {
+            description: 'background research', prompt: 'inspect', run_in_background: true,
+          })
+        : textTurn('PARENT-AFTER-MODEL-BG-AGENT')
+    })
+    const id = await createSession(fx, dir, 'model-bg-agent')
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    try {
+      await fx.sm.send(id, 'delegate research in the background')
+      // No host detach call: run_in_background:true alone detaches the Agent.
+      await nestedStarted
+      await vi.waitFor(() => expect(topLevelResults(frames)).toHaveLength(1), { timeout: 5000 })
+      const acknowledgements = toolResultBlocks(frames, 'model-bg-agent')
+      expect(acknowledgements).toHaveLength(1)
+      expect(acknowledgements[0].is_error).toBe(false)
+      expect(toolResultText(acknowledgements[0])).toContain('TaskOutput')
+      expect(liveSession(fx.sm, id).tasks.get('model-bg-agent')).toMatchObject({
+        status: 'running',
+        isBackgrounded: true,
+      })
+      expect(taskNotifications(frames, 'model-bg-agent')).toHaveLength(0)
+
+      releaseNested()
+      await vi.waitFor(() => {
+        expect(taskNotifications(frames, 'model-bg-agent')).toHaveLength(1)
+      }, { timeout: 5000 })
+      const notifications = taskNotifications(frames, 'model-bg-agent')
+      expect(notifications[0].result).toBe('MODEL-BG-AGENT-REPORT')
+      expect(notifications[0].result).not.toContain('running in the background')
+      const sidechain = frames.filter((frame) => frame.parent_tool_use_id != null)
+      expect(sidechain.length).toBeGreaterThan(0)
+      expect(sidechain.every((frame) => frame.parent_tool_use_id === 'model-bg-agent')).toBe(true)
+      expect(toolResultBlocks(frames, 'model-bg-agent')).toHaveLength(1)
+      expect(topLevelResults(frames)).toHaveLength(1)
+      expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-MODEL-BG-AGENT')
+    } finally {
+      releaseNested()
+      unsubscribe()
+    }
+  }, 30000)
+
+  it('keeps Agent foreground when run_in_background is absent or false and returns the report', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-model-fg-agent-'))
+    dirs.push(dir)
+    const fx = await makeFixture(dir)
+    let parentRounds = 0
+    let nestedRounds = 0
+    fx.setStream((req) => {
+      if (isNestedRequest(req)) {
+        nestedRounds++
+        return textTurn(nestedRounds === 1 ? 'FG-REPORT-ABSENT' : 'FG-REPORT-FALSE')
+      }
+      parentRounds++
+      if (parentRounds === 1) {
+        return toolUseTurn('fg-agent-absent', 'Agent', { description: 'foreground absent', prompt: 'inspect' })
+      }
+      if (parentRounds === 2) {
+        return toolUseTurn('fg-agent-false', 'Agent', {
+          description: 'foreground false', prompt: 'inspect', run_in_background: false,
+        })
+      }
+      return textTurn('PARENT-AFTER-FOREGROUND')
+    })
+    const id = await createSession(fx, dir, 'model-fg-agent')
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    try {
+      await fx.sm.send(id, 'delegate two foreground subtasks')
+      await vi.waitFor(() => expect(topLevelResults(frames)).toHaveLength(1), { timeout: 5000 })
+      // The established foreground contract: the tool_result IS the subagent
+      // report, never a detach acknowledgement.
+      for (const [callId, report] of [
+        ['fg-agent-absent', 'FG-REPORT-ABSENT'],
+        ['fg-agent-false', 'FG-REPORT-FALSE'],
+      ] as const) {
+        const results = toolResultBlocks(frames, callId)
+        expect(results).toHaveLength(1)
+        expect(results[0].is_error).toBe(false)
+        expect(toolResultText(results[0])).toBe(report)
+        expect(liveSession(fx.sm, id).tasks.get(callId)).toMatchObject({
+          status: 'completed',
+          isBackgrounded: false,
+        })
+      }
+      expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-FOREGROUND')
+    } finally {
+      unsubscribe()
+    }
+  }, 30000)
+
   it('enables the existing background and stop routes without changing their response shapes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'native-background-routes-'))
     dirs.push(dir)

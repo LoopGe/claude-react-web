@@ -139,6 +139,10 @@ interface AgentToolInput {
    *  Model-emitted, so a non-object value reaches the attach-time scan, which
    *  rejects it loudly. */
   outputSchema?: Record<string, unknown>
+  /** Opt-in backgrounding: true detaches the run at launch (the tool_result
+   *  is the TaskOutput launch acknowledgement). Absent/false keeps the
+   *  foreground contract — the tool_result IS the subagent's final report. */
+  run_in_background?: boolean
 }
 
 /** Shared Agent/Task guidance. The provider registers only `tool:Agent`; nested
@@ -176,6 +180,13 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
             'calling StructuredOutput with arguments matching this schema, and that captured value ' +
             '(as JSON) becomes this tool result instead of the final text report.',
         },
+        run_in_background: {
+          type: 'boolean',
+          description:
+            'Set to true to run the subagent in the background: the call returns immediately with a task id ' +
+            'instead of the final report, and you retrieve the report later with TaskOutput. Defaults to ' +
+            'false (foreground: this call waits and returns the subagent report).',
+        },
       },
       required: ['description', 'prompt'],
     },
@@ -189,6 +200,7 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
         const value = (raw as unknown as AgentToolInput).subagent_type
         return typeof value === 'string' && value.trim() ? value.trim() : 'general-purpose'
       },
+      shouldBackground: (raw) => (raw as unknown as AgentToolInput).run_in_background === true,
     },
     async run(raw, ctx) {
       const input = raw as unknown as AgentToolInput

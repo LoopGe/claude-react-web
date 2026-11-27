@@ -162,6 +162,7 @@ describe('createAgentTool', () => {
         subagent_type: { type: 'string', description: expect.any(String) },
         model: { type: 'string', description: expect.any(String) },
         outputSchema: { type: 'object', description: expect.any(String) },
+        run_in_background: { type: 'boolean', description: expect.any(String) },
       },
       required: ['description', 'prompt'],
     })
@@ -185,6 +186,13 @@ describe('createAgentTool', () => {
       .toBe('general-purpose')
     expect(agent.backgroundable?.subagentType?.({ description: 'd', prompt: 'p', subagent_type: 42 }))
       .toBe('general-purpose')
+    // Opt-in only: absent/false keeps the foreground report contract.
+    expect(agent.backgroundable?.shouldBackground?.({ description: 'd', prompt: 'p', run_in_background: true }))
+      .toBe(true)
+    expect(agent.backgroundable?.shouldBackground?.({ description: 'd', prompt: 'p', run_in_background: false }))
+      .toBe(false)
+    expect(agent.backgroundable?.shouldBackground?.({ description: 'd', prompt: 'p' }))
+      .toBe(false)
   })
 
   it.each(['Agent', 'Task'] as const)('detaches %s through the shared task manager and preserves its final report', async (toolName) => {

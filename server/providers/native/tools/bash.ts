@@ -24,7 +24,7 @@ export function capToolText(text: string): string {
   return text.slice(0, HEAD_CHARS) + '\n...[truncated]...\n' + text.slice(-TAIL_CHARS)
 }
 
-export const bashTool: ToolDef<{ command: string; timeout_ms?: number }> = {
+export const bashTool: ToolDef<{ command: string; timeout_ms?: number; run_in_background?: boolean }> = {
   name: 'Bash',
   description: 'Run a shell command and return its output. Every call starts in the session working directory; a `cd` does not carry over to the next call, and shell state (env vars, functions) does not persist.',
   guidance: 'Check the [exit code: N] marker on every bash result; investigate failures before moving on. Maintain the working directory by using absolute paths; use `cd` only when the user explicitly requests it. Never prepend `cd <working-directory>` to a command — it already runs in the session working directory, so the prefix is redundant (this applies to `git` commands especially).',
@@ -34,12 +34,20 @@ export const bashTool: ToolDef<{ command: string; timeout_ms?: number }> = {
     properties: {
       command: { type: 'string', description: 'The shell command to run.' },
       timeout_ms: { type: 'number', description: `Kill the command after this many ms. Defaults to ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}.` },
+      run_in_background: {
+        type: 'boolean',
+        description:
+          'Set to true to run this command in the background: the call returns immediately with a task id ' +
+          'instead of waiting, and you retrieve the final output later with TaskOutput. Use for long-running ' +
+          'commands (servers, watches) so the turn can continue. Defaults to false.',
+      },
     },
     required: ['command'],
   },
   backgroundable: {
     taskType: 'shell',
     describe: (input) => input.command,
+    shouldBackground: (input) => input.run_in_background === true,
   },
   async run(input, ctx) {
     if (typeof input.command !== 'string' || input.command.trim() === '') {
