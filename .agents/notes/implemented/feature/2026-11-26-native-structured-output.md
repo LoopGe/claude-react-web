@@ -251,3 +251,11 @@ acceptEdits gates, delegates through a native-default manager, and rejects
 `maxBudgetUsd` and unsupported schemas loudly.
 `server/permission-broker.test.ts` pins the dontAsk auto-allow and the plan
 gate passing the capture with its `readOnlyHint`.
+
+## Related
+
+[Auth-aware native default flip](2026-11-27-native-default-flip.md) (Block 3)
+activates the live-panel routing deferred above: `runStructured` follows the
+auth-aware effective default, and StructuredPanel hides and omits
+`maxBudgetUsd` for native. The provider-only phase boundary was this note's
+G2-phase decision; the panel now rides native when an API token is configured.

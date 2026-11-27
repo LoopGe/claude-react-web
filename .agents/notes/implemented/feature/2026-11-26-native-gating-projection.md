@@ -192,3 +192,13 @@ drift mutation). `SettingsPanel.test.tsx` / `UsagePanel.test.tsx` pin
 show-but-locked panels with zero fetches, per-boolean independence, and
 claude/legacy no-regression; `NewSessionDialog.test.tsx` pins the locked
 picker and live unlock in both provider-switch directions.
+
+## Related
+
+[Auth-aware native default flip](2026-11-27-native-default-flip.md) (Block 3)
+supersedes the create-dialog picker lock above: the picker gates on
+`pluginSkills` (functional on both providers), and native's `enabledPlugins`
+narrowing is an intentional, payload-pinned selection — resolving the open
+submit-path follow-up under Deferred. The settings plugins tab lock
+(`pluginsSupported`) and every other gate in this note stand. The picker tests
+now pin the functional behavior.
