@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 // and neutral shared/skills.js are distinct modules from the host's
 // server/skills.ts / server/subagent-transcripts.ts and must not false-positive.
 //
-// Tolerated residuals (type-only, injected-store types outside the six-port
+// Tolerated residuals (type-only, injected-store types outside the seven-port
 // scope): `import type { StoredAgentDefinition }` in agent-profile.ts and
 // session-log/format.ts, and `import type { AgentDefinitionStore }` in
 // native-provider.ts, native-session.ts and subagent.ts. A type-only import of
@@ -41,6 +41,7 @@ const HOST_SERVICE_MODULES = [
   'server/history-utils',
   'server/subagent-transcripts',
   'server/agent-definition-store',
+  'server/providers/native-host-memory',
 ]
 
 /** The port contract plus the neutral shared modules it leans on. These must

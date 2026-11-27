@@ -1,9 +1,10 @@
 // Host-side implementations of the native provider's service ports
 // (native/ports.ts). This module lives OUTSIDE native/ on purpose: it is the
 // only place that wraps the host service modules (config, anthropic-api,
-// mcp-config, attachment stores, skills, history-reader, subagent-transcripts)
-// into the neutral port interfaces. default-providers.ts constructs the ports
-// and injects them via NativeProvider opts; tests use makeNativePorts().
+// mcp-config, attachment stores, skills, history-reader, subagent-transcripts,
+// the CLAUDE.md memory reader) into the neutral port interfaces.
+// default-providers.ts constructs the ports and injects them via
+// NativeProvider opts; tests use makeNativePorts().
 
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import { config, DEFAULT_PROFILE, type ServerConfig } from '../config.js'
@@ -18,9 +19,10 @@ import type { MpStore } from '../mp-store.js'
 import { normalize, paginateRenderable } from '../history-reader.js'
 import { normalizeSubagentLine } from '../subagent-transcripts.js'
 import { projectNativeEventToSdkLine } from './native-host-frame-adapter.js'
+import { createMemoryReader } from './native-host-memory.js'
 import type { UploadStore } from '../upload-store.js'
 import { resolveNativeStateDir } from './native/session-log/paths.js'
-import type { NativeConfigPort, NativeHostPorts } from './native/ports.js'
+import type { NativeConfigPort, NativeHostPorts, NativeMemoryPort } from './native/ports.js'
 
 export interface NativeHostPortsDeps {
   /** App state dir; resolved exactly like NativeProvider's own stateDir so
@@ -37,6 +39,9 @@ export interface NativeHostPortsDeps {
   /** Marketplace store for read-only plugin-skill discovery. Absent = the
    *  skill port stays user/project-only (handle-only unit sessions). */
   mpStore?: MpStore
+  /** CLAUDE.md chain-reader override (tests inject fixture-backed readers);
+   *  absent = the real host reader, createMemoryReader(). */
+  memory?: NativeMemoryPort
 }
 
 /** Build the real host adapters for one NativeProvider. The ConfigPort is a
@@ -102,6 +107,7 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
       normalizeSubagentLine: (line, sessionId) => normalizeSubagentLine(line, sessionId),
       projectEventToSdkLine: (event, sessionId) => projectNativeEventToSdkLine(event, sessionId),
     },
+    memory: deps.memory ?? createMemoryReader(),
   }
 }
 

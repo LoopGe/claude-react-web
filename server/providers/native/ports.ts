@@ -1,11 +1,12 @@
 // Native-defined host-service ports: the injection boundary through which the
 // native provider receives the host capabilities it does not own (config,
 // auxiliary LLM calls, MCP transports, verified attachment reads, skill
-// discovery, transcript normalization). The interfaces are neutral — only
-// shared/* types and SDK types cross this boundary; the real implementations
-// live HOST-side (../native-host-adapters.ts) and are injected via
-// NativeProvider opts.ports. Raw credential fields never cross into native:
-// ConfigPort hands over resolved profiles, not the config singleton.
+// discovery, transcript normalization, the CLAUDE.md memory chain). The
+// interfaces are neutral — only shared/* types and SDK types cross this
+// boundary; the real implementations live HOST-side
+// (../native-host-adapters.ts) and are injected via NativeProvider opts.ports.
+// Raw credential fields never cross into native: ConfigPort hands over
+// resolved profiles, not the config singleton.
 
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
@@ -93,6 +94,25 @@ export interface NativeTranscriptPort {
   projectEventToSdkLine(event: NativeSessionEvent, sessionId: string): RawLine | null
 }
 
+/** Host-side CLAUDE.md chain reader. Worktree origin resolution and per-file
+ *  caching are host concerns; the core receives text only. `files` is ordered
+ *  user first, then project ancestors root→cwd; a worktree chain loads the
+ *  worktree's own files first, then the origin repo chain. */
+export interface NativeMemoryFile {
+  path: string
+  scope: 'user' | 'project' | 'local'
+  content: string
+}
+
+export interface NativeMemoryReadResult {
+  files: NativeMemoryFile[]
+  isGitRepo: boolean
+}
+
+export interface NativeMemoryPort {
+  read(cwd: string): Promise<NativeMemoryReadResult>
+}
+
 /** The grouped domain ports injected as one unit through NativeProvider opts
  *  and threaded into NativeSessionOptions. */
 export interface NativeHostPorts {
@@ -102,4 +122,5 @@ export interface NativeHostPorts {
   attachment: NativeAttachmentPort
   skill: NativeSkillPort
   transcript: NativeTranscriptPort
+  memory: NativeMemoryPort
 }

@@ -194,9 +194,9 @@ describe('ConfigPort adapter cache + live-view semantics', () => {
 })
 
 describe('host adapters aggregate', () => {
-  it('exposes all six ports and delegates the pure transforms to the host modules', () => {
+  it('exposes all seven ports and delegates the pure transforms to the host modules', () => {
     const ports = createNativeHostPorts()
-    expect(Object.keys(ports).sort()).toEqual(['attachment', 'auxLlm', 'config', 'mcpTransport', 'skill', 'transcript'])
+    expect(Object.keys(ports).sort()).toEqual(['attachment', 'auxLlm', 'config', 'mcpTransport', 'memory', 'skill', 'transcript'])
     const line = { type: 'assistant', uuid: 'u1', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } }
     expect(ports.transcript.normalize(line, 's1', true)).toEqual(normalize(line, 's1', true))
     expect(ports.transcript.paginateRenderable([line], 's1', { limit: 10 }))
