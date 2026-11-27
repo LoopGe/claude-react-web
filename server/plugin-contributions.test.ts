@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { listPluginContributions } from './plugin-contributions.js'
 import { MpStore, type EnabledPluginEntry } from './mp-store.js'
 import { makeNativePorts } from './providers/native-host-adapters.js'
@@ -63,6 +63,26 @@ function stub(entries: EnabledPluginEntry[]) {
   }
 }
 
+/** Directory link that needs no privileges on Windows (junction); a plain
+ *  symlink on POSIX. realpath resolves both to the target. */
+async function linkDir(target: string, path: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  await symlink(resolve(target), path, 'junction')
+}
+
+/** FILE symlinks need privileges on Windows (junctions don't). Returns false
+ *  when the OS refuses, so the file-link cases skip visibly instead of failing
+ *  on an unprivileged machine. */
+async function tryFileLink(target: string, path: string): Promise<boolean> {
+  await mkdir(dirname(path), { recursive: true })
+  try {
+    await symlink(resolve(target), path, 'file')
+    return true
+  } catch {
+    return false
+  }
+}
+
 const COMMAND_MATCHER = { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo hi' }] }
 
 describe('listPluginContributions — convention discovery', () => {
@@ -90,9 +110,9 @@ describe('listPluginContributions — convention discovery', () => {
   it('fills agent bookkeeping from the file mtime and passes the closed-field coerce', async () => {
     const entry = await makePlugin('demo')
     const file = join(entry.dir, 'agents', 'reviewer.md')
-    // `tools`/`model` are outside parseSkillFrontmatter's grammar and outside
-    // the built def: the stored shape carries only the closed AGENT_FIELDS set.
-    await writeMd(file, { name: 'reviewer', description: 'Reviews code', tools: 'Read, Grep', model: 'sonnet' }, 'You are a reviewer.')
+    // `color` is outside the closed AGENT_FIELDS set and never enters the def;
+    // the CLI-honored fields are pinned separately below.
+    await writeMd(file, { name: 'reviewer', description: 'Reviews code', color: 'blue' }, 'You are a reviewer.')
     const mtime = (await stat(file)).mtimeMs
 
     const [contrib] = await listPluginContributions(stub([entry]))
@@ -104,9 +124,9 @@ describe('listPluginContributions — convention discovery', () => {
     expect(Object.keys(def).sort()).toEqual(['createdAt', 'description', 'enabled', 'name', 'prompt', 'updatedAt'])
   })
 
-  it('falls back to the file basename when agent frontmatter has no name', async () => {
+  it('names agents from their path, not their frontmatter name (CLI rule)', async () => {
     const entry = await makePlugin('demo')
-    await writeMd(join(entry.dir, 'agents', 'fallback.md'), { description: 'No name field' }, 'Body text')
+    await writeMd(join(entry.dir, 'agents', 'fallback.md'), { name: 'ignored', description: 'No name field' }, 'Body text')
 
     const [contrib] = await listPluginContributions(stub([entry]))
 
@@ -176,6 +196,18 @@ describe('listPluginContributions — manifest shadowing', () => {
     expect(contrib!.commands).toEqual([
       { name: 'about', description: 'Override', argumentHint: '[file]', body: 'file body\n' },
       { name: 'inline', description: 'Inline command', argumentHint: '', body: 'Inline body' },
+    ])
+  })
+
+  it('parses frontmatter out of inline object-map content', async () => {
+    const entry = await makePlugin('demo', {
+      manifest: { commands: { about: { content: '---\ndescription: Inline desc\nargument-hint: "[file]"\n---\n\nInline body' } } },
+    })
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands).toEqual([
+      { name: 'about', description: 'Inline desc', argumentHint: '[file]', body: 'Inline body' },
     ])
   })
 
@@ -267,6 +299,25 @@ describe('listPluginContributions — hooks', () => {
 
     expect(Object.keys(contrib!.hooks).sort()).toEqual(['PreToolUse', 'SessionStart', 'Stop'])
     expect(contrib!.errors).toEqual([])
+  })
+
+  it('loads a hooks file once when the manifest re-declares it (realpath dedup)', async () => {
+    const entry = await makePlugin('demo', { manifest: { hooks: ['./hooks/hooks.json', './hooks/../hooks/hooks.json'] } })
+    await writeJson(join(entry.dir, 'hooks', 'hooks.json'), { hooks: { PreToolUse: [COMMAND_MATCHER] } })
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.hooks).toEqual({ PreToolUse: [COMMAND_MATCHER] })
+    expect(contrib!.errors).toEqual([])
+  })
+
+  it('reports a manifest-declared hooks file that is missing, not swallowed by the absent convention file', async () => {
+    const entry = await makePlugin('demo', { manifest: { hooks: './hooks/hooks.json' } })
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.hooks).toEqual({})
+    expect(contrib!.errors.some((e) => e.kind === 'hooks')).toBe(true)
   })
 
   it('rejects executable modules but still loads the hooks matchers (data-only)', async () => {
@@ -373,6 +424,189 @@ describe('listPluginContributions — traversal guards', () => {
   })
 })
 
+describe('listPluginContributions — recursive discovery and namespacing', () => {
+  it('namespaces nested commands and agents by their subdirectories', async () => {
+    const entry = await makePlugin('demo')
+    await writeMd(join(entry.dir, 'commands', 'frontend', 'component.md'), { description: 'Component' }, 'command body')
+    await writeMd(join(entry.dir, 'commands', 'about.md'), { description: 'About' }, 'about body')
+    await writeMd(join(entry.dir, 'agents', 'sub', 'reviewer.md'), { description: 'Reviewer' }, 'agent prompt')
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands.map((c) => c.name)).toEqual(['about', 'frontend:component'])
+    // Integration adds the plugin prefix — the CLI's full composed name.
+    expect(contrib!.commands.map((c) => `${contrib!.name}:${c.name}`)).toEqual(['demo:about', 'demo:frontend:component'])
+    expect(contrib!.agents.map((a) => `${contrib!.name}:${a.name}`)).toEqual(['demo:sub:reviewer'])
+    expect(contrib!.errors).toEqual([])
+  })
+
+  it('scans a directory-valued manifest entry instead of refusing it', async () => {
+    const entry = await makePlugin('demo', { manifest: { commands: ['cmdroot'], agents: ['agentroot'] } })
+    await writeMd(join(entry.dir, 'cmdroot', 'about.md'), { description: 'About' }, 'body')
+    await writeMd(join(entry.dir, 'cmdroot', 'deep', 'thing.md'), { description: 'Thing' }, 'body')
+    await writeMd(join(entry.dir, 'agentroot', 'sub', 'reviewer.md'), { description: 'Reviewer' }, 'prompt')
+    await writeMd(join(entry.dir, 'commands', 'hidden.md'), { description: 'Hidden' }, 'body')
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands.map((c) => c.name)).toEqual(['about', 'deep:thing'])
+    expect(contrib!.agents.map((a) => a.name)).toEqual(['sub:reviewer'])
+    expect(contrib!.errors).toEqual([])
+  })
+
+  it('stops the command walk at a skill dir and never loads SKILL.md as a command', async () => {
+    const entry = await makePlugin('demo')
+    await writeMd(join(entry.dir, 'commands', 'skillish', 'SKILL.md'), { description: 'A skill' }, 'skill body')
+    await writeMd(join(entry.dir, 'commands', 'skillish', 'nested.md'), { description: 'Nested' }, 'body')
+    await writeMd(join(entry.dir, 'commands', 'ok.md'), { description: 'Ok' }, 'body')
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands.map((c) => c.name)).toEqual(['ok'])
+  })
+
+  it('reports the depth cap instead of silently truncating a deep tree', async () => {
+    const entry = await makePlugin('demo')
+    const deep = join(entry.dir, 'commands', ...Array.from({ length: 9 }, (_, i) => `d${i + 1}`))
+    await writeMd(join(deep, 'deep.md'), { description: 'Deep' }, 'body')
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands).toEqual([])
+    expect(contrib!.errors.some((e) => e.kind === 'commands' && e.detail.includes('depth cap'))).toBe(true)
+  })
+
+  it('sanitizes non-ASCII names instead of dropping them (CJK is core)', async () => {
+    const entry = await makePlugin('demo')
+    await writeMd(join(entry.dir, 'commands', '中文命令.md'), { description: 'Chinese command' }, '命令正文')
+    await writeMd(join(entry.dir, 'commands', '前端', '组件.md'), { description: 'Nested CJK' }, 'body')
+    await writeMd(join(entry.dir, 'agents', '审查员.md'), { description: 'Chinese agent' }, 'prompt')
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands.map((c) => c.name).sort()).toEqual(['----', '--:--'].sort())
+    expect(contrib!.commands.find((c) => c.name === '----')!.body).toBe('命令正文\n')
+    expect(contrib!.agents.map((a) => a.name)).toEqual(['---'])
+    expect(contrib!.errors).toEqual([])
+  })
+})
+
+describe('listPluginContributions — agent frontmatter fields', () => {
+  it('keeps the CLI-honored fields through the closed-field coerce', async () => {
+    const entry = await makePlugin('demo')
+    await writeMd(join(entry.dir, 'agents', 'reviewer.md'), {
+      description: 'Reviews code',
+      tools: 'Read, Grep',
+      model: 'sonnet',
+      disallowedTools: 'Bash',
+      mcpServers: 'github',
+      skills: 'tdd',
+      permissionMode: 'plan',
+      maxTurns: '12',
+      effort: 'high',
+    }, 'You are a reviewer.')
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    const def = contrib!.agents[0]!
+    expect(def).toMatchObject({
+      tools: ['Read', 'Grep'],
+      model: 'sonnet',
+      disallowedTools: ['Bash'],
+      mcpServers: ['github'],
+      skills: ['tdd'],
+      permissionMode: 'plan',
+      maxTurns: 12,
+      effort: 'high',
+    })
+    expect(coerceStoredAgentDefinition(def)).toEqual(def)
+    expect(contrib!.errors).toEqual([])
+  })
+
+  it('parses flow-array and block-list frontmatter forms', async () => {
+    const entry = await makePlugin('demo')
+    const file = join(entry.dir, 'agents', 'lists.md')
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, ['---', 'description: Lists', 'tools: [Read, Grep]', 'skills:', '  - tdd', '  - review', '---', '', 'Body'].join('\n'), 'utf8')
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.agents[0]).toMatchObject({ tools: ['Read', 'Grep'], skills: ['tdd', 'review'] })
+  })
+})
+
+describe('listPluginContributions — realpath containment', () => {
+  it('refuses an in-dir link that resolves outside the plugin dir during the walk', async () => {
+    const entry = await makePlugin('demo', { relDir: 'mp/plugins/demo' })
+    const outside = resolve(root, 'mp', 'outside')
+    await writeMd(join(outside, 'secret.md'), { description: 'Secret' }, 'SECRET BODY')
+    await linkDir(outside, join(entry.dir, 'commands', 'linked'))
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands).toEqual([])
+    expect(contrib!.errors.some((e) => e.kind === 'traversal')).toBe(true)
+  })
+
+  it('refuses an in-dir FILE symlink pointing outside the plugin dir', async (ctx) => {
+    const entry = await makePlugin('demo', { relDir: 'mp/plugins/demo' })
+    const outside = resolve(root, 'mp', 'outside')
+    await writeMd(join(outside, 'secret.md'), { description: 'Secret' }, 'SECRET BODY')
+    if (!await tryFileLink(join(outside, 'secret.md'), join(entry.dir, 'commands', 'link.md'))) ctx.skip()
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands).toEqual([])
+    expect(contrib!.errors.some((e) => e.kind === 'traversal')).toBe(true)
+  })
+
+  it('refuses a convention .mcp.json that is a link out of the plugin', async (ctx) => {
+    const entry = await makePlugin('demo', { relDir: 'mp/plugins/demo' })
+    const outside = resolve(root, 'mp', 'outside')
+    await writeJson(join(outside, 'mcp.json'), { mcpServers: { escaped: {} } })
+    if (!await tryFileLink(join(outside, 'mcp.json'), join(entry.dir, '.mcp.json'))) ctx.skip()
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.mcpServers).toEqual({})
+    expect(contrib!.errors.some((e) => e.kind === 'traversal')).toBe(true)
+  })
+
+  it('refuses manifest-declared paths that traverse an in-dir link', async () => {
+    const entry = await makePlugin('demo', {
+      relDir: 'mp/plugins/demo',
+      manifest: { commands: ['linked/secret.md'], agents: ['linked/secret.md'], hooks: 'linked/hooks.json', mcpServers: 'linked/mcp.json' },
+    })
+    const outside = resolve(root, 'mp', 'outside')
+    await writeMd(join(outside, 'secret.md'), { description: 'Secret' }, 'SECRET BODY')
+    await writeJson(join(outside, 'hooks.json'), { hooks: { PreToolUse: [COMMAND_MATCHER] } })
+    await writeJson(join(outside, 'mcp.json'), { mcpServers: { escaped: {} } })
+    await linkDir(outside, join(entry.dir, 'linked'))
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands).toEqual([])
+    expect(contrib!.agents).toEqual([])
+    expect(contrib!.hooks).toEqual({})
+    expect(contrib!.mcpServers).toEqual({})
+    expect(contrib!.errors.filter((e) => e.kind === 'traversal')).toHaveLength(4)
+  })
+})
+
+describe('listPluginContributions — malformed manifest declarations', () => {
+  it('reports wrong shapes and non-string members instead of only logging them', async () => {
+    const entry = await makePlugin('demo', {
+      manifest: { agents: { wrong: 'shape' }, commands: ['commands/ok.md', 42], hooks: 42, mcpServers: [7] },
+    })
+    await writeMd(join(entry.dir, 'commands', 'ok.md'), { description: 'Ok' }, 'body')
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands.map((c) => c.name)).toEqual(['ok'])
+    expect(contrib!.errors.filter((e) => e.kind === 'manifest')).toHaveLength(4)
+  })
+})
+
 describe('listPluginContributions — per-plugin isolation', () => {
   it('reports a corrupt manifest and still returns the other plugins', async () => {
     const bad = await makePlugin('bad', { rawManifest: '{not json' })
@@ -433,6 +667,8 @@ describe('NativePluginPort host adapter', () => {
       manifest: { name: 'fake', plugins: [{ name: 'demo', dir, source: { kind: 'in-repo' } }] },
     })
     store.setEnabled('demo', 'm', true)
+    // Flush so no debounced write timer outlives the temp dir (afterEach rm).
+    await store.flush()
 
     expect(makeNativePorts({ stateDir: join(root, 'state') }).plugin).toBeUndefined()
 

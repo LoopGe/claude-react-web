@@ -82,10 +82,11 @@ export interface NativeSkillPort {
   listSkills(cwd?: string, enabledPlugins?: string[]): Promise<{ roots: SkillRootInfo[]; skills: SkillRecord[] }>
 }
 
-/** One plugin slash command. `name` is the BARE command name — the
- *  `plugin:name` qualification happens at integration, exactly like plugin
- *  skills. `body` is the prompt template (file body or manifest inline
- *  content). */
+/** One plugin slash command. `name` is the BARE command name — the plugin's
+ *  subdirectory namespace plus the sanitized file basename (`frontend:component`),
+ *  or the manifest object-map key. The `plugin:` qualification happens at
+ *  integration, exactly like plugin skills. `body` is the prompt template (file
+ *  body or manifest inline content, frontmatter already parsed out). */
 export interface PluginCommand {
   name: string
   description: string
@@ -106,8 +107,10 @@ export interface PluginContributionError {
 /** Everything one enabled plugin contributes besides skills (the skill catalog
  *  owns those). `key` is the compound `<plugin>@<marketplace>` Settings key;
  *  `name` is the plugin's own manifest name with the catalog name as fallback.
- *  `hooks` is validated SessionHooksConfig; `mcpServers` stays opaque server
- *  configs — merge precedence belongs to the consumer, not the loader. */
+ *  Command and agent names are path-derived and subdir-namespaced, bare of the
+ *  plugin prefix. `hooks` is validated SessionHooksConfig (files deduped by
+ *  realpath); `mcpServers` stays opaque server configs — merge precedence
+ *  belongs to the consumer, not the loader. */
 export interface PluginContributions {
   key: string
   name: string

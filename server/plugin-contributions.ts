@@ -5,24 +5,36 @@
 // coerce; the neutral core reaches it through NativePluginPort only.
 //
 // CLI conventions (verified against the SDK bundle's manifest schemas,
-// core-0bjz4v5z.mjs): `commands` is a path | path[] | record<name, {source |
-// content, description?, argumentHint?}> and SHADOWS the commands/ dir;
-// `agents` is a path | path[] and shadows agents/; `hooks` is a path | inline
-// matchers map | array of either, ADDITIVE to hooks/hooks.json; `mcpServers` is
-// a path | inline server map | array of either, ADDITIVE to .mcp.json.
-// hooks.json carries `hooks` (matchers) and/or `modules` (executable code) —
-// modules are REFUSED per plugin: native loads plugin data, never plugin code.
+// core-0bjz4v5z.mjs, and the CLI binary's loaders): `commands` is a path |
+// path[] | record<name, {source | content, description?, argumentHint?}> and
+// SHADOWS the commands/ dir; `agents` is a path | path[] and shadows agents/;
+// `hooks` is a path | inline matchers map | array of either, ADDITIVE to
+// hooks/hooks.json; `mcpServers` is a path | inline server map | array of
+// either, ADDITIVE to .mcp.json. hooks.json carries `hooks` (matchers) and/or
+// `modules` (executable code) — modules are REFUSED per plugin: native loads
+// plugin data, never plugin code.
 //
-// Every manifest and file is untrusted. Failures are contained twice: per
-// contribution type (one bad hooks.json never loses the plugin's commands) and
-// per plugin (one bad plugin never rejects the pass). A refusal is reported in
-// the record's `errors` and logged, never silently absorbed.
+// commands/ and agents/ are walked RECURSIVELY: a file's name is its sanitized
+// subdirectory namespace joined with its sanitized basename (`frontend:component`),
+// the plugin prefix being added at integration. A declared entry may name a
+// DIRECTORY, which is walked the same way. Command walks stop at a skill dir
+// (a directory holding SKILL.md) and never load SKILL.md itself. Names are
+// SANITIZED, not validated away — a CJK-named command loads under its dashed
+// name instead of vanishing.
+//
+// Every manifest and file is untrusted. Containment is REALPATH-based (the
+// CLI's rule): a lexical escape and a symlink resolving outside the plugin are
+// both refused before any read. Hooks files dedup by realpath, so a manifest
+// re-declaring hooks/hooks.json never fires its matchers twice. Failures are
+// contained twice: per contribution type (one bad hooks.json never loses the
+// plugin's commands) and per plugin (one bad plugin never rejects the pass).
+// Every refusal is reported in the record's `errors` and logged.
 
 import { promises as fs } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createLogger } from './log.js'
 import type { EnabledPluginEntry, MpStore } from './mp-store.js'
-import { MAX_SKILL_BYTES, VALID_SKILL_NAME, parseSkillFrontmatter } from '../shared/skills.js'
+import { MAX_SKILL_BYTES, parseSkillFrontmatter } from '../shared/skills.js'
 import { validateSessionHooksConfig, type HookEvent, type HookMatcherConfig, type SessionHooksConfig } from '../shared/hooks.js'
 import { isPlainObject } from '../shared/type-guards.js'
 import { coerceStoredAgentDefinition, type StoredAgentDefinition } from './agent-definition-store.js'
@@ -43,6 +55,12 @@ const COMMANDS_DIR = 'commands'
 const AGENTS_DIR = 'agents'
 const HOOKS_FILE = join('hooks', 'hooks.json')
 const MCP_FILE = '.mcp.json'
+const SKILL_FILE = 'SKILL.md'
+
+/** Walk bounds for one contribution root. A bound that binds is REPORTED, so a
+ *  pathological plugin tree degrades loudly instead of silently truncating. */
+const MAX_SCAN_DEPTH = 8
+const MAX_SCAN_FILES = 500
 
 function message(err: unknown): string {
   return (err as Error)?.message ?? String(err)
@@ -51,6 +69,13 @@ function message(err: unknown): string {
 function report(errors: PluginContributionError[], kind: string, detail: string): void {
   log.warn(`plugin contribution ${kind}: ${detail}`)
   errors.push({ kind, detail })
+}
+
+/** CLI sanitizer (plugin-skills.ts's rule): every character outside
+ *  [a-zA-Z0-9_-] becomes '-'. Applied per path segment, so a non-ASCII name
+ *  loads under a dashed name rather than being dropped. */
+function sanitizeName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, '-')
 }
 
 /** One object-map command declaration: `source` (file path(s)) XOR `content`
@@ -78,27 +103,30 @@ interface PluginManifest {
   mcpServers: Addition[]
 }
 
-/** string | string[] → its string members. Non-string members are warned about
- *  and ignored; any other shape leaves the field undeclared (plugin-skills.ts's
- *  normalization). */
-function pathEntries(raw: unknown, field: string, dir: string): { declared: boolean; entries: string[] } {
+/** string | string[] → its string members. Non-string members and wrong shapes
+ *  are reported (the manifest is untrusted, and a silent drop hides a typo). */
+function pathEntries(raw: unknown, field: string, dir: string, errors: PluginContributionError[]): { declared: boolean; entries: string[] } {
   if (typeof raw === 'string') return { declared: raw !== '', entries: raw ? [raw] : [] }
   if (Array.isArray(raw)) {
     const entries = raw.filter((s): s is string => typeof s === 'string')
-    if (entries.length !== raw.length) log.warn(`plugin manifest ${dir}: non-string ${field} entries ignored`)
+    if (entries.length !== raw.length) {
+      report(errors, 'manifest', `${dir}: ${field} has non-string entries, ignored`)
+    }
     return { declared: true, entries }
   }
-  if (raw !== undefined) log.warn(`plugin manifest ${dir}: ${field} must be a string or string[], ignored`)
+  if (raw !== undefined) {
+    report(errors, 'manifest', `${dir}: ${field} must be a string or string[], ignored`)
+  }
   return { declared: false, entries: [] }
 }
 
 /** hooks/mcpServers additions: a path, an inline map, or an array mixing both. */
-function additions(raw: unknown, field: string, dir: string): Addition[] {
+function additions(raw: unknown, field: string, dir: string, errors: PluginContributionError[]): Addition[] {
   if (raw === undefined) return []
   const one = (value: unknown): Addition[] => {
     if (typeof value === 'string') return value ? [{ path: value }] : []
     if (isPlainObject(value)) return [{ inline: value }]
-    log.warn(`plugin manifest ${dir}: ${field} entries must be a path or an object, ignored`)
+    report(errors, 'manifest', `${dir}: ${field} entries must be a path or an object, ignored`)
     return []
   }
   return Array.isArray(raw) ? raw.flatMap(one) : one(raw)
@@ -111,7 +139,7 @@ function optionalString(value: unknown): string | undefined {
 /** Fresh per-scan read of the plugin's own manifest. Absent (ENOENT) →
  *  undefined (catalog-name fallback, no declarations). Any other read failure
  *  or corrupt JSON throws — the caller contains it per plugin. */
-async function readPluginManifest(dir: string): Promise<PluginManifest | undefined> {
+async function readPluginManifest(dir: string, errors: PluginContributionError[]): Promise<PluginManifest | undefined> {
   let raw: string
   try {
     raw = await fs.readFile(join(dir, MANIFEST_FILE), 'utf8')
@@ -125,12 +153,12 @@ async function readPluginManifest(dir: string): Promise<PluginManifest | undefin
   const rawCommands = parsed.commands
   const commands = isPlainObject(rawCommands)
     ? { declared: true, entries: [] as string[] }
-    : pathEntries(rawCommands, 'commands', dir)
+    : pathEntries(rawCommands, 'commands', dir, errors)
   const commandMap: Array<{ name: string; spec: CommandSpec }> = []
   if (isPlainObject(rawCommands)) {
     for (const [commandName, value] of Object.entries(rawCommands)) {
       if (!isPlainObject(value)) {
-        log.warn(`plugin manifest ${dir}: commands.${commandName} must be an object, ignored`)
+        report(errors, 'manifest', `${dir}: commands.${commandName} must be an object, ignored`)
         continue
       }
       const content = optionalString(value.content)
@@ -139,7 +167,7 @@ async function readPluginManifest(dir: string): Promise<PluginManifest | undefin
       commandMap.push({
         name: commandName,
         spec: {
-          sources: pathEntries(value.source, `commands.${commandName}.source`, dir).entries,
+          sources: pathEntries(value.source, `commands.${commandName}.source`, dir, errors).entries,
           ...(content !== undefined ? { content } : {}),
           ...(description !== undefined ? { description } : {}),
           ...(argumentHint !== undefined ? { argumentHint } : {}),
@@ -148,7 +176,7 @@ async function readPluginManifest(dir: string): Promise<PluginManifest | undefin
     }
   }
 
-  const agents = pathEntries(parsed.agents, 'agents', dir)
+  const agents = pathEntries(parsed.agents, 'agents', dir, errors)
   return {
     name,
     commandsDeclared: commands.declared,
@@ -156,15 +184,14 @@ async function readPluginManifest(dir: string): Promise<PluginManifest | undefin
     commandMap,
     agentsDeclared: agents.declared,
     agentPaths: agents.entries,
-    hooks: additions(parsed.hooks, 'hooks', dir),
-    mcpServers: additions(parsed.mcpServers, 'mcpServers', dir),
+    hooks: additions(parsed.hooks, 'hooks', dir, errors),
+    mcpServers: additions(parsed.mcpServers, 'mcpServers', dir, errors),
   }
 }
 
-/** Manifest-declared paths are untrusted: a target must stay inside the plugin
- *  dir (plugin-skills.ts's escape check). An escape is reported and skipped —
- *  the file is never read. */
-function containedPath(dir: string, raw: string, kind: string, errors: PluginContributionError[]): string | null {
+/** First containment gate for a manifest-declared path: the lexical escape
+ *  check (plugin-skills.ts:208-220), refused before any filesystem access. */
+function lexicalTarget(dir: string, raw: string, kind: string, errors: PluginContributionError[]): string | null {
   const target = resolve(dir, raw)
   const rel = relative(dir, target)
   if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
@@ -172,6 +199,28 @@ function containedPath(dir: string, raw: string, kind: string, errors: PluginCon
     return null
   }
   return target
+}
+
+/** Second containment gate (the CLI's realpath rule): the REAL target must stay
+ *  inside the plugin's real root, so an in-dir symlink pointing outside is
+ *  refused, not read. A missing path passes through unchanged — the caller's
+ *  read reports it (ordinary for a convention file, a broken declaration for a
+ *  manifest-listed one). */
+async function realInside(pluginReal: string, target: string, kind: string, errors: PluginContributionError[]): Promise<string | null> {
+  let real: string
+  try {
+    real = await fs.realpath(target)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return target
+    report(errors, kind, `${target}: ${message(err)}`)
+    return null
+  }
+  const rel = relative(pluginReal, real)
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    report(errors, 'traversal', `${kind} target resolves outside the plugin dir, skipping: ${target}`)
+    return null
+  }
+  return real
 }
 
 /** Read + JSON-parse a plugin document. A missing file is ordinary for a
@@ -205,39 +254,113 @@ async function readJsonDocument(
   return parsed
 }
 
-/** Flat `.md` files directly inside a convention dir, sorted for deterministic
- *  order. Symlinks report isSymbolicLink() — never isFile() — so a link pointing
- *  outside the plugin is never read (native/commands.ts's rule). */
-async function markdownFiles(root: string): Promise<string[]> {
-  let entries
-  try {
-    entries = await fs.readdir(root, { withFileTypes: true })
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    // A plugin without a commands/ or agents/ dir is the ordinary case.
-    if (code === 'ENOENT' || code === 'ENOTDIR') return []
-    throw err
+/** One discovered markdown file: its real path and its BARE namespaced name
+ *  (sanitized subdir segments + sanitized basename, `:`-joined). */
+interface DiscoveredFile {
+  file: string
+  name: string
+}
+
+/** Recursive markdown walk (the CLI's commands/agents discovery). Subdirectory
+ *  names become name segments; `stopAtSkillDir` prunes a directory holding
+ *  SKILL.md (a skill is not a command namespace) and skips SKILL.md itself.
+ *  Every candidate passes realpath containment before it is statted or read.
+ *  Output is name-sorted for deterministic order. */
+async function walkMarkdown(
+  root: string,
+  pluginReal: string,
+  kind: string,
+  errors: PluginContributionError[],
+  stopAtSkillDir: boolean,
+): Promise<DiscoveredFile[]> {
+  const out: DiscoveredFile[] = []
+  let capped = false
+  const walk = async (dir: string, segments: string[], depth: number): Promise<void> => {
+    let entries
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true })
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      // A plugin without a commands/ or agents/ dir is the ordinary case.
+      if (code === 'ENOENT' || code === 'ENOTDIR') return
+      report(errors, kind, `${dir}: ${message(err)}`)
+      return
+    }
+    const names = entries.map((e) => e.name).sort((a, b) => a.localeCompare(b))
+    if (stopAtSkillDir && depth > 0 && names.includes(SKILL_FILE)) return
+    for (const name of names) {
+      if (out.length >= MAX_SCAN_FILES) {
+        if (!capped) {
+          capped = true
+          report(errors, kind, `${root}: file cap ${MAX_SCAN_FILES} reached, remaining files omitted`)
+        }
+        return
+      }
+      const full = join(dir, name)
+      const real = await realInside(pluginReal, full, kind, errors)
+      if (!real) continue
+      let stat
+      try {
+        stat = await fs.stat(real)
+      } catch (err) {
+        report(errors, kind, `${full}: ${message(err)}`)
+        continue
+      }
+      if (stat.isFile()) {
+        if (!name.endsWith('.md') || (stopAtSkillDir && name === SKILL_FILE)) continue
+        out.push({ file: real, name: [...segments, sanitizeName(basename(name, '.md'))].join(':') })
+      } else if (stat.isDirectory()) {
+        if (depth + 1 > MAX_SCAN_DEPTH) {
+          report(errors, kind, `${full}: depth cap ${MAX_SCAN_DEPTH} reached, subtree omitted`)
+          continue
+        }
+        await walk(real, [...segments, sanitizeName(name)], depth + 1)
+      }
+    }
   }
-  return entries
-    .filter((e) => e.isFile() && e.name.endsWith('.md'))
-    .map((e) => e.name)
-    .sort((a, b) => a.localeCompare(b))
-    .map((name) => join(root, name))
+  await walk(root, [], 0)
+  return out.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** Resolve one manifest-declared entry to the markdown files it names: a FILE
+ *  loads under its own basename, a DIRECTORY is walked with subdir namespacing
+ *  (the CLI scans directory-valued command/agent entries). */
+async function manifestMarkdownFiles(
+  raw: string,
+  dir: string,
+  pluginReal: string,
+  kind: string,
+  errors: PluginContributionError[],
+  stopAtSkillDir: boolean,
+): Promise<DiscoveredFile[]> {
+  const target = lexicalTarget(dir, raw, kind, errors)
+  if (!target) return []
+  const real = await realInside(pluginReal, target, kind, errors)
+  if (!real) return []
+  let stat
+  try {
+    stat = await fs.stat(real)
+  } catch (err) {
+    report(errors, kind, `${real}: ${message(err)}`)
+    return []
+  }
+  if (stat.isDirectory()) return walkMarkdown(real, pluginReal, kind, errors, stopAtSkillDir)
+  return [{ file: real, name: sanitizeName(basename(real, '.md')) }]
 }
 
 /** Parse one command document (native/commands.ts's parseCommand): a plain
  *  markdown file is a valid command whose whole text is the body; frontmatter
- *  is optional metadata, and a block that never closes is a broken document. */
-function parseCommandDocument(content: string, fileBase: string): PluginCommand | null {
+ *  is optional metadata, and a block that never closes is a broken document.
+ *  Inline manifest content goes through the SAME parse, so a `---` block never
+ *  leaks into the prompt body. */
+function parseCommandDocument(content: string): { description: string; argumentHint: string; body: string } | null {
   const normalized = content.replace(/^\uFEFF/, '')
   if (normalized.split(/\r?\n/, 1)[0]!.trim() !== '---') {
-    return { name: fileBase, description: '', argumentHint: '', body: normalized }
+    return { description: '', argumentHint: '', body: normalized }
   }
   const parsed = parseSkillFrontmatter(normalized)
   if (parsed.body === undefined) return null
-  const name = parsed.name && VALID_SKILL_NAME.test(parsed.name) ? parsed.name : fileBase
   return {
-    name,
     description: parsed.description ?? '',
     argumentHint: parsed.argumentHint ?? '',
     // The single separator newline after the closing delimiter belongs to the
@@ -248,7 +371,7 @@ function parseCommandDocument(content: string, fileBase: string): PluginCommand 
 
 async function readCommandFile(
   file: string,
-  name: string | undefined,
+  name: string,
   overrides: { description?: string; argumentHint?: string },
   errors: PluginContributionError[],
 ): Promise<PluginCommand | null> {
@@ -268,65 +391,141 @@ async function readCommandFile(
     report(errors, 'commands', `${file}: ${message(err)}`)
     return null
   }
-  const cmd = parseCommandDocument(content, name ?? basename(file, '.md'))
-  if (!cmd) {
+  const doc = parseCommandDocument(content)
+  if (!doc) {
     report(errors, 'commands', `${file}: frontmatter is missing its closing ---`)
     return null
   }
   return {
-    // An object-map key names the slash command outright; a file-derived name
-    // keeps the frontmatter-first rule.
-    name: name ?? cmd.name,
-    description: overrides.description ?? cmd.description,
-    argumentHint: overrides.argumentHint ?? cmd.argumentHint,
-    body: cmd.body,
+    name,
+    description: overrides.description ?? doc.description,
+    argumentHint: overrides.argumentHint ?? doc.argumentHint,
+    body: doc.body,
   }
 }
 
-async function scanCommands(dir: string, manifest: PluginManifest | undefined, errors: PluginContributionError[]): Promise<PluginCommand[]> {
+async function scanCommands(
+  dir: string,
+  pluginReal: string,
+  manifest: PluginManifest | undefined,
+  errors: PluginContributionError[],
+): Promise<PluginCommand[]> {
   const out: PluginCommand[] = []
-  if (!manifest?.commandsDeclared) {
-    for (const file of await markdownFiles(join(dir, COMMANDS_DIR))) {
-      const fileBase = basename(file, '.md')
-      if (!VALID_SKILL_NAME.test(fileBase)) continue
-      const cmd = await readCommandFile(file, undefined, {}, errors)
-      if (cmd) out.push(cmd)
+  const files: DiscoveredFile[] = []
+  if (manifest?.commandsDeclared) {
+    for (const raw of manifest.commandPaths) {
+      files.push(...await manifestMarkdownFiles(raw, dir, pluginReal, 'commands', errors, true))
     }
-    return out
+  } else {
+    files.push(...await walkMarkdown(join(dir, COMMANDS_DIR), pluginReal, 'commands', errors, true))
   }
-  for (const raw of manifest.commandPaths) {
-    const target = containedPath(dir, raw, 'commands', errors)
-    if (!target) continue
-    const cmd = await readCommandFile(target, undefined, {}, errors)
+  for (const { file, name } of files) {
+    const cmd = await readCommandFile(file, name, {}, errors)
     if (cmd) out.push(cmd)
   }
-  for (const { name, spec } of manifest.commandMap) {
+  for (const { name, spec } of manifest?.commandMap ?? []) {
     const overrides = { description: spec.description, argumentHint: spec.argumentHint }
     if (spec.content !== undefined && spec.sources.length > 0) {
       report(errors, 'commands', `commands.${name}: declares both source and content; the schema allows only one`)
       continue
     }
     if (spec.content !== undefined) {
-      out.push({ name, description: spec.description ?? '', argumentHint: spec.argumentHint ?? '', body: spec.content })
+      const doc = parseCommandDocument(spec.content)
+      if (!doc) {
+        report(errors, 'commands', `commands.${name}: inline content frontmatter is missing its closing ---`)
+        continue
+      }
+      out.push({
+        name,
+        description: overrides.description ?? doc.description,
+        argumentHint: overrides.argumentHint ?? doc.argumentHint,
+        body: doc.body,
+      })
       continue
     }
     if (spec.sources.length !== 1) {
       report(errors, 'commands', `commands.${name}: needs exactly one source file, got ${spec.sources.length}`)
       continue
     }
-    const target = containedPath(dir, spec.sources[0]!, 'commands', errors)
-    if (!target) continue
-    const cmd = await readCommandFile(target, name, overrides, errors)
-    if (cmd) out.push(cmd)
+    const sources = await manifestMarkdownFiles(spec.sources[0]!, dir, pluginReal, 'commands', errors, true)
+    if (sources.length > 1) {
+      report(errors, 'commands', `commands.${name}: source resolves to ${sources.length} files; one command name needs one file`)
+      continue
+    }
+    for (const { file } of sources) {
+      const cmd = await readCommandFile(file, name, overrides, errors)
+      if (cmd) out.push(cmd)
+    }
   }
   return out
 }
 
-/** One plugin agent: the shared frontmatter grammar supplies name/description,
- *  the body is the prompt, and the closed-field coerce validates it exactly as
- *  a user agent (unsupported fields never enter the def). Names stay BARE —
- *  plugin qualification happens at integration. */
-async function readAgentFile(file: string, errors: PluginContributionError[]): Promise<StoredAgentDefinition | null> {
+/** The CLI-honored optional agent fields, read from the RAW frontmatter lines:
+ *  parseSkillFrontmatter's grammar exposes only name/description/body, while
+ *  coerceStoredAgentDefinition validates this wider closed set. Accepts a
+ *  scalar, a comma list, a flow array (`[a, b]`) and a block list (`- a`). */
+const AGENT_LIST_FIELDS = new Set(['tools', 'disallowedTools', 'mcpServers', 'skills'])
+const AGENT_SCALAR_FIELDS = new Set(['model', 'permissionMode'])
+const AGENT_NUMERIC_FIELDS = new Set(['maxTurns', 'effort'])
+
+function unquote(value: string): string {
+  const trimmed = value.trim()
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1).trim()
+  }
+  return trimmed
+}
+
+function listItems(value: string): string[] {
+  const inner = value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value
+  return inner.split(',').map((item) => unquote(item)).filter((item) => item !== '')
+}
+
+function agentFrontmatterFields(content: string): Record<string, unknown> {
+  const normalized = content.replace(/^\uFEFF/, '')
+  const lines = normalized.split(/\r?\n/)
+  if (lines[0]?.trim() !== '---') return {}
+  const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---')
+  if (end < 0) return {}
+  const out: Record<string, unknown> = {}
+  let pending: { key: string; items: string[] } | null = null
+  const flush = (): void => {
+    if (pending && pending.items.length > 0) out[pending.key] = pending.items
+    pending = null
+  }
+  for (const line of lines.slice(1, end)) {
+    const item = /^\s*-\s*(.+)$/.exec(line)
+    if (pending && item) {
+      pending.items.push(unquote(item[1]!))
+      continue
+    }
+    flush()
+    const match = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line.trim())
+    if (!match) continue
+    const key = match[1]!
+    const value = unquote(match[2]!)
+    if (AGENT_LIST_FIELDS.has(key)) {
+      if (value === '') pending = { key, items: [] }
+      else out[key] = listItems(value)
+    } else if (AGENT_SCALAR_FIELDS.has(key)) {
+      if (value !== '') out[key] = value
+    } else if (AGENT_NUMERIC_FIELDS.has(key)) {
+      if (value === '') continue
+      const numeric = Number(value)
+      // A non-numeric value rides through so coerce strips it loudly.
+      out[key] = Number.isFinite(numeric) ? numeric : value
+    }
+  }
+  flush()
+  return out
+}
+
+/** One plugin agent: the shared frontmatter grammar supplies description and
+ *  the prompt body, the raw-frontmatter pass supplies the CLI-honored optional
+ *  fields, and the closed-field coerce validates the result exactly as a user
+ *  agent. The name is the path-derived namespaced name (CLI rule); plugin
+ *  qualification happens at integration. */
+async function readAgentFile(file: string, name: string, errors: PluginContributionError[]): Promise<StoredAgentDefinition | null> {
   let content: string
   let mtimeMs: number
   try {
@@ -347,7 +546,8 @@ async function readAgentFile(file: string, errors: PluginContributionError[]): P
   }
   const parsed = parseSkillFrontmatter(content)
   const def = coerceStoredAgentDefinition({
-    name: parsed.name?.trim() || basename(file, '.md'),
+    ...agentFrontmatterFields(content),
+    name,
     description: parsed.description ?? '',
     prompt: (parsed.body ?? '').replace(/^\r?\n/, ''),
     enabled: true,
@@ -361,13 +561,23 @@ async function readAgentFile(file: string, errors: PluginContributionError[]): P
   return def
 }
 
-async function scanAgents(dir: string, manifest: PluginManifest | undefined, errors: PluginContributionError[]): Promise<StoredAgentDefinition[]> {
-  const files = manifest?.agentsDeclared
-    ? manifest.agentPaths.map((raw) => containedPath(dir, raw, 'agents', errors)).filter((p): p is string => p !== null)
-    : (await markdownFiles(join(dir, AGENTS_DIR))).filter((file) => VALID_SKILL_NAME.test(basename(file, '.md')))
+async function scanAgents(
+  dir: string,
+  pluginReal: string,
+  manifest: PluginManifest | undefined,
+  errors: PluginContributionError[],
+): Promise<StoredAgentDefinition[]> {
+  const files: DiscoveredFile[] = []
+  if (manifest?.agentsDeclared) {
+    for (const raw of manifest.agentPaths) {
+      files.push(...await manifestMarkdownFiles(raw, dir, pluginReal, 'agents', errors, false))
+    }
+  } else {
+    files.push(...await walkMarkdown(join(dir, AGENTS_DIR), pluginReal, 'agents', errors, false))
+  }
   const out: StoredAgentDefinition[] = []
-  for (const file of files) {
-    const def = await readAgentFile(file, errors)
+  for (const { file, name } of files) {
+    const def = await readAgentFile(file, name, errors)
     if (def) out.push(def)
   }
   return out
@@ -394,10 +604,28 @@ function validateHooks(raw: unknown, source: string, errors: PluginContributionE
 
 /** A hooks document (hooks.json or a manifest-listed file) carries `hooks`
  *  matchers and/or `modules`. Modules are executable plugin code: refused with
- *  a reported error while the matchers still load (data-only non-goal). */
-async function applyHooksDocument(file: string, declared: boolean, errors: PluginContributionError[], target: SessionHooksConfig): Promise<void> {
-  const doc = await readJsonDocument(file, 'hooks', declared, errors)
+ *  a reported error while the matchers still load (data-only non-goal). Files
+ *  dedup by REALPATH, so a manifest re-declaring hooks/hooks.json (or two paths
+ *  to one file) never appends the same matchers twice. */
+async function applyHooksDocument(
+  file: string,
+  declared: boolean,
+  pluginReal: string,
+  errors: PluginContributionError[],
+  target: SessionHooksConfig,
+  seen: Set<string>,
+): Promise<void> {
+  const real = await realInside(pluginReal, file, 'hooks', errors)
+  if (!real) return
+  const doc = await readJsonDocument(real, 'hooks', declared, errors)
   if (!doc) return
+  // Dedup AFTER the read: a missing convention file must not swallow a later
+  // manifest declaration of the same path (that one is a broken declaration).
+  if (seen.has(real)) {
+    log.debug(`plugin hooks file already loaded, skipping duplicate: ${file}`)
+    return
+  }
+  seen.add(real)
   if (doc.modules !== undefined) {
     report(errors, 'modules', `${file}: executable hook modules are not loaded (data-only): ${JSON.stringify(doc.modules)}`)
   }
@@ -406,9 +634,15 @@ async function applyHooksDocument(file: string, declared: boolean, errors: Plugi
   if (value) mergeHooks(target, value)
 }
 
-async function scanHooks(dir: string, manifest: PluginManifest | undefined, errors: PluginContributionError[]): Promise<SessionHooksConfig> {
+async function scanHooks(
+  dir: string,
+  pluginReal: string,
+  manifest: PluginManifest | undefined,
+  errors: PluginContributionError[],
+): Promise<SessionHooksConfig> {
   const hooks: SessionHooksConfig = {}
-  await applyHooksDocument(join(dir, HOOKS_FILE), false, errors, hooks)
+  const seen = new Set<string>()
+  await applyHooksDocument(join(dir, HOOKS_FILE), false, pluginReal, errors, hooks, seen)
   for (const addition of manifest?.hooks ?? []) {
     if ('inline' in addition) {
       // The manifest inline variant IS the matchers map (no `hooks` envelope).
@@ -416,8 +650,8 @@ async function scanHooks(dir: string, manifest: PluginManifest | undefined, erro
       if (value) mergeHooks(hooks, value)
       continue
     }
-    const target = containedPath(dir, addition.path, 'hooks', errors)
-    if (target) await applyHooksDocument(target, true, errors, hooks)
+    const target = lexicalTarget(dir, addition.path, 'hooks', errors)
+    if (target) await applyHooksDocument(target, true, pluginReal, errors, hooks, seen)
   }
   return hooks
 }
@@ -434,18 +668,26 @@ function mergeMcpServers(target: Record<string, unknown>, raw: unknown, source: 
   }
 }
 
-async function scanMcpServers(dir: string, manifest: PluginManifest | undefined, errors: PluginContributionError[]): Promise<Record<string, unknown>> {
+async function scanMcpServers(
+  dir: string,
+  pluginReal: string,
+  manifest: PluginManifest | undefined,
+  errors: PluginContributionError[],
+): Promise<Record<string, unknown>> {
   const servers: Record<string, unknown> = {}
-  const base = await readJsonDocument(join(dir, MCP_FILE), 'mcp', false, errors)
-  if (base) mergeMcpServers(servers, base.mcpServers, MCP_FILE, dir, errors)
+  const base = await realInside(pluginReal, join(dir, MCP_FILE), 'mcp', errors)
+  const baseDoc = base ? await readJsonDocument(base, 'mcp', false, errors) : null
+  if (baseDoc) mergeMcpServers(servers, baseDoc.mcpServers, MCP_FILE, dir, errors)
   for (const addition of manifest?.mcpServers ?? []) {
     if ('inline' in addition) {
       mergeMcpServers(servers, addition.inline, 'manifest mcpServers', dir, errors)
       continue
     }
-    const target = containedPath(dir, addition.path, 'mcpServers', errors)
+    const target = lexicalTarget(dir, addition.path, 'mcpServers', errors)
     if (!target) continue
-    const doc = await readJsonDocument(target, 'mcp', true, errors)
+    const real = await realInside(pluginReal, target, 'mcp', errors)
+    if (!real) continue
+    const doc = await readJsonDocument(real, 'mcp', true, errors)
     if (doc) mergeMcpServers(servers, doc.mcpServers, addition.path, dir, errors)
   }
   return servers
@@ -465,19 +707,22 @@ async function collect<T>(kind: string, fallback: T, errors: PluginContributionE
 async function scanPluginContributions(entry: EnabledPluginEntry): Promise<PluginContributions> {
   const dir = entry.dir
   const errors: PluginContributionError[] = []
+  // Containment is measured against the plugin's REAL root, so a junction or
+  // symlink at the plugin dir itself is the boundary, not its lexical path.
+  const pluginReal = await fs.realpath(dir)
   let manifest: PluginManifest | undefined
   try {
-    manifest = await readPluginManifest(dir)
+    manifest = await readPluginManifest(dir, errors)
   } catch (err) {
     report(errors, 'manifest', `${join(dir, MANIFEST_FILE)}: ${message(err)}`)
   }
   // Prefix authority: the plugin's OWN manifest name read fresh, catalog name
   // as fallback (same rule as plugin-skills.ts).
   const name = manifest?.name ?? entry.name
-  const commands = await collect('commands', [], errors, () => scanCommands(dir, manifest, errors))
-  const agents = await collect('agents', [], errors, () => scanAgents(dir, manifest, errors))
-  const hooks = await collect('hooks', {}, errors, () => scanHooks(dir, manifest, errors))
-  const mcpServers = await collect('mcp', {}, errors, () => scanMcpServers(dir, manifest, errors))
+  const commands = await collect('commands', [], errors, () => scanCommands(dir, pluginReal, manifest, errors))
+  const agents = await collect('agents', [], errors, () => scanAgents(dir, pluginReal, manifest, errors))
+  const hooks = await collect('hooks', {}, errors, () => scanHooks(dir, pluginReal, manifest, errors))
+  const mcpServers = await collect('mcp', {}, errors, () => scanMcpServers(dir, pluginReal, manifest, errors))
   return { key: entry.key, name, dir, commands, agents, hooks, mcpServers, errors }
 }
 
