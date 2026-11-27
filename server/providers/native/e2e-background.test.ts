@@ -12,6 +12,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { TaskRecordUi } from '../../../shared/tasks.js'
+import { isTaskNotificationUserMessage } from '../../../shared/user-frames.js'
 import { SessionStore } from '../../persistence.js'
 import { SessionManager } from '../../session-manager.js'
 import { buildApiRouter } from '../../routes/index.js'
@@ -145,6 +146,16 @@ function taskNotifications(frames: Frame[], taskId: string): Frame[] {
   return frames.filter((frame) => frame.subtype === 'task_notification' && frame.task_id === taskId)
 }
 
+/** The model-facing half of a backgrounded settle: exactly one
+ *  content-classified <task-notification> user injection, whose XML rides the
+ *  continuation turn's request (the last scripted round in these tests). */
+function expectNotificationInjection(fx: Fixture, frames: Frame[]): void {
+  const injections = frames.filter((frame) => isTaskNotificationUserMessage(frame))
+  expect(injections).toHaveLength(1)
+  const continuation = JSON.stringify(fx.requests[fx.requests.length - 1].messages)
+  expect(continuation).toContain('<task-notification>')
+}
+
 function isNestedRequest(req: StreamRequest): boolean {
   return !req.tools.some((tool) => tool.name === 'Agent')
 }
@@ -220,8 +231,10 @@ describe('native background task acceptance through direct provider handles', ()
       expect(acknowledgements[0].is_error).toBe(false)
       expect(toolResultText(acknowledgements[0])).toContain('TaskOutput')
       await bash.release()
+      // The settle injects a <task-notification> continuation turn (CLI
+      // parity), so the parent result plus the continuation result both land.
       await vi.waitFor(() => {
-        expect(topLevelResults(frames)).toHaveLength(1)
+        expect(topLevelResults(frames)).toHaveLength(2)
         expect(taskNotifications(frames, 'bash-detach')).toHaveLength(1)
       }, { timeout: 5000 })
 
@@ -233,7 +246,8 @@ describe('native background task acceptance through direct provider handles', ()
       expect(outputResults[0].is_error).toBe(false)
       expect(toolResultText(outputResults[0])).toContain(panel!.result!)
       expect(toolResultBlocks(frames, 'bash-detach')).toHaveLength(1)
-      expect(topLevelResults(frames)).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(2)
       expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-BASH')
     } finally {
       await bash.release()
@@ -275,8 +289,11 @@ describe('native background task acceptance through direct provider handles', ()
       expect(acknowledgements[0].is_error).toBe(false)
       expect(toolResultText(acknowledgements[0])).toContain('TaskOutput')
       releaseNested()
+      // The backgrounded settle injects a <task-notification> continuation
+      // turn (CLI parity): the parent result plus the continuation result.
       await vi.waitFor(() => {
         expect(taskNotifications(frames, 'agent-detach')).toHaveLength(1)
+        expect(topLevelResults(frames)).toHaveLength(2)
       }, { timeout: 5000 })
 
       const notifications = taskNotifications(frames, 'agent-detach')
@@ -289,7 +306,8 @@ describe('native background task acceptance through direct provider handles', ()
         (frame) => frame.parent_tool_use_id === 'agent-detach',
       )).toBe(true)
       expect(toolResultBlocks(frames, 'agent-detach')).toHaveLength(1)
-      expect(topLevelResults(frames)).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(2)
       expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-AGENT')
     } finally {
       releaseNested()
@@ -335,8 +353,10 @@ describe('native background task acceptance through direct provider handles', ()
       expect(acknowledgements).toHaveLength(1)
       expect(toolResultText(acknowledgements[0])).toContain('TaskOutput')
       await bash.release()
+      // The nested settle injects a <task-notification> continuation turn on
+      // the MAIN thread once the parent settles (CLI parity).
       await vi.waitFor(() => {
-        expect(topLevelResults(frames)).toHaveLength(1)
+        expect(topLevelResults(frames)).toHaveLength(2)
         expect(taskNotifications(frames, 'nested-bash')).toHaveLength(1)
       }, { timeout: 5000 })
 
@@ -349,7 +369,8 @@ describe('native background task acceptance through direct provider handles', ()
       )
       expect(nestedResults).toHaveLength(1)
       expect(nestedResults[0].parent_tool_use_id).toBe('outer-agent')
-      expect(topLevelResults(frames)).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(2)
     } finally {
       await bash.release()
       unsubscribe()
@@ -522,8 +543,10 @@ describe('native background task acceptance through direct provider handles', ()
       expect(taskNotifications(frames, 'model-bg-bash')).toHaveLength(0)
 
       await bash.release()
+      // The settle injects a <task-notification> continuation turn (CLI
+      // parity), so the parent result plus the continuation result both land.
       await vi.waitFor(() => {
-        expect(topLevelResults(frames)).toHaveLength(1)
+        expect(topLevelResults(frames)).toHaveLength(2)
         expect(taskNotifications(frames, 'model-bg-bash')).toHaveLength(1)
       }, { timeout: 5000 })
       const panel = liveSession(fx.sm, id).tasks.get('model-bg-bash')
@@ -534,7 +557,8 @@ describe('native background task acceptance through direct provider handles', ()
       expect(outputResults[0].is_error).toBe(false)
       expect(toolResultText(outputResults[0])).toContain(panel!.result!)
       expect(toolResultBlocks(frames, 'model-bg-bash')).toHaveLength(1)
-      expect(topLevelResults(frames)).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(2)
       expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-MODEL-BG')
     } finally {
       await bash.release()
@@ -571,8 +595,10 @@ describe('native background task acceptance through direct provider handles', ()
         status: 'running',
         isBackgrounded: true,
       })
+      // The stopped settle injects a <task-notification> continuation turn
+      // (CLI parity), so the parent result plus the continuation result land.
       await vi.waitFor(() => {
-        expect(topLevelResults(frames)).toHaveLength(1)
+        expect(topLevelResults(frames)).toHaveLength(2)
         expect(taskNotifications(frames, 'model-task-stop')).toHaveLength(1)
       }, { timeout: 5000 })
       expect(taskNotifications(frames, 'model-task-stop')[0].status).toBe('stopped')
@@ -588,7 +614,8 @@ describe('native background task acceptance through direct provider handles', ()
       // produces a second result for it.
       expect(toolResultBlocks(frames, 'model-task-stop')).toHaveLength(1)
       expect(toolResultText(toolResultBlocks(frames, 'model-task-stop')[0])).toContain('TaskOutput')
-      expect(topLevelResults(frames)).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(2)
       expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-STOP')
     } finally {
       await bash.release()
@@ -639,8 +666,11 @@ describe('native background task acceptance through direct provider handles', ()
       expect(taskNotifications(frames, 'model-bg-agent')).toHaveLength(0)
 
       releaseNested()
+      // The backgrounded settle injects a <task-notification> continuation
+      // turn (CLI parity): the parent result plus the continuation result.
       await vi.waitFor(() => {
         expect(taskNotifications(frames, 'model-bg-agent')).toHaveLength(1)
+        expect(topLevelResults(frames)).toHaveLength(2)
       }, { timeout: 5000 })
       const notifications = taskNotifications(frames, 'model-bg-agent')
       expect(notifications[0].result).toBe('MODEL-BG-AGENT-REPORT')
@@ -649,7 +679,8 @@ describe('native background task acceptance through direct provider handles', ()
       expect(sidechain.length).toBeGreaterThan(0)
       expect(sidechain.every((frame) => frame.parent_tool_use_id === 'model-bg-agent')).toBe(true)
       expect(toolResultBlocks(frames, 'model-bg-agent')).toHaveLength(1)
-      expect(topLevelResults(frames)).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(2)
       expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-MODEL-BG-AGENT')
     } finally {
       releaseNested()
@@ -734,14 +765,17 @@ describe('native background task acceptance through direct provider handles', ()
       expect(await backgroundResponse.json()).toEqual({ ok: true, backgrounded: true })
       expect(await stopResponse.json()).toEqual({ ok: true })
 
+      // The stopped settle injects a <task-notification> continuation turn
+      // (CLI parity), so the parent result plus the continuation result land.
       await vi.waitFor(() => {
-        expect(topLevelResults(frames)).toHaveLength(1)
+        expect(topLevelResults(frames)).toHaveLength(2)
         expect(taskNotifications(frames, 'route-stop')).toHaveLength(1)
       }, { timeout: 5000 })
       expect(taskNotifications(frames, 'route-stop')[0].status).toBe('stopped')
       expect(toolResultBlocks(frames, 'route-stop')).toHaveLength(1)
       expect(toolResultText(toolResultBlocks(frames, 'route-stop')[0])).toContain('TaskOutput')
-      expect(topLevelResults(frames)).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(2)
       expect(topLevelResults(frames)[0].result).toBe('ROUTE-PARENT-DONE')
     } finally {
       await bash.release()

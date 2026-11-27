@@ -5,12 +5,15 @@
 // proceeds; asyncRewake (which implies async) turns a background exit-2 into a
 // wake notification the session delivers as a system turn when NEXT IDLE —
 // never a direct continuation of the running turn. The delivery queue itself
-// lives in the session (native-session.ts hookRewakes); this module owns the
-// background scheduling, the completion contract and the wake construction.
+// lives in the session (native-session.ts systemInjections, whose item union
+// PendingInjection is defined here); this module owns the background
+// scheduling, the completion contract and the wake construction.
 // Neutral core: imports only the shared hook config vocabulary, the sibling
-// output contract and the logger — no SDK / host frame vocabulary.
+// output contract, the sibling task-completion facts and the logger — no SDK /
+// host frame vocabulary.
 import { createLogger } from '../../../log.js'
 import type { CommandHookConfig, HookConfig } from '../../../../shared/hooks.js'
+import type { TaskNotificationFacts } from '../task-manager.js'
 import type { HookExecResult } from './output.js'
 
 const log = createLogger('native-hooks')
@@ -31,6 +34,16 @@ export interface HookWake {
   priority: 'next'
   stopHookActive: true
 }
+
+/** One idle-delivery system injection (the session's queue item). The
+ *  hook-rewake kind is stop-hook feedback: an informational banner plus a
+ *  system turn whose Stop dispatch carries stop_hook_active:true. The
+ *  task-notification kind is a background completion: a <task-notification>
+ *  USER turn the host classifies by content, with a fresh Stop guard. Both
+ *  deliver only when no user input is pending — the pump owns the queue. */
+export type PendingInjection =
+  | { kind: 'hook-rewake'; wake: HookWake }
+  | { kind: 'task-notification'; notification: TaskNotificationFacts }
 
 /** Config-async predicate: command hooks carrying async:true or
  *  asyncRewake:true (rewake implies async). The other types have no async
