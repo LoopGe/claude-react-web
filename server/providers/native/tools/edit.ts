@@ -115,7 +115,7 @@ export function createEditTool(state: NativeReadState): ToolDef<{
         throw new ToolInputError('old_string and new_string must not contain NUL bytes')
       }
       try {
-        const target = await state.assertEditable(ctx.cwd, input.file_path)
+        const target = await state.assertEditable(ctx.cwd, input.file_path, ctx.memoryRoots?.write)
         const { value: verifiedIdentity, observation } = await withNativeFile(
           target,
           ctx.signal,

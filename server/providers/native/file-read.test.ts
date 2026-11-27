@@ -110,6 +110,79 @@ describe('resolveNativeReadTarget', () => {
   })
 })
 
+describe('resolveNativeReadTarget extra roots', () => {
+  async function layout() {
+    const cwd = join(dir, 'cwd')
+    const memory = join(dir, 'memory')
+    const outside = join(dir, 'outside')
+    await mkdir(cwd)
+    await mkdir(memory)
+    await mkdir(outside)
+    return { cwd, memory, outside }
+  }
+
+  it('resolves a file inside an extra root outside the cwd', async () => {
+    const { cwd, memory } = await layout()
+    const file = join(memory, 'm.txt')
+    await writeFile(file, 'memory')
+
+    await expect(resolveNativeReadTarget(cwd, file)).rejects.toThrow(NativeFileUnavailableError)
+    const target = await resolveNativeReadTarget(cwd, file, [memory])
+    expect(target.absolutePath).toBe(file)
+    expect(target.realPath).toBe(await realpath(file))
+  })
+
+  it('still rejects a target outside the cwd and every extra root', async () => {
+    const { cwd, memory, outside } = await layout()
+    const file = join(outside, 'secret.txt')
+    await writeFile(file, 'secret')
+
+    await expect(resolveNativeReadTarget(cwd, file, [memory])).rejects.toThrow(NativeFileUnavailableError)
+  })
+
+  it('matches any of several extra roots', async () => {
+    const { cwd, memory } = await layout()
+    const second = join(dir, 'memory2')
+    await mkdir(second)
+    const file = join(second, 'm.txt')
+    await writeFile(file, 'second')
+
+    const target = await resolveNativeReadTarget(cwd, file, [memory, second])
+    expect(target.realPath).toBe(await realpath(file))
+  })
+
+  it('rejects a junction inside an extra root whose real target escapes', async () => {
+    const { cwd, memory, outside } = await layout()
+    await writeFile(join(outside, 'secret.txt'), 'secret')
+    await symlink(outside, join(memory, 'escape'), 'junction')
+
+    await expect(resolveNativeReadTarget(cwd, join(memory, 'escape', 'secret.txt'), [memory]))
+      .rejects.toThrow(NativeFileUnavailableError)
+  })
+
+  it('realpaths a symlinked extra root so a legitimate link target resolves', async () => {
+    const { cwd } = await layout()
+    const realMemory = join(dir, 'real-memory')
+    await mkdir(realMemory)
+    const file = join(realMemory, 'm.txt')
+    await writeFile(file, 'linked')
+    const linkRoot = join(dir, 'link-memory')
+    await symlink(realMemory, linkRoot, 'junction')
+
+    const target = await resolveNativeReadTarget(cwd, join(linkRoot, 'm.txt'), [linkRoot])
+    expect(target.realPath).toBe(await realpath(file))
+  })
+
+  it('keeps cwd-internal resolution unchanged when extra roots are present', async () => {
+    const { cwd, memory } = await layout()
+    const file = join(cwd, 'a.txt')
+    await writeFile(file, 'internal')
+
+    const target = await resolveNativeReadTarget(cwd, 'a.txt', [memory])
+    expect(target.realPath).toBe(await realpath(file))
+  })
+})
+
 describe('native file identity', () => {
   it('compares every identity field and floors nanosecond mtimes', async () => {
     const target = await resolveNativeReadTarget(dir, await fixture())

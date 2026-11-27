@@ -128,8 +128,8 @@ export class NativeReadState {
     }
   }
 
-  async assertEditable(cwd: string, path: string): Promise<NativeReadTarget> {
-    const target = await resolveNativeReadTarget(cwd, path)
+  async assertEditable(cwd: string, path: string, extraRoots?: readonly string[]): Promise<NativeReadTarget> {
+    const target = await resolveNativeReadTarget(cwd, path, extraRoots)
     const entry = this.entries.get(target.realPath)
     if (!entry?.seeded) {
       throw new NativeFileChangedError(`file must be read completely before editing: ${path}`)
