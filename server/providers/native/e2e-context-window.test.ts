@@ -127,13 +127,15 @@ describe('native model-window compaction', () => {
 
       expect(order).toEqual(['stream:1', 'summary', 'compact', 'stream:2'])
       expect(summarizeForCompact).toHaveBeenCalledTimes(1)
-      const replacement = JSON.stringify(live.history)
+      const retained = JSON.stringify(live.history)
       expect(live.history.some((frame) => frame.subtype === 'compact_boundary')).toBe(true)
-      expect(replacement).toContain('MOCK SUMMARY')
-      expect(replacement).toContain('small prompt')
-      expect(replacement).toContain('small reply')
-      expect(replacement).not.toContain('large prompt')
-      expect(replacement).not.toContain('large reply')
+      expect(retained).toContain('MOCK SUMMARY')
+      expect(retained).toContain('small prompt')
+      expect(retained).toContain('small reply')
+      // Compact is an append: the pre-compact turn stays visible above the
+      // marker (retain-history); only the MODEL history floors at the compact.
+      expect(retained).toContain('large prompt')
+      expect(retained).toContain('large reply')
 
       await vi.waitFor(() => {
         const events = legacyEventsOf(loadNativeSessionLogSync(dir, info.id))

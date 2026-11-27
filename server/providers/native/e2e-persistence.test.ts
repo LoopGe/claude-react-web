@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { SessionStore } from '../../persistence.js'
 import { SessionManager } from '../../session-manager.js'
 import { summarizeForCompact } from '../../compact-summary.js'
@@ -179,6 +180,21 @@ function hasCompactBoundary(history: Array<Record<string, unknown>>): boolean {
   return history.some((m) => m.subtype === 'compact_boundary')
 }
 
+// The marker pair's two occurrence predicates. The same top-level shape holds
+// for raw ring frames, normalized page messages, and reconcile-snapshot
+// entries, so one pair counts occurrences on every read surface.
+const isBoundaryFrame = (m: Record<string, unknown>): boolean =>
+  m.type === 'system' && m.subtype === 'compact_boundary'
+const isSummaryFrame = (m: Record<string, unknown>): boolean => m.isCompactSummary === true
+
+/** The log's single `session/compact` event (these tests compact exactly once). */
+function compactEventOf(dir: string, id: string): Extract<NativeSessionEvent, { type: 'session/compact' }> {
+  const log = loadNativeSessionLogSync(dir, id)!
+  const event = (log.neutralEvents ?? []).find((e) => e.type === 'session/compact')
+  expect(event).toBeDefined()
+  return event as Extract<NativeSessionEvent, { type: 'session/compact' }>
+}
+
 describe('native provider persistence through SessionManager', () => {
   it('restart + resume restores the turn into history and search', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'sm-native-persist-'))
@@ -338,7 +354,7 @@ describe('native provider persistence through SessionManager', () => {
     expect(pageText(sourcePage)).toContain(REPLY)
   }, 20000)
 
-  it('auto-compacts an idle native session above the window and resets the transcript', async () => {
+  it('auto-compacts an idle native session above the window and appends the marker, retaining the transcript', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'sm-native-autocompact-'))
     dirs.push(dir)
     vi.mocked(summarizeForCompact).mockClear()
@@ -365,20 +381,28 @@ describe('native provider persistence through SessionManager', () => {
     }, { timeout: 5000 })
 
     expect(vi.mocked(summarizeForCompact)).toHaveBeenCalledTimes(1)
-    // Fresh seq space (boundary + summary) under the NEXT generation: the
-    // store was created at 0 and the reset must CONTINUE the counter (clients
-    // arm a `generation + 1` floor on `session-cleared`), not restart it.
-    expect(sm.transcriptHead(info.id)).toEqual({ generation: 1, headSeq: 2 })
+    // Compact is an APPEND: the generation stays 0 and the boundary + summary
+    // seq-assign onto the SAME space, continuing the counter past the turn's
+    // three rows (user / assistant / result) — no reset, no `session-cleared`.
+    expect(sm.transcriptHead(info.id)).toEqual({ generation: 0, headSeq: 5 })
     const s = liveSession(sm, info.id)
     expect(JSON.stringify(s.history)).toContain('MOCK SUMMARY')
-    // The pre-compact turn is gone from the ring and from the disk page.
-    expect(JSON.stringify(s.history)).not.toContain(PROMPT)
-    expect(JSON.stringify(s.history)).not.toContain(REPLY)
+    // The pre-compact turn stays visible in the ring above the marker.
+    expect(JSON.stringify(s.history)).toContain(PROMPT)
+    expect(JSON.stringify(s.history)).toContain(REPLY)
 
     const log = loadNativeSessionLogSync(dir, info.id)!
     expect(legacyEventsOf(log).some((e) => e.type === 'session/compact')).toBe(true)
+    // The disk page and search retain the pre-compact turn too, and the page
+    // renders the divider + summary pair inline (D7).
     const page = await sm.getHistoryPage(info.id, { limit: 10 })
-    expect(JSON.stringify(page)).not.toContain(PROMPT)
+    expect(pageText(page)).toContain(PROMPT)
+    expect(pageText(page)).toContain(REPLY)
+    expect(pageText(page)).toContain('MOCK SUMMARY')
+    expect(page.messages.filter((m) => isBoundaryFrame(m as Record<string, unknown>))).toHaveLength(1)
+    expect(page.messages.filter((m) => isSummaryFrame(m as Record<string, unknown>))).toHaveLength(1)
+    const hits = await sm.searchMessages(REPLY, { sessionId: info.id })
+    expect(hits.length).toBeGreaterThan(0)
 
     // An idle re-check (the same call the trigger makes) must not compact a
     // second time without a new turn.
@@ -388,7 +412,7 @@ describe('native provider persistence through SessionManager', () => {
     expect(s.history.filter((m) => m.subtype === 'compact_boundary')).toHaveLength(1)
   }, 20000)
 
-  it('restart + resume rebuilds the conversation from the compact summary', async () => {
+  it('restart + resume retains the transcript above the compact marker while the model floors at it', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'sm-native-autocompact-resume-'))
     dirs.push(dir)
 
@@ -407,9 +431,7 @@ describe('native provider persistence through SessionManager', () => {
     } as unknown as Parameters<typeof first.sm.create>[0])
     armStream(first.provider, REPLY, 100_000)
     await sendTurn(first.sm, info.id)
-    // The pre-compact turn must be durable in the append-only log. The floored
-    // page reader below can no longer see it once `session/compact` lands, so
-    // gate on the raw events (which survive compaction) instead.
+    // Gate on the durable turn before reading the disk surface below.
     await vi.waitFor(() => {
       const log = loadNativeSessionLogSync(dir, info.id)!
       expect(JSON.stringify(legacyEventsOf(log))).toContain(REPLY)
@@ -419,14 +441,14 @@ describe('native provider persistence through SessionManager', () => {
       expect(hasCompactBoundary(liveSession(first.sm, info.id).history)).toBe(true)
     }, { timeout: 5000 })
 
-    // The durable surface is floored at the compact event: only the summary is
-    // still readable, and search no longer reaches the pre-compact turn.
+    // The renderable surface retains the pre-compact turn above the marker
+    // (divider + summary inline), and search still reaches it.
     const page = await first.provider.readHistoryPage(info.id, { limit: 20 })
     expect(pageText(page)).toContain('MOCK SUMMARY')
-    expect(pageText(page)).not.toContain(PROMPT)
-    expect(pageText(page)).not.toContain(REPLY)
+    expect(pageText(page)).toContain(PROMPT)
+    expect(pageText(page)).toContain(REPLY)
     const hits = await first.sm.searchMessages(REPLY, { sessionId: info.id })
-    expect(hits.length).toBe(0)
+    expect(hits.length).toBeGreaterThan(0)
 
     await first.sm.shutdown()
 
@@ -438,12 +460,13 @@ describe('native provider persistence through SessionManager', () => {
 
     const resumedPage = await second.sm.getHistoryPage(info.id, { limit: 10 })
     expect(pageText(resumedPage)).toContain('MOCK SUMMARY')
-    expect(pageText(resumedPage)).not.toContain(PROMPT)
-    expect(pageText(resumedPage)).not.toContain(REPLY)
+    expect(pageText(resumedPage)).toContain(PROMPT)
+    expect(pageText(resumedPage)).toContain(REPLY)
 
-    // The resumed live handle's model history is what the next turn actually
-    // sends. `historyFromEvents` must have restarted it at the last
-    // `session/compact` event (context + summary), not replayed the old turn.
+    // The resumed live handle's MODEL history is what the next turn actually
+    // sends. `historyFromEvents` floors it at the last `session/compact` event
+    // (context + summary) regardless of the retain marker — the visible
+    // transcript above does not re-enter the model's context (D3).
     const live = (second.sm as unknown as {
       sessions: Map<string, { handle: { history: unknown[] } }>
     }).sessions.get(info.id)
@@ -453,14 +476,136 @@ describe('native provider persistence through SessionManager', () => {
     expect(modelHistory).not.toContain(PROMPT)
     expect(modelHistory).not.toContain(REPLY)
 
-    // A post-compact turn continues from that floor: its reply is readable and
-    // the pre-compact content still never resurfaces.
+    // A post-compact turn continues from that model floor: its reply is
+    // readable, and the retained pre-compact history stays visible alongside.
     await sendTurn(second.sm, info.id, 'post-compact-prompt')
     await waitForPersistedTurn(second.provider, info.id, 'post-compact-reply')
     const afterPage = await second.sm.getHistoryPage(info.id, { limit: 10 })
     expect(pageText(afterPage)).toContain('post-compact-reply')
-    expect(pageText(afterPage)).not.toContain(PROMPT)
-    expect(pageText(afterPage)).not.toContain(REPLY)
+    expect(pageText(afterPage)).toContain(PROMPT)
+    expect(pageText(afterPage)).toContain(REPLY)
+  }, 30000)
+
+  it('restart of a retain-compacted session shows exactly one summary card', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-compact-single-card-'))
+    dirs.push(dir)
+
+    const first = await makeFixture(dir)
+    const info = await first.sm.create({
+      cwd: dir,
+      model: 'test-model',
+      provider: 'native',
+      title: 'compact-single-card',
+      settings: { autoCompactWindow: 66384 },
+    } as unknown as Parameters<typeof first.sm.create>[0])
+    armStream(first.provider, REPLY, 100_000)
+    await sendTurn(first.sm, info.id)
+    await vi.waitFor(() => {
+      expect(hasCompactBoundary(liveSession(first.sm, info.id).history)).toBe(true)
+    }, { timeout: 5000 })
+
+    // D8: the live summary frame already carries the persisted summaryUuid, and
+    // the boundary carries the event uuid — the two identities the disk
+    // projection must reproduce so a restart dedupes to one card.
+    const compact = compactEventOf(dir, info.id)
+    const summaryUuid = compact.data.summaryUuid!
+    const boundaryUuid = compact.data.uuid
+    expect(summaryUuid).not.toBe(boundaryUuid)
+    const liveRing = liveSession(first.sm, info.id).history
+    expect((liveRing.find(isSummaryFrame) as { uuid: string }).uuid).toBe(summaryUuid)
+    expect((liveRing.find(isBoundaryFrame) as { uuid: string }).uuid).toBe(boundaryUuid)
+
+    await first.sm.shutdown()
+
+    const second = await makeFixture(dir)
+    const resumed = await second.sm.resume(info.id)
+    expect(resumed.id).toBe(info.id)
+    sessionIds.push({ sm: second.sm, id: info.id })
+
+    // Every read surface synthesizes exactly ONE boundary + ONE summary, with
+    // the same identities — no duplicate card appended by disk replay.
+    const snapshot = await second.provider.readHistoryForReconcile(info.id, {})
+    expect(snapshot.status).toBe('ok')
+    const snapMsgs = snapshot.entries.map((e) => e.message as Record<string, unknown>)
+    expect(snapMsgs.filter(isBoundaryFrame)).toHaveLength(1)
+    expect(snapMsgs.filter(isSummaryFrame)).toHaveLength(1)
+    expect((snapMsgs.find(isSummaryFrame) as { uuid: string }).uuid).toBe(summaryUuid)
+    expect((snapMsgs.find(isBoundaryFrame) as { uuid: string }).uuid).toBe(boundaryUuid)
+
+    const page = await second.sm.getHistoryPage(info.id, { limit: 20 })
+    const pageMsgs = page.messages as Array<Record<string, unknown>>
+    expect(pageMsgs.filter(isBoundaryFrame)).toHaveLength(1)
+    expect(pageMsgs.filter(isSummaryFrame)).toHaveLength(1)
+    expect((pageMsgs.find(isSummaryFrame) as { uuid: string }).uuid).toBe(summaryUuid)
+    expect((pageMsgs.find(isBoundaryFrame) as { uuid: string }).uuid).toBe(boundaryUuid)
+    // The pair renders in write order: the boundary divider precedes its
+    // summary on the page surface (both exist, pinned by the counts above).
+    expect(pageMsgs.findIndex(isBoundaryFrame)).toBeLessThan(pageMsgs.findIndex(isSummaryFrame))
+
+    const resumedRing = liveSession(second.sm, info.id).history
+    expect(resumedRing.filter(isBoundaryFrame)).toHaveLength(1)
+    expect(resumedRing.filter(isSummaryFrame)).toHaveLength(1)
+    expect((resumedRing.find(isSummaryFrame) as { uuid: string }).uuid).toBe(summaryUuid)
+    expect((resumedRing.find(isBoundaryFrame) as { uuid: string }).uuid).toBe(boundaryUuid)
+  }, 30000)
+
+  it('crash before manager frame append: reload synthesizes a single clean marker', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-compact-crash-'))
+    dirs.push(dir)
+
+    const first = await makeFixture(dir)
+    // No autoCompactWindow pin: the default window leaves usage 10 far below
+    // the threshold, so the only compact is the one driven directly below.
+    const id = await createAndSend(first.sm, dir)
+    sessionIds.push({ sm: first.sm, id })
+    await waitForPersistedTurn(first.provider, id)
+
+    // Simulate the crash window: the provider's durable marker lands, but the
+    // manager never appends its boundary + summary frames (no ring rows, no seq
+    // rows). Driving compactInPlace directly reproduces exactly that state.
+    const live = (first.sm as unknown as {
+      sessions: Map<string, { handle: ProviderSessionHandle }>
+    }).sessions.get(id)!
+    const uuid = randomUUID()
+    const summaryUuid = randomUUID()
+    const timestamp = new Date().toISOString()
+    await live.handle.compactInPlace!('CRASH SUMMARY', { uuid, timestamp, summaryUuid })
+    expect(hasCompactBoundary(liveSession(first.sm, id).history)).toBe(false)
+    await first.sm.shutdown()
+
+    // The reader synthesizes the marker from the log alone: one boundary + one
+    // summary on every read surface, with the identities the normal path uses.
+    const second = await makeFixture(dir)
+    const page = await second.provider.readHistoryPage(id, { limit: 20 })
+    expect(pageText(page)).toContain(PROMPT)
+    expect(pageText(page)).toContain(REPLY)
+    expect(pageText(page)).toContain('CRASH SUMMARY')
+    const pageMsgs = page.messages as Array<Record<string, unknown>>
+    expect(pageMsgs.filter(isBoundaryFrame)).toHaveLength(1)
+    expect(pageMsgs.filter(isSummaryFrame)).toHaveLength(1)
+    expect((pageMsgs.find(isBoundaryFrame) as { uuid: string }).uuid).toBe(uuid)
+    expect((pageMsgs.find(isSummaryFrame) as { uuid: string }).uuid).toBe(summaryUuid)
+
+    const entries = await second.provider.readHistoryEntries(id, {})
+    const entryMsgs = entries.map((e) => e.message as Record<string, unknown>)
+    expect(entryMsgs.filter(isBoundaryFrame)).toHaveLength(1)
+    expect(entryMsgs.filter(isSummaryFrame)).toHaveLength(1)
+
+    const snapshot = await second.provider.readHistoryForReconcile(id, {})
+    expect(snapshot.status).toBe('ok')
+    const snapMsgs = snapshot.entries.map((e) => e.message as Record<string, unknown>)
+    expect(snapMsgs.filter(isBoundaryFrame)).toHaveLength(1)
+    expect(snapMsgs.filter(isSummaryFrame)).toHaveLength(1)
+
+    // Reload (resume) seeds the ring from the same projection: still exactly
+    // one clean marker pair, same identity — no duplicate, no lost divider.
+    const resumed = await second.sm.resume(id)
+    expect(resumed.id).toBe(id)
+    const resumedRing = liveSession(second.sm, id).history
+    expect(resumedRing.filter(isBoundaryFrame)).toHaveLength(1)
+    expect(resumedRing.filter(isSummaryFrame)).toHaveLength(1)
+    expect((resumedRing.find(isBoundaryFrame) as { uuid: string }).uuid).toBe(uuid)
+    expect((resumedRing.find(isSummaryFrame) as { uuid: string }).uuid).toBe(summaryUuid)
   }, 30000)
 })
 

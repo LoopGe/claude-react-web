@@ -688,9 +688,13 @@ describe('native P1.6 tools end to end through SessionManager', () => {
     expect(loadNativeSessionLogSync(stateDir, id)!.neutralEvents!
       .filter((e) => e.type === 'session/title')).toHaveLength(1)
 
-    // Native has no account state to report; the route serializes undefined as
-    // { account: null } rather than inventing fields.
-    expect(await fx.sm.accountInfo(id)).toBeUndefined()
+    // Native has no account state to report: the capability is false, so the
+    // account read rejects with 501 and the UI locks the section (no empty
+    // rows, no invented fields).
+    await expect(fx.sm.accountInfo(id)).rejects.toMatchObject({
+      status: 501,
+      message: 'provider native does not support account info',
+    })
 
     // sandbox is rejected for native BEFORE worktree provisioning (no orphan
     // worktree/branch is left behind).

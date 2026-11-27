@@ -43,6 +43,8 @@ import {
   type NativeFrameEnvelope,
 } from './native-host-frame-adapter.js'
 import { migrateEventToV3 } from './native/session-log/migration.js'
+import { historyFromEvents } from './native/session-log/replay.js'
+import { extractHistory } from '../recap.js'
 
 const SESSION = 'sess-1'
 const UUID = '11111111-1111-4111-8111-111111111111'
@@ -1094,6 +1096,186 @@ describe('wrapNativeCore — core seam + pre-fidelity input projection', () => {
     expect(consumed[0].uuid).toBe('host-uuid-pi')
     expect(consumed[0].message.content).toEqual([{ type: 'text', text: 'original' }])
     // drain returns the ORIGINAL host, not the projected form.
+  })
+})
+
+// ── Followup B: authoritative compaction input (getCompactionInput) ──────
+//
+// The handle's getCompactionInput projects the provider's UNCAPPED neutral
+// model history (historyFromEvents — floored at the last compact, sidechain
+// excluded) to SDK shape, recovers the floor summary's isCompactSummary
+// identity, and drops the context snapshot so recap's extractHistory keeps the
+// prior summary as a FULL-TEXT System line and never counts the context as a
+// human turn. These tests drive the REAL replay over a constructed neutral log
+// and the REAL extractHistory consumer, not a hand-built SDK array.
+
+describe('wrapNativeCore — getCompactionInput authoritative model-history projection', () => {
+  const TS = '2026-11-26T00:00:00.000Z'
+  const TIME = Date.parse(TS)
+  // Longer than recap's 500-char User/Assistant truncation cap, so a System
+  // line that still carries the whole string proves the summary was NOT
+  // truncated (the B4 identity-recovery requirement).
+  const SUMMARY = 'SUMMARY of the prior conversation. ' + 'detail '.repeat(120)
+  const CTX = '<system-reminder>Working directory: /repo\nCurrent time: 2026-11-26T00:00:00.000Z</system-reminder>'
+
+  function compactionEvents(): NativeSessionEvent[] {
+    const preUser: NativeSessionEvent = {
+      type: 'user/message', seq: 0, time: TIME, parentToolUseId: null,
+      data: { role: 'user', id: brandString<'MessageId'>('u-pre'), content: [{ type: 'text', text: 'pre-compact question' }], source: { kind: 'user' } },
+    }
+    const preAssistant: NativeSessionEvent = {
+      type: 'assistant/message', seq: 1, time: TIME, parentToolUseId: null,
+      data: { message: createAssistantMessage({ content: [{ type: 'text', text: 'pre-compact answer' }], source: { provider: 'anthropic', model: 'm' } }), stream: [] },
+    }
+    const compact: NativeSessionEvent = {
+      type: 'session/compact', seq: 2, time: TIME,
+      data: { text: SUMMARY, context: CTX, uuid: 'c1', timestamp: TS, retainHistory: true, summaryUuid: 'sum-1' },
+    }
+    const postUser: NativeSessionEvent = {
+      type: 'user/message', seq: 3, time: TIME, parentToolUseId: null,
+      data: {
+        role: 'user', id: brandString<'MessageId'>('u-post'), source: { kind: 'user' },
+        content: [
+          { type: 'text', text: 'post-compact question' },
+          { type: 'file', attachment: { id: 'sha256:aa', name: 'f.txt', size: 10, digest: 'aa' } },
+          { type: 'image', attachment: { id: 'sha256:bb', mediaType: 'image/png', bytes: 5, width: 1, height: 1 } },
+        ],
+      },
+    }
+    const postAssistant: NativeSessionEvent = {
+      type: 'assistant/message', seq: 4, time: TIME, parentToolUseId: null,
+      data: {
+        message: createAssistantMessage({
+          content: [
+            { type: 'reasoning', text: 'thinking hard', signature: 'sig-1' },
+            { type: 'text', text: 'post-compact answer' },
+            { type: 'tool-call', id: brandString<'ToolCallId'>('toolu_agent'), name: 'Agent', arguments: '{"prompt":"do"}' },
+          ],
+          source: { provider: 'anthropic', model: 'm' },
+        }),
+        stream: [],
+      },
+    }
+    // The subagent RESULT lives in the MAIN history (Agent tool_result) and
+    // carries a nested file block — it must survive the projection.
+    const agentResult: NativeSessionEvent = {
+      type: 'tool/result', seq: 5, time: TIME, parentToolUseId: null,
+      data: {
+        message: createToolResultMessage({
+          callId: brandString<'ToolCallId'>('toolu_agent'),
+          content: [
+            { type: 'text', text: 'subagent result report' },
+            { type: 'file', attachment: { id: 'sha256:cc', name: 'r.txt', size: 3, digest: 'cc' } },
+          ],
+          isError: false,
+        }),
+      },
+    }
+    // Sidechain internals (non-null parent) belong to the transcript UI, not
+    // the model history — both must be excluded.
+    const sideAssistant: NativeSessionEvent = {
+      type: 'assistant/message', seq: 6, time: TIME, parentToolUseId: 'toolu_agent',
+      data: { message: createAssistantMessage({ content: [{ type: 'text', text: 'subagent-internal-chatter' }], source: { provider: 'anthropic', model: 'm' } }), stream: [] },
+    }
+    const sideResult: NativeSessionEvent = {
+      type: 'tool/result', seq: 7, time: TIME, parentToolUseId: 'toolu_agent',
+      data: { message: createToolResultMessage({ callId: brandString<'ToolCallId'>('toolu_inner'), content: [{ type: 'text', text: 'subagent-internal-chatter' }], isError: false }) },
+    }
+    return [preUser, preAssistant, compact, postUser, postAssistant, agentResult, sideAssistant, sideResult]
+  }
+
+  function makeCompactionCore(events: NativeSessionEvent[], boundary: { text: string; context: string } | null): NativeSessionCore {
+    const history = historyFromEvents(events)
+    return {
+      ...makeFakeCore().core,
+      getCompactionHistory: () => history,
+      getCompactionBoundary: () => boundary,
+    }
+  }
+
+  it('projects model history to SDK with summary identity, excludes sidechain + pre-compact floor', () => {
+    const core = makeCompactionCore(compactionEvents(), { text: SUMMARY, context: CTX })
+    const handle = wrapNativeCore(core, {})
+    const input = handle.getCompactionInput!() as Array<Record<string, any>>
+
+    // Floor summary identity recovered (B4): exactly one isCompactSummary user
+    // message carrying the full summary text.
+    const summaries = input.filter((m) => m.isCompactSummary === true)
+    expect(summaries).toHaveLength(1)
+    expect(summaries[0].type).toBe('user')
+    expect(JSON.stringify(summaries[0].message.content)).toContain('SUMMARY')
+
+    const serialized = JSON.stringify(input)
+    // The compact floor supersedes the pre-compact conversation.
+    expect(serialized).not.toContain('pre-compact question')
+    expect(serialized).not.toContain('pre-compact answer')
+    // Sidechain internals excluded; the subagent RESULT (main history) kept.
+    expect(serialized).not.toContain('subagent-internal-chatter')
+    expect(serialized).toContain('subagent result report')
+    // Post-compact conversation present.
+    expect(serialized).toContain('post-compact question')
+    expect(serialized).toContain('post-compact answer')
+    // The context snapshot is dropped (not a user turn).
+    expect(serialized).not.toContain('Working directory: /repo')
+
+    // Block coverage: signed thinking, attachment refs (direct + nested), image
+    // ref, and the Agent tool_use all survive the projection.
+    const assistant = input.find((m) => m.type === 'assistant')!
+    expect(assistant.message.content).toEqual([
+      { type: 'thinking', thinking: 'thinking hard', signature: 'sig-1' },
+      { type: 'text', text: 'post-compact answer' },
+      { type: 'tool_use', id: 'toolu_agent', name: 'Agent', input: { prompt: 'do' } },
+    ])
+    const postUser = input.find((m) => m.type === 'user' && m.uuid === 'u-post')!
+    expect(postUser.message.content).toEqual([
+      { type: 'text', text: 'post-compact question' },
+      { type: 'file', attachment: { id: 'sha256:aa', name: 'f.txt', size: 10, digest: 'aa' } },
+      { type: 'image', attachment: { id: 'sha256:bb', mediaType: 'image/png', bytes: 5, width: 1, height: 1 } },
+    ])
+    const toolResult = input.find((m) => m.type === 'user' && Array.isArray(m.message.content) && m.message.content[0]?.type === 'tool_result')!
+    expect(toolResult.message.content[0]).toEqual({
+      type: 'tool_result',
+      tool_use_id: 'toolu_agent',
+      content: [
+        { type: 'text', text: 'subagent result report' },
+        { type: 'file', attachment: { id: 'sha256:cc', name: 'r.txt', size: 3, digest: 'cc' } },
+      ],
+      is_error: false,
+    })
+  })
+
+  it('extractHistory keeps the prior summary full-text System and counts no context user turn', () => {
+    const core = makeCompactionCore(compactionEvents(), { text: SUMMARY, context: CTX })
+    const handle = wrapNativeCore(core, {})
+    const input = handle.getCompactionInput!()
+    const { lines, stats } = extractHistory(input)
+
+    // Only the genuine post-compact human turn counts (the tool_result-only
+    // user message is skipped by extractHistory; the summary is System; the
+    // context snapshot is absent).
+    expect(stats.userTurns).toBe(1)
+    const systemLines = lines.filter((l) => l.role === 'System')
+    expect(systemLines).toHaveLength(1)
+    // Full text retained — well beyond the 500-char ordinary-line cap.
+    expect(systemLines[0].text.length).toBeGreaterThan(500)
+    expect(systemLines[0].text).toContain('SUMMARY')
+    expect(lines.some((l) => l.role === 'User' && l.text.includes('Working directory'))).toBe(false)
+  })
+
+  it('projects every message plainly when the log has no compact boundary', () => {
+    const events = compactionEvents().filter((e) => e.type !== 'session/compact')
+    const core = makeCompactionCore(events, null)
+    const handle = wrapNativeCore(core, {})
+    const input = handle.getCompactionInput!() as Array<Record<string, any>>
+    expect(input.some((m) => m.isCompactSummary === true)).toBe(false)
+    // No floor: the pre-compact conversation is retained.
+    expect(JSON.stringify(input)).toContain('pre-compact question')
+  })
+
+  it('omits getCompactionInput when the core exposes no neutral history accessor', () => {
+    const { core } = makeFakeCore()
+    const handle = wrapNativeCore(core, {})
+    expect(handle.getCompactionInput).toBeUndefined()
   })
 })
 

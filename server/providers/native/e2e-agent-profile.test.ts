@@ -25,6 +25,14 @@ import { loadNativeSessionLogSync } from './session-log/log.js'
 import { projectNeutralEventToLegacy } from './session-log/format.js'
 import type { NativeLogEvent } from './session-log/format.js'
 import type { NativeSessionEvent } from './vocabulary/session-event.js'
+import { BUILTIN_COMMANDS } from './commands.js'
+
+/** The builtin slash rows every native catalog answer now carries ahead of
+ *  the skill rows (the G3 slash surface). */
+const BUILTIN_ROWS = BUILTIN_COMMANDS.map(({ name, description, argumentHint }) => ({
+  name, description, argumentHint, builtin: true,
+}))
+const BUILTIN_NAMES = BUILTIN_ROWS.map((row) => row.name)
 
 // T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
 // the legacy shape from the canonical neutral baseline via the pinned compat
@@ -421,7 +429,7 @@ describe('native agent profiles end to end through SessionManager', () => {
     expect(next).toMatchObject({
       agent: 'reviewer', model: 'persona-model', permissionMode: 'bypassPermissions', effortLevel: 'max',
     })
-    expect(await fx.sm.supportedCommands(next.id)).toEqual([])
+    expect(await fx.sm.supportedCommands(next.id)).toEqual(BUILTIN_ROWS)
     const selection = legacyEventsOf(loadNativeSessionLogSync(stateDir, next.id))
       .find((event) => event.type === 'session/agent')
     expect(selection).toMatchObject({
@@ -462,21 +470,21 @@ describe('native agent profiles end to end through SessionManager', () => {
     const id = await createSession(fx, cwd, { agent: 'reviewer' })
     const commandNames = async (sessionId: string) =>
       ((await fx.sm.supportedCommands(sessionId)) as Array<{ name: string }>).map((command) => command.name)
-    expect(await commandNames(id)).toEqual(['demo', 'other'])
+    expect(await commandNames(id)).toEqual([...BUILTIN_NAMES, 'demo', 'other'])
     await fx.sm.setSkillOverride(id, { kind: 'disabled' })
-    expect(await fx.sm.supportedCommands(id)).toEqual([])
+    expect(await fx.sm.supportedCommands(id)).toEqual(BUILTIN_ROWS)
 
     const next = await fx.sm.clear(id)
     remember(fx.sm, next.id)
-    expect(await fx.sm.supportedCommands(next.id)).toEqual([])
+    expect(await fx.sm.supportedCommands(next.id)).toEqual(BUILTIN_ROWS)
     const selection = legacyEventsOf(loadNativeSessionLogSync(stateDir, next.id))
       .find((event) => event.type === 'session/agent')
     expect(selection?.base).not.toHaveProperty('skillPolicy')
 
     await fx.sm.setSkillOverride(next.id, undefined)
-    expect(await commandNames(next.id)).toEqual(['demo', 'other'])
+    expect(await commandNames(next.id)).toEqual([...BUILTIN_NAMES, 'demo', 'other'])
     await fx.sm.setAgent(next.id, null)
-    expect(await commandNames(next.id)).toEqual(['demo', 'other'])
+    expect(await commandNames(next.id)).toEqual([...BUILTIN_NAMES, 'demo', 'other'])
   }, 30_000)
 
   it('keeps a nested read-only profile read-only and asks under nested default despite parent bypass', async () => {

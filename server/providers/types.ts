@@ -104,6 +104,24 @@ export interface CreateSessionOptions {
    *  turn 结束的余量由 drainSupplements + 宿主 requeue 处理，不经此回调。 */
   onSupplementDelivered?: (uuid: string, outcome: SupplementOutcome) => void
   canUseTool?: (...args: unknown[]) => Promise<unknown>
+  /** Host-bound permission-mode change request (native tool-driven plan entry).
+   *  A native tool (EnterPlanMode) calls this to route a mode change through
+   *  SessionManager.setPermissionMode, so the manager's LIVE permissionMode
+   *  (the broker plan gate + UI chip) AND the native handle (persistence +
+   *  per-round guidance) update together. The manager binds it on every spawn
+   *  path; the claude provider ignores it (the CLI enforces plan mode before
+   *  canUseTool, so its EnterPlanMode never reaches this callback). */
+  requestPermissionModeChange?: (mode: string) => Promise<void>
+  /** Host-bound in-place compaction request (native `/compact` control
+   *  action). The native session intercepts a leading `/compact` before
+   *  command/skill expansion and calls this instead of running a model turn;
+   *  the manager records the request and runs its in-place compaction flow
+   *  (summarize + compactInPlace + appended client-facing divider/summary,
+   *  history retained) once the control turn settles idle — the SAME session
+   *  id, never the /handoff
+   *  fresh-session continuation. The manager binds it on every spawn path;
+   *  the claude provider ignores it (the CLI handles /compact internally). */
+  requestCompact?: () => Promise<void>
   /** MCP elicitation (OAuth auth / server-initiated form) callback.
    *  SDK-agnostic loose signature mirroring canUseTool — the claude provider
    *  casts it to the SDK's OnElicitation when forwarding to query(). */
@@ -310,6 +328,15 @@ export interface ProviderSessionHandle {
    *  projection. The manager anchors each canonical body to the original user
    *  UUID without exposing the instruction in UI history or search. */
   getSkillCompactionEntries?(): readonly { afterUserUuid: string; body: string }[]
+  /** Authoritative compaction input: the provider's UNCAPPED model history
+   *  projected to SDK shape (native). Floored at the last compact, sidechain
+   *  internals excluded (subagent RESULTS remain in the main history), the floor
+   *  summary marked `isCompactSummary` and the context snapshot dropped (not a
+   *  human turn). The manager's in-place compact prefers this over the capped
+   *  ring slice, so the summarizer never loses early post-compact content or the
+   *  prior summary to ring eviction. Providers without an authoritative model
+   *  history omit it (the manager falls back to the ring slice). */
+  getCompactionInput?(): AgentMessage[]
   /** Full-log attachment occurrences for compact hydration. Public top-level
    * FileBlocks join by message UUID + blockPath; nested tool-result occurrences
    * use the provider's resolved metadata directly. */
@@ -324,9 +351,15 @@ export interface ProviderSessionHandle {
    *  provider's captured context snapshot plus `summary`. Only legal while the
    *  session is idle — the manager treats a throw as "not now" and skips the
    *  attempt. Emits NO frames: the manager owns the client-facing divider and
-   *  transcript reset. Providers without an in-place compaction path omit it,
-   *  which disables the manager's auto-compact trigger. */
-  compactInPlace?(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+   *  summary append (the transcript is retained, not reset). `summaryUuid` is
+   *  the identity the manager's live summary frame carries, persisted on the
+   *  compact event so disk replay synthesizes the SAME card (no duplicate on
+   *  restart). `trigger` ('auto' | 'manual') rides the provider's PostCompact
+   *  hook input — both the pressure-gated auto path and the user-invoked
+   *  /compact control action splice in place. Providers without an in-place
+   *  compaction path omit it, which disables the manager's auto-compact
+   *  trigger. */
+  compactInPlace?(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string; trigger?: 'auto' | 'manual' }): Promise<void>
   /** Dispatch a host-driven lifecycle hook event (PreCompact / PostCompact)
    *  through the provider's OWN hook engine and return the merged decision.
    *  Only providers that own host-side hooks implement it (native); the claude
@@ -378,6 +411,11 @@ export interface ProviderCapabilities {
   supportsAgents: boolean
   supportsContextUsage: boolean
   supportsUsage: boolean
+  /** Displayable authenticated-account info (email / org / subscription /
+   *  auth backend). False when the provider has no account state to report
+   *  (native's API-key auth — accountInfo() resolves undefined): the account
+   *  route rejects with 501 and the UI locks the section instead of rendering
+   *  empty rows. */
   supportsAccountInfo: boolean
   supportsSessionTitle: boolean
   supportsTaskControl: boolean
@@ -393,6 +431,12 @@ export interface ProviderCapabilities {
   /** Sandboxed execution (claude's flag-settings sandbox layer). Providers
    *  without it reject a sandbox-enabled create with 501. */
   supportsSandbox: boolean
+  /** Hook engine (claude's settings hooks). Native has none — a hooks config
+   *  edited there would never execute, so the surface locks. */
+  supportsHooks: boolean
+  /** Auto-memory settings (claude's flag-settings memory layer). Native
+   *  rejects the memory keys in applyFlagSettings, so the surface locks. */
+  supportsMemory: boolean
   /** Background tasks survive a server restart (the claude CLI resumes its
    *  own). When false, the host reconciles non-terminal task records to
    *  'stopped' on hydrate — the provider's workers died with the process. */

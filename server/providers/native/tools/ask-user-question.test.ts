@@ -52,7 +52,7 @@ describe('askUserQuestionTool', () => {
   })
 
   it('schema-shaped input becomes a pending kind:question through the broker', async () => {
-    const broker = new PermissionBroker(() => undefined)
+    const broker = new PermissionBroker(() => undefined, () => false)
     const session = {
       id: 'native-ask',
       permissionMode: 'default',

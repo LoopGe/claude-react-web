@@ -62,12 +62,14 @@ import type { ToolDef } from './tools/types.js'
 import { createAgentTool, type AgentToolDeps } from './subagent.js'
 import { EXPLORE_AGENT_DESCRIPTION, EXPLORE_AGENT_NAME } from './explore.js'
 import { NativeTaskManager } from './task-manager.js'
-import { NativeSkillCatalog, LISTING_BUDGET_FRACTION, type NativeSkillInvocationView, type NativeSkillView } from './skills.js'
+import { NativeSkillCatalog, LISTING_BUDGET_FRACTION, type NativeSkillCommand, type NativeSkillInvocationView, type NativeSkillView } from './skills.js'
+import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, type NativeCommand } from './commands.js'
 import { createSkillTool } from './tools/skill.js'
 import { createTaskOutputTool } from './tools/task-output.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
 import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
+import { createEnterPlanModeTool, createExitPlanModeTool, PLAN_MODE_GUIDANCE } from './tools/plan-mode.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import { agentUnusableReason } from '../../../shared/agent-definitions.js'
 import {
@@ -134,8 +136,11 @@ interface PendingDurableInitial {
 
 const log = createLogger('native')
 
-const DEFAULT_MODEL = 'claude-sonnet-4-5'
-const DEFAULT_MAX_TOKENS = 16384
+/** The native default model and per-round output cap. Exported so the
+ *  one-shot structured runner (structured-run.ts / NativeProvider.runStructured)
+ *  shares the session defaults instead of duplicating them. */
+export const DEFAULT_MODEL = 'claude-sonnet-4-5'
+export const DEFAULT_MAX_TOKENS = 16384
 
 /** The aux prompt for `generateTitle`. The manager trims and persists the
  *  caller's first text block, so the model must answer with the title alone. */
@@ -222,6 +227,40 @@ export function packAssistantStream(
  *  so the slash parser and the name validator never drift. */
 const SKILL_COMMAND_RE = new RegExp('^/(' + CANONICAL_SKILL_NAME_SOURCE + ')(?:\\s+([\\s\\S]*))?$')
 
+/** The first text block of a user turn — the only block that can carry a
+ *  leading slash invocation. Every non-text block (image / file) remains
+ *  untouched in the original user message. */
+function invocationTextOf(content: unknown): string | undefined {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    const block = content.find(
+      (candidate) => typeof candidate === 'object' && candidate !== null &&
+        (candidate as { type?: unknown }).type === 'text',
+    ) as { type: 'text'; text?: unknown } | undefined
+    if (typeof block?.text === 'string') return block.text
+  }
+  return undefined
+}
+
+/** Resolve one text block against the command catalog (builtins first, then
+ *  the discovered custom rows). Lookup is case-insensitive — `/Foo` and `/foo`
+ *  both resolve — while the returned name stays the authored catalog name.
+ *  A builtin wins a same-name custom collision because the list is searched
+ *  in concatenation order. Anything else (not a command, an unknown name) has
+ *  no instruction and falls through to skill matching / plain text. */
+function commandInvocationForTurn(
+  content: unknown,
+  commands: readonly NativeCommand[],
+): { name: string; body: string } | null {
+  const text = invocationTextOf(content)
+  if (text === undefined) return null
+  const match = SKILL_COMMAND_RE.exec(text)
+  if (!match) return null
+  const typed = match[1].toLowerCase()
+  const cmd = commands.find((candidate) => candidate.name.toLowerCase() === typed)
+  return cmd ? { name: cmd.name, body: expandCommandBody(cmd, match[2] ?? '') } : null
+}
+
 /** Resolve one text block against the captured scoped view. A `/name args`
  *  invocation of a skill the user may invoke returns that skill's canonical
  *  body with the args substituted exactly once (the raw turn keeps the typed
@@ -231,18 +270,7 @@ function skillInvocationForTurn(
   content: unknown,
   skills: NativeSkillInvocationView,
 ): { name: string; body: string } | null {
-  let text: string | undefined
-  if (typeof content === 'string') {
-    text = content
-  } else if (Array.isArray(content)) {
-    // Only the FIRST text block can carry the slash command. Every non-text
-    // block (image / file) remains untouched in the original user message.
-    const block = content.find(
-      (candidate) => typeof candidate === 'object' && candidate !== null &&
-        (candidate as { type?: unknown }).type === 'text',
-    ) as { type: 'text'; text?: unknown } | undefined
-    if (typeof block?.text === 'string') text = block.text
-  }
+  const text = invocationTextOf(content)
   if (text === undefined) return null
   const match = SKILL_COMMAND_RE.exec(text)
   return match ? skills.expand(match[1], match[2] ?? '') : null
@@ -252,6 +280,19 @@ function skillInvocationForTurn(
  *  blocks (image/file blocks carry no prompt text). Mirrors the loop's textOf. */
 function promptTextOf(content: readonly ContentBlock[]): string {
   return content.filter((b): b is { type: 'text'; text: string } => b.type === 'text').map((b) => b.text).join('')
+}
+
+/** `/compact` is a CONTROL ACTION, not a prompt: the session intercepts it
+ *  ahead of command/skill expansion and routes it to the host compaction
+ *  callback (no model turn for the literal text). Name matching shares the
+ *  slash grammar and case-insensitivity of command lookup; trailing arguments
+ *  are ignored — the host summarizer compresses the whole conversation and
+ *  takes no focus instructions. */
+function isCompactControlInvocation(content: unknown): boolean {
+  const text = invocationTextOf(content)
+  if (text === undefined) return false
+  const match = SKILL_COMMAND_RE.exec(text)
+  return match !== null && match[1].toLowerCase() === 'compact'
 }
 
 /** Fire-and-forget flush: a persistence failure must never become an
@@ -377,6 +418,10 @@ export interface NativeSessionOptions {
    *  read-only plugin-skill discovery. `undefined` = all enabled, `[]` = none.
    *  Forwarded to the skill port; the catalog never touches the marketplace. */
   enabledPlugins?: string[]
+  /** The host-resolved CLI config root (`claudeConfigDir()`), parent of the
+   *  user-scope `commands/` discovery root. Passed in by the composition root
+   *  — the neutral core never derives host config itself. */
+  commandsUserRoot: string
   /** Create-body tool surface, merged field-wise with the selected persona.
    *  The native loop honors the allow/deny lists; permission aliases/config
    *  remain SDK-only fields and do not affect this in-process tool list. */
@@ -393,6 +438,20 @@ export interface NativeSessionOptions {
   subagentSystem?: string
   /** Loose canUseTool from CreateSessionOptions — (toolName, input, {signal}) => PermissionResult. */
   canUseTool?: (...args: unknown[]) => Promise<unknown>
+  /** Host-bound permission-mode change request, threaded from
+   *  CreateSessionOptions. Consumed by the plan-mode entry hook (enterPlanMode)
+   *  so a tool-driven mode change routes through the host manager. Absent in
+   *  unit sessions that drive the core without a host manager (a no-op then). */
+  requestPermissionModeChange?: (mode: string) => Promise<void>
+  /** Host-bound in-place compaction request, threaded from
+   *  CreateSessionOptions. The `/compact` control interception calls it
+   *  instead of expanding a prompt; the manager records the request and runs
+   *  its in-place compaction flow (summarize + compactInPlace + appended
+   *  divider/summary, history retained) once the control turn settles idle.
+   *  Absent in unit sessions that drive
+   *  the core without a host manager (the control turn then simply completes
+   *  with no compaction). */
+  requestCompact?: () => Promise<void>
   /** Test seam: evaluated PER TURN; a non-undefined return replaces the real
    *  network streamer for that turn. Per-turn evaluation lets tests swap the
    *  script between turns. */
@@ -488,6 +547,17 @@ export class NativeSession implements NativeSessionCore {
    *  a manual reload supersedes the construction one (and can recover from a
    *  transient construction failure) for every per-turn await. */
   private skillsReady: Promise<void>
+  /** Custom `.claude/commands` rows discovered as of the last reload. Replaced
+   *  wholesale (never mutated), so a turn's captured reference is a stable
+   *  snapshot. Builtin rows are concatenated separately at every read. */
+  private customCommands: NativeCommand[] = []
+  /** The CURRENT command discovery in flight — the same supersede semantics
+   *  as `skillsReady`, re-assigned by `reloadSkills`. */
+  private commandsReady: Promise<void>
+  /** Generation fence for command discovery: a slower earlier pass must not
+   *  overwrite a newer committed one (mirrors NativeSkillCatalog.reload). */
+  private commandGeneration = 0
+  private committedCommandGeneration = 0
   /** Model-facing tool name → owning server, for the permission request's
    *  `mcpServer` field. Built from discovery metadata, never by parsing the
    *  FQN (it may be truncated and hashed). */
@@ -514,6 +584,15 @@ export class NativeSession implements NativeSessionCore {
    *  of the session — the spawn-time opts value is only the starting point, so
    *  a bypass-spawned session can be downgraded mid-flight. */
   private permissionMode: string
+  /** The ACTIVE main turn's permission-mode snapshot, passed to every tool's
+   *  permission call for that turn. Normally frozen at turn start (a non-plan
+   *  mid-turn chip switch only lands next turn). A PLAN-involved mid-turn
+   *  transition — entry to plan (EnterPlanMode) or exit from plan (an approved
+   *  ExitPlanMode) — refreshes it via setPermissionMode so the broker's
+   *  acceptEdits/bypass auto-allow engages for the rest of the SAME turn, matching
+   *  the CLI's approve→execute semantics. Null when no main turn is running; the
+   *  turn loop owns a local reference, so a stale holder is never read. */
+  private activeTurnMode: { mode: string } | null = null
   /** Live extended-thinking config, read when the next request is built.
    *  `undefined` = no explicit choice (API/model default). */
   private thinking: ThinkingSetting | undefined
@@ -741,6 +820,9 @@ export class NativeSession implements NativeSessionCore {
     this.skills = new NativeSkillCatalog(opts.cwd, opts.ports.skill, opts.enabledPlugins)
     this.skills.configure(opts.skills)
     this.skillsReady = this.startSkillReload()
+    // Custom commands are discovered before the first turn can invoke them,
+    // the same per-turn-await shape as the skill catalog.
+    this.commandsReady = this.startCommandReload()
     this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
     this.taskOutputTool = createTaskOutputTool(this.tasks)
     // Every session can delegate, MCP or not: `tools` is a live getter and the
@@ -1225,6 +1307,7 @@ export class NativeSession implements NativeSessionCore {
     toolUseId: string,
     signal: AbortSignal,
     permissionMode = this.permissionMode,
+    readOnlyHint?: boolean,
   ) => {
     // Guard against an abort that fired while the previous tool executed: an
     // already-aborted signal never fires the broker's abort listener, so
@@ -1237,7 +1320,7 @@ export class NativeSession implements NativeSessionCore {
     // here and surfaces as the turn's error through the pump catch. This is
     // the loop's single pre-tool seam, so it covers bypass / deny paths too.
     if (this.assistantFlush) await this.assistantFlush
-    return this.decidePermission(toolName, input, toolUseId, signal, permissionMode)
+    return this.decidePermission(toolName, input, toolUseId, signal, permissionMode, readOnlyHint)
   }
 
   private async decidePermission(
@@ -1246,6 +1329,7 @@ export class NativeSession implements NativeSessionCore {
     toolUseId: string,
     signal: AbortSignal,
     permissionMode: string,
+    readOnlyHint?: boolean,
   ) {
     // An interrupt/destroy can land while the model turn's flush is in flight.
     // Re-check before handing the signal to the broker: its abort listener
@@ -1308,6 +1392,10 @@ export class NativeSession implements NativeSessionCore {
       toolUseID: toolUseId,
       permissionMode,
       ...(mcpServer ? { mcpServer } : {}),
+      // The resolved ToolDef's read-only metadata (MCP tools: the server's
+      // declared annotation). Only present when proven true — the host plan
+      // gate treats absence as "not proven" (fail-closed).
+      ...(readOnlyHint === true ? { readOnlyHint: true } : {}),
     })) as { behavior?: string; updatedInput?: Record<string, unknown>; message?: string; interrupt?: boolean }
     if (result?.behavior === 'allow') {
       return { allowed: true, input: result.updatedInput ?? input }
@@ -1794,6 +1882,46 @@ export class NativeSession implements NativeSessionCore {
     return reload
   }
 
+  /** Start a command-discovery pass and return it as the current
+   *  `commandsReady`. Same observed-but-loud contract as `startSkillReload`:
+   *  the catch marks the promise handled at process level while the turn path
+   *  still awaits the ORIGINAL promise, so a real failure stays a loud turn
+   *  error. The generation fence keeps a slower earlier pass from overwriting
+   *  a newer committed snapshot. */
+  private startCommandReload(): Promise<void> {
+    const generation = ++this.commandGeneration
+    const reload = discoverCommands(this.opts.cwd, this.opts.commandsUserRoot).then((commands) => {
+      if (generation <= this.committedCommandGeneration) return
+      this.customCommands = commands
+      this.committedCommandGeneration = generation
+    })
+    void reload.catch((err) => log.warn(`[${this.opts.id}] command discovery failed:`, err))
+    return reload
+  }
+
+  /** The full slash surface: builtin rows, then discovered custom rows, then
+   *  the current skill view's rows — deduped by lowercased name so a command
+   *  wins a same-name skill and a builtin wins a same-name custom file.
+   *  Display names stay as authored; only the dedupe key is case-folded. */
+  private commandCatalog(custom: readonly NativeCommand[], skillCommands: readonly NativeSkillCommand[]): NativeSkillCommand[] {
+    const out: NativeSkillCommand[] = []
+    const seen = new Set<string>()
+    const push = (row: NativeSkillCommand): void => {
+      const key = row.name.toLowerCase()
+      if (seen.has(key)) return
+      seen.add(key)
+      out.push(row)
+    }
+    for (const cmd of BUILTIN_COMMANDS) {
+      push({ name: cmd.name, description: cmd.description, argumentHint: cmd.argumentHint, builtin: true })
+    }
+    for (const cmd of custom) {
+      push({ name: cmd.name, description: cmd.description, argumentHint: cmd.argumentHint })
+    }
+    for (const row of skillCommands) push(row)
+    return out
+  }
+
   /** The nested (Agent/Task) prompt: the subagent system plus the nested run's
    *  scoped Skill section. The view reads the shared catalog at call time, so
    *  a reload reaches the next run without reviving an excluded skill. */
@@ -1813,7 +1941,11 @@ export class NativeSession implements NativeSessionCore {
   } {
     // Agent, Task and Skill ride EVERY list, MCP-less sessions included —
     // otherwise the model loses delegation exactly when it has no servers to
-    // call, and a subagent could never load a skill.
+    // call, and a subagent could never load a skill. The plan tools ride every
+    // list too (main AND nested): a subagent inherits plan enforcement, and
+    // EnterPlanMode binds to the session's host-bound entry hook so a
+    // tool-driven mode change routes through the manager. Stateless, so a
+    // fresh instance per rebuild is fine (the hook reads live opts at call).
     const tools: ToolDef[] = [
       ...this.opts.tools,
       this.webFetchTool,
@@ -1823,6 +1955,8 @@ export class NativeSession implements NativeSessionCore {
       this.taskTool,
       this.taskOutputTool,
       skillTool,
+      createEnterPlanModeTool({ enterPlanMode: () => this.enterPlanMode() }),
+      createExitPlanModeTool(),
     ]
     const mcpToolServers = new Map<string, { name: string; source: 'sdk' | 'dynamic' }>()
     if (this.mcp) {
@@ -1923,13 +2057,22 @@ export class NativeSession implements NativeSessionCore {
         const turnSkillPolicy = turnProfile?.skills ?? this.baseSkillPolicy
         const turnBaseToolProfile = this.baseToolProfile
         const turnModel = this.model
-        const turnPermissionMode = this.permissionMode
+        // The turn's permission-mode snapshot. A plan-involved mid-turn
+        // transition refreshes `turnMode.mode` in place (setPermissionMode), so
+        // the loop below reads the current value on every tool call.
+        const turnMode = { mode: this.permissionMode }
+        this.activeTurnMode = turnMode
         const turnEffortLevel = this.effortLevel
         // The init SessionStart dispatch must settle before the first turn's
         // UserPromptSubmit so its context/seed lead this turn's messages. A
         // resolved promise on every later turn — no per-turn cost.
         await this.sessionStartInit
         let turnSkillView: NativeSkillInvocationView | undefined
+        // `/compact` control-action flag: the user branch's catalog discovery
+        // sets it; the shared tail reads it to route the control turn (no model
+        // round). Hoisted to the try scope so a wake turn — never /compact —
+        // reads false and takes the model-turn path.
+        let compactControl = false
         // Branch on `pending` so the user branch narrows it to non-null;
         // pending === null ⇔ wake !== null by the construction above.
         if (pending === null) {
@@ -1986,18 +2129,32 @@ export class NativeSession implements NativeSessionCore {
         } else {
           const next = pending.message
           let invocation: { name: string; body: string } | null = null
-          let skillError: unknown
+          let catalogError: unknown
           try {
-            // Skill discovery is awaited per turn, not at spawn: a slow disk
-            // never delays session creation, and `skillsReady` tracks the LATEST
-            // reload pass, so a manual reload supersedes the construction snapshot.
+            // Catalog discovery is awaited per turn, not at spawn: a slow disk
+            // never delays session creation, and the ready promises track the
+            // LATEST reload pass, so a manual reload supersedes the construction
+            // snapshot.
             await this.skillsReady
-            // Freeze the freshly discovered cache BEFORE resolving the command.
+            await this.commandsReady
+            // Freeze the freshly discovered caches BEFORE resolving the invocation.
             // Invocation, available_skills and the Skill tool now share one view.
             turnSkillView = this.skills.snapshot(turnSkillPolicy)
-            invocation = skillInvocationForTurn(next.content, turnSkillView)
+            // Interception order contract: a control-action interception belongs
+            // ahead of prompt expansion — `/compact` routes to the host
+            // compaction callback and never reaches the catalog (its builtin
+            // row is bodyless). Command expansion precedes skill matching (a
+            // command wins a same-name collision); an unknown name matches
+            // neither and passes through as ordinary text. The command list is
+            // captured once so a later reload cannot mix into this turn.
+            compactControl = isCompactControlInvocation(next.content)
+            if (!compactControl) {
+              const turnCommands = [...BUILTIN_COMMANDS, ...this.customCommands]
+              invocation = commandInvocationForTurn(next.content, turnCommands)
+                ?? skillInvocationForTurn(next.content, turnSkillView)
+            }
           } catch (err) {
-            skillError = err
+            catalogError = err
           }
 
           // UserPromptSubmit seam (RS §3): dispatch BEFORE the prompt joins the
@@ -2005,6 +2162,15 @@ export class NativeSession implements NativeSessionCore {
           // (RS §9). exit-2 / block erases the prompt from native's OWN log only
           // (the durable append below is skipped) — the host bubble stays, since
           // the manager broadcast + seq-stored it before the provider saw it.
+          // The /compact control action SKIPS this seam: it is a local command,
+          // not a prompt submission — the CLI dispatches local commands through
+          // an immediate executor that never fires UserPromptSubmit (binary-
+          // verified: the `type:"local"` branch bypasses the prompt path). The
+          // defaults below (no suppress, no context) let the shared persist /
+          // consume machinery run unchanged for the control turn.
+          let suppressPrompt = false
+          let promptContext: string[] = []
+          if (!compactControl) {
           const currentTitle = this.currentSessionTitle()
           const promptDecision = await this.dispatchHook('UserPromptSubmit', {
             session_id: this.opts.id,
@@ -2069,8 +2235,9 @@ export class NativeSession implements NativeSessionCore {
             }
             continue
           }
-          const suppressPrompt = promptDecision.suppressOriginalPrompt === true
-          const promptContext = promptDecision.additionalContext.filter((context) => context.trim() !== '')
+          suppressPrompt = promptDecision.suppressOriginalPrompt === true
+          promptContext = promptDecision.additionalContext.filter((context) => context.trim() !== '')
+          }
 
           // Persist the raw prompt before consumption is acknowledged. A v1 log
           // upgrades before its first structured occurrence; a failed migration
@@ -2173,89 +2340,122 @@ export class NativeSession implements NativeSessionCore {
           // admission may open. It closes when the manager settles the turn.
           this.steeringOpen = true
           await this.log.flush()
-          if (skillError !== undefined) throw skillError
+          if (catalogError !== undefined) throw catalogError
         }
-        // MCP discovery is awaited per turn, not at spawn: a slow server never
-        // delays session creation, and a mid-turn replace/toggle only lands
-        // on the next turn (the turn below runs on this snapshot).
-        await this.mcp?.whenReady()
-        // Everything a preset can override was captured before the awaits.
-        // Build the effective list with THAT profile and return the exact
-        // snapshot runTurn will use, rather than reading live fields again.
-        const skillView = turnSkillView!
-        const turnTools = this.rebuildTools(
-          this.skillToolFor(skillView),
-          turnProfile,
-          turnBaseToolProfile,
-        )
-        const turnSystem = withSkillsSection(
-          turnProfile?.instruction
-            ? `${this.baseSystem}\n\n${turnProfile.instruction}`
-            : this.baseSystem,
-          skillView.section(),
-        )
-        const res = await runTurn(
-          {
-            stream: (req) => {
-              // Main-thread rounds only: nested runners call streamFor through
-              // their own deps and never pass here. Last round wins.
-              this.suggestionSnapshot = {
-                at: Date.now(),
-                model: req.model,
-                system: req.system,
-                tools: req.tools,
-                messages: req.messages,
-              }
-              return this.streamFor(req, { effortLevel: () => turnEffortLevel })
+        if (compactControl) {
+          // Control turn: no model round for the literal text. Request the
+          // host's in-place compaction BEFORE the terminal result so the
+          // manager's request flag is set before the pump settles this turn;
+          // the flow itself runs at the settle trigger point, where the
+          // session reads idle (compactInPlace refuses an in-flight turn or
+          // queued input). The result carries text so the pump classifies a
+          // REAL turn settlement — an empty bookend would skip queued-input
+          // materialization and strand a prompt queued behind this one.
+          await this.opts.requestCompact?.()
+          this.output.push({
+            type: 'result',
+            sessionId: this.opts.id,
+            uuid: this.ctx.uuid(),
+            parentToolUseId: this.ctx.parentToolUseId ?? null,
+            result: 'Compaction requested.',
+            usage: neutralUsageOf({ input_tokens: 0, output_tokens: 0 }),
+            numTurns: 0,
+            durationMs: 0,
+            isError: false,
+            fastMode: this.fastMode,
+          })
+          endReason = 'completed'
+        } else {
+          // MCP discovery is awaited per turn, not at spawn: a slow server never
+          // delays session creation, and a mid-turn replace/toggle only lands
+          // on the next turn (the turn below runs on this snapshot).
+          await this.mcp?.whenReady()
+          // Everything a preset can override was captured before the awaits.
+          // Build the effective list with THAT profile and return the exact
+          // snapshot runTurn will use, rather than reading live fields again.
+          const skillView = turnSkillView!
+          const turnTools = this.rebuildTools(
+            this.skillToolFor(skillView),
+            turnProfile,
+            turnBaseToolProfile,
+          )
+          const turnSystem = withSkillsSection(
+            turnProfile?.instruction
+              ? `${this.baseSystem}\n\n${turnProfile.instruction}`
+              : this.baseSystem,
+            skillView.section(),
+          )
+          const res = await runTurn(
+            {
+              stream: (req) => {
+                // Main-thread rounds only: nested runners call streamFor through
+                // their own deps and never pass here. Last round wins.
+                this.suggestionSnapshot = {
+                  at: Date.now(),
+                  model: req.model,
+                  system: req.system,
+                  tools: req.tools,
+                  messages: req.messages,
+                }
+                // Plan guidance is appended PER ROUND from the LIVE mode, not
+                // baked into turnSystem: a mid-turn EnterPlanMode adds it to the
+                // very next round and an ExitPlanMode approval removes it. The
+                // snapshot above keeps the base system (the suggestion fork is
+                // suppressed in plan mode, so it never replays this prefix).
+                const system = this.permissionMode === 'plan'
+                  ? `${req.system}\n\n${PLAN_MODE_GUIDANCE}`
+                  : req.system
+                return this.streamFor({ ...req, system }, { effortLevel: () => turnEffortLevel })
+              },
+              tools: [...turnTools],
+              maxTurns: turnProfile?.maxTurns,
+              tasks: this.tasks,
+              cwd: this.opts.cwd,
+              requestPermission: (toolName, input, toolUseId, signal, readOnlyHint) =>
+                this.requestPermission(toolName, input, toolUseId, signal, turnMode.mode, readOnlyHint),
+              dispatchHook: async (event, input, hookCtx) => {
+                // Pre-tool durability barrier (spec §7): a hook allow short-circuits
+                // requestPermission, which normally awaits the assistant flush before
+                // any tool runs. The PreToolUse dispatch awaits it here instead, so a
+                // hook-allowed tool still never runs before its announcing assistant
+                // frame is durable. A rejected flush surfaces as the turn's error.
+                if (event === 'PreToolUse' && this.assistantFlush) await this.assistantFlush
+                return this.dispatchHook(event, input, hookCtx)
+              },
+              emit: (frame) => {
+                const parent = this.ctx.parentToolUseId ?? null
+                this.persistFrame(frame, parent)
+                this.emitFrame(frame, parent)
+              },
+              persistToolResult: (result) => this.persistToolResult(result, null),
+              attachmentProjection: {
+                attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
+                preparedPdfs: this.preparedPdfs,
+              },
+              system: turnSystem,
+              fastModeState: () => (this.fastMode ? 'on' : 'off'),
+              drainSupplement: () => this.injectSupplements(),
+              onInitialMessagesOwned: () => { initialMessagesOwned = true },
+              // T23 (RS §4.4): the wake turn IS stop-hook feedback — its first
+              // Stop dispatch carries stop_hook_active:true so a well-behaved
+              // asyncRewake Stop hook terminates instead of re-waking forever.
+              initialStopHookActive: wake?.stopHookActive,
             },
-            tools: [...turnTools],
-            maxTurns: turnProfile?.maxTurns,
-            tasks: this.tasks,
-            cwd: this.opts.cwd,
-            requestPermission: (toolName, input, toolUseId, signal) =>
-              this.requestPermission(toolName, input, toolUseId, signal, turnPermissionMode),
-            dispatchHook: async (event, input, hookCtx) => {
-              // Pre-tool durability barrier (spec §7): a hook allow short-circuits
-              // requestPermission, which normally awaits the assistant flush before
-              // any tool runs. The PreToolUse dispatch awaits it here instead, so a
-              // hook-allowed tool still never runs before its announcing assistant
-              // frame is durable. A rejected flush surfaces as the turn's error.
-              if (event === 'PreToolUse' && this.assistantFlush) await this.assistantFlush
-              return this.dispatchHook(event, input, hookCtx)
-            },
-            emit: (frame) => {
-              const parent = this.ctx.parentToolUseId ?? null
-              this.persistFrame(frame, parent)
-              this.emitFrame(frame, parent)
-            },
-            persistToolResult: (result) => this.persistToolResult(result, null),
-            attachmentProjection: {
-              attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
-              preparedPdfs: this.preparedPdfs,
-            },
-            system: turnSystem,
-            fastModeState: () => (this.fastMode ? 'on' : 'off'),
-            drainSupplement: () => this.injectSupplements(),
-            onInitialMessagesOwned: () => { initialMessagesOwned = true },
-            // T23 (RS §4.4): the wake turn IS stop-hook feedback — its first
-            // Stop dispatch carries stop_hook_active:true so a well-behaved
-            // asyncRewake Stop hook terminates instead of re-waking forever.
-            initialStopHookActive: wake?.stopHookActive,
-          },
-          this.ctx,
-          this.history,
-          initialMessages,
-          turnModel,
-          turnSignal,
-        )
-        // Success-path result frame was already emitted by runTurn; only the
-        // LAST-reading accounting happens here. Per-model totals are summed
-        // from the persisted assistant frames in `persistFrame`, so the live
-        // value and a restart's rebuild are identical.
-        this.lastUsage = sdkUsageOf(res.usage)
-        endReason = res.isError ? 'error' : 'completed'
-        if (!res.isError) endUsage = sdkUsageOf(res.usage)
-        turnResult = res
+            this.ctx,
+            this.history,
+            initialMessages,
+            turnModel,
+            turnSignal,
+          )
+          // Success-path result frame was already emitted by runTurn; only the
+          // LAST-reading accounting happens here. Per-model totals are summed
+          // from the persisted assistant frames in `persistFrame`, so the live
+          // value and a restart's rebuild are identical.
+          this.lastUsage = sdkUsageOf(res.usage)
+          endReason = res.isError ? 'error' : 'completed'
+          if (!res.isError) endUsage = sdkUsageOf(res.usage)
+          turnResult = res
+        }
       } catch (err) {
         // A withdrawn parked head (pendingDurableInitial !== pending) already
         // received its terminal 'failed' outcome from drainQueued (the T7
@@ -2352,6 +2552,7 @@ export class NativeSession implements NativeSessionCore {
       } finally {
         this.preparedPdfs.clearHistory('main')
         this.turnAbort = null
+        this.activeTurnMode = null
       }
       // Exactly one turn/end per turn, OUTSIDE the turn try/catch: a flush
       // failure here must log rather than land in the catch above, which
@@ -2538,6 +2739,28 @@ export class NativeSession implements NativeSessionCore {
     return entries
   }
 
+  /** Authoritative neutral model history for the host's compaction input: the
+   *  uncapped replay, floored at the last compact, sidechain excluded. The host
+   *  adapter owns the SDK projection + floor-summary identity recovery; the
+   *  core returns only neutral messages (no SDK import). */
+  getCompactionHistory(): RequestMessage[] {
+    return historyFromEvents(neutralEventsOf(this.log))
+  }
+
+  /** The last compact boundary's neutral facts (summary text + context
+   *  snapshot), or null when the log has none. Reverse scan mirrors replay's
+   *  `lastCompactIndex` floor (ES2022 — no Array.findLastIndex). */
+  getCompactionBoundary(): { text: string; context: string } | null {
+    const events = neutralEventsOf(this.log)
+    for (let i = events.length - 1; i >= 0; i--) {
+      const event = events[i]
+      if (event.type === 'session/compact') {
+        return { text: event.data.text, context: event.data.context }
+      }
+    }
+    return null
+  }
+
   /** Compact the conversation in place (P1.1 auto-compact): append the
    *  append-only `session/compact` boundary, then restart the model history
    *  from the captured context snapshot plus the summary. Only legal while the
@@ -2555,14 +2778,13 @@ export class NativeSession implements NativeSessionCore {
    *  only compacts while the session is idle. A queued user turn cannot slip
    *  in ahead of the swap: the log's serialized flush chain makes the pump's
    *  own flush resolve after the compact write, so the turn starts against the
-   *  swapped history. The post-splice SessionStart(compact) hook await extends
-   *  this idle window to hook-subprocess duration (command/http up to 600s),
-   *  and the manager's journal-commit window (prepare → compactInPlace →
-   *  reset) with it. A send racing that extended window starts a turn against
-   *  the swapped history before the hook decision applies; the pending
-   *  SessionStart model covers that race — the context/seed lands in a later
-   *  turn exactly once, never lost and never duplicated. */
-  async compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void> {
+   *  swapped history. The post-splice PostCompact + SessionStart(compact) hook
+   *  awaits extend this idle window to hook-subprocess duration (command/http
+   *  up to 600s). A send racing that extended window starts a turn against the
+   *  swapped history before the hook decision applies; the pending SessionStart
+   *  model covers that race — the context/seed lands in a later turn exactly
+   *  once, never lost and never duplicated. */
+  async compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string; trigger?: 'auto' | 'manual' }): Promise<void> {
     if (this._closed) throw new Error('session is closed')
     if (this.turnAbort !== null) throw new Error('a turn is in flight')
     if (this.queueDepth > 0) throw new Error('input is queued')
@@ -2573,7 +2795,15 @@ export class NativeSession implements NativeSessionCore {
     this.log.append({
       type: 'session/compact',
       time: Date.parse(opts.timestamp),
-      data: { text: summary, context, uuid: opts.uuid, timestamp: opts.timestamp },
+      data: {
+        text: summary, context, uuid: opts.uuid, timestamp: opts.timestamp,
+        // retainHistory keeps the pre-compact transcript visible above this
+        // boundary while the model history still floors here; summaryUuid is
+        // the summary frame's durable identity so disk replay and the live
+        // frame agree (no duplicate card on restart).
+        retainHistory: true,
+        ...(opts.summaryUuid ? { summaryUuid: opts.summaryUuid } : {}),
+      },
     })
     await this.log.flush()
     this.pdfBudgets.rebuildFromEvents(neutralEventsOf(this.log))
@@ -2592,16 +2822,16 @@ export class NativeSession implements NativeSessionCore {
     // (the hook/run activity record carries it; the decision has no actionable
     // specific output). A dispatch failure is logged, never thrown, for the
     // same reason as the SessionStart seam below. hasContext:false — PostCompact
-    // is a non-REPL event (RS §12.2); the matcher target is `trigger`. The
-    // trigger is always 'auto': compactInPlace is exclusively the host's
-    // in-place AUTO-compact path — manual /compact is a clear-with-seed fresh
-    // spawn (SessionStart(startup)), which fires no PostCompact.
+    // is a non-REPL event (RS §12.2); the matcher target is `trigger`. Both the
+    // pressure-gated auto path and the user-invoked /compact control action now
+    // splice in place through here, so the trigger rides opts (default 'auto'
+    // for a bare core call) — the host passes the real one.
     try {
       await this.dispatchHook('PostCompact', {
         session_id: this.opts.id,
         cwd: this.opts.cwd,
         hook_event_name: 'PostCompact',
-        trigger: 'auto',
+        trigger: opts.trigger ?? 'auto',
         compact_summary: summary,
       }, { signal: this.sessionAbort.signal, hasContext: false })
     } catch (err) {
@@ -2611,8 +2841,9 @@ export class NativeSession implements NativeSessionCore {
     // ordered AFTER PostCompact (dispatched immediately above). The compact
     // write is already durable and the history swapped, so a hook failure here
     // must NOT throw: compactInPlace's throw
-    // contract is "before any in-memory state change" (the manager's journal
-    // commit relies on it). hasContext:false — EVERY SessionStart source rides
+    // contract is "before any in-memory state change" (the manager appends its
+    // client-facing divider + summary only after this resolves). hasContext:false
+    // — EVERY SessionStart source rides
     // the CLI's no-toolUseContext generator (ivr, RS §13.2 dispatch chain /
     // §12.2 matrix), compact included: prompt/agent hooks report the
     // non-blocking availability error here exactly as at init, never an LLM
@@ -2748,7 +2979,18 @@ export class NativeSession implements NativeSessionCore {
     await this.updateAgentBase({ model })
   }
 
+  /** Plan-mode entry signal: route the mode change through the host-bound
+   *  callback so the manager's live permissionMode (the broker plan gate + UI
+   *  chip) and this handle's mode (persistence + per-round guidance) update
+   *  together. The EnterPlanMode tool deps bind to this hook; a session with no
+   *  host callback (bare unit core) is a no-op. The mode string stays neutral —
+   *  the host owns the permission-mode vocabulary. */
+  async enterPlanMode(): Promise<void> {
+    await this.opts.requestPermissionModeChange?.('plan')
+  }
+
   async setPermissionMode(mode: string): Promise<void> {
+    const previousEffective = this.permissionMode
     try {
       await this.updateAgentBase({ permissionMode: mode })
     } catch (err) {
@@ -2758,7 +3000,25 @@ export class NativeSession implements NativeSessionCore {
       // mode (requested base without a persona override, persona otherwise).
       this.basePermissionMode = mode
       this.applyEffectiveProfile()
+      this.refreshActiveTurnModeOnPlanTransition(previousEffective)
       throw err
+    }
+    this.refreshActiveTurnModeOnPlanTransition(previousEffective)
+  }
+
+  /** Spec G1 "Mid-turn transitions": a PLAN-involved mode change (entry to plan
+   *  via EnterPlanMode, or exit from plan via an approved ExitPlanMode) must bind
+   *  the very next tool call of the CURRENT turn — not just the next turn — so an
+   *  approved plan lets acceptEdits/bypass auto-allow the following edits in the
+   *  SAME turn (CLI approve→execute parity). Non-plan mid-turn switches keep the
+   *  turn-start snapshot (next-turn behavior). The broker plan gate already reads
+   *  the manager's live mode; this refreshes the per-call snapshot the
+   *  acceptEdits/bypass branches read. Model/effort/skill snapshots are untouched. */
+  private refreshActiveTurnModeOnPlanTransition(previousEffective: string): void {
+    const holder = this.activeTurnMode
+    if (!holder) return
+    if (previousEffective === 'plan' || this.permissionMode === 'plan') {
+      holder.mode = this.permissionMode
     }
   }
 
@@ -2933,13 +3193,15 @@ export class NativeSession implements NativeSessionCore {
     }
   }
 
-  /** The `/` command catalog: every user-invocable skill of the current
-   *  catalog, in the catalog's own selection state. Awaits the CURRENT
-   *  discovery pass so an immediate `/commands` fetch after spawn cannot race
-   *  it into an empty answer. */
+  /** The `/` command catalog: builtin prompt commands, discovered custom
+   *  commands, and every user-invocable skill of the current catalog (deduped
+   *  by name, command wins). Awaits the CURRENT discovery passes so an
+   *  immediate `/commands` fetch after spawn cannot race them into an empty
+   *  answer. */
   async supportedCommands(): Promise<unknown> {
     await this.skillsReady
-    return this.currentSkillView().commands()
+    await this.commandsReady
+    return this.commandCatalog(this.customCommands, this.currentSkillView().commands())
   }
 
   /** Auto-title through the injected auxiliary LLM port. The model is
@@ -3005,14 +3267,19 @@ export class NativeSession implements NativeSessionCore {
     })
   }
 
-  /** Re-read the skill roots and answer the fresh command catalog. The new
-   *  discovery replaces `skillsReady`, so every per-turn await from here on
-   *  tracks THIS pass — a manual reload both supersedes the construction
-   *  snapshot and recovers the session from a failed one. */
+  /** Re-read the skill AND command roots and answer the fresh merged catalog.
+   *  The new discoveries replace `skillsReady` / `commandsReady`, so every
+   *  per-turn await from here on tracks THIS pass — a manual reload both
+   *  supersedes the construction snapshot and recovers the session from a
+   *  failed one. The `skills` key is the manager's broadcast contract: it
+   *  relays the array as `commands-changed`, so it carries the FULL slash
+   *  surface (builtin + custom + skill rows), not skill rows alone. */
   async reloadSkills(): Promise<unknown> {
     this.skillsReady = this.startSkillReload()
+    this.commandsReady = this.startCommandReload()
     await this.skillsReady
-    return { skills: this.currentSkillView().commands() }
+    await this.commandsReady
+    return { skills: this.commandCatalog(this.customCommands, this.currentSkillView().commands()) }
   }
 
   /** The single hook decision point for the trigger seams: delegates to the

@@ -400,6 +400,10 @@ import { NativeSessionLog, loadNativeSessionLogSync } from './providers/native/s
 import { projectNeutralEventToLegacy } from './providers/native/session-log/format.js'
 import type { NativeSessionEvent } from './providers/native/vocabulary/session-event.js'
 import { nativeCoreOf } from './providers/native-host-frame-adapter.js'
+import { neutralEventsOf } from './providers/native/session-log/neutral-read.js'
+import { pushBounded, stampReceivedAt } from './history-utils.js'
+import { brandString } from './providers/native/vocabulary/brand.js'
+import { createAssistantMessage, createToolResultMessage } from './providers/native/vocabulary/message.js'
 
 // T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
 // the legacy shape from the canonical neutral baseline via the pinned compat
@@ -652,6 +656,26 @@ describe('SessionManager', () => {
     expect(native.taskControlSupported).toBe(true)
     await sm.unload(native.id)
     expect(sm.list().find((session) => session.id === native.id)?.taskControlSupported).toBe(true)
+  })
+
+  it('projects locked-feature booleans false for native, true for claude (live and dormant)', async () => {
+    const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+    const keys = ['pluginsSupported', 'hooksSupported', 'memorySupported', 'sandboxSupported', 'accountInfoSupported'] as const
+    for (const k of keys) {
+      expect(claude[k]).toBe(true)
+      expect(native[k]).toBe(false)
+    }
+    // Dormant projection (infoFromMeta) re-derives the same booleans from the
+    // provider registry — no live handle is involved.
+    await sm.unload(native.id)
+    await sm.unload(claude.id)
+    const dormantNative = sm.list().find((session) => session.id === native.id)
+    const dormantClaude = sm.list().find((session) => session.id === claude.id)
+    for (const k of keys) {
+      expect(dormantNative?.[k]).toBe(false)
+      expect(dormantClaude?.[k]).toBe(true)
+    }
   })
 
   it('create() defaults betas to the 1M-context flag when none is supplied', async () => {
@@ -2814,7 +2838,7 @@ describe('SessionManager', () => {
     expect(sm.getHistory(info.id)).toBeNull()
   })
 
-  it('native auto-compact uses the same skill projection and keeps it out of the replacement UI history', async () => {
+  it('native auto-compact uses the same skill projection and keeps it out of the retained UI history', async () => {
     const info = await sm.create({})
     await sm.send(info.id, '/demo do this')
     const rawUuid = (sm.getHistory(info.id)![0] as { uuid: string }).uuid
@@ -2860,8 +2884,8 @@ describe('SessionManager', () => {
       expect(input[2]).toMatchObject({ uuid: 'auto-subagent-frame', parent_tool_use_id: 'agent-1' })
       expect(input[3]).toMatchObject({ uuid: 'auto-turn-result', type: 'result' })
 
-      // Inspect before compactInPlace clears the rings: a hidden-body append or
-      // broadcast during projection would otherwise be erased by the reset.
+      // Inspect before the provider call: projection must not append the hidden
+      // body to the rings or broadcast it (the rings are retained by compact).
       expect.soft(live.history).toHaveLength(2)
       expect.soft(live.subagentHistory).toHaveLength(1)
       expect.soft(JSON.stringify(live.history)).not.toContain('AUTO SKILL BODY')
@@ -2879,11 +2903,15 @@ describe('SessionManager', () => {
     }
 
     expect(compactInPlace).toHaveBeenCalledWith('MOCK SUMMARY', {
-      uuid: expect.any(String), timestamp: expect.any(String),
+      uuid: expect.any(String), timestamp: expect.any(String), summaryUuid: expect.any(String), trigger: 'auto',
     })
-    const replacementHistory = sm.getHistory(info.id)!
-    expect(replacementHistory).toHaveLength(2)
-    expect(JSON.stringify(replacementHistory)).not.toContain('AUTO SKILL BODY')
+    // Append, not replacement: the original turn (and the subagent frame)
+    // survive above the marker, and the hidden skill body stays out of the
+    // retained UI history (getHistory is the merged main+subagent view).
+    const retainedHistory = sm.getHistory(info.id)!
+    expect(retainedHistory).toHaveLength(5)
+    expect((retainedHistory[0] as { uuid: string }).uuid).toBe(rawUuid)
+    expect(JSON.stringify(retainedHistory)).not.toContain('AUTO SKILL BODY')
   })
 
   describe('native auto-compact pressure and pre-dispatch checks', () => {
@@ -2943,7 +2971,7 @@ describe('SessionManager', () => {
       expect(live.handle.compactInPlace).not.toHaveBeenCalled()
     })
 
-    it('native compact writes a reset batch and KEEPS the sidecar (no deletion), journal committed', async () => {
+    it('native compact appends to the KEPT sidecar — no reset batch, no journal, generation unchanged', async () => {
       const info = await sm.create({ cwd: dir })
       await sm.send(info.id, 'seed turn')
       const h = mockHandles.at(-1)!
@@ -2955,21 +2983,29 @@ describe('SessionManager', () => {
       live.handle.compactInPlace = vi.fn(async () => {})
       await callAutoCompact(live, { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 })
       expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
-      // The seq sidecar is KEPT (spec §8.3: no deletion on compact).
+      // The seq sidecar is KEPT and appended (no deletion, no reset batch):
+      // the boundary + summary seq-assign onto the same space as the seed turn.
       const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
-      expect(existsSync(sidecarFile)).toBe(true)
+      // The sidecar append is fire-and-forget (a serial promise queue onto a
+      // file handle), so under parallel test load the seed turn's file may
+      // not have landed by the time compact resolves — wait for existence
+      // the same way the row-count check below waits for the rows.
+      expect(await waitFor(() => existsSync(sidecarFile))).toBe(true)
+      expect(await waitFor(async () =>
+        (await new TranscriptSidecar(dir, info.id).load()).filter((r) => typeof r.seq === 'number').length === 5,
+      )).toBe(true)
       const rows = await new TranscriptSidecar(dir, info.id).load()
-      expect(rows.some((r) => r.commit === true && r.batchType === 'reset' && r.reason === 'compact')).toBe(true)
-      // Generation carried forward; journal committed with clearEpoch advanced.
-      expect(sm.transcriptHead(info.id)!.generation).toBe(prevGen + 1)
+      expect(rows.some((r) => r.batchType === 'reset')).toBe(false)
+      // Generation unchanged; no journal prepared — compact is an append, not
+      // a reset producer (legacy compact-reset journals are recovery-only).
+      expect(sm.transcriptHead(info.id)!.generation).toBe(prevGen)
       const journal = (sm as unknown as { journalFor(id: string): ResetJournal }).journalFor(info.id)
       await journal.ready
-      expect(journal.latest?.state).toBe('committed')
-      expect(journal.latest?.reason).toBe('compact')
-      expect(journal.clearEpoch).toBe(1)
+      expect(journal.latest).toBeNull()
+      expect(journal.clearEpoch).toBe(0)
     })
 
-    it('session-cleared carries the authoritative clearedGeneration after compact', async () => {
+    it('no session-cleared after compact — append keeps the client transcript floor', async () => {
       const info = await sm.create({ cwd: dir })
       await sm.send(info.id, 'seed turn')
       const h = mockHandles.at(-1)!
@@ -2983,7 +3019,11 @@ describe('SessionManager', () => {
       const live = liveSession(info.id)
       live.handle.compactInPlace = vi.fn(async () => {})
       await callAutoCompact(live, { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 })
-      expect(frames.some((f) => f.kind === 'session-cleared' && f.clearedGeneration === prevGen + 1)).toBe(true)
+      await tick()
+      // No universe reset: the client keeps its transcript (no cleared floor),
+      // and the marker frames arrive as ordinary live appends.
+      expect(frames).toEqual([])
+      expect(sm.transcriptHead(info.id)!.generation).toBe(prevGen)
       sub!.unsubscribe()
     })
 
@@ -3057,12 +3097,12 @@ describe('SessionManager', () => {
       }
     })
 
-    it('I5: happy-path compact survives a reload — fresh manager projects the post-compact universe from the kept sidecar', async () => {
+    it('I5: happy-path compact survives a reload — fresh manager projects the RETAINED history + marker from the kept sidecar', async () => {
       const prevConfigDir = process.env.CLAUDE_CONFIG_DIR
       process.env.CLAUDE_CONFIG_DIR = dir
       try {
         const info = await sm.create({ cwd: dir })
-        await sm.send(info.id, 'seed turn')
+        const sent = await sm.send(info.id, 'seed turn')
         const h = mockHandles.at(-1)!
         h.emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
         h.emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
@@ -3071,17 +3111,19 @@ describe('SessionManager', () => {
         live.handle.compactInPlace = vi.fn(async () => {})
         await callAutoCompact(live, { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 })
         const genAfter = sm.transcriptHead(info.id)!.generation
-        // The real native compactInPlace writes the boundary to the provider
-        // log; the mock no-op does not, so simulate that evidence here (the
-        // startup fence requires it for a committed journal).
-        const jr = (sm as unknown as { journalFor(id: string): ResetJournal }).journalFor(info.id)
-        await jr.ready
-        const boundaryUuid = jr.latest!.seedBoundaryUuid!
+        // The real native compactInPlace appends its marker to the provider
+        // log WITHOUT dropping the prior history; the mock no-op does not, so
+        // simulate that evidence here: the full retained transcript + marker.
+        const boundaryUuid = (live.history.find((m) => m.type === 'system' && m.subtype === 'compact_boundary') as { uuid: string }).uuid
+        const summaryUuid = (live.history.find((m) => (m as { isCompactSummary?: boolean }).isCompactSummary === true) as { uuid: string }).uuid
         const jsonlPath = join(dir, 'projects', encodeCwd(dir), `${info.id}.jsonl`)
         mkdirSync(dirname(jsonlPath), { recursive: true })
         writeFileSync(jsonlPath, [
+          JSON.stringify({ type: 'user', uuid: sent.uuid, parent_tool_use_id: null, message: { role: 'user', content: 'seed turn' } }),
+          JSON.stringify({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } }),
+          JSON.stringify({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id }),
           JSON.stringify({ type: 'system', subtype: 'compact_boundary', uuid: boundaryUuid, compact_metadata: { trigger: 'auto', pre_tokens: 90 } }),
-          JSON.stringify({ type: 'user', uuid: 'sum', isCompactSummary: true, message: { role: 'user', content: 'MOCK SUMMARY' } }),
+          JSON.stringify({ type: 'user', uuid: summaryUuid, isCompactSummary: true, message: { role: 'user', content: 'MOCK SUMMARY' } }),
         ].join('\n') + '\n')
         await sm.shutdown()
         const store2 = new SessionStore({ stateDir: dir })
@@ -3091,9 +3133,13 @@ describe('SessionManager', () => {
           const win = await sm2.getTranscriptWindow(info.id)
           expect(win.generation).toBe(genAfter)
           const uuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
-          // post-compact universe: the boundary + summary, NOT the pre-compact seed turn
-          expect(uuids.some((u) => u === 'a1' || u === 'r1')).toBe(false)
-          expect(win.messages.length).toBeGreaterThanOrEqual(2)
+          // Retained universe: the pre-compact seed turn AND the marker pair,
+          // each exactly once (the summary identity dedupes live vs disk).
+          expect(uuids).toContain(sent.uuid)
+          expect(uuids).toContain('a1')
+          expect(uuids).toContain('r1')
+          expect(uuids.filter((u) => u === boundaryUuid)).toHaveLength(1)
+          expect(uuids.filter((u) => u === summaryUuid)).toHaveLength(1)
         } finally {
           await sm2.shutdown()
         }
@@ -3103,20 +3149,21 @@ describe('SessionManager', () => {
       }
     })
 
-    it('Task 5: compact advances clearEpoch + lastFullResetGeneration; rebuild advances rebaseEpoch', async () => {
+    it('compact append leaves clearEpoch + lastFullResetGeneration untouched (no reset epoch)', async () => {
       const info = await sm.create({ cwd: dir })
       await sm.send(info.id, 'seed turn')
       const h = mockHandles.at(-1)!
       h.emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
       h.emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
       expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      const prevGen = sm.transcriptHead(info.id)!.generation
       const live = liveSession(info.id)
       live.handle.compactInPlace = vi.fn(async () => {})
       await callAutoCompact(live, { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 })
-      const genAfter = sm.transcriptHead(info.id)!.generation
+      expect(sm.transcriptHead(info.id)!.generation).toBe(prevGen)
       const epochs = sm.transcriptEpochs(info.id)
-      expect(epochs.clearEpoch).toBe(1)
-      expect(epochs.lastFullResetGeneration).toBe(genAfter)
+      expect(epochs.clearEpoch).toBe(0)
+      expect(epochs.lastFullResetGeneration).toBeUndefined()
       expect(epochs.rebaseEpoch).toBe(0)
     })
 
@@ -3454,6 +3501,288 @@ describe('SessionManager', () => {
     })
   })
 
+  describe('native auto-compact append semantics (retain-history)', () => {
+    const liveSession = (id: string): Session =>
+      (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)!
+    const callAutoCompact = (
+      session: Session,
+      pressure?: {
+        totalTokens: number
+        maxTokens: number
+        model: string
+        autoCompactThreshold?: number
+      } | null,
+    ) => (sm as unknown as {
+      maybeAutoCompact(
+        session: Session,
+        pressure?: {
+          totalTokens: number
+          maxTokens: number
+          model: string
+          autoCompactThreshold?: number
+        } | null,
+      ): Promise<void>
+    }).maybeAutoCompact(session, pressure)
+    const overThreshold = { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 }
+    const isBoundary = (m: SDKMessage) => m.type === 'system' && m.subtype === 'compact_boundary'
+    const isSummary = (m: SDKMessage) => (m as { isCompactSummary?: boolean }).isCompactSummary === true
+
+    /** One completed seed turn on a mock-handle session with a compactInPlace
+     *  mock attached — the same driving pattern as the pressure suite. */
+    async function seededSession() {
+      const info = await sm.create({ cwd: dir })
+      const sent = await sm.send(info.id, 'seed turn')
+      const h = mockHandles.at(-1)!
+      h.emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
+      h.emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      const live = liveSession(info.id)
+      live.handle.compactInPlace = vi.fn(async () => {})
+      return { info, live, promptUuid: sent.uuid }
+    }
+
+    it('native auto-compact appends marker, retains ring, no session-cleared / generation bump', async () => {
+      const { info, live, promptUuid } = await seededSession()
+      const before = live.history.length
+      const genBefore = sm.transcriptHead(info.id)!.generation
+      const clearedFrames: unknown[] = []
+      const sub = sm.subscribeSessionCleared(info.id)
+      void (async () => { for await (const f of sub!.iterable) clearedFrames.push(f) })()
+
+      await callAutoCompact(live, overThreshold)
+
+      // Ring retained + appended: the pre-compact turn survives above the marker.
+      expect(live.history.length).toBe(before + 2)
+      const uuids = live.history.map((m) => (m as { uuid?: string }).uuid)
+      expect(uuids).toContain(promptUuid)
+      expect(uuids).toContain('a1')
+      expect(uuids).toContain('r1')
+      expect(live.history.some(isBoundary)).toBe(true)
+      expect(live.history.some(isSummary)).toBe(true)
+      // No universe reset: generation unchanged, boundary + summary seq-assigned
+      // onto the SAME space, no reset batch in the kept sidecar.
+      expect(sm.transcriptHead(info.id)!.generation).toBe(genBefore)
+      expect(sm.transcriptHead(info.id)!.headSeq).toBe(before + 2)
+      expect(await waitFor(async () =>
+        (await new TranscriptSidecar(dir, info.id).load()).filter((r) => typeof r.seq === 'number').length === before + 2,
+      )).toBe(true)
+      const rows = await new TranscriptSidecar(dir, info.id).load()
+      expect(rows.some((r) => r.batchType === 'reset')).toBe(false)
+      await tick()
+      expect(clearedFrames).toEqual([])
+      sub!.unsubscribe()
+    })
+
+    it('live summary frame uuid == persisted summaryUuid (no duplicate on restart)', async () => {
+      captureNativeRequests(sm)
+      const info = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      const live = liveSession(info.id)
+      live.lastContextUsage = {
+        totalTokens: 90, maxTokens: 100, rawMaxTokens: 100, percentage: 90, model: 'test-model',
+      }
+
+      await callAutoCompact(live)
+
+      const liveSummary = live.history.find(isSummary) as { uuid: string } | undefined
+      const liveBoundary = live.history.find(isBoundary) as { uuid: string } | undefined
+      expect(liveSummary).toBeDefined()
+      expect(liveBoundary).toBeDefined()
+      const log = (nativeCoreOf(live.handle) as unknown as { log: NativeSessionLog }).log
+      const compact = neutralEventsOf(log).find(
+        (e): e is Extract<NativeSessionEvent, { type: 'session/compact' }> => e.type === 'session/compact',
+      )
+      expect(compact).toBeDefined()
+      expect(compact!.data.retainHistory).toBe(true)
+      // D8: the live summary frame and the disk-synthesized summary share one
+      // identity; the boundary keeps the event uuid (distinct from the summary).
+      expect(liveSummary!.uuid).toBe(compact!.data.summaryUuid)
+      expect(liveBoundary!.uuid).toBe(compact!.data.uuid)
+      expect(liveSummary!.uuid).not.toBe(liveBoundary!.uuid)
+    })
+
+    it('second compact summarizes only the post-last-boundary span (D6)', async () => {
+      const { info, live, promptUuid } = await seededSession()
+      await callAutoCompact(live, overThreshold)
+      const firstSummary = live.history.find(isSummary)!
+      const firstBoundary = live.history.find(isBoundary)!
+
+      // A post-compact turn lands AFTER the marker.
+      const sent2 = await sm.send(info.id, 'post turn')
+      const h = mockHandles.at(-1)!
+      h.emit({ type: 'assistant', uuid: 'a2', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'post reply' }] } })
+      h.emit({ type: 'result', subtype: 'success', uuid: 'r2', session_id: info.id })
+      expect(await waitFor(() => live.history.some((m) => (m as { uuid?: string }).uuid === 'r2'))).toBe(true)
+
+      vi.mocked(summarizeForCompact).mockClear()
+      vi.mocked(summarizeForCompact).mockResolvedValueOnce('SECOND SUMMARY')
+      await callAutoCompact(live, overThreshold)
+
+      // The summarizer sees exactly the model's post-compact span: the previous
+      // summary (part of the model context) + the new turn — never the retained
+      // pre-compact history nor the boundary itself.
+      const input = vi.mocked(summarizeForCompact).mock.calls[0][0]
+      expect(input.map((m) => (m as { uuid?: string }).uuid)).toEqual([
+        (firstSummary as { uuid: string }).uuid, sent2.uuid, 'a2', 'r2',
+      ])
+      const inputUuids = input.map((m) => (m as { uuid?: string }).uuid)
+      expect(inputUuids).not.toContain(promptUuid)
+      expect(inputUuids).not.toContain('a1')
+      expect(inputUuids).not.toContain('r1')
+      expect(inputUuids).not.toContain((firstBoundary as { uuid: string }).uuid)
+      expect(live.history.some(isBoundary)).toBe(true) // ring still retains everything
+      expect(live.history.length).toBe(10) // 3 seed + 2 marker1 + 3 post turn + 2 marker2
+    })
+
+    it('compact summary input survives ring eviction of the boundary (authoritative model history)', async () => {
+      captureNativeRequests(sm)
+      const info = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      const live = liveSession(info.id)
+      const phaseOf = (s: Session) => (sm as unknown as { phaseOf(s: Session): string }).phaseOf(s)
+      const resultCount = () => live.history.filter((m) => (m as { type?: string }).type === 'result').length
+      const waitSettled = async (results: number) =>
+        expect(await waitFor(() => resultCount() >= results && phaseOf(live) === 'idle')).toBe(true)
+
+      // A real pre-compact turn, then the first compact floors it out.
+      await sm.send(info.id, 'pre turn')
+      await waitSettled(1)
+      await callAutoCompact(live, overThreshold)
+      expect(live.history.some(isBoundary)).toBe(true)
+      expect(live.history.some(isSummary)).toBe(true)
+
+      // An early post-compact turn lands in BOTH the ring and the durable log.
+      const earlySent = await sm.send(info.id, 'early post turn')
+      await waitSettled(2)
+
+      // Flood the ring past its cap so the boundary, the previous summary and
+      // the early post-compact turn are all evicted from the capped ring. The
+      // durable log (the authoritative model history) still holds them.
+      const cap = (sm as unknown as { historyCap: number }).historyCap
+      for (let i = 0; i < cap + 20; i++) {
+        const flood = {
+          type: 'assistant', uuid: `flood-${i}`, session_id: info.id, parent_tool_use_id: null,
+          message: { role: 'assistant', content: [{ type: 'text', text: `flood filler ${i}` }] },
+        } as unknown as SDKMessage
+        stampReceivedAt(flood)
+        pushBounded(live.history, flood, cap)
+      }
+      expect(live.history.some(isBoundary)).toBe(false)
+      expect(live.history.some(isSummary)).toBe(false)
+      expect(live.history.some((m) => (m as { uuid?: string }).uuid === earlySent.uuid)).toBe(false)
+
+      // The second compact must still summarize the previous summary + the
+      // early post-compact turn (taken from getCompactionInput, not the ring).
+      vi.mocked(summarizeForCompact).mockClear()
+      vi.mocked(summarizeForCompact).mockResolvedValueOnce('SECOND SUMMARY')
+      await callAutoCompact(live, overThreshold)
+      const input = vi.mocked(summarizeForCompact).mock.calls[0][0]
+      const serialized = JSON.stringify(input)
+      expect(serialized).toContain('MOCK SUMMARY') // prior summary survives eviction
+      expect(serialized).toContain('early post turn') // early post-compact turn survives
+      expect(serialized).not.toContain('pre turn') // compact floor still excludes pre-compact
+      expect(serialized).not.toContain('flood filler') // ring-only flood is never model-visible
+      expect(input.filter(isSummary)).toHaveLength(1) // exactly the floor summary identity
+    })
+
+    it('runInPlaceCompact prefers getCompactionInput over ring-slice', async () => {
+      const { info, live } = await seededSession()
+      const authoritative = [{
+        type: 'user', uuid: 'authoritative-span', session_id: info.id, parent_tool_use_id: null,
+        message: { role: 'user', content: [{ type: 'text', text: 'AUTHORITATIVE SPAN' }] },
+      }] as unknown as SDKMessage[]
+      live.handle.getCompactionInput = () => authoritative
+      vi.mocked(summarizeForCompact).mockClear()
+
+      await callAutoCompact(live, overThreshold)
+
+      // The exact authoritative array reaches the summarizer verbatim — not the
+      // ring slice (which holds the seed turn).
+      expect(vi.mocked(summarizeForCompact).mock.calls[0][0]).toBe(authoritative)
+      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+    })
+
+    it('native compact summary excludes subagent internals, keeps results', async () => {
+      const info = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      const live = liveSession(info.id)
+      const core = nativeCoreOf(live.handle) as unknown as { log: NativeSessionLog }
+      const time = Date.now()
+      const agentCall = brandString<'ToolCallId'>('toolu_agent')
+      // Authoritative log fixture: a main-thread delegation, its Agent result,
+      // and sidechain internals (non-null parent) the model never sees.
+      core.log.append({
+        type: 'user/message', time, parentToolUseId: null,
+        data: { role: 'user', id: brandString<'MessageId'>('u-delegate'), content: [{ type: 'text', text: 'delegate to the agent' }], source: { kind: 'user' } },
+      })
+      core.log.append({
+        type: 'assistant/message', time, parentToolUseId: null,
+        data: { message: createAssistantMessage({ content: [{ type: 'tool-call', id: agentCall, name: 'Agent', arguments: '{"prompt":"do"}' }], source: { provider: 'anthropic', model: 'test-model' } }), stream: [] },
+      })
+      core.log.append({
+        type: 'tool/result', time, parentToolUseId: null,
+        data: { message: createToolResultMessage({ callId: agentCall, content: [{ type: 'text', text: 'subagent result report' }], isError: false }) },
+      })
+      core.log.append({
+        type: 'assistant/message', time, parentToolUseId: 'toolu_agent',
+        data: { message: createAssistantMessage({ content: [{ type: 'text', text: 'subagent-internal-chatter' }], source: { provider: 'anthropic', model: 'test-model' } }), stream: [] },
+      })
+      // Mirror the frames into the rings so the capped-ring fallback WOULD see
+      // the sidechain chatter (the merged view includes subagentHistory).
+      const ringFrame = (uuid: string, parent: string | null, content: unknown[], role: 'user' | 'assistant'): SDKMessage => {
+        const m = { type: role, uuid, session_id: info.id, parent_tool_use_id: parent, message: { role, content } } as unknown as SDKMessage
+        stampReceivedAt(m)
+        return m
+      }
+      live.history.push(
+        ringFrame('u-delegate', null, [{ type: 'text', text: 'delegate to the agent' }], 'user'),
+        ringFrame('a-agent', null, [{ type: 'tool_use', id: 'toolu_agent', name: 'Agent', input: { prompt: 'do' } }], 'assistant'),
+        ringFrame('u-agent-result', null, [{ type: 'tool_result', tool_use_id: 'toolu_agent', content: 'subagent result report' }], 'user'),
+      )
+      live.subagentHistory.push(
+        ringFrame('a-side', 'toolu_agent', [{ type: 'text', text: 'subagent-internal-chatter' }], 'assistant'),
+      )
+      vi.mocked(summarizeForCompact).mockClear()
+
+      await callAutoCompact(live, overThreshold)
+
+      const serialized = JSON.stringify(vi.mocked(summarizeForCompact).mock.calls[0][0])
+      expect(serialized).toContain('delegate to the agent')
+      expect(serialized).toContain('subagent result report') // main-history Agent result kept
+      expect(serialized).not.toContain('subagent-internal-chatter') // sidechain internals excluded
+    })
+
+    it('handoff summary input unchanged by D6 floor (shared helper untouched)', async () => {
+      const { info, live, promptUuid } = await seededSession()
+      await callAutoCompact(live, overThreshold)
+      const ringUuids = live.history.map((m) => (m as { uuid?: string }).uuid)
+
+      vi.mocked(summarizeForCompact).mockClear()
+      vi.mocked(summarizeForCompact).mockResolvedValueOnce('HAND-OFF')
+      await sm.compact(info.id, { handoff: true })
+
+      // /handoff summarizes the FULL merged ring — pre-compact history included.
+      const input = vi.mocked(summarizeForCompact).mock.calls[0][0]
+      expect(input.map((m) => (m as { uuid?: string }).uuid)).toEqual(ringUuids)
+      expect(input.map((m) => (m as { uuid?: string }).uuid)).toContain(promptUuid)
+    })
+
+    it('no spurious re-compaction on stale usage after compact', async () => {
+      const { info, live } = await seededSession()
+      await callAutoCompact(live, overThreshold)
+      expect(live.lastContextUsage).toBeUndefined()
+
+      // A turn settles WITHOUT a fresh usage payload (no usage on the result):
+      // the post-turn trigger reads the cleared cache, not the pre-compact high.
+      await sm.send(info.id, 'stale turn')
+      mockHandles.at(-1)!.emit({ type: 'result', subtype: 'success', uuid: 'r-stale', session_id: info.id, num_turns: 1, result: 'done' })
+      await tick()
+      await tick()
+      await callAutoCompact(live) // the post-turn trigger's exact call shape
+
+      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+      expect(summarizeForCompact).toHaveBeenCalledTimes(1)
+      expect(live.autoCompacting).toBe(false)
+    })
+  })
+
   it('compact() keeps Claude summarizer input byte-for-byte unchanged without the optional provider method', async () => {
     const info = await sm.create({})
     await sm.send(info.id, 'ordinary turn')
@@ -3706,7 +4035,7 @@ describe('SessionManager', () => {
     await (sm as unknown as { maybeAutoCompact(session: Session): Promise<void> }).maybeAutoCompact(live)
 
     expect(live.handle.compactInPlace).toHaveBeenCalledWith('MOCK SUMMARY', {
-      uuid: expect.any(String), timestamp: expect.any(String),
+      uuid: expect.any(String), timestamp: expect.any(String), summaryUuid: expect.any(String), trigger: 'auto',
     })
     expect(live.handle.getAttachmentCatalog).not.toHaveBeenCalled()
     expect(buildCompactAttachmentContent).toHaveBeenCalledTimes(1)
@@ -10810,26 +11139,26 @@ describe('SessionManager', () => {
       await expect(sm.send(info.id, 'after rebuild')).resolves.toMatchObject({ uuid: expect.any(String) })
     })
 
-    it('an in-place compact reset supersedes the pending payload and reopens admission', async () => {
+    it('an in-place compact append does NOT supersede the pending payload; admission stays closed', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
       await arm(info.id)
       await expect(sm.send(info.id, 'closed')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
       // Drive the native in-place auto-compact (same harness as the
-      // auto-compact suites): a 'compact' reset generation batch commits and
-      // the SAME holder is reset in place (reconciled stays true).
+      // auto-compact suites): compact is an APPEND — it seq-assigns its marker
+      // frames onto the same space and never resolves the pending rebuild.
       const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
       live.handle.compactInPlace = vi.fn(async () => {})
       live.lastContextUsage = {
         totalTokens: 90, maxTokens: 100, rawMaxTokens: 100, percentage: 90, model: 'test-model',
       }
       await (sm as unknown as { maybeAutoCompact(session: Session): Promise<void> }).maybeAutoCompact(live)
-      expect(sm.transcriptHead(info.id)?.generation).toBe(1)
-      // The reset generation superseded the durable pending rows...
-      expect(readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load())).toEqual([])
-      // ...so admission must reopen consistently — the retained holder's flag
-      // cannot outlive its durable pending payload (no re-reconcile runs).
-      const sent = await sm.send(info.id, 'after compact')
-      expect(sent.uuid).toBeTruthy()
+      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+      expect(sm.transcriptHead(info.id)?.generation).toBe(0)
+      expect(live.history.some((m) => m.type === 'system' && m.subtype === 'compact_boundary')).toBe(true)
+      // The durable pending rows survive the append...
+      expect(readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load())).toHaveLength(1)
+      // ...so admission stays closed — only a rebuild/retry resolves the op.
+      await expect(sm.send(info.id, 'still closed')).rejects.toMatchObject({ status: 409, message: REBUILD_REQUIRED })
     })
 
     it('abortTranscriptRebuild(cancelled) restores admission and retains the durable payload', async () => {
@@ -11367,25 +11696,23 @@ describe('SessionManager', () => {
       await tick()
     })
 
-    it('durable authority: a compact-superseded pending does not fire (writer list retained)', async () => {
+    it('compact append leaves the durable pending intact; the auto-scheduler still fires', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
       capableSub(info.id)
       const exec = stubExecutor()
       await arm(info.id)
-      // In-place compact reset commits a new generation, superseding the durable
-      // pending row and clearing the holder flag — but the writer's in-memory
-      // pendingRebuilds list retains the op (no writer clear API).
+      // In-place compact is an APPEND: it never supersedes the durable pending
+      // row nor clears the holder flag, so the rebuild remains real work.
       const s = live(info.id)
       ;(s.handle as unknown as { compactInPlace: () => Promise<void> }).compactInPlace = vi.fn(async () => {})
       s.lastContextUsage = { totalTokens: 90, maxTokens: 100, rawMaxTokens: 100, percentage: 90, model: 'test-model' }
       await (sm as unknown as { maybeAutoCompact(x: Session): Promise<void> }).maybeAutoCompact(s)
-      expect(sm.transcriptHead(info.id)?.generation).toBe(1)
-      expect(readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load())).toEqual([])
+      expect(sm.transcriptHead(info.id)?.generation).toBe(0)
+      expect(readPendingRebuilds(await new TranscriptSidecar(dir, info.id).load())).toHaveLength(1)
       const writer = (sm as unknown as { transcriptWriters: Map<string, { pendingRebuilds: unknown[] }> }).transcriptWriters.get(info.id)!
-      expect(writer.pendingRebuilds.length).toBe(1) // stale in-memory list retained
-      sm.schedulePendingRebuilds(info.id)        // must NOT fire off the stale list
-      await tick()
-      expect(exec).not.toHaveBeenCalled()
+      expect(writer.pendingRebuilds.length).toBe(1)
+      sm.schedulePendingRebuilds(info.id)        // the pending op is still live → fire
+      expect(await waitFor(() => exec.mock.calls.some((c) => c[0] === info.id))).toBe(true)
     })
 
     it('handles an executor refusal gracefully: pending retained, no re-fire loop', async () => {

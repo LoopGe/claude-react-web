@@ -131,7 +131,7 @@ export interface NativeSessionCore {
   readonly steeringActive?: boolean
 
   /** Neutral-typed control reads / switches. */
-  compactInPlace?(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+  compactInPlace?(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string; trigger?: 'auto' | 'manual' }): Promise<void>
   /** The single hook decision point (the trigger seams delegate here). The host
    *  adapter wraps it into the handle's two-argument dispatchHook, constructing
    *  the dispatch context internally (session abort signal; hasContext:false for
@@ -141,6 +141,18 @@ export interface NativeSessionCore {
   getAttachmentOccurrences?(): readonly NativeAttachmentOccurrence[]
   getAttachmentCatalog?(): readonly NativeFileAttachment[]
   getSkillCompactionEntries?(): readonly { afterUserUuid: string; body: string }[]
+  /** The authoritative NEUTRAL model history for compaction input: the uncapped
+   *  replay (`historyFromEvents`), already floored at the last compact and with
+   *  sidechain internals excluded (subagent RESULTS remain in the main history).
+   *  The host adapter projects this to SDK shape and recovers the floor summary
+   *  identity — the core exposes ONLY neutral RequestMessage[], never SDK. */
+  getCompactionHistory?(): RequestMessage[]
+  /** The LAST compact boundary's neutral facts — the summary text the model
+   *  continues from and the context snapshot captured at compaction time — or
+   *  null when the log has no compact. The adapter matches these against the
+   *  floor messages to mark the summary `isCompactSummary` and to drop the
+   *  context snapshot from the summarizer input (it is not a human turn). */
+  getCompactionBoundary?(): { text: string; context: string } | null
   getContextUsage?(opts?: { detail?: 'summary' | 'full' }): Promise<unknown>
   getEffectiveSettings?(): NativeEffectiveSettings
   getResetBaseSettings?(): NativeResetBaseSettings
@@ -156,6 +168,10 @@ export interface NativeSessionCore {
   stopTask?(taskId: string): Promise<void>
   setModel?(model?: string): Promise<void>
   setPermissionMode?(mode: string): Promise<void>
+  /** Plan-mode entry signal: routes the mode change through the host-bound
+   *  callback (the EnterPlanMode tool deps bind to this). A bare core with no
+   *  host callback is a no-op. */
+  enterPlanMode?(): Promise<void>
   applyFlagSettings?(settings: Record<string, unknown>): Promise<void>
   setMaxThinkingTokens?(tokens: number | null, display?: 'summarized' | 'omitted' | 'highlights' | null): Promise<void>
   supportedModels?(): Promise<unknown>

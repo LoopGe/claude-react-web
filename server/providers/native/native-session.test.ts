@@ -37,6 +37,7 @@ import { SKILL_GUIDANCE } from './tools/skill.js'
 import { TASK_OUTPUT_GUIDANCE } from './tools/task-output.js'
 import { globTool } from './tools/glob.js'
 import { lsTool } from './tools/ls.js'
+import { createEnterPlanModeTool } from './tools/plan-mode.js'
 import { setFakeWebHandler } from './tools/web-test-transport.js'
 import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import { WEB_SEARCH_GUIDANCE } from './tools/web-search.js'
@@ -57,6 +58,14 @@ import type { ToolDef, ToolOutcome } from './tools/types.js'
 import { UploadStore } from '../../upload-store.js'
 import { aliasPathOf, attachmentRoot } from '../../attachment-paths.js'
 import { estimateText, estimateMessage, estimateToolSchema, ROLE_OVERHEAD } from './estimate.js'
+import { BUILTIN_COMMANDS } from './commands.js'
+
+/** The builtin slash rows every native catalog answer now carries ahead of
+ *  the skill rows (the G3 slash surface). */
+const BUILTIN_ROWS = BUILTIN_COMMANDS.map(({ name, description, argumentHint }) => ({
+  name, description, argumentHint, builtin: true,
+}))
+const BUILTIN_NAMES = BUILTIN_ROWS.map((row) => row.name)
 
 // The retry suppression test drives the real `defaultStream` against a mocked
 // wire layer: the mock invokes `onRetry` and yields a minimal canonical round.
@@ -659,6 +668,31 @@ describe('NativeSession', () => {
     const result = frames.at(-1) as Frame
     expect(result.subtype).toBe('success')
     expect(result.result).toBe('hello native')
+    await session.destroy()
+  })
+
+  it('EnterPlanMode tool callback routes through requestPermissionModeChange', async () => {
+    const dir = await tempDir('native-plan-callback-')
+    const requestPermissionModeChange = vi.fn(async () => {})
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const session = provider.createSession({ id: 'plan-cb', cwd: dir, requestPermissionModeChange })
+    // The session exposes a bound enter-plan hook; the EnterPlanMode tool deps
+    // bind to it (registration itself is Task 4). Drive the real tool body.
+    const core = nativeCoreOf(session)!
+    const tool = createEnterPlanModeTool({ enterPlanMode: () => core.enterPlanMode!() })
+    const out = await tool.run({}, { cwd: dir, signal: new AbortController().signal })
+    expect(requestPermissionModeChange).toHaveBeenCalledOnce()
+    expect(requestPermissionModeChange).toHaveBeenCalledWith('plan')
+    expect(out.isError).toBeFalsy()
+    await session.destroy()
+  })
+
+  it('enterPlanMode is a no-op when no host callback is bound', async () => {
+    const dir = await tempDir('native-plan-noop-')
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const session = provider.createSession({ id: 'plan-noop', cwd: dir })
+    const core = nativeCoreOf(session)!
+    await expect(core.enterPlanMode!()).resolves.toBeUndefined()
     await session.destroy()
   })
 
@@ -1668,7 +1702,7 @@ describe('NativeSession', () => {
 
     // The first API request advertises the builtins plus the discovered tool.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
     ])
     // The permission request carries the server OWNED BY the tool's FQN,
     // resolved from discovery metadata (never parsed back out of the name).
@@ -1696,6 +1730,56 @@ describe('NativeSession', () => {
     const statuses = (await session.mcpServerStatus?.()) as Array<Record<string, unknown>>
     expect(statuses).toHaveLength(1)
     expect(statuses[0]).toMatchObject({ name: 'a', status: 'connected', source: 'sdk', scope: 'session' })
+    await session.destroy()
+  })
+
+  it('threads each tool definition readOnlyHint into the permission ctx (MCP annotations)', async () => {
+    const dir = await tempDir('native-mcp-readonly-hint-')
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    // One round per tool so each permission ctx is captured distinctly. The
+    // mixedReadOnlyServer fixture declares read=true, write=false, undeclared
+    // absent — the three evidence states the host plan gate distinguishes.
+    const callTurn = (id: string, name: string): CanonicalEvent[] => [
+      { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+      { kind: 'block_start', index: 0, block: { type: 'tool_use', id, name } },
+      { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: '{}' } },
+      { kind: 'block_end', index: 0 },
+      { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+    ]
+    const scripts: CanonicalEvent[][] = [
+      callTurn('m1', 'mcp__a__read'),
+      callTurn('m2', 'mcp__a__write'),
+      callTurn('m3', 'mcp__a__undeclared'),
+      textTurn('done'),
+    ]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const seen: Array<{ toolName: string; readOnlyHint?: boolean }> = []
+    const session = provider.createSession({
+      id: 'mcp-hint',
+      cwd: dir,
+      mcpServers: { a: { type: 'sdk', instance: delayedInstance(mixedReadOnlyServer('a')) } },
+      canUseTool: async (toolName: unknown, input: unknown, ctx: unknown) => {
+        seen.push({ toolName: toolName as string, readOnlyHint: (ctx as { readOnlyHint?: boolean }).readOnlyHint })
+        return { behavior: 'allow', updatedInput: input }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of session.messages) frames.push(f as Frame)
+    })()
+    session.enqueueUserMessage(userMsg('use the tools') as never)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    })
+    // Only the tool whose definition DECLARES readOnlyHint:true carries the
+    // hint; false and absent both omit it (the gate reads absence as unproven).
+    expect(seen).toEqual([
+      { toolName: 'mcp__a__read', readOnlyHint: true },
+      { toolName: 'mcp__a__write', readOnlyHint: undefined },
+      { toolName: 'mcp__a__undeclared', readOnlyHint: undefined },
+    ])
     await session.destroy()
   })
 
@@ -1766,12 +1850,12 @@ describe('NativeSession', () => {
     // The parent advertises both delegation names plus the discovered MCP
     // tool; every nested request drops both (depth cap 1) but keeps MCP and Skill.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
     ])
     const nestedRequests = requests.filter((r) => !r.tools.some((t) => t.name === 'Agent'))
     expect(nestedRequests).toHaveLength(2)
     for (const r of nestedRequests) {
-      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskOutput', 'Skill', 'mcp__a__echo'])
+      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo'])
       expect(r.tools.some((tool) => tool.name === 'Task')).toBe(false)
       expect(r.system).not.toContain(AGENT_GUIDANCE)
     }
@@ -2589,6 +2673,7 @@ describe('NativeSession', () => {
       agent: 'reviewer',
     })
     expect(await resumed.supportedCommands?.()).toEqual([
+      ...BUILTIN_ROWS,
       { name: 'demo', description: 'demo description', argumentHint: '' },
     ])
     await resumed.destroy()
@@ -3064,7 +3149,7 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('review') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
 
-    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill'])
+    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
     const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
     // The definition's prompt is the nested instruction suffix and its model the
     // default nested model...
@@ -3294,7 +3379,7 @@ describe('NativeSession', () => {
     // The effective tool list holds from construction (rebuildTools runs in the
     // constructor), not builtins-only until the first turn.
     expect((coreOf(session) as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name))
-      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill'])
+      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
     const other = provider.createSession({ id: 'agents-cap-other', cwd: dir })
     expect((coreOf(session) as unknown as { todoWriteTool: unknown }).todoWriteTool)
       .not.toBe((coreOf(other) as unknown as { todoWriteTool: unknown }).todoWriteTool)
@@ -3311,23 +3396,24 @@ describe('NativeSession', () => {
     await writeProjectSkill(dir, 'demo', { frontmatter: { 'argument-hint': "'[topic]'" } })
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     expect(provider.capabilities.supportsCommands).toBe(true)
-    // Plugins stay unsupported — only the skill command catalog is exposed.
+    // Plugins stay unsupported — the catalog is builtin + custom + skill rows.
     expect(provider.capabilities.supportsPlugins).toBe(false)
     const session = provider.createSession({ id: 'skill-commands', cwd: dir })
     expect(await session.supportedCommands?.()).toEqual([
+      ...BUILTIN_ROWS,
       { name: 'demo', description: 'demo description', argumentHint: '[topic]' },
     ])
     await session.destroy()
   })
 
-  it('reloadSkills re-reads the skill roots and can empty the catalog', async () => {
+  it('reloadSkills re-reads the skill roots and can empty the skill rows', async () => {
     const dir = await tempDir('native-skill-reload-')
     await writeProjectSkill(dir, 'demo', { body: '# demo v1' })
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const session = provider.createSession({ id: 'skill-reload', cwd: dir })
     const catalog = coreOf(session) as unknown as { skills: { bodyOf(name: string): { text: string } } }
     expect(await session.reloadSkills?.()).toEqual({
-      skills: [{ name: 'demo', description: 'demo description', argumentHint: '' }],
+      skills: [...BUILTIN_ROWS, { name: 'demo', description: 'demo description', argumentHint: '' }],
     })
 
     // A file edit is picked up only by a reload — the catalog caches bodies.
@@ -3335,11 +3421,11 @@ describe('NativeSession', () => {
     await session.reloadSkills?.()
     expect(catalog.skills.bodyOf('demo').text).toContain('# demo v2')
 
-    // A fully deleted catalog answers an empty list (the manager relays that
-    // to the client so the picker clears).
+    // A fully deleted skill catalog answers builtin-only rows (the manager
+    // relays that to the client so the picker clears the skill rows).
     await rm(join(dir, '.claude', 'skills', 'demo'), { recursive: true, force: true })
-    expect(await session.reloadSkills?.()).toEqual({ skills: [] })
-    expect(await session.supportedCommands?.()).toEqual([])
+    expect(await session.reloadSkills?.()).toEqual({ skills: BUILTIN_ROWS })
+    expect(await session.supportedCommands?.()).toEqual(BUILTIN_ROWS)
     await session.destroy()
   })
 
@@ -3354,6 +3440,7 @@ describe('NativeSession', () => {
     // `supportedCommands` awaits the construction-time discovery, so the
     // catalog is populated before the first synchronous read.
     expect(await session.supportedCommands?.()).toEqual([
+      ...BUILTIN_ROWS,
       { name: 'demo', description: 'demo description', argumentHint: '' },
     ])
 
@@ -3440,6 +3527,7 @@ describe('NativeSession', () => {
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
     try {
       expect(await session.supportedCommands?.()).toEqual([
+        ...BUILTIN_ROWS,
         { name: 'demo', description: 'demo description', argumentHint: '' },
       ])
 
@@ -3449,7 +3537,7 @@ describe('NativeSession', () => {
 
       await session.applyFlagSettings?.({ agent: null })
       expect((await session.supportedCommands?.() as Array<{ name: string }>).map((command) => command.name))
-        .toEqual(['demo', 'other'])
+        .toEqual([...BUILTIN_NAMES, 'demo', 'other'])
       session.enqueueUserMessage(userMsg('/other keep this') as never)
       await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result' && frame.result === 'allowed')).toBe(true))
       expect(requests[1].messages.slice(-2)).toEqual([
@@ -3515,6 +3603,7 @@ describe('NativeSession', () => {
     }
     try {
       expect(await session.supportedCommands?.()).toEqual([
+        ...BUILTIN_ROWS,
         { name: 'demo', description: 'demo description', argumentHint: '' },
       ])
       session.enqueueUserMessage(userMsg('/demo do this') as never)
@@ -4019,6 +4108,7 @@ describe('NativeSession', () => {
     await runTurnOnce(3)
     expect(requests[2].system).not.toContain('<available_skills>')
     expect(await session.supportedCommands?.()).toEqual([
+      ...BUILTIN_ROWS,
       { name: 'demo', description: 'demo description', argumentHint: '' },
     ])
 
@@ -4029,7 +4119,7 @@ describe('NativeSession', () => {
     await runTurnOnce(4)
     expect(requests[3].system).not.toContain('<available_skills>')
     expect(requests[3].system).toBe(requests[2].system)
-    expect(await session.supportedCommands?.()).toEqual([])
+    expect(await session.supportedCommands?.()).toEqual(BUILTIN_ROWS)
     await session.destroy()
   })
 
@@ -4139,7 +4229,7 @@ describe('NativeSession', () => {
     // The manual reload supersedes the failed construction pass, so the NEXT
     // turn awaits the fresh one and sees the discovered skill.
     expect(await session.reloadSkills?.()).toEqual({
-      skills: [{ name: 'demo', description: 'demo description', argumentHint: '' }],
+      skills: [...BUILTIN_ROWS, { name: 'demo', description: 'demo description', argumentHint: '' }],
     })
     session.enqueueUserMessage(userMsg('second') as never)
     await vi.waitFor(() => {
@@ -5677,7 +5767,7 @@ describe('NativeSession', () => {
     // `compactInPlace` is provider-specific (not on ProviderSessionHandle yet),
     // so reach it through the same narrow cast the internals reads use.
     const compactable = coreOf(session) as unknown as {
-      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
     }
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
@@ -5685,7 +5775,7 @@ describe('NativeSession', () => {
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'first reply')).toBe(true))
     await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
 
-    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z', summaryUuid: 'sum-1' })
 
     const compactEvent = legacyViewOf(logOf(session)).find((e) => e.type === 'session/compact') as unknown as {
       text: string
@@ -5726,17 +5816,82 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('compactInPlace persists retainHistory + summaryUuid and floors model history', async () => {
+    const dir = await tempDir('native-retain-')
+    const provider = providerWithStreamer([textTurn('first reply')], dir)
+    const session = provider.createSession({ id: 'retain', cwd: dir })
+    // Same narrow cast the other compactInPlace tests use, plus the log so the
+    // canonical neutral events can be read through `neutralEventsOf`.
+    const compactable = coreOf(session) as unknown as {
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
+      log: NativeSessionLog
+    }
+    void (async () => { for await (const _ of session.messages) { /* drain */ } })()
+    session.enqueueUserMessage(userMsg('pre-compact turn') as never)
+    await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
+
+    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-26T02:59:46.714Z', summaryUuid: 'sum-1' })
+
+    const events = neutralEventsOf(compactable.log)
+    const compact = events.find((e) => e.type === 'session/compact') as
+      Extract<NativeSessionEvent, { type: 'session/compact' }>
+    expect(compact).toBeDefined()
+    expect(compact.data.retainHistory).toBe(true)
+    expect(compact.data.summaryUuid).toBe('sum-1')
+    expect(compact.data.uuid).toBe('c1')
+    // The model-history floor is unchanged: replay starts at the captured
+    // context + summary, never the pre-compact conversation.
+    const model = historyFromEvents(events)
+    expect(JSON.stringify(model)).not.toContain('pre-compact')
+    expect(JSON.stringify(model)).toContain('SUMMARY')
+    await session.destroy()
+  })
+
+  it('compactInPlace without summaryUuid persists retainHistory and omits the summaryUuid key', async () => {
+    const dir = await tempDir('native-retain-omission-')
+    const provider = providerWithStreamer([textTurn('first reply')], dir)
+    const session = provider.createSession({ id: 'retain-omission', cwd: dir })
+    const compactable = coreOf(session) as unknown as {
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
+      log: NativeSessionLog
+    }
+    void (async () => { for await (const _ of session.messages) { /* drain */ } })()
+    session.enqueueUserMessage(userMsg('pre-compact turn') as never)
+    await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
+
+    await compactable.compactInPlace('S', { uuid: 'c1', timestamp: '2026-11-26T02:59:46.714Z' })
+
+    const compact = neutralEventsOf(compactable.log).find((e) => e.type === 'session/compact') as
+      Extract<NativeSessionEvent, { type: 'session/compact' }>
+    expect(compact).toBeDefined()
+    expect(compact.data.retainHistory).toBe(true)
+    // The key is ABSENT, not present-with-undefined: the writer's conditional
+    // spread omits it entirely when no summaryUuid is supplied.
+    expect(Object.hasOwn(compact.data, 'summaryUuid')).toBe(false)
+    await session.destroy()
+
+    // The persisted line itself carries the same shape (flush ran inside
+    // compactInPlace; destroy flushed + closed before this read).
+    const raw = await readFile(nativeSessionLogPath(dir, 'retain-omission'), 'utf8')
+    const compactLine = raw.split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as { type?: string; data?: Record<string, unknown> })
+      .find((event) => event.type === 'session/compact')
+    expect(compactLine).toBeDefined()
+    expect(compactLine!.data!.retainHistory).toBe(true)
+    expect(Object.hasOwn(compactLine!.data!, 'summaryUuid')).toBe(false)
+  })
+
   it('reconcile snapshot emits compact boundary + summary as two occurrences with sourceOrdinal', async () => {
     const dir = await tempDir('native-snap-')
     const provider = providerWithStreamer([textTurn('first reply')], dir)
     const session = provider.createSession({ id: 'snap', cwd: dir })
     const compactable = coreOf(session) as unknown as {
-      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
     }
     void (async () => { for await (const _ of session.messages) { /* drain */ } })()
     session.enqueueUserMessage(userMsg('OLD') as never)
     await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
-    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z', summaryUuid: 'sum-1' })
     await session.destroy()
 
     const res = await provider.readHistoryForReconcile!('snap', {})
@@ -5746,13 +5901,16 @@ describe('NativeSession', () => {
     expect(boundary).toBeDefined()
     expect(summary).toBeDefined()
     expect((boundary!.message as { uuid: string }).uuid).toBe('c1')
-    expect((summary!.message as { uuid: string }).uuid).toBe('c1')
+    // The summary carries its own identity (summaryUuid) — the uuid the live
+    // summary frame uses — while the boundary keeps the event uuid.
+    expect((summary!.message as { uuid: string }).uuid).toBe('sum-1')
     expect(boundary!.sourceOrdinal).not.toBe(summary!.sourceOrdinal)
     expect(res.entries.every((e) => typeof e.sourceOrdinal === 'number')).toBe(true)
-    // The public entries projection stays summary-only: the boundary occurrence
-    // is NEW reconcile behavior, so this contrast pins what the snapshot adds.
+    // compactInPlace writes a RETAIN compact, whose boundary + summary pair
+    // renders in every read path — so the public entries projection carries
+    // the boundary too (the summary-only public shape is the legacy floor's).
     const publicEntries = await provider.readHistoryEntries!('snap', {})
-    expect(publicEntries.some((e) => (e.message as { subtype?: string }).subtype === 'compact_boundary')).toBe(false)
+    expect(publicEntries.some((e) => (e.message as { subtype?: string }).subtype === 'compact_boundary')).toBe(true)
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
@@ -5816,14 +5974,14 @@ describe('NativeSession', () => {
     const provider = providerWithStreamer([textTurn('first')], dir)
     const session = provider.createSession({ id: 'compact-resume', cwd: dir })
     const compactable = coreOf(session) as unknown as {
-      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
     }
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
     session.enqueueUserMessage(userMsg('OLD-PROMPT') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'first')).toBe(true))
     await vi.waitFor(() => expect(legacyViewOf(logOf(session)).some((e) => e.type === 'turn/end')).toBe(true))
-    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z', summaryUuid: 'sum-1' })
     await session.destroy()
 
     const resumed = provider.createSession({ id: 'compact-resume', cwd: dir, resume: 'compact-resume' })
@@ -5853,7 +6011,7 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'race', cwd: dir })
     const internals = coreOf(session) as unknown as {
       log: { flush: () => Promise<void>; events: LogEventLike[] }
-      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string; summaryUuid?: string }): Promise<void>
     }
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
@@ -5871,7 +6029,7 @@ describe('NativeSession', () => {
       return gate.then(() => originalFlush())
     }
 
-    const compacting = internals.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+    const compacting = internals.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z', summaryUuid: 'sum-1' })
     // The guard already passed; the message lands while the compact write is
     // still in flight.
     session.enqueueUserMessage(userMsg('next') as never)
@@ -7113,10 +7271,14 @@ describe('NativeSession', () => {
       }
     })
 
-    it('accountInfo resolves undefined', async () => {
+    it('accountInfo resolves undefined and the capability is false (no displayable account)', async () => {
       const dir = await tempDir('native-account-')
       const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
-      expect(provider.capabilities.supportsAccountInfo).toBe(true)
+      // API-key auth has no subscription account: the handle method exists
+      // and resolves undefined, but the capability is false so the manager's
+      // account route 501s and the UI locks the section instead of rendering
+      // empty rows.
+      expect(provider.capabilities.supportsAccountInfo).toBe(false)
       const session = provider.createSession({ id: 'account-1', cwd: dir })
       try {
         await expect(session.accountInfo?.()).resolves.toBeUndefined()

@@ -404,6 +404,135 @@ export function projectNativeEventToSdkLine(event: NativeSessionEvent, sessionId
   }
 }
 
+// ── Compaction input: neutral model history → SDK (Followup B) ───────────
+//
+// The authoritative summarizer input is the provider's UNCAPPED model history
+// (historyFromEvents — floored at the last compact, sidechain excluded), not
+// the capped host ring. The core exposes that history neutrally
+// (getCompactionHistory) plus the last compact boundary's facts
+// (getCompactionBoundary); THIS adapter owns the SDK projection and the floor
+// identity recovery (B4/B5). The mapper is deliberately separate from the live
+// projectToolResult, which throws on non-text blocks (the live UI contract):
+// durable model-history tool results carry file blocks the summarizer hydrates.
+
+/** Public file-ref shape for the compaction input. The neutral block carries
+ *  the FULL resolved attachment structurally (registry path / mediaType /
+ *  modelForm), but the summarizer's occurrence join (compact-attachments.ts)
+ *  keys on id+digest and pulls resolved metadata from the provider occurrences —
+ *  so the projection strips the server-only superset, matching the public ring
+ *  block and never leaking a registry path into the summarizer input. */
+function publicFileRef(attachment: FileAttachmentRef): FileAttachmentRef {
+  return {
+    id: attachment.id,
+    name: attachment.name,
+    size: attachment.size,
+    ...(attachment.digest !== undefined ? { digest: attachment.digest } : {}),
+  }
+}
+
+/** One model-history content block → SDK shape. Covers text / reasoning
+ *  (thinking + redacted) / tool-call (tool_use) via the assistant mapper, plus
+ *  the user/tool-result attachment blocks (image ref + legacy base64, file ref)
+ *  the live mappers reject. tool-addition / tool-removal are developer-catalog
+ *  blocks, never model-history conversation content, so they are a loud
+ *  contract violation here rather than a fabricated SDK shape. */
+function sdkHistoryBlock(block: ContentBlock): Record<string, unknown> {
+  switch (block.type) {
+    case 'text':
+    case 'reasoning':
+    case 'tool-call':
+      return sdkAssistantBlock(block)
+    case 'image':
+      return 'attachment' in block
+        ? { type: 'image', attachment: block.attachment }
+        : { type: 'image', source: block.source }
+    case 'file':
+      return { type: 'file', attachment: publicFileRef(block.attachment) }
+    default:
+      throw new Error(`native host adapter: block kind "${(block as { type: string }).type}" is not model-history conversation content`)
+  }
+}
+
+/** The single text of a user-role message carrying exactly one text block —
+ *  the shape replay's floor `userText(context)` / `userText(summary)` produce.
+ *  null for any other message, so identity recovery never touches a rich
+ *  conversation message. */
+function floorTextOf(msg: RequestMessage): string | null {
+  if (msg.role !== 'user' || msg.content.length !== 1) return null
+  const block = msg.content[0]
+  return block.type === 'text' ? block.text : null
+}
+
+/** One neutral model-history message → the SDK transcript message the
+ *  summarizer (recap extractHistory) and compact-attachment hydration read.
+ *  user / assistant / tool are the roles historyFromEvents produces; a
+ *  RequestUserInput (role user, no durable id) mints a uuid. system / developer
+ *  are prompt/catalog messages, NOT model-history conversation — replay never
+ *  emits them, so they are discriminated and rejected loudly rather than
+ *  mislabeled as user turns. */
+function projectHistoryMessage(msg: RequestMessage, sessionId: string): AgentMessage {
+  const uuid = (msg as { id?: string }).id ?? randomUUID()
+  switch (msg.role) {
+    case 'user':
+      return {
+        type: 'user', session_id: sessionId, uuid, parent_tool_use_id: null,
+        message: { role: 'user', content: msg.content.map(sdkHistoryBlock) },
+      } as unknown as AgentMessage
+    case 'assistant':
+      return {
+        type: 'assistant', session_id: sessionId, uuid, parent_tool_use_id: null,
+        message: {
+          id: `msg_${uuid}`, type: 'assistant', role: 'assistant',
+          model: msg.source.model, content: msg.content.map(sdkAssistantBlock),
+        },
+      } as unknown as AgentMessage
+    case 'tool':
+      return {
+        type: 'user', session_id: sessionId, uuid, parent_tool_use_id: null,
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: msg.toolCallId,
+            content: msg.content.map(sdkHistoryBlock),
+            is_error: msg.isError ?? false,
+          }],
+        },
+      } as unknown as AgentMessage
+    case 'system':
+    case 'developer':
+      throw new Error(`native host adapter: role "${msg.role}" is not a model-history conversation message`)
+    default:
+      return assertNever(msg, 'projectHistoryMessage')
+  }
+}
+
+/** Project the neutral model history to the SDK compaction input, recovering
+ *  the floor identity (B4): the summary message (text === the last compact's
+ *  text) is marked `isCompactSummary` so extractHistory keeps it as a FULL-TEXT
+ *  System line; the context snapshot (text === the compact's context) is DROPPED
+ *  — extractHistory has no isMeta escape hatch, and the snapshot is compaction
+ *  metadata, not a human turn. With no compact boundary every message projects
+ *  plainly. Sidechain internals are already absent (historyFromEvents excludes
+ *  them); subagent RESULTS remain as main-history tool_result messages. */
+export function projectCompactionInput(
+  history: readonly RequestMessage[],
+  lastCompact: { text: string; context: string } | null,
+  sessionId: string,
+): AgentMessage[] {
+  const out: AgentMessage[] = []
+  for (const msg of history) {
+    const floorText = lastCompact === null ? null : floorTextOf(msg)
+    if (floorText !== null && floorText === lastCompact!.context) continue
+    const projected = projectHistoryMessage(msg, sessionId)
+    if (floorText !== null && floorText === lastCompact!.text) {
+      ;(projected as { isCompactSummary?: boolean }).isCompactSummary = true
+    }
+    out.push(projected)
+  }
+  return out
+}
+
 // ── Live input: SDK AgentUserMessage → neutral RequestMessage ─────────────
 
 /** One host input content block as the projection sees it. The SDK input union
@@ -779,6 +908,13 @@ export function wrapNativeCore(
   }
   if (core.getAttachmentCatalog) handle.getAttachmentCatalog = () => core.getAttachmentCatalog!()
   if (core.getSkillCompactionEntries) handle.getSkillCompactionEntries = () => core.getSkillCompactionEntries!()
+  if (core.getCompactionHistory) {
+    handle.getCompactionInput = () => projectCompactionInput(
+      core.getCompactionHistory!(),
+      core.getCompactionBoundary?.() ?? null,
+      core.sessionId,
+    )
+  }
   if (core.getContextUsage) handle.getContextUsage = (opts) => core.getContextUsage!(opts)
   if (core.getEffectiveSettings) {
     handle.getEffectiveSettings = (): { model: string; permissionMode?: string; effortLevel?: string; agent: string | null } => {

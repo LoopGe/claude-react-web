@@ -81,8 +81,10 @@ export interface LoopDeps {
   /** `questionResult` is the broker's internal marker for an AskUserQuestion
    *  denial that carries the user's ANSWER (answer / clarify / malformed).
    *  It is never set for aborts, session-close denials, missing handlers or
-   *  ordinary permission denials. */
-  requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string; questionResult?: boolean; interrupt?: boolean }>
+   *  ordinary permission denials. `readOnlyHint` is the resolved ToolDef's
+   *  read-only metadata (for MCP tools, the server's declared annotation),
+   *  forwarded to the host permission gate as read-only evidence. */
+  requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal, readOnlyHint?: boolean): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string; questionResult?: boolean; interrupt?: boolean }>
   /** Hook decision point (T8). The per-call tool block dispatches PreToolUse
    *  BEFORE requestPermission (RS §5): allow/deny short-circuit the permission
    *  request, ask/defer/no-decision enter it. Absent = no hook engine wired
@@ -376,7 +378,7 @@ export async function runTurn(
       if (hookAllow) {
         toolInput = effectiveInput
       } else {
-        const decision = await deps.requestPermission(call.name, effectiveInput, call.id, signal)
+        const decision = await deps.requestPermission(call.name, effectiveInput, call.id, signal, tool.readOnlyHint === true)
         if (!decision.allowed) {
           // The broker resolves an ANSWERED AskUserQuestion as a marked denial:
           // the message IS the tool's output, not a permission error. Only that

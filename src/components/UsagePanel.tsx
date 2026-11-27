@@ -20,6 +20,7 @@ import {
 } from '../../shared/usage'
 import { ACCOUNT_PROVIDER_LABELS, type AccountInfoData } from '../../shared/account-info'
 import { clamp } from '../utils/clamp'
+import { RequiresCliNotice } from './RequiresCliNotice'
 
 interface Props {
   sessionId: string
@@ -27,6 +28,11 @@ interface Props {
   /** Authenticated-account info (fetched by the same refresh as `data`;
    *  null when unavailable — it's supplementary and never blocks usage). */
   account?: AccountInfoData | null
+  /** Capability projection (SessionInfo.accountInfoSupported). Explicit
+   *  false = the provider has no account/plan surface: the Account section
+   *  shows the requires-CLI notice instead of rows. Undefined (legacy
+   *  frames) keeps the rows-when-present behavior. */
+  accountInfoSupported?: boolean
   loading: boolean
   error: string | null
   onRefresh: () => void
@@ -124,6 +130,7 @@ export const UsagePanel = memo(function UsagePanel({
   sessionId,
   data,
   account,
+  accountInfoSupported,
   loading,
   error,
   onRefresh,
@@ -212,7 +219,14 @@ export const UsagePanel = memo(function UsagePanel({
             </div>
           )}
 
-          {accountRows.length > 0 && (
+          {/* A provider without an account surface shows the honest lock
+              note — never an empty section, never rows it can't serve. */}
+          {accountInfoSupported === false ? (
+            <section className="usage-section usage-account">
+              <h3 className="usage-section-title">Account</h3>
+              <RequiresCliNotice />
+            </section>
+          ) : accountRows.length > 0 && (
             <section className="usage-section usage-account">
               <h3 className="usage-section-title">Account</h3>
               <div className="usage-account-rows">

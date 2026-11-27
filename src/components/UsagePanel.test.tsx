@@ -154,6 +154,65 @@ describe('UsagePanel cache-write TTL split', () => {
   })
 })
 
+describe('UsagePanel account gating', () => {
+  const account = { email: 'user@example.com', apiProvider: 'firstParty' as const }
+
+  function renderAccountPanel(opts: {
+    accountInfoSupported?: boolean
+    account?: typeof account | null
+    data?: SessionUsageData | null
+  }) {
+    return render(
+      <UsagePanel
+        sessionId="s1"
+        data={opts.data ?? null}
+        account={opts.account ?? null}
+        accountInfoSupported={opts.accountInfoSupported}
+        loading={false}
+        error={null}
+        onRefresh={vi.fn()}
+        available
+      />,
+    )
+  }
+
+  it('shows the requires-CLI note instead of rows when accountInfoSupported is false', () => {
+    const { container } = renderAccountPanel({ accountInfoSupported: false, account })
+    const section = container.querySelector('.usage-account')!
+    expect(section, 'Account section stays visible').toBeDefined()
+    expect(section.querySelector('.requires-cli-notice')?.textContent).toContain(
+      'requires the Claude CLI',
+    )
+    // The flag wins over any rows: no account values render behind the lock.
+    expect(section.textContent).not.toContain('user@example.com')
+  })
+
+  it('shows the note even before any usage data has loaded', () => {
+    const { container } = renderAccountPanel({ accountInfoSupported: false, data: null })
+    expect(container.querySelector('.usage-account .requires-cli-notice')).not.toBeNull()
+  })
+
+  it('renders account rows without a notice when supported', () => {
+    const { container } = renderAccountPanel({ accountInfoSupported: true, account })
+    const section = container.querySelector('.usage-account')!
+    expect(section.textContent).toContain('user@example.com')
+    expect(section.querySelector('.requires-cli-notice')).toBeNull()
+  })
+
+  it('legacy frame (accountInfoSupported undefined): rows render, no notice', () => {
+    const { container } = renderAccountPanel({ account })
+    const section = container.querySelector('.usage-account')!
+    expect(section.textContent).toContain('user@example.com')
+    expect(section.querySelector('.requires-cli-notice')).toBeNull()
+  })
+
+  it('legacy frame with no account data: no Account section at all (unchanged)', () => {
+    const { container } = renderAccountPanel({})
+    expect(container.querySelector('.usage-account')).toBeNull()
+    expect(container.querySelector('.requires-cli-notice')).toBeNull()
+  })
+})
+
 describe('UsagePanel cost availability', () => {
   it('shows a dash, not $0.0000, when the provider reports no cost', () => {
     const { container } = renderPanel({

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { PermissionBroker, firstPartyReadOnlyTools, isQuestionResult } from './permission-broker.js'
+import { PermissionBroker, firstPartyReadOnlyTools, isQuestionResult, type BrokerPermissionResult } from './permission-broker.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 import type { Session, PendingPermission } from './session-types.js'
 import { __setConfigForTest } from './config.js'
@@ -140,7 +140,10 @@ describe('PermissionBroker', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
-    broker = new PermissionBroker(() => undefined)
+    // () => false: the fixture provider has no CLI-side plan steering, so the
+    // host plan gate applies (the native shape). The scoping tests below build
+    // a () => true broker for the claude shape.
+    broker = new PermissionBroker(() => undefined, () => false)
   })
 
   afterEach(() => {
@@ -457,6 +460,17 @@ describe('PermissionBroker', () => {
       const session = makeFakeSession({ permissionMode: 'dontAsk' })
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       const result = await canUseTool('LS', { path: '.' }, ctx())
+      expect(result).toMatchObject({ behavior: 'allow' })
+      expect(session.pending.size).toBe(0)
+    })
+
+    it('dontAsk auto-allows the native StructuredOutput capture tool', async () => {
+      // The terminal capture records the run's answer — no filesystem
+      // mutation — so a structured run (nested or one-shot) can finish under
+      // CI lockdown. Inert for claude: no such tool exists there.
+      const session = makeFakeSession({ permissionMode: 'dontAsk' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('StructuredOutput', { result: 'x' }, ctx())
       expect(result).toMatchObject({ behavior: 'allow' })
       expect(session.pending.size).toBe(0)
     })
@@ -844,6 +858,259 @@ describe('PermissionBroker', () => {
     })
   })
 
+  // ─── plan-mode enforcement ───────────────────────────────────────
+  //
+  // The gate reads the LIVE session.permissionMode, never the per-call
+  // snapshot (ctx.permissionMode) that native main turns carry from turn
+  // start. A call that falls through the gate raises a pending prompt
+  // instead of settling, so the helper reports which of the two happened
+  // rather than awaiting a prompt forever.
+
+  describe('plan-mode enforcement', () => {
+    type Mode = NonNullable<Session['permissionMode']>
+
+    async function callBroker(opts: {
+      toolName: string
+      input?: Record<string, unknown>
+      sessionMode: Mode
+      ctxMode: Mode
+      /** Provider-declared tool read-only hint (native ToolDef.readOnlyHint). */
+      readOnlyHint?: boolean
+      /** true = the provider enforces plan mode CLI-side (claude) — the host
+       *  gate must stand down. Defaults to the outer host-enforced broker. */
+      cliSidePlanSteering?: boolean
+    }): Promise<{ decision: BrokerPermissionResult | null; session: Session }> {
+      const session = makeFakeSession({ permissionMode: opts.sessionMode, cwd: '/work/app' })
+      const b = opts.cliSidePlanSteering === undefined
+        ? broker
+        : new PermissionBroker(() => undefined, () => opts.cliSidePlanSteering!)
+      const canUseTool = b.buildCanUseTool(session, vi.fn())
+      const promise = canUseTool(opts.toolName, opts.input ?? {}, {
+        toolUseID: 'tu-plan',
+        requestId: 'req-tu-plan',
+        signal: new AbortController().signal,
+        title: '', displayName: '', description: '', suggestions: [],
+        permissionMode: opts.ctxMode,
+        ...(opts.readOnlyHint !== undefined ? { readOnlyHint: opts.readOnlyHint } : {}),
+      })
+      let decision: BrokerPermissionResult | null = null
+      void promise.then((r) => { decision = r })
+      // Immediate allow/deny paths settle in microtasks (no await precedes
+      // the gate); a fall-through prompt stays pending. Flush microtasks so
+      // either state is observable without advancing fake timers.
+      await Promise.resolve()
+      await Promise.resolve()
+      return { decision, session }
+    }
+
+    function expectPlanDeny(decision: BrokerPermissionResult | null, session: Session): void {
+      if (!decision || decision.behavior !== 'deny') throw new Error('expected an immediate plan-mode deny')
+      expect(decision.message).toMatch(/plan mode/i)
+      expect(decision.interrupt).toBe(false)
+      expect(session.pending.size).toBe(0)
+    }
+
+    it('denies Edit when the live session mode is plan even if the call snapshot is default', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'Edit', input: { file_path: '/work/app/x.ts' }, sessionMode: 'plan', ctxMode: 'default',
+      })
+      expectPlanDeny(decision, session)
+    })
+
+    it('allows Edit when the live mode left plan even if the turn snapshot is plan', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'Edit', input: { file_path: '/work/app/x.ts' }, sessionMode: 'default', ctxMode: 'plan',
+      })
+      // No immediate deny — falls through to the normal default pipeline (prompt).
+      expect(decision).toBeNull()
+      expect(session.pending.size).toBe(1)
+      expect(Array.from(session.pending.values())[0].toolName).toBe('Edit')
+    })
+
+    it('allows Read in plan mode', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'Read', input: { file_path: '/work/app/a.txt' }, sessionMode: 'plan', ctxMode: 'plan',
+      })
+      expect(decision).toBeNull()
+      expect(session.pending.size).toBe(1)
+      expect(Array.from(session.pending.values())[0].toolName).toBe('Read')
+    })
+
+    it('passes StructuredOutput with its readOnlyHint through the plan gate', async () => {
+      // The capture tool is read-only evidence (ToolDef.readOnlyHint), so the
+      // plan gate must not hard-deny it; it reaches the normal pipeline like
+      // the built-in reads (a live plan session still reviews the call).
+      const { decision, session } = await callBroker({
+        toolName: 'StructuredOutput', input: { result: 'x' }, sessionMode: 'plan', ctxMode: 'plan', readOnlyHint: true,
+      })
+      expect(decision).toBeNull()
+      expect(session.pending.size).toBe(1)
+      expect(Array.from(session.pending.values())[0].toolName).toBe('StructuredOutput')
+    })
+
+    it('denies mutating Bash in plan mode', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'Bash', input: { command: 'rm -rf x' }, sessionMode: 'plan', ctxMode: 'plan',
+      })
+      expectPlanDeny(decision, session)
+    })
+
+    it('plan gate precedes acceptEdits auto-allow', async () => {
+      // Live plan, snapshot acceptEdits: Edit must still deny.
+      const { decision, session } = await callBroker({
+        toolName: 'Edit', input: { file_path: '/work/app/x.ts' }, sessionMode: 'plan', ctxMode: 'acceptEdits',
+      })
+      expectPlanDeny(decision, session)
+    })
+
+    it('plan gate precedes bypassPermissions auto-allow', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'Edit', input: { file_path: '/work/app/x.ts' }, sessionMode: 'plan', ctxMode: 'bypassPermissions',
+      })
+      expectPlanDeny(decision, session)
+    })
+
+    it.each([
+      ['Write', { file_path: '/work/app/x.ts', content: 'x' }],
+      ['NotebookEdit', { notebook_path: '/work/app/n.ipynb' }],
+      ['MultiEdit', { file_path: '/work/app/x.ts', edits: [] }],
+    ] as const)('denies %s in plan mode', async (toolName, input) => {
+      const { decision, session } = await callBroker({ toolName, input, sessionMode: 'plan', ctxMode: 'plan' })
+      expectPlanDeny(decision, session)
+    })
+
+    it.each([
+      'ls && rm x',
+      'git status > out.txt',
+      'cat file; rm file',
+    ])('fail-closed: denies unprovable Bash %j in plan mode', async (command) => {
+      const { decision, session } = await callBroker({
+        toolName: 'Bash', input: { command }, sessionMode: 'plan', ctxMode: 'plan',
+      })
+      expectPlanDeny(decision, session)
+    })
+
+    it('does not deny provably read-only Bash in plan mode', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'Bash', input: { command: 'git status' }, sessionMode: 'plan', ctxMode: 'plan',
+      })
+      expect(decision).toBeNull()
+      expect(session.pending.size).toBe(1)
+    })
+
+    it('still raises a plan review for ExitPlanMode in plan mode', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'ExitPlanMode', input: { plan: 'do the thing' }, sessionMode: 'plan', ctxMode: 'plan',
+      })
+      expect(decision).toBeNull()
+      expect(session.pending.size).toBe(1)
+      expect(Array.from(session.pending.values())[0].toolName).toBe('ExitPlanMode')
+    })
+
+    it('still auto-allows EnterPlanMode in plan mode', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'EnterPlanMode', input: {}, sessionMode: 'plan', ctxMode: 'plan',
+      })
+      expect(decision).toMatchObject({ behavior: 'allow' })
+      expect(session.pending.size).toBe(0)
+    })
+
+    // Comprehensive read-only enforcement: the gate denies anything not
+    // PROVABLY read-only, so a mutating MCP/first-party tool can never reach
+    // a prompt a user could approve while the chip says plan.
+
+    it.each([
+      'mcp__git-tools__git_commit',
+      'mcp__git-tools__git_checkout',
+      'mcp__skills-tools__create',
+      'mcp__skills-tools__delete',
+      'mcp__marketplace-tools__remove',
+    ])('denies mutating first-party tool %s in plan mode', async (toolName) => {
+      const { decision, session } = await callBroker({ toolName, input: {}, sessionMode: 'plan', ctxMode: 'plan' })
+      expectPlanDeny(decision, session)
+    })
+
+    it('passes read-only first-party tool mcp__git-tools__git_status in plan mode', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'mcp__git-tools__git_status', input: {}, sessionMode: 'plan', ctxMode: 'plan',
+      })
+      // No deny — falls through to the normal pipeline (default-mode prompt).
+      expect(decision).toBeNull()
+      expect(session.pending.size).toBe(1)
+      expect(Array.from(session.pending.values())[0].toolName).toBe('mcp__git-tools__git_status')
+    })
+
+    it('fail-closed: denies an unknown MCP tool with no read-only evidence in plan mode', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'mcp__unknown__mutate', input: {}, sessionMode: 'plan', ctxMode: 'plan',
+      })
+      expectPlanDeny(decision, session)
+    })
+
+    it('passes an MCP tool whose definition declares readOnlyHint in plan mode', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'mcp__custom__inspect', input: {}, sessionMode: 'plan', ctxMode: 'plan', readOnlyHint: true,
+      })
+      expect(decision).toBeNull()
+      expect(session.pending.size).toBe(1)
+    })
+
+    it('denies a tool whose definition declares readOnlyHint false in plan mode', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'mcp__custom__mutate', input: {}, sessionMode: 'plan', ctxMode: 'plan', readOnlyHint: false,
+      })
+      expectPlanDeny(decision, session)
+    })
+
+    it.each(['WebFetch', 'WebSearch'])('passes %s (read-only exploration) in plan mode', async (toolName) => {
+      const { decision, session } = await callBroker({
+        toolName, input: { url: 'https://example.test' }, sessionMode: 'plan', ctxMode: 'plan',
+      })
+      expect(decision).toBeNull()
+      expect(session.pending.size).toBe(1)
+    })
+
+    it.each([
+      ['TodoWrite', { todos: [] }],
+      ['Agent', { description: 'd', prompt: 'p' }],
+      ['Task', { description: 'd', prompt: 'p' }],
+    ] as const)('denies non-read-only builtin %s in plan mode', async (toolName, input) => {
+      const { decision, session } = await callBroker({ toolName, input, sessionMode: 'plan', ctxMode: 'plan' })
+      expectPlanDeny(decision, session)
+    })
+
+    // Provider scoping: the claude CLI enforces plan mode itself BEFORE
+    // canUseTool, so the host gate must not re-classify its already-allowed
+    // calls (a quoted grep the CLI proved read-only fails isReadOnlyBash's
+    // metachar gate and would otherwise be hard-denied here).
+
+    it('does not fire for a cliSidePlanSteering provider: Edit in plan mode prompts, not denies', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'Edit', input: { file_path: '/work/app/x.ts' }, sessionMode: 'plan', ctxMode: 'plan',
+        cliSidePlanSteering: true,
+      })
+      expect(decision).toBeNull()
+      expect(session.pending.size).toBe(1)
+    })
+
+    it('does not fire for a cliSidePlanSteering provider: CLI-allowed quoted grep is not re-denied', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'Bash', input: { command: 'grep "x" f' }, sessionMode: 'plan', ctxMode: 'plan',
+        cliSidePlanSteering: true,
+      })
+      expect(decision).toBeNull()
+      expect(session.pending.size).toBe(1)
+    })
+
+    it('the same quoted grep IS denied for a host-enforced provider (scoping contrast)', async () => {
+      const { decision, session } = await callBroker({
+        toolName: 'Bash', input: { command: 'grep "x" f' }, sessionMode: 'plan', ctxMode: 'plan',
+        cliSidePlanSteering: false,
+      })
+      expectPlanDeny(decision, session)
+    })
+  })
+
   // 鈹€鈹€鈹€ decide 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   describe('decide', () => {
@@ -1180,7 +1447,7 @@ describe('auto mode classifier model', () => {
 
     const target = { model: 'vendor/aux-model', baseUrl: 'https://gw-session', authToken: 'sk-session' }
     const injected = vi.fn(() => target)
-    const autoBroker = new PermissionBroker(injected)
+    const autoBroker = new PermissionBroker(injected, () => false)
     const session = makeFakeSession({ id: 'auto-1', permissionMode: 'auto', cwd: '/work/app' })
     const canUseTool = autoBroker.buildCanUseTool(session, vi.fn())
 

@@ -111,6 +111,8 @@ const CAPS: ProviderCapabilities = {
   // 'test' provider is not 'native': preserve the pre-capability behavior
   // (every native special-case was false for it) — claude-equivalent values.
   supportsSandbox: true,
+  supportsHooks: true,
+  supportsMemory: true,
   tasksSurviveRestart: true,
   interleavedSubagentHistory: false,
   hostDrivenAutoCompact: false,

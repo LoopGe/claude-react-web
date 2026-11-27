@@ -37,6 +37,7 @@ import { ErrorBoundary } from './ErrorBoundary'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { HooksPanel } from './HooksPanel'
+import { RequiresCliNotice } from './RequiresCliNotice'
 import { UsagePanel } from './UsagePanel'
 import { DiagnosticsPanel } from './DiagnosticsPanel'
 import { PerformancePanel } from './PerformancePanel'
@@ -111,14 +112,6 @@ const SESSION_TAB_GROUPS: SettingsNavGroup<SettingsTab>[] = [
     ],
   },
 ]
-
-/** Same groups without the Plugins leaf. Native sessions have no CLI plugin
- *  pipeline (`supportsPlugins: false`), and opening the tab would fire a
- *  reload that the server answers 501. A module-level constant keeps the
- *  props identity stable for the memoized nav. */
-const SESSION_TAB_GROUPS_NO_PLUGINS: SettingsNavGroup<SettingsTab>[] = SESSION_TAB_GROUPS.map(
-  (group) => ({ ...group, tabs: group.tabs.filter((entry) => entry.key !== 'plugins') }),
-)
 
 interface Props {
   session: SessionInfo
@@ -253,10 +246,12 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // session panel reads as one long scroll no more — each concern is its
   // own tab (General controls, Context usage, Plugins, MCP servers).
   const [tab, setTab] = useState<SettingsTab>('general')
-  // Native sessions have no plugin pipeline (`supportsPlugins: false`), so the
-  // Plugins leaf and its panel are unavailable. Claude (provider undefined or
-  // 'claude') keeps the tab unchanged.
-  const pluginsSupported = session.provider !== 'native'
+  // Locked-feature gates: each surface reads its own capability boolean
+  // projected from the provider registry into SessionInfo. `!== false` keeps
+  // legacy frames (booleans undefined) claude-compatible; explicit false
+  // shows the surface locked with a RequiresCliNotice instead of hiding it.
+  const pluginsSupported = session.pluginsSupported !== false
+  const hooksSupported = session.hooksSupported !== false
 
   // Effective UI prefs: a per-session override wins, else the global default.
   // Resolved via the shared resolver so the override UI hints stay in sync
@@ -323,11 +318,6 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     setAppliedTabNonce(tabRequest.nonce)
     setTab(tabRequest.tab)
   }
-  // A deep link (or a stale tab from a provider change) must not leave a
-  // native session on the removed Plugins tab. General always exists, and the
-  // next render clears the condition (no loop).
-  if (!pluginsSupported && tab === 'plugins') setTab('general')
-
   // The marketplace overlay is portaled to <body>, so it lives OUTSIDE App's
   // global Escape chain (which would otherwise close the settings panel
   // underneath it, orphaning the portal on screen). It's rendered as
@@ -635,8 +625,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // applyFlagSettings and re-applied on every re-spawn, so unlike the
   // FlagSettingsEditor above these survive resume / fork / clear.
   // Dormant sessions have no live Query (setMemorySettings 404s), so the
-  // controls are disabled until resumed.
-  const memoryDisabled = busy || session.terminated || !session.running
+  // controls are disabled until resumed. A provider without the memory
+  // pipeline (memorySupported === false) locks them permanently — the
+  // section stays visible with a RequiresCliNotice.
+  const memoryLocked = session.memorySupported === false
+  const memoryDisabled = busy || session.terminated || !session.running || memoryLocked
 
   const changeMemory = (
     partial: { autoMemoryEnabled?: boolean | null; autoMemoryDirectory?: string | null; autoDreamEnabled?: boolean | null },
@@ -663,8 +656,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // SDK Settings.sandbox, applied post-spawn via applyFlagSettings and
   // re-applied on every re-spawn, so it survives resume / fork / clear. Also
   // runtime-switchable. Same dormant gating as auto-memory above: a dormant
-  // session has no live Query (setSandbox 404s until resumed).
-  const sandboxDisabled = memoryDisabled
+  // session has no live Query (setSandbox 404s until resumed). Its OWN
+  // capability flag (not memory's) locks it on providers without a sandbox.
+  const sandboxLocked = session.sandboxSupported === false
+  const sandboxDisabled = busy || session.terminated || !session.running || sandboxLocked
 
   // `null` clears sandbox back to off (project/SDK default).
   const setSandbox = (next: SandboxSetting | null) =>
@@ -1076,11 +1071,6 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     return result
   }, [commands, agents, reloadedPlugins])
 
-  // Module-level SESSION_TAB_GROUPS: fully static, and a stable identity
-  // keeps the memoized SettingsTabNav from re-diffing on WS-driven re-renders.
-  // Native sessions get the pre-filtered variant (also a module constant).
-  const tabGroups = pluginsSupported ? SESSION_TAB_GROUPS : SESSION_TAB_GROUPS_NO_PLUGINS
-
   const panelBodyRef = useRef<HTMLDivElement | null>(null)
   const setPanelBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
   const panelBodyRefMerged = useMergedRef(panelBodyRef, setPanelBodyOs)
@@ -1127,8 +1117,12 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       </div>
 
       {/* Tab bar — two-level nav (group pills over leaf tabs), sharing the
-          leaf styling with the global settings modal for visual consistency. */}
-      <SettingsTabNav groups={tabGroups} active={tab} onSelect={switchTab} />
+          leaf styling with the global settings modal for visual consistency.
+          The module-level SESSION_TAB_GROUPS is fully static: a stable
+          identity keeps the memoized nav from re-diffing on WS-driven
+          re-renders. Locked tabs (native plugins/hooks) stay selectable and
+          render a RequiresCliNotice panel — no leaf is hidden. */}
+      <SettingsTabNav groups={SESSION_TAB_GROUPS} active={tab} onSelect={switchTab} />
 
       {/* All settings feedback (success/error) flows through the global
           toast hub now (see ToastHost). The toast itself is the live
@@ -1293,11 +1287,14 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         <div className="settings-group-head">
           <h4>Memory</h4>
           <span className="settings-group-desc">
-            {!session.running && !session.terminated
+            {/* A locked provider never unlocks on resume — the notice below
+                carries the explanation instead of the resume hint. */}
+            {!memoryLocked && !session.running && !session.terminated
               ? 'Resume the session to change memory settings.'
               : 'Auto-memory directory and background consolidation for this session.'}
           </span>
         </div>
+        {memoryLocked && <RequiresCliNotice />}
         <SettingsRow
           title="Auto-memory"
           hint={<>Lets Claude read from and write to this project's auto-memory directory; recalled
@@ -1381,19 +1378,19 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         </SettingsRow>
       </section>
 
-      {/* The native provider has no sandbox implementation (its create
-          rejects the intent with a 501), so offering the control would only
-          produce an error. Everything else on this tab stays shared. */}
-      {session.provider !== 'native' && (
+      {/* A provider without a sandbox (sandboxSupported === false) keeps the
+          section visible with disabled controls + the requires-CLI notice —
+          shown-but-locked, never hidden. */}
       <section className="settings-group">
         <div className="settings-group-head">
           <h4>Sandbox</h4>
           <span className="settings-group-desc">
-            {!session.running && !session.terminated
+            {!sandboxLocked && !session.running && !session.terminated
               ? 'Resume the session to change sandbox settings.'
               : 'Isolates Bash file/network access behind permission rules.'}
           </span>
         </div>
+        {sandboxLocked && <RequiresCliNotice />}
         <SettingsRow
           title="Run commands in a sandbox"
           hint={<>Isolates Bash file/network access behind permission rules. macOS needs nothing; Linux
@@ -1482,7 +1479,6 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           </>
         )}
       </section>
-      )}
       </div>
       )}
 
@@ -1791,14 +1787,23 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       )}
 
       {tab === 'hooks' && (
-        <HooksPanel
-          session={session}
-          disabled={busy || session.terminated}
-          onSessionUpdate={onSessionUpdate}
-        />
+        hooksSupported ? (
+          <HooksPanel
+            session={session}
+            disabled={busy || session.terminated}
+            onSessionUpdate={onSessionUpdate}
+          />
+        ) : (
+          /* Locked: the tab stays selectable, but the editor is not mounted —
+             no config read, no controls that would save into a void. */
+          <div className="settings-stack">
+            <RequiresCliNotice />
+          </div>
+        )
       )}
 
       {tab === 'plugins' && (
+      pluginsSupported ? (
       <div className="settings-stack">
       <section className="settings-group">
         <div className="settings-group-head">
@@ -1862,6 +1867,14 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         </div>
       </section>
       </div>
+      ) : (
+        /* Locked: the leaf stays visible and selectable; the panel explains
+           the lock instead of offering reload/browse actions that would 501.
+           The auto-load effect is gated on the same flag, so no reload fires. */
+        <div className="settings-stack">
+          <RequiresCliNotice />
+        </div>
+      )
       )}
 
       {tab === 'mcp' && (
@@ -2002,6 +2015,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           sessionId={session.id}
           data={sessionUsage.data}
           account={sessionUsage.account}
+          accountInfoSupported={session.accountInfoSupported}
           loading={sessionUsage.loading}
           error={sessionUsage.error}
           onRefresh={sessionUsage.refresh}
