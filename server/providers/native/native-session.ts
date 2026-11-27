@@ -108,7 +108,7 @@ import { normalizeSuggestion, screenSuggestion } from './prompt-suggestion-filte
 import { projectNativeHistoryToWire } from './wire/wire-projection.js'
 import { metrics } from '../../metrics.js'
 import type { FileReadResult } from '../../../shared/read-file.js'
-import { CANONICAL_SKILL_NAME_SOURCE } from '../../../shared/skills.js'
+import { CANONICAL_SKILL_NAME_FLAGS, CANONICAL_SKILL_NAME_SOURCE } from '../../../shared/skills.js'
 import type { NativeReadState } from './read-state.js'
 import {
   DEFAULT_READ_MAX_BYTES,
@@ -229,7 +229,7 @@ export function packAssistantStream(
  *  or a `:`-composed name — `plugin:skill`, `plugin:frontend:component`),
  *  compiled from the shared canonical source so the slash parser and the name
  *  validator never drift. */
-const SKILL_COMMAND_RE = new RegExp('^/(' + CANONICAL_SKILL_NAME_SOURCE + ')(?:\\s+([\\s\\S]*))?$')
+const SKILL_COMMAND_RE = new RegExp('^/(' + CANONICAL_SKILL_NAME_SOURCE + ')(?:\\s+([\\s\\S]*))?$', CANONICAL_SKILL_NAME_FLAGS)
 
 /** The first text block of a user turn — the only block that can carry a
  *  leading slash invocation. Every non-text block (image / file) remains
@@ -785,7 +785,10 @@ export class NativeSession implements NativeSessionCore {
     this.output = createPushable<NativeCoreFrame>(`native-session[${opts.id}]`)
     this.ctx = defaultFrameContext(opts.id)
     this.mcp = opts.mcp
-    this.userMcpServers = opts.mcpServers ?? {}
+    // Shallow-copy at store time for explicit ownership: the composition reads
+    // this map but never mutates it, and a caller mutating its own opts map
+    // after spawn must not retroactively change the session's user half.
+    this.userMcpServers = { ...opts.mcpServers }
     this.tools = [...opts.tools]
     this.nestedTools = [...opts.tools]
     this.baseSystem = opts.system
@@ -914,81 +917,83 @@ export class NativeSession implements NativeSessionCore {
     })
     this.webSearchTool = createWebSearchTool()
     this.todoWriteTool = createTodoWriteTool({ todos: [] })
-    // Skills are discovered before the first turn can ask for them. The
-    // policy is stored separately from discovery (the catalog resolves state
-    // lazily), so configure-before/after-reload makes no difference.
-    this.enabledPlugins = opts.enabledPlugins
-    this.skills = new NativeSkillCatalog(opts.cwd, opts.ports.skill, this.enabledPlugins)
-    this.skills.configure(opts.skills)
-    this.skillsReady = this.startSkillReload()
-    // Custom commands are discovered before the first turn can invoke them,
-    // the same per-turn-await shape as the skill catalog.
-    this.commandsReady = this.startCommandReload()
-    // Initial MCP connect pass: the composed set with the plugin half still
-    // empty (the command reload above commits it asynchronously and re-composes
-    // then). Fire-and-forget like the old provider-side load — `whenReady()`
-    // waits for it, and a ctor throw after this point is torn down by the
-    // provider's closeAll guard.
-    this.mcp?.load(this.composeMcpServers())
-    // One merged read-only resolution surface for the Agent tool and the
-    // persona path: the user store plus the live qualified plugin defs.
-    this.agentLookup = new PluginAgentLookup(opts.agentStore, () => this.pluginAgentDefs)
-    this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
-    this.taskOutputTool = createTaskOutputTool(this.tasks)
-    // Every session can delegate, MCP or not: `tools` is a live getter and the
-    // `emit` path is the session's own persist+push, so a nested run's frames
-    // land in the transcript with their real parent. Built after `ctx` exists.
-    const agentDeps: AgentToolDeps = {
-      cwd: opts.cwd,
-      model: () => this.model,
-      effortLevel: () => this.effortLevel,
-      permissionMode: () => this.permissionMode,
-      system: (skillView) => this.subagentSystem(skillView),
-      frameCtx: this.ctx,
-      tools: () => this.nestedTools,
-      mcpToolServers: () => this.mcpToolServers,
-      skillView: (policy) => this.skills.view(policy ?? this.baseSkillPolicy),
-      skillToolFor: (view) => this.skillToolFor(view),
-      tasks: this.tasks,
-      agentProgressSummaries: this.opts.agentProgressSummaries ?? true,
-      // The dep request (per-request + fork overrides) forwards unchanged
-      // into the session seam, which reads the optional fields.
-      streamFor: (req, streamOpts) => this.streamFor(req, {
-        ...streamOpts,
-        suppressRetryFrames: true,
-      }),
-      requestPermission: this.requestPermission,
-      emit: (frame, parentToolUseId) => {
-        this.persistFrame(frame, parentToolUseId)
-        this.emitFrame(frame, parentToolUseId)
-      },
-      persistToolResult: (result, parentToolUseId) => this.persistToolResult(result, parentToolUseId),
-      attachmentProjection: {
-        attachmentPort: opts.uploadStore ? opts.ports.attachment : undefined,
-        preparedPdfs: this.preparedPdfs,
-      },
-      appendDescriptor: async (input) => {
-        // The runner builds the neutral v3 descriptor (identity in `data`, time
-        // paired with data.timestamp); the log assigns seq. Return the neutral
-        // event with that seq — for a v3 log this is exactly the stored canonical
-        // form.
-        const appended = await this.log.appendDurable(input)
-        return { ...input, seq: appended.seq } as SessionEvent<'subagent/descriptor'>
-      },
-      agentStore: this.agentLookup,
-      dispatchHook: (event, input, hookCtx) => this.dispatchHook(event, input, hookCtx),
-    }
-    this.agentTool = createAgentTool(agentDeps)
-    this.taskTool = createAgentTool(agentDeps, 'Task')
-    // The mode switch owns the log, the model history, and the usage
-    // counters. It runs before `system/init` so a storage failure (fresh id
-    // that already has a log, corrupt resume) throws out of createSession
-    // instead of leaving a half-started session. Everything from here on is
-    // wrapped: a throw after the async startup passes (command reload, MCP
-    // load) were launched must mark the stillborn session CLOSED, so their
-    // in-flight commits stand down instead of re-connecting MCP after the
-    // provider's ctor-throw closeAll guard.
+    // Everything from here on is wrapped: the async startup passes below
+    // (skill/command reload, MCP load) launch in-flight work, so any later
+    // ctor throw must mark the stillborn session CLOSED — their in-flight
+    // commits stand down instead of re-connecting MCP after the provider's
+    // ctor-throw closeAll guard. Opening the try ABOVE those launches makes
+    // the closed-on-throw invariant structural, not comment-enforced.
     try {
+      // Skills are discovered before the first turn can ask for them. The
+      // policy is stored separately from discovery (the catalog resolves state
+      // lazily), so configure-before/after-reload makes no difference.
+      this.enabledPlugins = opts.enabledPlugins
+      this.skills = new NativeSkillCatalog(opts.cwd, opts.ports.skill, this.enabledPlugins)
+      this.skills.configure(opts.skills)
+      this.skillsReady = this.startSkillReload()
+      // Custom commands are discovered before the first turn can invoke them,
+      // the same per-turn-await shape as the skill catalog.
+      this.commandsReady = this.startCommandReload()
+      // Initial MCP connect pass: the composed set with the plugin half still
+      // empty (the command reload above commits it asynchronously and re-composes
+      // then). Fire-and-forget like the old provider-side load — `whenReady()`
+      // waits for it, and a ctor throw after this point is torn down by the
+      // provider's closeAll guard.
+      this.mcp?.load(this.composeMcpServers())
+      // One merged read-only resolution surface for the Agent tool and the
+      // persona path: the user store plus the live qualified plugin defs.
+      this.agentLookup = new PluginAgentLookup(opts.agentStore, () => this.pluginAgentDefs)
+      this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
+      this.taskOutputTool = createTaskOutputTool(this.tasks)
+      // Every session can delegate, MCP or not: `tools` is a live getter and the
+      // `emit` path is the session's own persist+push, so a nested run's frames
+      // land in the transcript with their real parent. Built after `ctx` exists.
+      const agentDeps: AgentToolDeps = {
+        cwd: opts.cwd,
+        model: () => this.model,
+        effortLevel: () => this.effortLevel,
+        permissionMode: () => this.permissionMode,
+        system: (skillView) => this.subagentSystem(skillView),
+        frameCtx: this.ctx,
+        tools: () => this.nestedTools,
+        mcpToolServers: () => this.mcpToolServers,
+        skillView: (policy) => this.skills.view(policy ?? this.baseSkillPolicy),
+        skillToolFor: (view) => this.skillToolFor(view),
+        tasks: this.tasks,
+        agentProgressSummaries: this.opts.agentProgressSummaries ?? true,
+        // The dep request (per-request + fork overrides) forwards unchanged
+        // into the session seam, which reads the optional fields.
+        streamFor: (req, streamOpts) => this.streamFor(req, {
+          ...streamOpts,
+          suppressRetryFrames: true,
+        }),
+        requestPermission: this.requestPermission,
+        emit: (frame, parentToolUseId) => {
+          this.persistFrame(frame, parentToolUseId)
+          this.emitFrame(frame, parentToolUseId)
+        },
+        persistToolResult: (result, parentToolUseId) => this.persistToolResult(result, parentToolUseId),
+        attachmentProjection: {
+          attachmentPort: opts.uploadStore ? opts.ports.attachment : undefined,
+          preparedPdfs: this.preparedPdfs,
+        },
+        appendDescriptor: async (input) => {
+          // The runner builds the neutral v3 descriptor (identity in `data`, time
+          // paired with data.timestamp); the log assigns seq. Return the neutral
+          // event with that seq — for a v3 log this is exactly the stored canonical
+          // form.
+          const appended = await this.log.appendDurable(input)
+          return { ...input, seq: appended.seq } as SessionEvent<'subagent/descriptor'>
+        },
+        agentStore: this.agentLookup,
+        dispatchHook: (event, input, hookCtx) => this.dispatchHook(event, input, hookCtx),
+      }
+      this.agentTool = createAgentTool(agentDeps)
+      this.taskTool = createAgentTool(agentDeps, 'Task')
+      // The mode switch owns the log, the model history, and the usage
+      // counters. It runs before `system/init` so a storage failure (fresh
+      // id that already has a log, corrupt resume) throws out of
+      // createSession instead of leaving a half-started session.
       if (opts.forkSession && opts.resume) {
         this.log = this.openForkLog(opts, opts.resume)
       } else if (opts.resume) {
@@ -3869,7 +3874,8 @@ export class NativeSession implements NativeSessionCore {
    *  replaceAll of the user map, which would drop every plugin server. The
    *  next turn sees the new tool list; a running turn keeps its snapshot. */
   async setMcpServers(servers: Record<string, unknown>): Promise<unknown> {
-    this.userMcpServers = servers
+    // Shallow-copy for explicit ownership (same rule as the spawn-time store).
+    this.userMcpServers = { ...servers }
     return (await this.applyComposedMcpServers()) ?? { added: [], removed: [], errors: {} }
   }
 

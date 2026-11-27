@@ -215,6 +215,13 @@ describe('pluginCommandRows', () => {
     expect(rows.map((row) => row.name)).toEqual(['demo:frontend:component'])
   })
 
+  it('accepts raw CJK command names under the plugin prefix (widened composed grammar)', () => {
+    // The loader keeps CJK basenames raw; the composed grammar admits Unicode
+    // letters/digits after the first ':', so the rows are listed, not gated out.
+    const rows = pluginCommandRows([contribution('demo', [command('中文命令', '命令正文'), command('前端:组件', '嵌套')])])
+    expect(rows.map((row) => row.name).sort()).toEqual(['demo:中文命令', 'demo:前端:组件'].sort())
+  })
+
   it('sorts rows by qualified name across plugins', () => {
     const rows = pluginCommandRows([
       contribution('zeta', [command('last', 'Z')]),

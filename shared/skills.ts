@@ -23,20 +23,33 @@ export const VALID_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
 /** The CLI's canonical skill/command-name grammar: a bare name, optionally
  *  composed with `:`-separated namespace segments (`plugin:skill`, and a
  *  nested plugin command's `plugin:frontend:component`). The FIRST segment
- *  stays alphanumeric-led (a bare discovered name). Composed segments accept
- *  the full plugin-name sanitizer output domain — any non-empty run of
- *  `[A-Za-z0-9._-]`, dash-led included — so a sanitized CJK segment (`--`)
- *  lists AND invocates instead of becoming a broken row. Unlike
+ *  stays alphanumeric-led (a bare discovered name / the ASCII plugin prefix).
+ *  Composed segments accept Unicode letters and digits (`\p{L}\p{N}`) alongside
+ *  `._-`, dash-led included — so a RAW CJK command/agent segment (`中文命令`,
+ *  `前端:组件`) lists AND invocates, matching the CLI, whose command-name
+ *  offering gate is a shell-metacharacter blocklist (CJK passes), not an ASCII
+ *  allowlist. Skills still sanitize to the ASCII domain upstream; this widening
+ *  only admits the raw names the command/agent loader now keeps. Unlike
  *  {@link VALID_SKILL_NAME} (the filesystem-basename / frontmatter validator,
  *  which stays bare because `:` cannot be a Windows directory character), a
  *  `:` name is only ever a composed canonical name — never a discovered
- *  directory. Every segment must be non-empty. The unanchored source is
- *  shared so the slash-command parser and any future canonical-name consumer
- *  compile from one grammar. Browser-safe: pure string/regex. */
+ *  directory. Every segment must be non-empty; spaces and edge colons still
+ *  reject. The unanchored source is shared so the slash-command parser and any
+ *  future canonical-name consumer compile from one grammar. Browser-safe: pure
+ *  string/regex.
+ *
+ *  The source uses `\p{…}` Unicode property escapes, so EVERY consumer MUST
+ *  compile it with {@link CANONICAL_SKILL_NAME_FLAGS} (`'u'`) — without the flag
+ *  `\p` degrades to a literal `p` and the class silently matches the wrong set. */
 export const CANONICAL_SKILL_NAME_SOURCE =
-  '[A-Za-z0-9][A-Za-z0-9._-]{0,79}(?::[A-Za-z0-9._-]{1,80})*'
+  '[A-Za-z0-9][A-Za-z0-9._-]{0,79}(?::[\\p{L}\\p{N}._-]{1,80})*'
 
-export const CANONICAL_SKILL_NAME = new RegExp('^' + CANONICAL_SKILL_NAME_SOURCE + '$')
+/** The required RegExp flag for {@link CANONICAL_SKILL_NAME_SOURCE} (Unicode
+ *  property escapes). Shared so the slash parser, the fork-cut pairing and the
+ *  name validator all compile the grammar with the flag it needs. */
+export const CANONICAL_SKILL_NAME_FLAGS = 'u'
+
+export const CANONICAL_SKILL_NAME = new RegExp('^' + CANONICAL_SKILL_NAME_SOURCE + '$', CANONICAL_SKILL_NAME_FLAGS)
 
 export interface ParsedSkillFrontmatter {
   name?: string

@@ -8441,7 +8441,7 @@ describe('NativeSession plugin commands', () => {
     await some.destroy()
   })
 
-  it('a CJK-named plugin command lists and invocates through its sanitized name', async () => {
+  it('a CJK-named plugin command lists and invocates through its RAW name', async () => {
     const dir = await tempDir('native-plugin-cmd-cjk-')
     const entry = await makePluginEntry(dir, 'demo')
     await writePluginCommand(entry, '中文命令.md', { description: 'Chinese command' }, '命令正文 $ARGUMENTS')
@@ -8449,21 +8449,43 @@ describe('NativeSession plugin commands', () => {
     const ports = portsWithPlugins(dir, [entry])
     const provider = new NativeProvider({ stateDir: dir, ports })
     const session = provider.createSession({ id: 'plugin-cmd-cjk', cwd: dir })
-    // The loader sanitizes each CJK segment to dashes; the widened grammar
-    // accepts dash-led composed segments, so the rows are invocable, not
-    // listed-broken. (Membership, not ICU punctuation collation, is the
-    // contract — the two dashed names sort by localeCompare in the catalog.)
+    // The loader keeps CJK segments raw (CLI command parity); the widened
+    // composed grammar accepts Unicode letters/digits, so the rows are
+    // invocable under their own names. (Membership, not ICU collation, is the
+    // contract — the two names sort by localeCompare in the catalog.)
     const names = (await session.supportedCommands?.() as Array<{ name: string }>).map((row) => row.name)
     expect(names.slice(0, BUILTIN_NAMES.length)).toEqual(BUILTIN_NAMES)
-    expect(names.slice(BUILTIN_NAMES.length).sort()).toEqual(['demo:--:--', 'demo:----'].sort())
+    expect(names.slice(BUILTIN_NAMES.length).sort()).toEqual(['demo:中文命令', 'demo:前端:组件'].sort())
     await session.destroy()
-    expect(await slashTurnMessages(ports, dir, 'plugin-cmd-cjk-flat', '/demo:---- 测试')).toEqual([
-      { role: 'user', content: [{ type: 'text', text: '/demo:---- 测试' }] },
+    expect(await slashTurnMessages(ports, dir, 'plugin-cmd-cjk-flat', '/demo:中文命令 测试')).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/demo:中文命令 测试' }] },
       { role: 'user', content: [{ type: 'text', text: '命令正文 测试' }] },
     ])
-    expect(await slashTurnMessages(ports, dir, 'plugin-cmd-cjk-nested', '/demo:--:-- 按钮')).toEqual([
-      { role: 'user', content: [{ type: 'text', text: '/demo:--:-- 按钮' }] },
+    expect(await slashTurnMessages(ports, dir, 'plugin-cmd-cjk-nested', '/demo:前端:组件 按钮')).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/demo:前端:组件 按钮' }] },
       { role: 'user', content: [{ type: 'text', text: '嵌套 按钮' }] },
+    ])
+  })
+
+  it('two equal-length CJK plugin commands both list and invocate distinctly (merge gate)', async () => {
+    const dir = await tempDir('native-plugin-cmd-cjk-pair-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, '中文命令.md', { description: 'First' }, '第一 $ARGUMENTS')
+    await writePluginCommand(entry, '测试命令.md', { description: 'Second' }, '第二 $ARGUMENTS')
+    const ports = portsWithPlugins(dir, [entry])
+    const provider = new NativeProvider({ stateDir: dir, ports })
+    const session = provider.createSession({ id: 'plugin-cmd-cjk-pair', cwd: dir })
+    const names = (await session.supportedCommands?.() as Array<{ name: string }>).map((row) => row.name)
+    expect(names).toContain('demo:中文命令')
+    expect(names).toContain('demo:测试命令')
+    await session.destroy()
+    expect(await slashTurnMessages(ports, dir, 'plugin-cmd-cjk-pair-a', '/demo:中文命令 甲')).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/demo:中文命令 甲' }] },
+      { role: 'user', content: [{ type: 'text', text: '第一 甲' }] },
+    ])
+    expect(await slashTurnMessages(ports, dir, 'plugin-cmd-cjk-pair-b', '/demo:测试命令 乙')).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/demo:测试命令 乙' }] },
+      { role: 'user', content: [{ type: 'text', text: '第二 乙' }] },
     ])
   })
 

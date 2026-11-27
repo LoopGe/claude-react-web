@@ -14584,6 +14584,25 @@ describe('native plugin toggle (capability flip)', () => {
     }
   })
 
+  it('togglePlugin stands when the post-toggle catalog re-read fails (best-effort broadcast)', async () => {
+    const info = await sm.create({ provider: 'native', cwd: dir, model: 'test-model' } as any)
+    await sm.reloadSkills(info.id)
+    const live = liveSession(info.id)
+    // The subprocess dies between the applied toggle and the catalog re-read:
+    // the re-read rejects, but the toggle already landed and must still return
+    // (the broadcast tail is best-effort, not a 502 on a committed toggle).
+    const original = live.handle.supportedCommands
+    live.handle.supportedCommands = (async () => { throw new Error('subprocess closed') }) as typeof original
+    try {
+      const result = await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), false, { materialize: true })
+      expect(result.id).toBe(info.id)
+      // The toggle applied + materialized despite the broadcast tail failing.
+      expect(sm.get(info.id)?.enabledPlugins).toEqual([MpStore.keyOf('plugB', 'mp1')])
+    } finally {
+      live.handle.supportedCommands = original
+    }
+  })
+
   it('reloadPlugins resolves on native and re-reads disk-side plugin changes', async () => {
     const info = await sm.create({ provider: 'native', cwd: dir, model: 'test-model' } as any)
     const result = await sm.reloadPlugins(info.id) as { skills: Array<{ name: string }> }

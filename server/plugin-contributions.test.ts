@@ -382,6 +382,27 @@ describe('listPluginContributions — MCP', () => {
     expect(contrib!.commands.map((c) => c.name)).toEqual(['about'])
     expect(contrib!.errors.some((e) => e.kind === 'mcp')).toBe(true)
   })
+
+  it('keeps a hostile MCP server name an own data property, never a prototype write', async () => {
+    const entry = await makePlugin('demo')
+    // A computed `['__proto__']` key is an own data property in the fixture, so
+    // JSON.stringify carries it; the loader must store it the same way.
+    await writeJson(join(entry.dir, '.mcp.json'), {
+      mcpServers: {
+        ['__proto__']: { type: 'http', url: 'https://evil.test/mcp' },
+        constructor: { type: 'http', url: 'https://ctor.test/mcp' },
+        ok: { type: 'http', url: 'https://ok.test/mcp' },
+      },
+    })
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(Object.keys(contrib!.mcpServers).sort()).toEqual(['__proto__', 'constructor', 'ok'])
+    expect(Object.hasOwn(contrib!.mcpServers, '__proto__')).toBe(true)
+    expect(contrib!.mcpServers['__proto__']).toEqual({ type: 'http', url: 'https://evil.test/mcp' })
+    expect(Object.getPrototypeOf(contrib!.mcpServers)).toBeNull()
+    expect(contrib!.errors).toEqual([])
+  })
 })
 
 describe('listPluginContributions — traversal guards', () => {
@@ -476,7 +497,7 @@ describe('listPluginContributions — recursive discovery and namespacing', () =
     expect(contrib!.errors.some((e) => e.kind === 'commands' && e.detail.includes('depth cap'))).toBe(true)
   })
 
-  it('sanitizes non-ASCII names instead of dropping them (CJK is core)', async () => {
+  it('keeps raw CJK command/agent names (CJK is core — CLI command parity)', async () => {
     const entry = await makePlugin('demo')
     await writeMd(join(entry.dir, 'commands', '中文命令.md'), { description: 'Chinese command' }, '命令正文')
     await writeMd(join(entry.dir, 'commands', '前端', '组件.md'), { description: 'Nested CJK' }, 'body')
@@ -484,16 +505,16 @@ describe('listPluginContributions — recursive discovery and namespacing', () =
 
     const [contrib] = await listPluginContributions(stub([entry]))
 
-    expect(contrib!.commands.map((c) => c.name).sort()).toEqual(['----', '--:--'].sort())
-    expect(contrib!.commands.find((c) => c.name === '----')!.body).toBe('命令正文\n')
-    expect(contrib!.agents.map((a) => a.name)).toEqual(['---'])
+    expect(contrib!.commands.map((c) => c.name).sort()).toEqual(['中文命令', '前端:组件'].sort())
+    expect(contrib!.commands.find((c) => c.name === '中文命令')!.body).toBe('命令正文\n')
+    expect(contrib!.agents.map((a) => a.name)).toEqual(['审查员'])
     expect(contrib!.errors).toEqual([])
   })
 
-  it('sanitizes manifest object-map command keys so every listed row is invocable', async () => {
+  it('folds grammar-invalid manifest object-map keys but keeps raw CJK keys', async () => {
     // The CLI uses object-map keys raw; a spaced key would list a row the
-    // slash parser can never tokenize. Native sanitizes keys with the same
-    // rule as path segments so the name domain stays grammar-valid.
+    // slash parser can never tokenize, so native folds spaces to '-'. A CJK
+    // key is grammar-valid (the widened composed grammar) and stays raw.
     const entry = await makePlugin('demo', {
       manifest: {
         commands: {
@@ -506,9 +527,63 @@ describe('listPluginContributions — recursive discovery and namespacing', () =
 
     const [contrib] = await listPluginContributions(stub([entry]))
 
-    expect(contrib!.commands.map((c) => c.name).sort()).toEqual(['--', 'my-cmd', 'ok'].sort())
+    expect(contrib!.commands.map((c) => c.name).sort()).toEqual(['组件', 'my-cmd', 'ok'].sort())
     expect(contrib!.commands.find((c) => c.name === 'my-cmd')!.body).toBe('SPACED KEY BODY')
+    expect(contrib!.commands.find((c) => c.name === '组件')!.body).toBe('CJK KEY BODY')
     expect(contrib!.errors).toEqual([])
+  })
+})
+
+describe('listPluginContributions — name collisions (CJK safety net)', () => {
+  it('two equal-length CJK basenames load as DISTINCT commands (no sanitizer collision)', async () => {
+    // The merge gate: 中文命令 and 测试命令 both folded to '----' under the old
+    // ASCII sanitizer and the catalog silently dropped the second. Raw Unicode
+    // names keep them distinct, so both load.
+    const entry = await makePlugin('demo')
+    await writeMd(join(entry.dir, 'commands', '中文命令.md'), { description: 'First' }, 'FIRST BODY')
+    await writeMd(join(entry.dir, 'commands', '测试命令.md'), { description: 'Second' }, 'SECOND BODY')
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands.map((c) => c.name).sort()).toEqual(['中文命令', '测试命令'].sort())
+    expect(contrib!.commands.find((c) => c.name === '中文命令')!.body).toBe('FIRST BODY\n')
+    expect(contrib!.commands.find((c) => c.name === '测试命令')!.body).toBe('SECOND BODY\n')
+    expect(contrib!.errors).toEqual([])
+  })
+
+  it('refuses a later command file that folds to an already-declared name (loud, deterministic)', async () => {
+    const entry = await makePlugin('demo')
+    await writeMd(join(entry.dir, 'commands', 'my cmd.md'), { description: 'Spaced' }, 'SPACED BODY')
+    await writeMd(join(entry.dir, 'commands', 'my-cmd.md'), { description: 'Dashed' }, 'DASHED BODY')
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    // Both fold to `my-cmd`: the first declaration wins, the later is refused
+    // loudly — never a silent first-wins drop in the catalog.
+    expect(contrib!.commands.map((c) => c.name)).toEqual(['my-cmd'])
+    expect(contrib!.errors.some((e) => e.kind === 'commands' && e.detail.includes('my-cmd') && e.detail.includes('already declared'))).toBe(true)
+  })
+
+  it('refuses a later agent file that folds to an already-declared name', async () => {
+    const entry = await makePlugin('demo')
+    await writeMd(join(entry.dir, 'agents', 'my agent.md'), { description: 'Spaced' }, 'SPACED PROMPT')
+    await writeMd(join(entry.dir, 'agents', 'my-agent.md'), { description: 'Dashed' }, 'DASHED PROMPT')
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.agents.map((a) => a.name)).toEqual(['my-agent'])
+    expect(contrib!.errors.some((e) => e.kind === 'agents' && e.detail.includes('already declared'))).toBe(true)
+  })
+
+  it('refuses a later object-map key that folds to an earlier key', async () => {
+    const entry = await makePlugin('demo', {
+      manifest: { commands: { 'my cmd': { content: 'SPACED' }, 'my-cmd': { content: 'DASHED' } } },
+    })
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands.map((c) => c.name)).toEqual(['my-cmd'])
+    expect(contrib!.errors.some((e) => e.kind === 'commands' && e.detail.includes('already declared'))).toBe(true)
   })
 })
 

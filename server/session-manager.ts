@@ -7311,7 +7311,15 @@ export class SessionManager {
     // applyDynamicSkillOverrides uses for its catalog-mutating flag change.
     // For claude this duplicates the CLI push harmlessly (the client replaces
     // state on either frame).
-    this.broadcastCommandsChanged(id, (await this.supportedCommands(id)) as unknown[])
+    // Best-effort: the toggle already applied + persisted above. If the
+    // subprocess died between the apply and this catalog re-read, the re-read
+    // rejects — that must not 502 a toggle that landed. Log and let the result
+    // stand; the picker refreshes on the next catalog read regardless.
+    try {
+      this.broadcastCommandsChanged(id, (await this.supportedCommands(id)) as unknown[])
+    } catch (err) {
+      log.warn(`[session ${id}] plugin toggle applied; commands-changed broadcast failed:`, err)
+    }
     return info
   }
 
