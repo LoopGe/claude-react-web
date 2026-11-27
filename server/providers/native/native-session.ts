@@ -685,14 +685,17 @@ export class NativeSession implements NativeSessionCore {
   private steeringOpen = false
   /** Supplements admitted during the current turn, not yet injected. */
   private supplementQueue: Array<{ uuid: string; text: string }> = []
-  /** T23 (RS §4.4): system injections awaiting idle delivery — asyncRewake
-   *  exit-2 wakes (hook feedback) and backgrounded-task completion
-   *  notifications. The engine's background completion and the task manager's
-   *  settle sink enqueue here; the pump delivers each as a system turn only
-   *  when no user input is pending — a mid-turn injection waits for the active
-   *  turn to settle, never corrupts it. Live-only (the CLI notification queue
-   *  is likewise in-memory); the injected message itself is durable like any
-   *  turn message. */
+  /** T23 (RS §4.4): system injections — asyncRewake exit-2 wakes (hook
+   *  feedback) and backgrounded-task completion notifications. The engine's
+   *  background completion and the task manager's settle sink enqueue here.
+   *  Two delivery paths: task-notification items (Monitor event batches +
+   *  backgrounded settles) drain MID-TURN at the next round boundary via the
+   *  loop's drainInjection (injectTaskNotifications); hook-rewakes are
+   *  idle-only — the pump's wake branch delivers them, injections arriving
+   *  while idle, and any notification left with no remaining round boundary,
+   *  as a system turn when no user input is pending. Live-only (the CLI
+   *  notification queue is likewise in-memory); the injected message itself
+   *  is durable like any turn message. */
   private readonly systemInjections: PendingInjection[] = []
   private lastUsage: Usage = { input_tokens: 0, output_tokens: 0 }
   /** The wire shape of the last MAIN-thread API request, captured per round in
@@ -2110,8 +2113,10 @@ export class NativeSession implements NativeSessionCore {
       this.suggestionAbort?.abort()
       // T23 (RS §4.4): an injection turn runs only when no user input is
       // pending — user turns always take priority, and a parked durable head
-      // keeps its retry precedence. A mid-turn injection waits here for the
-      // next idle window.
+      // keeps its retry precedence. This idle wake branch serves hook-rewakes
+      // (always idle-only), injections arriving while idle, and notifications
+      // left queued with no remaining round boundary; a mid-turn notification
+      // drains earlier at the loop's round boundary (drainInjection).
       const wake = this.pendingDurableInitial === null && this.input.length === 0
         ? this.systemInjections.shift() ?? null
         : null
