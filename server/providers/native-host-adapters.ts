@@ -2,7 +2,8 @@
 // (native/ports.ts). This module lives OUTSIDE native/ on purpose: it is the
 // only place that wraps the host service modules (config, anthropic-api,
 // mcp-config, attachment stores, skills, history-reader, subagent-transcripts,
-// the CLAUDE.md memory reader) into the neutral port interfaces.
+// the CLAUDE.md memory reader, the auto-memory store) into the neutral port
+// interfaces.
 // default-providers.ts constructs the ports and injects them via
 // NativeProvider opts; tests use makeNativePorts().
 
@@ -21,9 +22,10 @@ import { normalize, paginateRenderable } from '../history-reader.js'
 import { normalizeSubagentLine } from '../subagent-transcripts.js'
 import { projectNativeEventToSdkLine } from './native-host-frame-adapter.js'
 import { createMemoryReader } from './native-host-memory.js'
+import { createAutoMemoryPort, resolveMemoryRoots } from './native-host-auto-memory.js'
 import type { UploadStore } from '../upload-store.js'
 import { resolveNativeStateDir } from './native/session-log/paths.js'
-import type { NativeConfigPort, NativeHostPorts, NativeMemoryPort } from './native/ports.js'
+import type { NativeAutoMemoryPort, NativeConfigPort, NativeHostPorts, NativeMemoryPort } from './native/ports.js'
 
 export interface NativeHostPortsDeps {
   /** App state dir; resolved exactly like NativeProvider's own stateDir so
@@ -45,6 +47,9 @@ export interface NativeHostPortsDeps {
   /** CLAUDE.md chain-reader override (tests inject fixture-backed readers);
    *  absent = the real host reader, createMemoryReader(). */
   memory?: NativeMemoryPort
+  /** Auto-memory port override (tests inject fixture-backed ports); absent =
+   *  the real host port over the resolved stateDir. */
+  autoMemory?: NativeAutoMemoryPort
 }
 
 /** Build the real host adapters for one NativeProvider. The ConfigPort is a
@@ -106,7 +111,7 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
     skill: {
       listSkills: (cwd, enabledPlugins) => listSkills(cwd, mpStore ? { mpStore, enabledPlugins } : undefined),
     },
-    // Present only with a marketplace store — the seven always-on ports keep
+    // Present only with a marketplace store — the eight always-on ports keep
     // their key set when plugin discovery is unavailable.
     ...(mpStore ? { plugin: { listContributions: (enabledPlugins?: string[]) => listPluginContributions(mpStore, enabledPlugins) } } : {}),
     transcript: {
@@ -116,6 +121,7 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
       projectEventToSdkLine: (event, sessionId) => projectNativeEventToSdkLine(event, sessionId),
     },
     memory: deps.memory ?? createMemoryReader(),
+    autoMemory: deps.autoMemory ?? createAutoMemoryPort({ stateDir }),
   }
 }
 
@@ -123,10 +129,30 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
  *  Pass the same stateDir/uploadStore the provider itself receives so the
  *  ports stay consistent with its wiring; bare `makeNativePorts()` gives a
  *  config/aux/transcript-only setup for handle-only unit sessions. Memory
- *  defaults to an EMPTY stub here — never the real host reader — so test
- *  ports stay hermetic on machines with a real ~/.claude/CLAUDE.md; inject
- *  deps.memory for a fixture-backed chain. */
+ *  and autoMemory default to EMPTY stubs here — never the real host readers —
+ *  so test ports stay hermetic on machines with a real ~/.claude/CLAUDE.md or
+ *  memory store; inject deps.memory / deps.autoMemory for fixture-backed
+ *  chains. The autoMemory stub's resolve is the lexical root computation
+ *  only: it never creates directories. */
 export function makeNativePorts(deps: NativeHostPortsDeps = {}): NativeHostPorts {
   const ports = createNativeHostPorts(deps)
-  return deps.memory ? ports : { ...ports, memory: { read: async () => ({ files: [], isGitRepo: false }) } }
+  return {
+    ...ports,
+    ...(deps.memory ? {} : { memory: { read: async () => ({ files: [], isGitRepo: false }) } }),
+    ...(deps.autoMemory ? {} : {
+      autoMemory: {
+        resolve: async (cwd, override) => {
+          const roots = resolveMemoryRoots(cwd, resolveNativeStateDir(deps.stateDir), override)
+          return { ownDir: roots.own, claudeDir: null }
+        },
+        listCandidates: async () => [],
+        readIndex: async () => null,
+        readMemoryFile: async () => ({ content: '', truncated: false }),
+        listSessionsTouchedSince: async () => [],
+        readDreamState: async () => ({}),
+        claimDream: async () => false,
+        releaseDream: async () => {},
+      },
+    }),
+  }
 }

@@ -6,6 +6,7 @@
 // The remaining ports get a delegation smoke check.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,7 +20,7 @@ import { NativeProvider } from './native/native-provider.js'
 import type { ProviderSessionHandle } from './types.js'
 import { createNativeHostPorts, makeNativePorts } from './native-host-adapters.js'
 import { nativeCoreOf } from './native-host-frame-adapter.js'
-import type { NativeConfigPort, NativeHostPorts } from './native/ports.js'
+import type { NativeAutoMemoryPort, NativeConfigPort, NativeHostPorts } from './native/ports.js'
 
 const dirs: string[] = []
 const sessions: ProviderSessionHandle[] = []
@@ -199,9 +200,9 @@ describe('ConfigPort adapter cache + live-view semantics', () => {
 })
 
 describe('host adapters aggregate', () => {
-  it('exposes all seven ports and delegates the pure transforms to the host modules', () => {
+  it('exposes all eight ports and delegates the pure transforms to the host modules', () => {
     const ports = createNativeHostPorts()
-    expect(Object.keys(ports).sort()).toEqual(['attachment', 'auxLlm', 'config', 'mcpTransport', 'memory', 'skill', 'transcript'])
+    expect(Object.keys(ports).sort()).toEqual(['attachment', 'autoMemory', 'auxLlm', 'config', 'mcpTransport', 'memory', 'skill', 'transcript'])
     const line = { type: 'assistant', uuid: 'u1', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } }
     expect(ports.transcript.normalize(line, 's1', true)).toEqual(normalize(line, 's1', true))
     expect(ports.transcript.paginateRenderable([line], 's1', { limit: 10 }))
@@ -224,5 +225,28 @@ describe('host adapters aggregate', () => {
     const fixture = { files: [{ path: '/repo/CLAUDE.md', scope: 'project' as const, content: 'RULES' }], isGitRepo: true }
     const ports = makeNativePorts({ memory: { read: async () => fixture } })
     expect(await ports.memory.read('/repo')).toEqual(fixture)
+  })
+
+  it('makeNativePorts defaults autoMemory to a hermetic stub that never touches fs', async () => {
+    const dir = await tempDir()
+    const ports = makeNativePorts({ stateDir: dir })
+    expect(await ports.autoMemory.listCandidates([dir])).toEqual([])
+    expect(await ports.autoMemory.readIndex(dir)).toBeNull()
+    expect(await ports.autoMemory.readMemoryFile(join(dir, 'm.md'))).toEqual({ content: '', truncated: false })
+    expect(await ports.autoMemory.listSessionsTouchedSince(dir, 0)).toEqual([])
+    expect(await ports.autoMemory.readDreamState()).toEqual({})
+    expect(await ports.autoMemory.claimDream('key')).toBe(false)
+    await ports.autoMemory.releaseDream('key', 1)
+    const roots = await ports.autoMemory.resolve('D:\\codes\\repo')
+    expect(roots.ownDir).toBe(join(dir, 'native-memory', 'D--codes-repo'))
+    expect(roots.claudeDir).toBeNull()
+    expect(existsSync(roots.ownDir)).toBe(false)
+  })
+
+  it('makeNativePorts passes an injected autoMemory port through', async () => {
+    const injected: NativeAutoMemoryPort = { ...makeNativePorts().autoMemory, readIndex: async () => 'sentinel' }
+    const ports = makeNativePorts({ autoMemory: injected })
+    expect(ports.autoMemory).toBe(injected)
+    expect(await ports.autoMemory.readIndex('any')).toBe('sentinel')
   })
 })
