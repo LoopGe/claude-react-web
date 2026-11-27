@@ -668,6 +668,11 @@ describe('NativeSession', () => {
     const result = frames.at(-1) as Frame
     expect(result.subtype).toBe('success')
     expect(result.result).toBe('hello native')
+    // The completed result carries the real round count, a wall-clock
+    // duration (no longer the hardcoded 0), and the neutral completion reason.
+    expect(result.num_turns).toBe(1)
+    expect(typeof result.duration_ms).toBe('number')
+    expect(result.terminal_reason).toBe('completed')
     await session.destroy()
   })
 
@@ -721,12 +726,21 @@ describe('NativeSession', () => {
     // Wait for the turn to actually start (no result may have landed yet).
     await started
     expect(frames.filter((f) => f.type === 'result')).toHaveLength(0)
+    // Give the turn a real elapsed interval: the settled duration must be the
+    // MEASURED value, not pass because it is any number (the old hardcoded 0).
+    await new Promise((resolve) => setTimeout(resolve, 100))
     await session.interrupt?.()
     await vi.waitFor(() => {
       const results = frames.filter((f) => f.type === 'result')
       expect(results).toHaveLength(1)
       expect(results[0].result).toBe('interrupted by user')
       expect(results[0].is_error).toBe(true)
+      // The interrupted settlement reports what actually happened: no round
+      // completed, a real wall-clock duration, and the abort phase stamped at
+      // interrupt() mapped to the SDK's terminal_reason.
+      expect(results[0].num_turns).toBe(0)
+      expect(results[0].duration_ms).toBeGreaterThanOrEqual(100)
+      expect(results[0].terminal_reason).toBe('aborted_streaming')
     })
     // The session is NOT bricked: the next message completes normally. The
     // seam is re-evaluated per turn, so the swapped script takes effect.
@@ -739,7 +753,102 @@ describe('NativeSession', () => {
       expect(results).toHaveLength(2)
       expect(results[1].result).toBe('recovered')
       expect(results[1].subtype).toBe('success')
+      expect(results[1].num_turns).toBe(1)
+      expect(results[1].terminal_reason).toBe('completed')
     })
+    await session.destroy()
+  })
+
+  it("an interrupted turn reports its own partial usage, never the previous turn's", async () => {
+    const dir = await tempDir('native-session-')
+    const provider = providerWithStreamer([textTurn('first')], dir)
+    const session = provider.createSession({ id: 's-usage-isolation', cwd: process.cwd() })
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of session.messages) frames.push(f as Frame)
+    })()
+    session.enqueueUserMessage(userMsg('one') as never)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    })
+    // Turn 1 completes with the scripted usage (input 10 / output 5).
+    const first = frames.filter((f) => f.type === 'result')[0]
+    expect(first.usage).toMatchObject({ input_tokens: 10, output_tokens: 5 })
+
+    // Turn 2 hangs mid-stream (the real transport rejects on abort); the user
+    // interrupts before any round settles.
+    let streamStarted!: () => void
+    const started = new Promise<void>((resolve) => { streamStarted = resolve })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { signal: AbortSignal }) {
+      streamStarted()
+      await new Promise<never>((_, reject) => {
+        req.signal.addEventListener('abort', () => reject(req.signal.reason), { once: true })
+      })
+      yield // unreachable
+    }
+    session.enqueueUserMessage(userMsg('two') as never)
+    await started
+    await session.interrupt?.()
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(2)
+    })
+    const second = frames.filter((f) => f.type === 'result')[1]
+    expect(second.terminal_reason).toBe('aborted_streaming')
+    // The settlement reports THIS turn's partial usage — the previous turn's
+    // `lastUsage` (10/5) must not leak into it.
+    expect(second.usage).toMatchObject({ input_tokens: 0, output_tokens: 0 })
+    await session.destroy()
+  })
+
+  it('an interrupted multi-round turn reports the accumulated rounds, usage, and duration', async () => {
+    const dir = await tempDir('native-session-')
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const scripts = [toolTurn('t1'), toolTurn('t2')]
+    let roundThreeStarted!: () => void
+    const started = new Promise<void>((resolve) => { roundThreeStarted = resolve })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { signal: AbortSignal }) {
+      const script = scripts.shift()
+      if (script) {
+        for (const ev of script) yield ev
+        return
+      }
+      // A third round parks until Stop: two rounds have settled by then.
+      roundThreeStarted()
+      await new Promise<never>((_, reject) => {
+        req.signal.addEventListener('abort', () => reject(req.signal.reason), { once: true })
+      })
+      yield // unreachable
+    }
+    const session = provider.createSession({
+      id: 's-multi-round-abort',
+      cwd: process.cwd(),
+      canUseTool: async (_toolName: unknown, _input: unknown) => ({
+        behavior: 'allow',
+        updatedInput: { file_path: 'package.json' },
+      }),
+    })
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of session.messages) frames.push(f as Frame)
+    })()
+    session.enqueueUserMessage(userMsg('go') as never)
+    await started
+    // A real elapsed interval pins duration_ms to the measured value.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await session.interrupt?.()
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    })
+    const result = frames.find((f) => f.type === 'result')!
+    expect(result.result).toBe('interrupted by user')
+    expect(result.is_error).toBe(true)
+    // Two tool rounds completed and settled before the third round parked:
+    // the settlement reports the turn total, not a per-round or previous-turn
+    // reading.
+    expect(result.num_turns).toBe(2)
+    expect(result.usage).toMatchObject({ input_tokens: 20, output_tokens: 10 })
+    expect(result.duration_ms).toBeGreaterThanOrEqual(100)
+    expect(result.terminal_reason).toBe('aborted_streaming')
     await session.destroy()
   })
 
@@ -1422,6 +1531,13 @@ describe('NativeSession', () => {
       expect(results).toHaveLength(1)
       expect(results[0].result).toBe('interrupted by user')
       expect(results[0].is_error).toBe(true)
+      // The tool round completed before the abort landed: the settlement
+      // reports it, classifies the phase the user stopped in as aborted_tools,
+      // and carries THIS turn's partial usage (never the previous lastUsage).
+      expect(results[0].num_turns).toBe(1)
+      expect(typeof results[0].duration_ms).toBe('number')
+      expect(results[0].terminal_reason).toBe('aborted_tools')
+      expect(results[0].usage).toMatchObject({ input_tokens: 10, output_tokens: 5 })
     })
     // Only the FIRST tool ever reached the permission handler.
     expect(canUseToolCalls).toEqual(['Read'])

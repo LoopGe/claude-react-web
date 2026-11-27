@@ -143,6 +143,10 @@ export function resultFrame(
      *  on), stamped on every native result frame so the client's chip is
      *  truthful for a provider with no CLI to report `cooldown`. */
     fastModeState?: 'on' | 'off'
+    /** SDK `terminal_reason`. The neutral projection derives it from the
+     *  neutral (reason, abortPhase) pair; this legacy builder takes it
+     *  explicitly so golden frames stay field-for-field comparable. */
+    terminalReason?: 'completed' | 'aborted_streaming' | 'aborted_tools'
   },
 ): Frame {
   return {
@@ -154,6 +158,7 @@ export function resultFrame(
     num_turns: opts.numTurns,
     duration_ms: opts.durationMs,
     is_error: opts.isError,
+    ...(opts.terminalReason !== undefined ? { terminal_reason: opts.terminalReason } : {}),
     ...(opts.fastModeState !== undefined ? { fast_mode_state: opts.fastModeState } : {}),
   } as unknown as AgentMessage
 }

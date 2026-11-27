@@ -19,7 +19,7 @@ import {
 } from './vocabulary/message.js'
 import { finishReasonOf, parseToolInput, type ContentBlock, type TokenUsage, type ToolCallBlock } from './vocabulary/types.js'
 import type { StreamChunk } from './vocabulary/stream.js'
-import type { NativeCoreFrame } from './vocabulary/live-frame.js'
+import type { NativeCoreFrame, TurnPhase } from './vocabulary/live-frame.js'
 import { BlockAssembler } from './vocabulary/assembler.js'
 import { brandString } from './vocabulary/brand.js'
 import type { CanonicalEvent, CanonicalUsagePartial } from './canonical.js'
@@ -75,6 +75,10 @@ export interface LoopDeps {
   /** Maximum number of model API rounds for this prompt. A final-round
    *  tool_use receives a synthetic error result instead of being executed. */
   maxTurns?: number
+  /** Live per-turn facts shared with the session's settlement path (see
+   *  TurnStats). Absent for nested runners (structured runs / subagents),
+   *  which emit no terminal result and never need an abort settlement. */
+  turnStats?: TurnStats
   tasks: NativeTaskManager
   /** The session's working directory; every ToolContext is built from it. */
   cwd: string
@@ -141,6 +145,37 @@ export interface TurnResult {
  *  (server/config.ts reads no process.env). */
 const STOP_BLOCK_CAP = 8
 
+/** Live per-turn facts, shared by the loop that produces them and the session's
+ *  settlement path (which runs when runTurn throws). The session stamps
+ *  `startedAt` when it arms the turn and `abortPhase` when the user interrupts;
+ *  the loop advances `rounds` / `phase` / `usage` as it runs. Because an abort
+ *  or API failure unwinds the loop through an exception, the catch path cannot
+ *  receive a TurnResult — it reads this same record, so the round count and
+ *  duration the success frame and the interrupted/error settlement report
+ *  cannot disagree. Usage deliberately CAN: the success frame stays on its
+ *  existing last-round reading while an interrupted settlement reports the
+ *  turn total (see `usage`). */
+export interface TurnStats {
+  /** Wall-clock turn start (ms epoch), stamped by the session at turn start —
+   *  before the durable-append await, so the duration covers the whole turn. */
+  readonly startedAt: number
+  /** Completed model rounds (the same counter the loop reports as numTurns).
+   *  An aborted round has no settled assistant message and does not count. */
+  rounds: number
+  /** Current loop phase. */
+  phase: TurnPhase
+  /** The phase observed at the instant the user interrupted (stamped by the
+   *  session's interrupt()). Only meaningful for the interrupted settlement —
+   *  the exception itself often surfaces in the NEXT round, after `phase`
+   *  already flipped back to 'streaming'. */
+  abortPhase?: TurnPhase
+  /** Usage accumulated over COMPLETED rounds. The interrupted settlement
+   *  reports it as the partial turn's usage (never the previous turn's
+   *  `lastUsage`). The completed result frame keeps its existing last-round
+   *  reading — making it cumulative is a separate, product-visible change. */
+  usage: TokenUsage
+}
+
 /** One gathered tool result in neutral form: the call it answers, its content
  *  blocks (text / file), and whether the invocation failed. */
 interface NeutralToolResult {
@@ -168,6 +203,7 @@ export async function runTurn(
   }
   const ctx = frameCtx
   const toolByName = new Map(deps.tools.map((t) => [t.name, t]))
+  const turnStartedAt = deps.turnStats?.startedAt ?? Date.now()
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0 }
   let numTurns = 0
   let finalText = ''
@@ -190,6 +226,12 @@ export async function runTurn(
   history.push(...initialMessages)
   deps.onInitialMessagesOwned?.()
   for (;;) {
+    // A new round is about to stream and the previous round's tools are done,
+    // so stamp the phase BEFORE the supplement drain: the drain awaits the
+    // log flush, and an interrupt in that window is a stop before the next
+    // round — not "stopped in tools". (A later settlement reads `abortPhase`,
+    // which the session stamps at interrupt time.)
+    if (deps.turnStats) deps.turnStats.phase = 'streaming'
     // Mid-run steering: anything queued since the previous round joins the
     // conversation as a user message BEFORE this round's request is built.
     // `entry.text` is already the wrapped guidance — never re-wrap it.
@@ -227,6 +269,10 @@ export async function runTurn(
     }
     numTurns++
     usage = roundUsage
+    if (deps.turnStats) {
+      deps.turnStats.rounds = numTurns
+      deps.turnStats.usage = addUsage(deps.turnStats.usage, roundUsage)
+    }
     const blocks = assembler.blocks()
     // The settled assistant message keeps EVERY block (the UI frame renders
     // them all); the wire adapter owns the signed-thinking retention filter
@@ -327,6 +373,7 @@ export async function runTurn(
       // permission request forever. Results gathered so far still get their
       // tool_result frames and history push below.
       if (signal.aborted) break
+      if (deps.turnStats) deps.turnStats.phase = 'tools'
       const tool = toolByName.get(call.name)
       const input = parseToolInput(call.arguments)
       if (!tool) {
@@ -547,8 +594,12 @@ export async function runTurn(
       result: finalText,
       usage,
       numTurns,
-      durationMs: 0,
+      durationMs: Date.now() - turnStartedAt,
       isError,
+      // Neutral outcome (the adapter maps it to the SDK terminal_reason).
+      // maxTurns exhaustion is 'error' today; the SDK's 'max_turns' value is a
+      // later refinement, not a behavior this loop wants to overclaim.
+      reason: isError ? 'error' : 'completed',
       sessionId: ctx.sessionId,
       uuid: ctx.uuid(),
       parentToolUseId: ctx.parentToolUseId ?? null,
@@ -661,6 +712,19 @@ function mergeUsage(base: TokenUsage, partial: CanonicalUsagePartial | undefined
     ...(typeof partial.output_tokens === 'number' ? { outputTokens: partial.output_tokens } : {}),
     ...(typeof partial.cache_read_input_tokens === 'number' ? { cacheReadTokens: partial.cache_read_input_tokens } : {}),
     ...(typeof partial.cache_creation_input_tokens === 'number' ? { cacheWriteTokens: partial.cache_creation_input_tokens } : {}),
+  }
+}
+
+/** Field-wise sum of two neutral usage readings (cache fields only appear when
+ *  at least one side carries them) — the turn-total accumulator for TurnStats. */
+function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  const cacheRead = (a.cacheReadTokens ?? 0) + (b.cacheReadTokens ?? 0)
+  const cacheWrite = (a.cacheWriteTokens ?? 0) + (b.cacheWriteTokens ?? 0)
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    ...(cacheRead !== 0 ? { cacheReadTokens: cacheRead } : {}),
+    ...(cacheWrite !== 0 ? { cacheWriteTokens: cacheWrite } : {}),
   }
 }
 

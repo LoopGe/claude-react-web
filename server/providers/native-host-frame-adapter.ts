@@ -254,6 +254,18 @@ function projectToolResult(message: ToolResultMessage, env: NativeFrameEnvelope)
   } as unknown as AgentMessage
 }
 
+/** Neutral turn outcome → the SDK's terminal_reason value. SDK vocabulary lives
+ *  HERE, never in the core: the core reports the neutral (reason, abortPhase)
+ *  pair and this mapping encodes the SDK's aborted_streaming / aborted_tools
+ *  split. 'error' stays deliberately unlabelled for now: native failures include
+ *  tool/permission and persistence faults that 'api_error' would misdescribe, and
+ *  the client only reads the aborted_* pair (interrupt styling). */
+function terminalReasonOf(event: Extract<OperationalFrame, { type: 'result' }>): string | undefined {
+  if (event.reason === 'completed') return 'completed'
+  if (event.reason !== 'interrupted') return undefined
+  return event.abortPhase === 'tools' ? 'aborted_tools' : 'aborted_streaming'
+}
+
 /** Project a neutral operational event to the exact SDK shape native emits
  *  (R6): the system/result subtypes and the top-level prompt_suggestion message.
  *  Durable SessionEventMap keys return null: their SDK-line projection is the
@@ -303,7 +315,8 @@ export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalF
         ...(event.reason !== undefined ? { reason: event.reason } : {}),
         receivedAt: event.time,
       } as unknown as AgentMessage
-    case 'result':
+    case 'result': {
+      const terminalReason = terminalReasonOf(event)
       return {
         ...operationalEnvelope(event, 'result', event.isError ? 'error_during_execution' : 'success'),
         runtime: 'native',
@@ -312,8 +325,10 @@ export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalF
         num_turns: event.numTurns,
         duration_ms: event.durationMs,
         is_error: event.isError,
+        ...(terminalReason !== undefined ? { terminal_reason: terminalReason } : {}),
         ...(event.fastMode !== undefined ? { fast_mode_state: event.fastMode ? 'on' : 'off' } : {}),
       } as unknown as AgentMessage
+    }
     case 'prompt/suggestion':
       // SDKPromptSuggestionMessage carries only type/suggestion/uuid/session_id
       // — no subtype, no parent_tool_use_id — so it is built directly, never via

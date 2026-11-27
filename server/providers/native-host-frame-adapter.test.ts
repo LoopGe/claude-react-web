@@ -377,6 +377,40 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
     expect(projectNativeEventToSdk(event)).toEqual(golden)
   })
 
+  it('result: neutral reason/abortPhase map to the SDK terminal_reason vocabulary', () => {
+    const completedGolden = resultFrame(ctx(), {
+      result: 'done', usage: SDK_USAGE, numTurns: 2, durationMs: 100, isError: false, terminalReason: 'completed',
+    })
+    const completed: OperationalFrame = {
+      type: 'result', sessionId: SESSION, uuid: UUID, parentToolUseId: null,
+      result: 'done', usage: NEUTRAL_USAGE, numTurns: 2, durationMs: 100, isError: false, reason: 'completed',
+    }
+    expect(projectNativeEventToSdk(completed)).toEqual(completedGolden)
+
+    const interruptedBase = {
+      type: 'result', sessionId: SESSION, uuid: UUID, parentToolUseId: null,
+      result: 'interrupted by user', usage: { inputTokens: 0, outputTokens: 0 }, numTurns: 1, durationMs: 5000, isError: true,
+    } as const
+    const toolsGolden = resultFrame(ctx(), {
+      result: 'interrupted by user', usage: { input_tokens: 0, output_tokens: 0 }, numTurns: 1, durationMs: 5000,
+      isError: true, terminalReason: 'aborted_tools',
+    })
+    expect(projectNativeEventToSdk({ ...interruptedBase, reason: 'interrupted', abortPhase: 'tools' })).toEqual(toolsGolden)
+    const streamingGolden = resultFrame(ctx(), {
+      result: 'interrupted by user', usage: { input_tokens: 0, output_tokens: 0 }, numTurns: 1, durationMs: 5000,
+      isError: true, terminalReason: 'aborted_streaming',
+    })
+    expect(projectNativeEventToSdk({ ...interruptedBase, reason: 'interrupted', abortPhase: 'streaming' })).toEqual(streamingGolden)
+    // A phase-less interrupt defaults to the streaming classification.
+    const phaseLess = projectNativeEventToSdk({ ...interruptedBase, reason: 'interrupted' }) as Record<string, any>
+    expect(phaseLess.terminal_reason).toBe('aborted_streaming')
+    // 'error' (and an unclassified/older producer) stays unlabelled.
+    const error = projectNativeEventToSdk({ ...interruptedBase, result: 'boom', reason: 'error' }) as Record<string, any>
+    expect('terminal_reason' in error).toBe(false)
+    const unclassified = projectNativeEventToSdk({ ...interruptedBase, isError: false }) as Record<string, any>
+    expect('terminal_reason' in unclassified).toBe(false)
+  })
+
   it('prompt_suggestion: exact SDK shape — no subtype, no parent_tool_use_id', () => {
     // SDKPromptSuggestionMessage is a top-level message type carrying only
     // type/suggestion/uuid/session_id — the operationalEnvelope helper (which
