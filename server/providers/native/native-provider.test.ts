@@ -32,6 +32,11 @@ import { projectNeutralEventToLegacy, serializeEvent, serializeHeader } from './
 import type { NativeLogEvent, NativeSessionHeader } from './session-log/format.js'
 import type { NativeSessionEvent } from './vocabulary/session-event.js'
 import { createUserMessage } from './vocabulary/message.js'
+import { TODO_WRITE_GUIDANCE } from './tools/todo-write.js'
+import { TASK_CREATE_GUIDANCE } from './tools/task-create.js'
+import { TASK_UPDATE_GUIDANCE } from './tools/task-update.js'
+import { TASK_GET_GUIDANCE } from './tools/task-get.js'
+import { TASK_LIST_GUIDANCE } from './tools/task-list.js'
 
 // T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
 // the legacy shape from the canonical neutral baseline via the pinned compat
@@ -57,6 +62,16 @@ function textTurn(text: string): CanonicalEvent[] {
     { kind: 'block_delta', index: 0, delta: { type: 'text', text } },
     { kind: 'block_end', index: 0 },
     { kind: 'message_end', stopReason: 'end_turn', usage: { output_tokens: 5 } },
+  ]
+}
+
+function toolUseTurn(id: string, name: string, input: Record<string, unknown>): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'tool_use', id, name } },
+    { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: JSON.stringify(input) } },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
   ]
 }
 
@@ -248,6 +263,39 @@ describe('NativeProvider core + adapter composition (T14)', () => {
     expect(result?.subtype).toBe('success')
     expect(result?.runtime).toBe('native')
     expect(result?.result).toBe('hello sdk')
+  })
+
+  it('renders the Task* guidance sections in both the parent and subagent prompts', async () => {
+    const dir = await tempDir('native-task-guidance-')
+    const provider = makeProvider(dir)
+    const requests: Array<{ messages: unknown[]; system: string; tools: Array<{ name: string }> }> = []
+    armStream(provider, [
+      toolUseTurn('agent-1', 'Agent', { description: 'd', prompt: 'p' }),
+      textTurn('NESTED-DONE'),
+      textTurn('PARENT-DONE'),
+    ], requests)
+    const handle = track(provider.createSession({
+      id: 'task-guidance',
+      cwd: dir,
+      model: 'test-model',
+      canUseTool: async (_name: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    }))
+    const frames = pumpFrames(handle)
+    handle.enqueueUserMessage(userMsg('delegate', 'tg-u1') as never)
+    await waitForResult(frames, 'PARENT-DONE')
+
+    // The parent request and the nested (Agent-less) request each render the
+    // full Task* family beside TodoWrite — the sections ride the unconditional
+    // registration block, so a subagent sees the same guidance.
+    const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))
+    expect(nested).toBeDefined()
+    for (const system of [requests[0].system, nested!.system]) {
+      expect(system).toContain(TASK_CREATE_GUIDANCE)
+      expect(system).toContain(TASK_UPDATE_GUIDANCE)
+      expect(system).toContain(TASK_GET_GUIDANCE)
+      expect(system).toContain(TASK_LIST_GUIDANCE)
+      expect(system).toContain(TODO_WRITE_GUIDANCE)
+    }
   })
 
   it('handle-only path projects structured files to handle text before the neutral core', async () => {

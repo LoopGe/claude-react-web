@@ -47,6 +47,10 @@ import { lsTool } from './tools/ls.js'
 import { notebookEditTool } from './tools/notebook-edit.js'
 import { askUserQuestionTool } from './tools/ask-user-question.js'
 import { TODO_WRITE_GUIDANCE } from './tools/todo-write.js'
+import { TASK_CREATE_GUIDANCE } from './tools/task-create.js'
+import { TASK_UPDATE_GUIDANCE } from './tools/task-update.js'
+import { TASK_GET_GUIDANCE } from './tools/task-get.js'
+import { TASK_LIST_GUIDANCE } from './tools/task-list.js'
 import { WEB_SEARCH_GUIDANCE } from './tools/web-search.js'
 import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import type { ToolDef } from './tools/types.js'
@@ -96,6 +100,16 @@ const WEB_SEARCH_SECTION: PromptSection = { name: 'tool:WebSearch', order: 170, 
  *  tool instance), so its section rides the same explicit registration. */
 const TODO_WRITE_SECTION: PromptSection = { name: 'tool:TodoWrite', order: 180, text: TODO_WRITE_GUIDANCE }
 
+/** The Task* family is session-owned as well (the store lives in the session),
+ *  so its four sections ride the same explicit registration as TodoWrite, in
+ *  BOTH prompt variants — a subagent creates and updates tasks in the same
+ *  session store. Order 180 matches the tools' promptOrder; the registry's
+ *  name tie-break sequences the family deterministically beside TodoWrite. */
+const TASK_CREATE_SECTION: PromptSection = { name: 'tool:TaskCreate', order: 180, text: TASK_CREATE_GUIDANCE }
+const TASK_UPDATE_SECTION: PromptSection = { name: 'tool:TaskUpdate', order: 180, text: TASK_UPDATE_GUIDANCE }
+const TASK_GET_SECTION: PromptSection = { name: 'tool:TaskGet', order: 180, text: TASK_GET_GUIDANCE }
+const TASK_LIST_SECTION: PromptSection = { name: 'tool:TaskList', order: 180, text: TASK_LIST_GUIDANCE }
+
 /** Build this session's system prompt (plus any per-session append). The
  *  subagent variant omits the Agent section — see createSession. */
 function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: string }, tools: readonly ToolDef[]): string {
@@ -109,6 +123,10 @@ function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: st
   registry.register(WEB_FETCH_SECTION)
   registry.register(WEB_SEARCH_SECTION)
   registry.register(TODO_WRITE_SECTION)
+  registry.register(TASK_CREATE_SECTION)
+  registry.register(TASK_UPDATE_SECTION)
+  registry.register(TASK_GET_SECTION)
+  registry.register(TASK_LIST_SECTION)
   if (opts.withAgentSection) registry.register(AGENT_SECTION)
   registry.register(TASK_OUTPUT_SECTION)
   registry.register(SKILL_SECTION)
