@@ -5,10 +5,19 @@ import type { ToolOutcome } from './tools/types.js'
 
 export interface NativeTaskMetadata {
   toolUseId: string
-  taskType: 'shell' | 'subagent'
+  taskType: 'shell' | 'subagent' | 'monitor'
   description: string
   subagentType?: string
 }
+
+/** The neutral live-frame task discriminant for each metadata task type. The
+ *  host adapter projects these to the SDK `task_started` shape; the friendly
+ *  client labels (shell / subagent / monitor) come from shared/tasks.ts. */
+const TASK_TYPE_FRAME = {
+  shell: 'local_bash',
+  subagent: 'local_agent',
+  monitor: 'local_monitor',
+} as const
 
 /** The model-facing completion facts of a backgrounded task settle — the
  *  neutral input to the `<task-notification>` user injection (the CLI's
@@ -274,7 +283,7 @@ export class NativeTaskManager {
       type: 'task/started',
       taskId: record.metadata.toolUseId,
       toolUseId: record.metadata.toolUseId,
-      taskType: record.metadata.taskType === 'shell' ? 'local_bash' : 'local_agent',
+      taskType: TASK_TYPE_FRAME[record.metadata.taskType],
       description: record.metadata.description,
       ...(record.metadata.subagentType !== undefined ? { subagentType: record.metadata.subagentType } : {}),
       isBackgrounded: true,

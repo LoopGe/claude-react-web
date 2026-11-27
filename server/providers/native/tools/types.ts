@@ -52,7 +52,7 @@ export interface ToolDef<In = Record<string, unknown>> {
   /** Explicit tool-level read-only metadata; absent is always false. */
   readOnlyHint?: boolean
   backgroundable?: {
-    taskType: 'shell' | 'subagent'
+    taskType: 'shell' | 'subagent' | 'monitor'
     describe(input: In): string
     subagentType?(input: In): string | undefined
     /** Model-initiated backgrounding: when true, the loop detaches the call

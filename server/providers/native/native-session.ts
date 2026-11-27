@@ -68,6 +68,7 @@ import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, type NativeComma
 import { createSkillTool } from './tools/skill.js'
 import { createTaskOutputTool } from './tools/task-output.js'
 import { createTaskStopTool } from './tools/task-stop.js'
+import { createMonitorTool, createNodeMonitorSpawn } from './tools/monitor.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
 import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
@@ -547,6 +548,9 @@ export class NativeSession implements NativeSessionCore {
   private readonly taskOutputTool: ToolDef
   /** Stops this session's backgrounded tasks through the same shared manager. */
   private readonly taskStopTool: ToolDef
+  /** Watches a command's stdout / a WebSocket's frames as a background monitor
+   *  task; event batches join the same idle-injection queue as completions. */
+  private readonly monitorTool: ToolDef
   /** Local SKILL.md catalog. Discovery is kicked off at construction and
    *  awaited per turn, the same shape as MCP's `whenReady`. */
   private readonly skills: NativeSkillCatalog
@@ -868,6 +872,10 @@ export class NativeSession implements NativeSessionCore {
     )
     this.taskOutputTool = createTaskOutputTool(this.tasks)
     this.taskStopTool = createTaskStopTool(this.tasks)
+    this.monitorTool = createMonitorTool({
+      inject: (notification) => this.enqueueTaskNotification(notification),
+      spawn: createNodeMonitorSpawn(),
+    })
     // Every session can delegate, MCP or not: `tools` is a live getter and the
     // `emit` path is the session's own persist+push, so a nested run's frames
     // land in the transcript with their real parent. Built after `ctx` exists.
@@ -2043,6 +2051,7 @@ export class NativeSession implements NativeSessionCore {
       this.taskTool,
       this.taskOutputTool,
       this.taskStopTool,
+      this.monitorTool,
       skillTool,
       createEnterPlanModeTool({ enterPlanMode: () => this.enterPlanMode() }),
       createExitPlanModeTool(),
