@@ -8711,4 +8711,37 @@ describe('NativeSession plugin hooks', () => {
       await session.destroy()
     }
   }, 15_000)
+
+  it('a plugin SessionStart hook seeds the first turn (init awaits plugin discovery)', async () => {
+    const dir = await tempDir('native-plugin-hook-sessionstart-')
+    const entry = await makePluginEntry(dir, 'demo')
+    const ssCmd = `echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"plugin-ss-context","initialUserMessage":"plugin-ss-seed"}}'`
+    await writePluginHooks(entry, {
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: ssCmd, shell: 'bash' }] }] },
+    })
+    const provider = new NativeProvider({ stateDir: dir, ports: portsWithPlugins(dir, [entry]) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'plugin-hook-sessionstart', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      // Deliberately NO supportedCommands()/reloadSkills() gate: the
+      // construction-time SessionStart dispatch must await plugin discovery
+      // itself (pluginHooks commits async), and the first turn awaits
+      // sessionStartInit. The plugin seed + context lead the user prompt.
+      session.enqueueUserMessage(userMsg('first-prompt') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      expect(requests).toHaveLength(1)
+      const wire = JSON.stringify(requests[0].messages)
+      expect(wire).toContain('plugin-ss-seed')
+      expect(wire).toContain('plugin-ss-context')
+      expect(wire).toContain('first-prompt')
+      // Seed, then context, then the prompt (sessionStartTurnMessages order).
+      expect(wire.indexOf('plugin-ss-seed')).toBeLessThan(wire.indexOf('plugin-ss-context'))
+      expect(wire.indexOf('plugin-ss-context')).toBeLessThan(wire.indexOf('first-prompt'))
+    } finally {
+      await session.destroy()
+    }
+  }, 30_000)
 })

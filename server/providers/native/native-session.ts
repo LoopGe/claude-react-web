@@ -772,9 +772,9 @@ export class NativeSession implements NativeSessionCore {
     // suppress retry frames (auxiliary rounds, the nested-runner convention).
     const flagHookSource: HookSource = { kind: 'flag', collect: (event) => this.hooksConfig[event] ?? [] }
     // The plugin source reads the LIVE merged plugin config per collection, in
-    // CLI precedence order after flag (settings/agent slots arrive between them
-    // with their config seams). Executable hook modules never reach here — the
-    // loader refuses them per plugin (data-only).
+    // CLI precedence order after flag (settings arrives between flag and plugin;
+    // agent after plugin — both with their config seams). Executable hook modules
+    // never reach here — the loader refuses them per plugin (data-only).
     const pluginHookSource: HookSource = { kind: 'plugin', collect: (event) => this.pluginHooks[event] ?? [] }
     // T22: the projection port is the only neutral path from the host history
     // seam into the core materializer (the core never imports the host adapter).
@@ -3556,6 +3556,15 @@ export class NativeSession implements NativeSessionCore {
    *  first turn must not strand on a hook failure. */
   private async runSessionStart(source: 'startup' | 'resume' | 'fork'): Promise<void> {
     try {
+      // Plugin hooks commit asynchronously in the command reload, so await it
+      // before dispatching when a plugin port exists: a plugin SessionStart
+      // matcher (e.g. inject context at session start) must fire at init, not
+      // silently miss it. Without a plugin port there are no plugin hooks to
+      // wait for (pluginHooks stays empty), so the flag-only dispatch keeps its
+      // immediate construction-time timing. The turn path awaits this same
+      // promise, so this adds no turn latency; a discovery failure lands in the
+      // catch below and the session starts regardless (RS §3 non-blocking).
+      if (this.opts.ports.plugin) await this.commandsReady
       // hasContext:false — SessionStart is a no-conversation-context event
       // (RS §12.2): prompt/agent hooks report a non-blocking availability error.
       const decision = await this.dispatchHook('SessionStart', this.sessionStartInput(source), {
