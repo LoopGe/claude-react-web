@@ -73,7 +73,11 @@ function report(errors: PluginContributionError[], kind: string, detail: string)
 
 /** CLI sanitizer (plugin-skills.ts's rule): every character outside
  *  [a-zA-Z0-9_-] becomes '-'. Applied per path segment, so a non-ASCII name
- *  loads under a dashed name rather than being dropped. */
+ *  loads under a dashed name rather than being dropped. Also applied to
+ *  manifest object-map command KEYS: the CLI uses those raw, but a spaced key
+ *  would list a row the slash parser can never tokenize — native keeps the
+ *  whole command-name domain inside the slash grammar (no listed-but-broken
+ *  rows). */
 function sanitizeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, '-')
 }
@@ -165,7 +169,9 @@ async function readPluginManifest(dir: string, errors: PluginContributionError[]
       const description = optionalString(value.description)
       const argumentHint = optionalString(value.argumentHint)
       commandMap.push({
-        name: commandName,
+        // Sanitized like a path segment; error messages keep the RAW key so a
+        // refusal still names what the manifest authored.
+        name: sanitizeName(commandName),
         spec: {
           sources: pathEntries(value.source, `commands.${commandName}.source`, dir, errors).entries,
           ...(content !== undefined ? { content } : {}),

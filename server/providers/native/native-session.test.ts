@@ -8430,4 +8430,76 @@ describe('NativeSession plugin commands', () => {
       .toEqual([...BUILTIN_NAMES, 'demo:about'])
     await some.destroy()
   })
+
+  it('a CJK-named plugin command lists and invocates through its sanitized name', async () => {
+    const dir = await tempDir('native-plugin-cmd-cjk-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, '中文命令.md', { description: 'Chinese command' }, '命令正文 $ARGUMENTS')
+    await writePluginCommand(entry, '前端/组件.md', { description: 'Nested CJK' }, '嵌套 $ARGUMENTS')
+    const ports = portsWithPlugins(dir, [entry])
+    const provider = new NativeProvider({ stateDir: dir, ports })
+    const session = provider.createSession({ id: 'plugin-cmd-cjk', cwd: dir })
+    // The loader sanitizes each CJK segment to dashes; the widened grammar
+    // accepts dash-led composed segments, so the rows are invocable, not
+    // listed-broken. (Membership, not ICU punctuation collation, is the
+    // contract — the two dashed names sort by localeCompare in the catalog.)
+    const names = (await session.supportedCommands?.() as Array<{ name: string }>).map((row) => row.name)
+    expect(names.slice(0, BUILTIN_NAMES.length)).toEqual(BUILTIN_NAMES)
+    expect(names.slice(BUILTIN_NAMES.length).sort()).toEqual(['demo:--:--', 'demo:----'].sort())
+    await session.destroy()
+    expect(await slashTurnMessages(ports, dir, 'plugin-cmd-cjk-flat', '/demo:---- 测试')).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/demo:---- 测试' }] },
+      { role: 'user', content: [{ type: 'text', text: '命令正文 测试' }] },
+    ])
+    expect(await slashTurnMessages(ports, dir, 'plugin-cmd-cjk-nested', '/demo:--:-- 按钮')).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/demo:--:-- 按钮' }] },
+      { role: 'user', content: [{ type: 'text', text: '嵌套 按钮' }] },
+    ])
+  })
+
+  it('two plugins with an identical qualified command name collapse first-wins', async () => {
+    const dir = await tempDir('native-plugin-cmd-collision-')
+    // Distinct catalog keys/dirs, the SAME manifest name — the qualified
+    // command names collide and the catalog's first-wins dedupe applies.
+    const first = await makePluginEntry(dir, 'a', { name: 'demo' })
+    const second = await makePluginEntry(dir, 'b', { name: 'demo' })
+    await writePluginCommand(first, 'about.md', { description: 'First about' }, 'FIRST ABOUT')
+    await writePluginCommand(second, 'about.md', { description: 'Second about' }, 'SECOND ABOUT')
+    const ports = portsWithPlugins(dir, [first, second])
+    const provider = new NativeProvider({ stateDir: dir, ports })
+    const session = provider.createSession({ id: 'plugin-cmd-collision', cwd: dir })
+    const catalog = await session.supportedCommands?.() as Array<{ name: string; description: string }>
+    expect(catalog.filter((row) => row.name === 'demo:about')).toEqual([
+      { name: 'demo:about', description: 'First about', argumentHint: '' },
+    ])
+    await session.destroy()
+    expect(await slashTurnMessages(ports, dir, 'plugin-cmd-collision-turn', '/demo:about')).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/demo:about' }] },
+      { role: 'user', content: [{ type: 'text', text: 'FIRST ABOUT' }] },
+    ])
+  })
+
+  it('a plugin row that escapes the slash grammar is omitted at the session, never listed broken', async () => {
+    const dir = await tempDir('native-plugin-cmd-gate-')
+    // A stub port feeding a name the loader would never produce (spaced key):
+    // the projection's grammar gate must keep it out of the catalog.
+    const ports: NativeHostPorts = {
+      ...makeNativePorts({ stateDir: dir }),
+      plugin: {
+        listContributions: async () => [{
+          key: 'demo@mp', name: 'demo', dir,
+          commands: [
+            { name: 'about', description: 'About', argumentHint: '', body: 'ABOUT' },
+            { name: 'my cmd', description: 'Broken', argumentHint: '', body: 'BROKEN' },
+          ],
+          agents: [], hooks: {}, mcpServers: {}, errors: [],
+        }],
+      },
+    }
+    const provider = new NativeProvider({ stateDir: dir, ports })
+    const session = provider.createSession({ id: 'plugin-cmd-gate', cwd: dir })
+    const names = (await session.supportedCommands?.() as Array<{ name: string }>).map((row) => row.name)
+    expect(names).toEqual([...BUILTIN_NAMES, 'demo:about'])
+    await session.destroy()
+  })
 })

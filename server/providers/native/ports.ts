@@ -84,7 +84,7 @@ export interface NativeSkillPort {
 
 /** One plugin slash command. `name` is the BARE command name — the plugin's
  *  subdirectory namespace plus the sanitized file basename (`frontend:component`),
- *  or the manifest object-map key. The `plugin:` qualification happens at
+ *  or the sanitized manifest object-map key. The `plugin:` qualification happens at
  *  integration, exactly like plugin skills. `body` is the prompt template (file
  *  body or manifest inline content, frontmatter already parsed out). */
 export interface PluginCommand {

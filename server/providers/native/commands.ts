@@ -1,21 +1,25 @@
 // Builtin slash-command catalog + custom `.claude/commands/*.md` discovery
 // for the native provider.
 //
-// Neutral core module: Node builtins, the neutral shared frontmatter parser,
-// the sibling skill-render substitution contract, and the neutral plugin-port
-// payload types only. The user root is PASSED IN (the host resolves its config
-// dir); nothing here reads host config. Discovery mirrors server/skills.ts
-// (readdir, frontmatter, containment, project-wins dedupe), but commands are
-// FLAT `.md` files under `.claude/commands` — not skill subdirectories — and a
-// command's frontmatter is optional metadata, not a validity gate. Plugin
-// commands arrive already discovered through the plugin port; the projection
-// here only qualifies their names.
+// Neutral core module: Node builtins, the neutral shared frontmatter parser
+// and name grammar, the scoped logger, the sibling skill-render substitution
+// contract, and the neutral plugin-port payload types only. The user root is
+// PASSED IN (the host resolves its config dir); nothing here reads host
+// config. Discovery mirrors server/skills.ts (readdir, frontmatter,
+// containment, project-wins dedupe), but commands are FLAT `.md` files under
+// `.claude/commands` — not skill subdirectories — and a command's
+// frontmatter is optional metadata, not a validity gate. Plugin commands
+// arrive already discovered through the plugin port; the projection here
+// qualifies their names and gates them against the slash grammar.
 
 import { promises as fs } from 'node:fs'
 import { basename, isAbsolute, relative, resolve } from 'node:path'
-import { MAX_SKILL_BYTES, VALID_SKILL_NAME, parseSkillFrontmatter } from '../../../shared/skills.js'
+import { CANONICAL_SKILL_NAME, MAX_SKILL_BYTES, VALID_SKILL_NAME, parseSkillFrontmatter } from '../../../shared/skills.js'
+import { createLogger } from '../../log.js'
 import type { PluginContributions } from './ports.js'
 import { substituteSkillArguments } from './skill-render.js'
+
+const log = createLogger('native-commands')
 
 /** One row of the native slash-command surface. Builtin rows carry a
  *  host-authored prompt template as `body`; custom rows carry the file body. */
@@ -165,13 +169,25 @@ export async function discoverCommands(cwd: string | undefined, userRoot: string
  *  (already applied); rows keep the authored metadata and prompt body and
  *  sort by qualified name for a deterministic catalog. Same-qualified-name
  *  collisions across plugins are left to the session catalog's first-wins
- *  dedupe, exactly like custom rows. */
+ *  dedupe, exactly like custom rows.
+ *
+ *  Every qualified name is gated against the canonical slash grammar: a row
+ *  the invocation parser could never tokenize is reported loudly and omitted
+ *  — never listed broken. The loader's sanitizer (path segments AND object-map
+ *  keys) keeps valid plugins inside this domain, so a refusal here means the
+ *  name derivation drifted from the grammar — a loud invariant fence, the
+ *  same role ensureInside plays for path containment. */
 export function pluginCommandRows(contributions: readonly PluginContributions[]): NativeCommand[] {
   const out: NativeCommand[] = []
   for (const contribution of contributions) {
     for (const cmd of contribution.commands) {
+      const name = `${contribution.name}:${cmd.name}`
+      if (!CANONICAL_SKILL_NAME.test(name)) {
+        log.warn(`plugin command ${name}: qualified name is outside the slash grammar, omitting the row`)
+        continue
+      }
       out.push({
-        name: `${contribution.name}:${cmd.name}`,
+        name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
         builtin: false,

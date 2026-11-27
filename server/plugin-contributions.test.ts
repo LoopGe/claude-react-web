@@ -489,6 +489,27 @@ describe('listPluginContributions — recursive discovery and namespacing', () =
     expect(contrib!.agents.map((a) => a.name)).toEqual(['---'])
     expect(contrib!.errors).toEqual([])
   })
+
+  it('sanitizes manifest object-map command keys so every listed row is invocable', async () => {
+    // The CLI uses object-map keys raw; a spaced key would list a row the
+    // slash parser can never tokenize. Native sanitizes keys with the same
+    // rule as path segments so the name domain stays grammar-valid.
+    const entry = await makePlugin('demo', {
+      manifest: {
+        commands: {
+          'my cmd': { content: 'SPACED KEY BODY' },
+          '组件': { content: 'CJK KEY BODY' },
+          ok: { content: 'OK BODY' },
+        },
+      },
+    })
+
+    const [contrib] = await listPluginContributions(stub([entry]))
+
+    expect(contrib!.commands.map((c) => c.name).sort()).toEqual(['--', 'my-cmd', 'ok'].sort())
+    expect(contrib!.commands.find((c) => c.name === 'my-cmd')!.body).toBe('SPACED KEY BODY')
+    expect(contrib!.errors).toEqual([])
+  })
 })
 
 describe('listPluginContributions — agent frontmatter fields', () => {

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, pluginCommandRows } from './commands.js'
 import type { PluginCommand, PluginContributions } from './ports.js'
+import { disableLogRing, enableLogRing, readLogRing } from '../../log.js'
 
 // Creating a file symlink needs no privileges on POSIX but does on Windows
 // unless developer mode is on. Probe once so the escape test is skipped only
@@ -225,6 +226,28 @@ describe('pluginCommandRows', () => {
   it('returns an empty list for no contributions and for plugins without commands', () => {
     expect(pluginCommandRows([])).toEqual([])
     expect(pluginCommandRows([contribution('empty', [])])).toEqual([])
+  })
+
+  it('omits and loudly reports a row whose qualified name is not invocable', () => {
+    // The loader aligns names to the slash grammar; a row that still escapes
+    // it (a spaced key here, a spaced plugin name below) must never be listed
+    // broken — it is reported and omitted, while its valid siblings survive.
+    enableLogRing()
+    try {
+      const rows = pluginCommandRows([
+        contribution('demo', [
+          command('about', 'OK'),
+          { name: 'my cmd', description: '', argumentHint: '', body: 'BROKEN' },
+        ]),
+        contribution('bad plugin', [command('about', 'BROKEN PREFIX')]),
+      ])
+      expect(rows.map((row) => row.name)).toEqual(['demo:about'])
+      const warned = readLogRing({ scope: 'native-commands', level: 'warn' }).lines
+      expect(warned.some((line) => line.msg.includes('demo:my cmd'))).toBe(true)
+      expect(warned.some((line) => line.msg.includes('bad plugin:about'))).toBe(true)
+    } finally {
+      disableLogRing()
+    }
   })
 })
 
