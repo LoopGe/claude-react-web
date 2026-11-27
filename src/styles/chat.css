@@ -3389,6 +3389,8 @@ button.msg-mention-chip:hover {
   align-items: center;
   font-family: var(--sans);
 }
+/* The tool-card surface collapses the same background label at 479px
+   (utilities.css, where the status label goes with it) — tune both together. */
 @container (max-width: 590px) {
   .subagent-card-background-action .tool-card-bg-btn > span {
     display: none;
