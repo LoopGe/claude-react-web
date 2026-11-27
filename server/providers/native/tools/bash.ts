@@ -26,8 +26,8 @@ export function capToolText(text: string): string {
 
 export const bashTool: ToolDef<{ command: string; timeout_ms?: number }> = {
   name: 'Bash',
-  description: 'Run a shell command and return its output.',
-  guidance: 'Check the [exit code: N] marker on every bash result; investigate failures before moving on.',
+  description: 'Run a shell command and return its output. Every call starts in the session working directory; a `cd` does not carry over to the next call, and shell state (env vars, functions) does not persist.',
+  guidance: 'Check the [exit code: N] marker on every bash result; investigate failures before moving on. Maintain the working directory by using absolute paths; use `cd` only when the user explicitly requests it. Never prepend `cd <working-directory>` to a command — it already runs in the session working directory, so the prefix is redundant (this applies to `git` commands especially).',
   promptOrder: 90,
   schema: {
     type: 'object',

@@ -15,6 +15,17 @@ describe('bashTool', () => {
     expect(bashTool.backgroundable?.describe({ command: 'sleep 10' })).toBe('sleep 10')
   })
 
+  it('description states execution semantics', () => {
+    expect(bashTool.description).toBe('Run a shell command and return its output. Every call starts in the session working directory; a `cd` does not carry over to the next call, and shell state (env vars, functions) does not persist.')
+  })
+
+  it('guidance keeps exit-code rule and adds the absolute-path strategy', () => {
+    expect(bashTool.guidance).toContain('[exit code: N]')
+    expect(bashTool.guidance).toContain('absolute paths')
+    expect(bashTool.guidance).toContain('Never prepend `cd <working-directory>`')
+    expect(bashTool.guidance).not.toContain('permission prompt')
+  })
+
   it('runs a command and appends the exit marker', async () => {
     const res = await bashTool.run({ command: 'echo hello' }, ctx(process.cwd()))
     expect(res.text).toContain('hello')
