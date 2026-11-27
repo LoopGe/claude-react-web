@@ -45,7 +45,8 @@ import { finishReasonOf, type ContentBlock, type TokenUsage, type Usage } from '
 import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './vocabulary/session-event.js'
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
-import type { NativeHostPorts } from './ports.js'
+import type { NativeHostPorts, NativeMemoryReadResult } from './ports.js'
+import { joinPromptParts, renderMemorySection, renderEnvironment } from './prompt/overlay.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel, type RequestOutputFormat, type StreamRequest } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, type FrameContext } from './vocabulary/frame-context.js'
@@ -575,6 +576,10 @@ export class NativeSession implements NativeSessionCore {
   /** Base values survive independently of the selected persona. The effective
    *  fields below are what the next request and permission broker observe. */
   private readonly baseSystem: string
+  /** The latest CLAUDE.md chain read: seeded fire-and-forget at construction
+   *  (for pre-turn readers) and refreshed authoritatively at each turn start.
+   *  Nested runs inherit this snapshot — they never call the port themselves. */
+  private memorySnapshot: NativeMemoryReadResult | null = null
   private baseModel: string
   private basePermissionMode: string | undefined
   private baseEffortLevel: EffortLevel | undefined
@@ -927,6 +932,13 @@ export class NativeSession implements NativeSessionCore {
         .then(() => { if (!this._closed) this.rebuildTools() })
         .catch((err) => log.debug(`[${opts.id}] post-discovery tool refresh failed:`, err))
     }
+    // Seed the memory snapshot fire-and-forget so pre-turn readers see the
+    // CLAUDE.md chain without waiting for a turn. The per-turn read below is
+    // authoritative and surfaces failures loudly; this seed only warns. A
+    // destroy before settlement no-ops (same closed guard).
+    void this.opts.ports.memory.read(this.opts.cwd)
+      .then((r) => { if (!this._closed) this.memorySnapshot = r })
+      .catch((err) => log.warn(`[${this.opts.id}] memory seed failed:`, err))
     // SessionStart seam (RS §3, §13.2): fires at init with the source mapped
     // from the spawn mode — the SAME branch the log open used. CRW's /clear is
     // a host-driven fresh spawn, so it surfaces as 'startup'; there is no
@@ -1956,8 +1968,15 @@ export class NativeSession implements NativeSessionCore {
    *  scoped Skill section. The view reads the shared catalog at call time, so
    *  a reload reaches the next run without reviving an excluded skill. */
   private subagentSystem(skillView: NativeSkillView): string {
+    const memory = this.memorySnapshot
     return withSkillsSection(
-      this.opts.subagentSystem ?? this.baseSystem,
+      joinPromptParts(
+        this.opts.subagentSystem ?? this.baseSystem,
+        memory ? renderMemorySection(memory.files) : '',
+        memory
+          ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
+          : '',
+      ),
       skillView.section(),
     )
   }
@@ -2425,10 +2444,16 @@ export class NativeSession implements NativeSessionCore {
             turnProfile,
             turnBaseToolProfile,
           )
+          const memory = await this.opts.ports.memory.read(this.opts.cwd)
+          this.memorySnapshot = memory
           const turnSystem = withSkillsSection(
-            turnProfile?.instruction
-              ? `${this.baseSystem}\n\n${turnProfile.instruction}`
-              : this.baseSystem,
+            joinPromptParts(
+              turnProfile?.instruction
+                ? `${this.baseSystem}\n\n${turnProfile.instruction}`
+                : this.baseSystem,
+              renderMemorySection(memory.files),
+              renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() }),
+            ),
             skillView.section(),
           )
           const res = await runTurn(

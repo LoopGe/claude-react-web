@@ -8,8 +8,9 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { NativeProvider } from './native-provider.js'
-import { makeNativePorts } from '../native-host-adapters.js'
-import type { NativeAuxLlmPort } from './ports.js'
+import { makeNativePorts as makeHostPorts } from '../native-host-adapters.js'
+import type { NativeHostPortsDeps } from '../native-host-adapters.js'
+import type { NativeAuxLlmPort, NativeHostPorts, NativeMemoryPort, NativeMemoryReadResult } from './ports.js'
 import type { NativeMcpConnections, NativeMcpServerInstance } from './mcp/connections.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, appendSessionTitle, loadNativeSessionLogSync } from './session-log/log.js'
@@ -60,6 +61,15 @@ import { UploadStore } from '../../upload-store.js'
 import { aliasPathOf, attachmentRoot } from '../../attachment-paths.js'
 import { estimateText, estimateMessage, estimateToolSchema, ROLE_OVERHEAD } from './estimate.js'
 import { BUILTIN_COMMANDS } from './commands.js'
+
+/** Hermetic memory default: session tests must never read the developer's real
+ *  CLAUDE.md chain (the host reader walks cwd ancestors + the user config dir).
+ *  An empty stub keeps the overlay's memory section absent unless a test injects
+ *  its own fixture port; the environment block still renders. A test passes
+ *  `memory` explicitly to override. */
+function makeNativePorts(deps: NativeHostPortsDeps = {}): NativeHostPorts {
+  return makeHostPorts({ memory: { read: async () => ({ files: [], isGitRepo: false }) }, ...deps })
+}
 
 /** The builtin slash rows every native catalog answer now carries ahead of
  *  the skill rows (the G3 slash surface). */
@@ -7968,4 +7978,163 @@ describe('native attachment occurrence neutral read (Task 4)', () => {
   function publicFile(attachment: NativeFileAttachment) {
     return { type: 'file', attachment: { id: attachment.id, name: attachment.name, size: attachment.size, digest: attachment.digest } }
   }
+})
+
+describe('per-turn memory + environment overlay', () => {
+  const MEM_FIXTURE: NativeMemoryReadResult = {
+    files: [{ path: '/repo/CLAUDE.md', scope: 'project', content: 'MEM-FIXTURE' }],
+    isGitRepo: true,
+  }
+
+  /** A controllable memory port: `set` swaps the read result between turns. */
+  function memoryStub(initial: NativeMemoryReadResult) {
+    let current = initial
+    const port: NativeMemoryPort = { read: async () => current }
+    return { port, set: (next: NativeMemoryReadResult) => { current = next } }
+  }
+
+  function streamerOf(provider: NativeProvider, scripts: CanonicalEvent[][], requests: CapturedRequest[]) {
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(scripts, requests)
+  }
+
+  async function drain(session: { messages: AsyncIterable<unknown> }, frames: Frame[]) {
+    for await (const f of session.messages) frames.push(f as Frame)
+  }
+
+  it('turn system carries behavior + memory + environment in order', async () => {
+    const dir = await tempDir('native-overlay-order-')
+    await writeProjectSkill(dir, 'demo')
+    const stub = memoryStub(MEM_FIXTURE)
+    const provider = new NativeProvider({
+      stateDir: dir,
+      agentStore: agentStoreOf({ reviewer: agentDefinition() }),
+      ports: makeNativePorts({ stateDir: dir, memory: stub.port }),
+    })
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'overlay-order', cwd: dir, agent: 'reviewer' })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const sys = requests[0].system
+      expect(sys).toContain('# Tone and style')
+      expect(sys).toContain('MEM-FIXTURE')
+      expect(sys).toContain('# Environment')
+      expect(sys).toContain(`Working directory: ${dir}`)
+      expect(sys).toContain('Is a git repository: true')
+      const behavior = sys.indexOf('# Tone and style')
+      const persona = sys.indexOf('REVIEW-PROMPT')
+      const memory = sys.indexOf('MEM-FIXTURE')
+      const environment = sys.indexOf('# Environment')
+      const skills = sys.indexOf('<available_skills>')
+      expect(behavior).toBeGreaterThanOrEqual(0)
+      expect(persona).toBeGreaterThan(behavior)
+      expect(memory).toBeGreaterThan(persona)
+      expect(environment).toBeGreaterThan(memory)
+      expect(skills).toBeGreaterThan(environment)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('memory edit lands on the next turn', async () => {
+    const dir = await tempDir('native-overlay-edit-')
+    const stub = memoryStub(MEM_FIXTURE)
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir, memory: stub.port }) })
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('one'), textTurn('two')], requests)
+    const session = provider.createSession({ id: 'overlay-edit', cwd: dir })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      stub.set({ files: [{ path: '/repo/CLAUDE.md', scope: 'project', content: 'MEM-EDITED' }], isGitRepo: true })
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+      expect(requests[0].system).toContain('MEM-FIXTURE')
+      expect(requests[0].system).not.toContain('MEM-EDITED')
+      expect(requests[1].system).toContain('MEM-EDITED')
+      expect(requests[1].system).not.toContain('MEM-FIXTURE')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('byte-stable system across unchanged same-day turns', async () => {
+    const dir = await tempDir('native-overlay-stable-')
+    const stub = memoryStub(MEM_FIXTURE)
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir, memory: stub.port }) })
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('one'), textTurn('two')], requests)
+    const session = provider.createSession({ id: 'overlay-stable', cwd: dir })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+      expect(requests[1].system).toBe(requests[0].system)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('empty memory omits the section, environment stays', async () => {
+    const dir = await tempDir('native-overlay-empty-')
+    const stub = memoryStub({ files: [], isGitRepo: false })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir, memory: stub.port }) })
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'overlay-empty', cwd: dir })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      expect(requests[0].system).not.toContain('# Memory Files')
+      expect(requests[0].system).toContain('# Environment')
+      expect(requests[0].system).toContain('Is a git repository: false')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('subagent system inherits memory + environment (and behavior), without delegation guidance', async () => {
+    const dir = await tempDir('native-overlay-subagent-')
+    const stub = memoryStub(MEM_FIXTURE)
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir, memory: stub.port }) })
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [
+      agentTurn('agent-1', { description: 'd', prompt: 'do it' }),
+      textTurn('NESTED-REPORT'),
+      textTurn('PARENT-DONE'),
+    ], requests)
+    const session = provider.createSession({
+      id: 'overlay-subagent',
+      cwd: dir,
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('delegate') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
+      expect(nested.system).toContain('MEM-FIXTURE')
+      expect(nested.system).toContain('# Environment')
+      expect(nested.system).toContain(`Working directory: ${dir}`)
+      // Both prompt variants carry the behavior sections (Task 2 coverage nit).
+      expect(nested.system).toContain('# Tone and style')
+      expect(nested.system).not.toContain(AGENT_GUIDANCE)
+      expect(requests[0].system).toContain('MEM-FIXTURE')
+      expect(requests[0].system).toContain('# Environment')
+      expect(requests[0].system).toContain(AGENT_GUIDANCE)
+    } finally {
+      await session.destroy()
+    }
+  })
 })
