@@ -72,7 +72,8 @@ import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
 import { createEnterPlanModeTool, createExitPlanModeTool, PLAN_MODE_GUIDANCE } from './tools/plan-mode.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
-import { agentUnusableReason } from '../../../shared/agent-definitions.js'
+import { agentUnusableReason, type StoredAgentDefinition } from '../../../shared/agent-definitions.js'
+import { PluginAgentLookup, pluginAgentDefs } from './agent-lookup.js'
 import {
   agentSelectionFromEvents,
   agentSelectionOf,
@@ -566,6 +567,15 @@ export class NativeSession implements NativeSessionCore {
    *  plugin port's contributions as of the last command reload. Replaced
    *  wholesale alongside `customCommands` under the same generation fence. */
   private pluginCommands: NativeCommand[] = []
+  /** Qualified plugin agent definitions (`plugin:agent`) projected from the
+   *  plugin port's contributions as of the last command reload. Replaced
+   *  wholesale alongside `pluginCommands` under the same generation fence; the
+   *  merged agent lookup reads this live, so a reload reaches the next subagent
+   *  dispatch and persona switch without a respawn. */
+  private pluginAgentDefs: StoredAgentDefinition[] = []
+  /** The merged read-only agent resolution surface (user store + plugin defs)
+   *  shared by the Agent tool and the main-thread persona path. */
+  private readonly agentLookup: PluginAgentLookup
   /** The CURRENT command discovery in flight — the same supersede semantics
    *  as `skillsReady`, re-assigned by `reloadSkills`. */
   private commandsReady: Promise<void>
@@ -842,6 +852,9 @@ export class NativeSession implements NativeSessionCore {
     // Custom commands are discovered before the first turn can invoke them,
     // the same per-turn-await shape as the skill catalog.
     this.commandsReady = this.startCommandReload()
+    // One merged read-only resolution surface for the Agent tool and the
+    // persona path: the user store plus the live qualified plugin defs.
+    this.agentLookup = new PluginAgentLookup(opts.agentStore, () => this.pluginAgentDefs)
     this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
     this.taskOutputTool = createTaskOutputTool(this.tasks)
     // Every session can delegate, MCP or not: `tools` is a live getter and the
@@ -884,7 +897,7 @@ export class NativeSession implements NativeSessionCore {
         const appended = await this.log.appendDurable(input)
         return { ...input, seq: appended.seq } as SessionEvent<'subagent/descriptor'>
       },
-      agentStore: opts.agentStore,
+      agentStore: this.agentLookup,
       dispatchHook: (event, input, hookCtx) => this.dispatchHook(event, input, hookCtx),
     }
     this.agentTool = createAgentTool(agentDeps)
@@ -1948,6 +1961,7 @@ export class NativeSession implements NativeSessionCore {
       if (generation <= this.committedCommandGeneration) return
       this.customCommands = commands
       this.pluginCommands = pluginCommandRows(contributions)
+      this.pluginAgentDefs = pluginAgentDefs(contributions)
       this.committedCommandGeneration = generation
     })
     void reload.catch((err) => log.warn(`[${this.opts.id}] command discovery failed:`, err))
@@ -3625,9 +3639,13 @@ export class NativeSession implements NativeSessionCore {
       }
       agentIntent = { name }
       if (name !== null) {
-        const reason = agentUnusableReason(this.opts.agentStore, name)
+        // Resolve through the merged lookup (user store + qualified plugin
+        // agents). Await the current discovery so a switch right after spawn or
+        // reload sees the committed plugin set, not an empty pre-discovery one.
+        await this.commandsReady
+        const reason = agentUnusableReason(this.agentLookup, name)
         if (reason) throw new Error(reason)
-        const definition = this.opts.agentStore!.get(name)!
+        const definition = this.agentLookup.get(name)!
         assertAgentProfileSupported(definition)
         agentIntent.definition = definition
       }
@@ -3653,12 +3671,17 @@ export class NativeSession implements NativeSessionCore {
     this.skills.applyOverrides(overrides as Record<string, 'on' | 'name-only' | 'user-invocable-only' | 'off'>)
   }
 
-  /** Built-in agents only: the /agents route unions the enabled
-   *  `AgentDefinitionStore` definitions on top (same split as claude). */
+  /** Built-in agents plus the merged enabled definitions (user store ∪
+   *  qualified plugin agents). The /agents route unions the user
+   *  `AgentDefinitionStore` definitions on top and de-dupes by name (built-in
+   *  wins), so a user row appears exactly once while plugin rows ride here. */
   async supportedAgents(): Promise<unknown> {
+    await this.commandsReady
+    const enabled = this.agentLookup.getEnabledDefinitions()
     return [
       { name: 'general-purpose', description: 'General-purpose subagent for self-contained tasks.' },
       { name: EXPLORE_AGENT_NAME, description: EXPLORE_AGENT_DESCRIPTION },
+      ...Object.entries(enabled).map(([name, definition]) => ({ name, ...definition })),
     ]
   }
 

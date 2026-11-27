@@ -1,5 +1,5 @@
 // server/providers/native/subagent.ts
-import type { AgentDefinitionStore } from '../../agent-definition-store.js'
+import type { AgentStoreReadSurface } from './agent-lookup.js'
 import { runTurn, type LoopDeps, type NativeLoopFrame, type PersistedToolResult } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
 import type { FrameContext } from './vocabulary/frame-context.js'
@@ -100,7 +100,10 @@ export interface AgentToolDeps {
   appendDescriptor(
     input: Omit<SessionEvent<'subagent/descriptor'>, 'seq'>,
   ): Promise<SessionEvent<'subagent/descriptor'>>
-  agentStore?: AgentDefinitionStore
+  /** Agent definitions `subagent_type` resolves against — the session's merged
+   *  read-only lookup (user store + qualified plugin agents). Structural so the
+   *  concrete user store and the PluginAgentLookup both satisfy it. */
+  agentStore?: AgentStoreReadSurface
   /** Hook decision point for the subagent lifecycle seams: SubagentStart at
    *  descriptor append, SubagentStop at the final report. Absent = no hook
    *  engine wired. The runner stamps the sidechain parent (the spawning

@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { createAgentTool, type AgentToolDeps } from './subagent.js'
+import { PluginAgentLookup } from './agent-lookup.js'
 import { PROGRESS_INTERVAL_MS, PROGRESS_MAX_TOKENS, PROGRESS_SUMMARY_PROMPT } from './subagent-progress.js'
 import type { NativeLoopFrame } from './loop.js'
 import type { OperationalFrame } from './vocabulary/live-frame.js'
@@ -339,6 +340,29 @@ describe('createAgentTool', () => {
     })
     expect(descriptor.data.profile?.tools).not.toBe(definition.tools)
     expect(descriptor.data.profile?.skills).not.toBe(definition.skills)
+  })
+
+  it('resolves a plugin-qualified agent through the merged read-only lookup', async () => {
+    const s = scriptedStreamer([[startStop, ...textBlock(0, 'done'), deltaStop('end_turn')]])
+    const appendDescriptor = vi.fn(baseDeps().appendDescriptor)
+    const pluginDef = {
+      name: 'demo:reviewer', description: 'Plugin reviewer', prompt: 'PLUGIN-REVIEW',
+      enabled: true, createdAt: 1, updatedAt: 1, tools: ['Read'],
+    } as StoredAgentDefinition
+    const lookup = new PluginAgentLookup(fakeStore({}), () => [pluginDef])
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      appendDescriptor,
+      agentStore: lookup,
+    }))
+
+    expect(await runAgent(agent, {
+      description: '', prompt: 'p', subagent_type: 'demo:reviewer',
+    })).toEqual({ text: 'done' })
+    expect(appendDescriptor.mock.calls[0][0].data).toMatchObject({
+      label: 'demo:reviewer',
+      profile: { name: 'demo:reviewer', instruction: 'PLUGIN-REVIEW', tools: ['Read'] },
+    })
   })
 
   it('falls back to the generic descriptor label', async () => {

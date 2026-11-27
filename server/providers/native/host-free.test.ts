@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 // Tolerated residuals (type-only, injected-store types outside the seven-port
 // scope): `import type { StoredAgentDefinition }` in agent-profile.ts and
 // session-log/format.ts, and `import type { AgentDefinitionStore }` in
-// native-provider.ts, native-session.ts and subagent.ts. A type-only import of
+// native-provider.ts and native-session.ts. A type-only import of
 // a host service module is allowed; converting any of these to a VALUE import
 // trips the ban below.
 

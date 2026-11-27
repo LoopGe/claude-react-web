@@ -1356,9 +1356,11 @@ export function buildSessionRouter(
     return c.json({ commands })
   })
 
-  // Supported agents: the SDK's built-in list UNIONed with the enabled custom
-  // AgentDefinitionStore defs. De-duped by name with a built-in winning — a
-  // colliding custom def (same name as an SDK agent) is not added twice.
+  // Supported agents: the provider's built-in list UNIONed with the enabled
+  // custom AgentDefinitionStore defs. De-duped by name with a built-in winning —
+  // a colliding custom def (same name as a built-in) is not added twice. The
+  // native provider's built-in list also carries its qualified plugin agents
+  // (user store ∪ plugin defs), so plugin rows surface here without a route change.
   app.get('/sessions/:id/agents', async (c) => {
     const id = c.req.param('id')
     const builtins = (await sm.supportedAgents(id)) as Array<{ name: string; description?: string }> | undefined
