@@ -1508,7 +1508,10 @@ export class NativeSession implements NativeSessionCore {
    *  passes neither, so its behavior is unchanged. `opts.effortLevel` (a
    *  getter, possibly returning undefined) and `opts.fastMode` override the
    *  session's live effort/fast-mode intent — the hook stream uses them to
-   *  strip session model config from evaluator rounds. */
+   *  strip session model config from evaluator rounds. `req.appendMessages`
+   *  / `req.maxTokens` / `req.forkProfile` are the nested-fork overrides: a
+   *  breakpoint-free tail appended after the cached prefix, a small output
+   *  cap, and stripped effort/fast-mode intent. Absent → session defaults. */
   private defaultStream(
     req: {
       model: string
@@ -1518,6 +1521,9 @@ export class NativeSession implements NativeSessionCore {
       signal: AbortSignal
       thinking?: ThinkingSetting
       outputFormat?: RequestOutputFormat
+      appendMessages?: unknown[]
+      maxTokens?: number
+      forkProfile?: boolean
     },
     opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined; fastMode?: boolean },
   ): AsyncIterable<CanonicalEvent> {
@@ -1528,11 +1534,12 @@ export class NativeSession implements NativeSessionCore {
         system: req.system,
         tools: req.tools,
         messages: req.messages,
-        maxTokens: DEFAULT_MAX_TOKENS,
+        maxTokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
         thinking: req.thinking ?? this.thinking,
         thinkingDisplay: this.thinkingDisplay,
-        effort: opts?.effortLevel ? opts.effortLevel() : this.effortLevel,
-        fastMode: opts?.fastMode ?? this.fastMode,
+        effort: req.forkProfile ? undefined : (opts?.effortLevel ? opts.effortLevel() : this.effortLevel),
+        fastMode: req.forkProfile ? undefined : (opts?.fastMode ?? this.fastMode),
+        ...(req.appendMessages ? { appendMessages: req.appendMessages } : {}),
         ...(req.outputFormat !== undefined ? { outputFormat: req.outputFormat } : {}),
         signal: req.signal,
       },
@@ -1561,12 +1568,23 @@ export class NativeSession implements NativeSessionCore {
       signal: AbortSignal
       thinking?: ThinkingSetting
       outputFormat?: RequestOutputFormat
+      appendMessages?: unknown[]
+      maxTokens?: number
+      forkProfile?: boolean
     },
     opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined; fastMode?: boolean },
   ): AsyncIterable<CanonicalEvent> {
-    // The test seam ignores opts: scripted streams have no retry path.
+    // The test seam ignores opts: scripted streams have no retry path. A
+    // fork tail is flattened into messages (runSuggestionFork's seam
+    // projection) so a scripted stream reads the full fork content; with no
+    // tail the request passes through untouched — the suggestion-snapshot
+    // pins hold the main round's wire arrays by reference through this seam.
     const testStream = this.opts.streamSupplier?.()
-    return testStream ? testStream(req) : this.defaultStream(req, opts)
+    return testStream
+      ? testStream(req.appendMessages
+        ? { ...req, messages: [...req.messages, ...req.appendMessages] }
+        : req)
+      : this.defaultStream(req, opts)
   }
 
   /** The RS §6.2 gateway fact for the agent-hook model fallback: a
@@ -1747,7 +1765,7 @@ export class NativeSession implements NativeSessionCore {
   private isOperationalFrame(frame: NativeLoopFrame): frame is OperationalFrame {
     if (!('type' in frame)) return false
     switch (frame.type) {
-      case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/notification': case 'result': case 'prompt/suggestion': case 'hook/run':
+      case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/progress': case 'task/notification': case 'result': case 'prompt/suggestion': case 'hook/run':
         return true
       default:
         return false

@@ -47,6 +47,7 @@ import { ASK_USER_QUESTION_GUIDANCE } from './tools/ask-user-question.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { CanonicalEvent } from './canonical.js'
 import { buildRequestBody } from './anthropic-stream.js'
+import { DEFAULT_MAX_TOKENS } from './native-session.js'
 import type { Frame } from '../native-frames.js'
 import { config, __setConfigForTest } from '../../config.js'
 import { AnthropicModelDiscovery } from './model-discovery.js'
@@ -7215,6 +7216,158 @@ describe('NativeSession', () => {
         streamAnthropicMessagesMock.mockReset()
         streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
         __setConfigForTest(origConfig)
+      }
+    })
+  })
+
+  describe('nested-stream fork seam', () => {
+    /** The widened streamFor request: the three fork overrides are optional,
+     *  so a caller that passes none keeps the session-default behavior. */
+    type ForkSeamReq = {
+      model: string
+      system: string
+      tools: unknown[]
+      messages: unknown[]
+      signal: AbortSignal
+      appendMessages?: unknown[]
+      maxTokens?: number
+      forkProfile?: boolean
+    }
+
+    const seamOf = (session: unknown): { streamFor: (req: ForkSeamReq) => AsyncIterable<CanonicalEvent> } =>
+      coreOf(session) as unknown as { streamFor: (req: ForkSeamReq) => AsyncIterable<CanonicalEvent> }
+
+    const prefix = [{ role: 'user', content: [{ type: 'text', text: 'prefix question' }] }]
+    const tail = [
+      { role: 'assistant', content: [{ type: 'text', text: 'tail answer' }] },
+      { role: 'user', content: [{ type: 'text', text: 'summarize progress' }] },
+    ]
+
+    it('fork seam: the scripted streamSupplier sees the flattened prefix + tail', async () => {
+      const dir = await tempDir('native-fork-seam-scripted-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('ok')], requests)
+      const session = provider.createSession({ id: 'fork-seam-scripted', cwd: dir })
+      try {
+        const events: CanonicalEvent[] = []
+        for await (const ev of seamOf(session).streamFor({
+          model: 'claude-sonnet-4-5', system: 'sys', tools: [], messages: prefix,
+          appendMessages: tail, maxTokens: 64, forkProfile: true,
+          signal: new AbortController().signal,
+        })) events.push(ev)
+        expect(events.length).toBeGreaterThan(0)
+        expect(requests).toHaveLength(1)
+        // The seam flattens the breakpoint-free tail into messages, exactly
+        // as runSuggestionFork's test seam does.
+        expect(requests[0].messages).toEqual([...prefix, ...tail])
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('fork seam: production forwards appendMessages/maxTokens and strips effort/fast mode under forkProfile', async () => {
+      const dir = await tempDir('native-fork-seam-prod-')
+      const origConfig = { ...config }
+      __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+      const requests: Array<Parameters<typeof buildRequestBody>[0]> = []
+      streamAnthropicMessagesMock.mockImplementation(async function* (req: Parameters<typeof buildRequestBody>[0]) {
+        requests.push(req)
+        for (const ev of textTurn('ok')) yield ev
+      })
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const session = provider.createSession({
+        id: 'fork-seam-prod', cwd: dir, model: 'claude-opus-4-8', effortLevel: 'high', fastMode: true,
+      })
+      const drain = async (req: ForkSeamReq): Promise<void> => {
+        const events: CanonicalEvent[] = []
+        for await (const ev of seamOf(session).streamFor(req)) events.push(ev)
+        expect(events.length).toBeGreaterThan(0)
+      }
+      try {
+        // Absent overrides keep the session defaults (existing callers unchanged).
+        await drain({ model: 'claude-opus-4-8', system: 'sys', tools: [], messages: prefix, signal: new AbortController().signal })
+        expect(requests).toHaveLength(1)
+        expect(requests[0].maxTokens).toBe(DEFAULT_MAX_TOKENS)
+        expect(requests[0].appendMessages).toBeUndefined()
+        expect(requests[0].effort).toBe('high')
+        expect(requests[0].fastMode).toBe(true)
+        const baseBody = buildRequestBody(requests[0]) as { max_tokens: number; output_config?: unknown; speed?: unknown }
+        expect(baseBody.max_tokens).toBe(DEFAULT_MAX_TOKENS)
+        expect(baseBody.output_config).toEqual({ effort: 'high' })
+        expect(baseBody.speed).toBe('fast')
+
+        // forkProfile: the small cap and the breakpoint-free tail reach the
+        // wire; effort and fast mode are stripped from the request.
+        await drain({
+          model: 'claude-opus-4-8', system: 'sys', tools: [], messages: prefix,
+          appendMessages: tail, maxTokens: 64, forkProfile: true,
+          signal: new AbortController().signal,
+        })
+        expect(requests).toHaveLength(2)
+        const forkReq = requests[1]
+        expect(forkReq.maxTokens).toBe(64)
+        expect(forkReq.appendMessages).toEqual(tail)
+        expect(forkReq.effort).toBeUndefined()
+        expect(forkReq.fastMode).toBeUndefined()
+        const body = buildRequestBody(forkReq) as { max_tokens: number; messages: unknown[]; output_config?: unknown; speed?: unknown }
+        expect(body.max_tokens).toBe(64)
+        expect(body.output_config).toBeUndefined()
+        expect(body.speed).toBeUndefined()
+        // The tail lands AFTER the cached prefix, verbatim and breakpoint-free;
+        // the prefix keeps its own last-block breakpoint.
+        expect(body.messages).toHaveLength(prefix.length + tail.length)
+        expect(body.messages.slice(prefix.length)).toEqual(tail)
+        expect(JSON.stringify(body.messages.slice(prefix.length))).not.toContain('cache_control')
+        const lastPrefix = body.messages[prefix.length - 1] as { content: Array<{ cache_control?: unknown }> }
+        expect(lastPrefix.content[lastPrefix.content.length - 1].cache_control).toEqual({ type: 'ephemeral' })
+      } finally {
+        await session.destroy()
+        streamAnthropicMessagesMock.mockReset()
+        streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
+        __setConfigForTest(origConfig)
+      }
+    })
+  })
+
+  describe('task/progress emission', () => {
+    it('emits verbatim on the live channel and never persists (live-only)', async () => {
+      const dir = await tempDir('native-task-progress-')
+      const provider = providerWithStreamer([], dir)
+      const session = provider.createSession({ id: 'task-progress-emission', cwd: dir })
+      const core = coreOf(session) as unknown as {
+        messages: AsyncIterable<Record<string, unknown>>
+        persistFrame: (frame: unknown, parentToolUseId: string | null) => void
+        emitFrame: (frame: unknown, parentToolUseId: string | null) => void
+      }
+      const neutral: Array<Record<string, unknown>> = []
+      void (async () => { for await (const frame of core.messages) neutral.push(frame) })()
+      const progressFrame = {
+        type: 'task/progress',
+        taskId: 'task-1',
+        toolUseId: 'tu-agent',
+        description: 'review the diff',
+        subagentType: 'reviewer',
+        usage: { totalTokens: 120, toolUses: 3, durationMs: 450 },
+        lastToolName: 'Read',
+        summary: 'reading files',
+        time: 1730000000000,
+      }
+      try {
+        const eventsBefore = neutralLogEvents(session).length
+        // The nested runner's emit pair (agentDeps.emit): persist + emit.
+        core.persistFrame(progressFrame, 'tu-agent')
+        core.emitFrame(progressFrame, 'tu-agent')
+        // The core seeds an ambient init frame; the emission under test is
+        // the first non-init frame on the channel.
+        await vi.waitFor(() => expect(neutral.some((frame) => frame.type !== 'init')).toBe(true))
+        // Operational: pushed verbatim, NOT wrapped in an enveloped-conversation
+        // (the wrapper is the conversation-frame path and would mis-project).
+        expect(neutral.find((frame) => frame.type !== 'init')).toEqual(progressFrame)
+        // R6 live-only: the persist half is a no-op for a non-assistant frame.
+        expect(neutralLogEvents(session)).toHaveLength(eventsBefore)
+      } finally {
+        await session.destroy()
       }
     })
   })
