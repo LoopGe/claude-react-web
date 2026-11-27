@@ -228,9 +228,29 @@ function fireWork(state: ScrollState, shouldFire: (work: WorkRequest) => boolean
   }
 }
 
-function settleOwner(state: ScrollState, landed: boolean): ScrollTransition {
+function allocateWork(
+  state: ScrollState,
+  kind: WorkRequest['kind'],
+  delivery: WorkRequest['delivery'],
+): { state: ScrollState; command: ScrollCommand } {
+  const work: WorkRequest = { id: state.nextWorkId, kind, delivery }
+  return {
+    state: { ...state, work: [...state.work, work], nextWorkId: state.nextWorkId + 1 },
+    command: { type: 'SCHEDULE_WORK', epoch: state.attachment.epoch, work },
+  }
+}
+
+/** Why the current owner is giving up the viewport. `seek-ease-landed` moves a
+ *  seek from ease to hold; `landed` is a natural finish (exact-land, abort, or
+ *  fold/restore end); `cancelled` is a user-gesture takeover. Only a natural
+ *  FOLLOW landing arms the settle verification — a cancellation means the user
+ *  is driving and a verification pin would fight the takeover. The discriminated
+ *  reason keeps that pairing unrepresentable in any other combination. */
+type SettleReason = 'seek-ease-landed' | 'landed' | 'cancelled'
+
+function settleOwner(state: ScrollState, reason: SettleReason): ScrollTransition {
   if (state.owner.kind === 'none') return unchanged(state)
-  if (landed && state.owner.kind === 'seek' && state.owner.phase === 'ease') {
+  if (reason === 'seek-ease-landed' && state.owner.kind === 'seek' && state.owner.phase === 'ease') {
     return {
       state: {
         ...state,
@@ -242,15 +262,31 @@ function settleOwner(state: ScrollState, landed: boolean): ScrollTransition {
   }
 
   const seekState = state.owner.kind === 'restore' ? state.seekState : 'idle'
-  const cleared: ScrollState = {
+  let cleared: ScrollState = {
     ...state,
     owner: { kind: 'none' },
     seekState,
   }
+  // A follow landing — the exact-land OR the mid-ease pull-back abort, which
+  // skips the exact write — arms the same bounded verification pinToBottom
+  // requests. The post-landing geometry can sit a few px short with nothing
+  // left to correct it: the abort's residue produces no scroll event, the
+  // quiet layout fires no observer, and the followOutput animation path
+  // queues no work of its own (measured live 2026-11-27: a 3px residue
+  // frozen for 2.9s until the next append). Intent and visibility need no
+  // extra guard: a live follow owner already implies both (every away
+  // transition clears the owner, and every non-visible attachment change
+  // invalidates it).
+  const verifyCommands: ScrollCommand[] = []
+  if (reason === 'landed' && state.owner.kind === 'follow') {
+    const allocated = allocateWork(cleared, 'verify', 'after-owner')
+    cleared = allocated.state
+    verifyCommands.push(allocated.command)
+  }
   const fired = fireWork(cleared, () => true)
   return {
     state: fired.state,
-    commands: [...publishSeekState(state, seekState), ...fired.commands],
+    commands: [...publishSeekState(state, seekState), ...verifyCommands, ...fired.commands],
   }
 }
 
@@ -374,15 +410,15 @@ export function reduceScroll(state: ScrollState, event: ScrollEvent): ScrollTran
 
     case 'SEEK_EASE_LANDED':
       if (state.owner.kind === 'none' || state.owner.token !== event.token) return unchanged(state)
-      return settleOwner(state, true)
+      return settleOwner(state, 'seek-ease-landed')
 
     case 'OWNER_LANDED':
       if (state.owner.kind === 'none' || state.owner.token !== event.token) return unchanged(state)
-      return settleOwner(state, false)
+      return settleOwner(state, 'landed')
 
     case 'OWNER_CANCELLED': {
       if (state.owner.kind === 'none' || state.owner.token !== event.token) return unchanged(state)
-      const settled = settleOwner(state, false)
+      const settled = settleOwner(state, 'cancelled')
       return {
         state: settled.state,
         commands: [
@@ -411,15 +447,8 @@ export function reduceScroll(state: ScrollState, event: ScrollEvent): ScrollTran
 
     case 'WORK_REQUESTED': {
       if (state.intent === 'away' || isNonVisible(state)) return unchanged(state)
-      const work: WorkRequest = {
-        id: state.nextWorkId,
-        kind: event.kind,
-        delivery: event.delivery,
-      }
-      return {
-        state: { ...state, work: [...state.work, work], nextWorkId: state.nextWorkId + 1 },
-        commands: [{ type: 'SCHEDULE_WORK', epoch: state.attachment.epoch, work }],
-      }
+      const allocated = allocateWork(state, event.kind, event.delivery)
+      return { state: allocated.state, commands: [allocated.command] }
     }
 
     case 'WORK_FIRED':
