@@ -54,6 +54,7 @@ const NEUTRAL_MODULES = [
   here('../../../shared/agent-definitions.ts'),
   here('../../../shared/attachment-store-error.ts'),
   here('../../../shared/attachment-types.ts'),
+  here('../../../shared/hooks.ts'),
   here('../../../shared/skills.ts'),
   here('../../../shared/transcript-format.ts'),
   here('../../../shared/mcp-transport.ts'),
