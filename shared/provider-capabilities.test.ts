@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { providerSupports, LOCKED_FEATURES } from './provider-capabilities.js'
 
 describe('providerSupports (pre-create capability source)', () => {
-  it('native locks the five features; claude supports them', () => {
+  it('native locks hooks/memory/sandbox/account; both providers support plugins', () => {
     for (const f of LOCKED_FEATURES) {
-      expect(providerSupports('native', f)).toBe(false)
+      expect(providerSupports('native', f)).toBe(f === 'plugins')
       expect(providerSupports('claude', f)).toBe(true)
     }
   })

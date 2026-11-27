@@ -109,7 +109,7 @@ describe('mp-ops', () => {
     expect(sm.reloadPlugins).toHaveBeenCalledWith('live')
   })
 
-  it('applyPluginToggleToLiveSessions reloads the skill catalog for native sessions, SDK toggle for claude', async () => {
+  it('applyPluginToggleToLiveSessions rides the shared catalog reload for native sessions, SDK toggle for claude', async () => {
     const sm = {
       list: () => [
         { id: 'nat', running: true, provider: 'native' },
@@ -121,8 +121,11 @@ describe('mp-ops', () => {
       reloadSkills: vi.fn(async () => ({ skills: [] })),
     } as unknown as SessionManager
     await applyPluginToggleToLiveSessions(sm, 'p1@mp-id', true)
-    // Native has no SDK plugin flags: the catalog re-read IS the live push
-    // (it reads the store's global enabled set, persisted before this call).
+    // Native has no SDK plugin flags: the shared discovery commit re-reads the
+    // store's global enabled set (persisted before this call) and re-composes
+    // ALL five contribution types — skills, commands, agents, hooks, MCP — so
+    // the one catalog reload IS the whole live push (and broadcasts
+    // commands-changed).
     expect(sm.reloadSkills).toHaveBeenCalledTimes(1)
     expect(sm.reloadSkills).toHaveBeenCalledWith('nat')
     // Claude keeps the existing togglePlugin + reloadPlugins path.

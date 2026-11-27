@@ -75,8 +75,9 @@ export class NativeSkillCatalog {
   private readonly cwd: string | undefined
   private readonly skillPort: NativeSkillPort
   /** Per-session plugin subset forwarded to the port's discovery; the catalog
-   *  itself never resolves plugins (that stays host-side behind the port). */
-  private readonly enabledPlugins: string[] | undefined
+   *  itself never resolves plugins (that stays host-side behind the port).
+   *  Seeded at spawn; `setEnabledPlugins` replaces it on a live toggle. */
+  private enabledPlugins: string[] | undefined
   /** Spawn `Options.skills`. `undefined` keeps the CLI default: every skill
    *  listed by name only. */
   private policy: string[] | 'all' | undefined
@@ -99,6 +100,13 @@ export class NativeSkillCatalog {
    *  resolved lazily, so calls may precede or follow `reload()`. */
   configure(skills: string[] | 'all' | undefined): void {
     this.policy = Array.isArray(skills) ? [...skills] : skills
+  }
+
+  /** Replace the per-session plugin subset (a live toggle). The next
+   *  `reload()` forwards it to the port; discovered entries are untouched
+   *  until then, same lazy contract as `configure`. */
+  setEnabledPlugins(enabledPlugins: string[] | undefined): void {
+    this.enabledPlugins = enabledPlugins
   }
 
   /** Replace the override layer (a `Settings.skillOverrides` snapshot).

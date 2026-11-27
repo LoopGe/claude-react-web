@@ -658,10 +658,14 @@ describe('SessionManager', () => {
     expect(sm.list().find((session) => session.id === native.id)?.taskControlSupported).toBe(true)
   })
 
-  it('projects locked-feature booleans false for native, true for claude (live and dormant)', async () => {
+  it('projects locked-feature booleans for native (plugins supported) and claude (live and dormant)', async () => {
     const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
     const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
-    const keys = ['pluginsSupported', 'hooksSupported', 'memorySupported', 'sandboxSupported', 'accountInfoSupported'] as const
+    // Plugins are supported on native too (the T6 capability flip); the other
+    // four locked features stay claude-only.
+    const keys = ['hooksSupported', 'memorySupported', 'sandboxSupported', 'accountInfoSupported'] as const
+    expect(claude.pluginsSupported).toBe(true)
+    expect(native.pluginsSupported).toBe(true)
     for (const k of keys) {
       expect(claude[k]).toBe(true)
       expect(native[k]).toBe(false)
@@ -672,6 +676,8 @@ describe('SessionManager', () => {
     await sm.unload(claude.id)
     const dormantNative = sm.list().find((session) => session.id === native.id)
     const dormantClaude = sm.list().find((session) => session.id === claude.id)
+    expect(dormantNative?.pluginsSupported).toBe(true)
+    expect(dormantClaude?.pluginsSupported).toBe(true)
     for (const k of keys) {
       expect(dormantNative?.[k]).toBe(false)
       expect(dormantClaude?.[k]).toBe(true)
@@ -14475,6 +14481,94 @@ describe('plugin subset selection', () => {
     } finally {
       await smNoMp.shutdown()
     }
+  })
+})
+
+// ── native plugin toggle (plugin parity T6 capability flip) ─────────────────
+// supportsPlugins: true ungates togglePlugin / reloadPlugins for native. The
+// live push re-resolves the session's plugin subset through the shared
+// discovery commit; materialize pins the same post-toggle set onto the meta.
+// Real plugin dirs here (the native loader resolves them on disk), unlike the
+// fake-dir claude fixture above.
+describe('native plugin toggle (capability flip)', () => {
+  let dir: string
+  let store: SessionStore
+  let mpStore: MpStore
+  let sm: SessionManager
+
+  beforeEach(async () => {
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    mpStore = new MpStore({ stateDir: dir })
+    await mpStore.load()
+    const plugA = join(dir, 'plugA')
+    const plugB = join(dir, 'plugB')
+    for (const [name, pluginDir] of [['plugA', plugA], ['plugB', plugB]] as const) {
+      mkdirSync(join(pluginDir, '.claude-plugin'), { recursive: true })
+      writeFileSync(join(pluginDir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name }), 'utf8')
+      mkdirSync(join(pluginDir, 'commands'), { recursive: true })
+      writeFileSync(join(pluginDir, 'commands', 'about.md'), `---\ndescription: ${name} about\n---\n\n${name} ABOUT`, 'utf8')
+    }
+    mpStore.upsert({
+      id: 'mp1',
+      displayName: 'mp1',
+      source: { type: 'https', url: 'https://example.com/mp1.git' },
+      cloneDir: join(dir, 'mp1'),
+      addedAt: 1, lastRefreshedAt: 1, lastSha: 'a'.repeat(40),
+      manifest: { name: 'mp1', plugins: [
+        { name: 'plugA', dir: plugA },
+        { name: 'plugB', dir: plugB },
+      ] },
+    })
+    mpStore.setEnabled('plugA', 'mp1', true)
+    mpStore.setEnabled('plugB', 'mp1', true)
+    sm = new SessionManager({ store, mpStore })
+  })
+
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+  })
+
+  const liveSession = (id: string): Session =>
+    (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)!
+
+  it('togglePlugin succeeds on native, revokes the plugin live and materializes the spawn set', async () => {
+    const info = await sm.create({ provider: 'native', cwd: dir, model: 'test-model' } as any)
+    expect(info.pluginsSupported).toBe(true)
+    const live = liveSession(info.id)
+    await sm.reloadSkills(info.id)
+    const names = ((await live.handle.supportedCommands?.()) as Array<{ name: string }>).map((row) => row.name)
+    expect(names).toContain('plugA:about')
+    expect(names).toContain('plugB:about')
+
+    await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), false, { materialize: true })
+
+    // The live subset re-resolved: plugA's command is gone, plugB stays.
+    const core = nativeCoreOf(live.handle) as unknown as { enabledPlugins?: string[] }
+    expect(core.enabledPlugins).toEqual([MpStore.keyOf('plugB', 'mp1')])
+    const after = ((await live.handle.supportedCommands?.()) as Array<{ name: string }>).map((row) => row.name)
+    expect(after).not.toContain('plugA:about')
+    expect(after).toContain('plugB:about')
+    // The materialized spawn set agrees with the live subset.
+    expect(sm.get(info.id)?.enabledPlugins).toEqual([MpStore.keyOf('plugB', 'mp1')])
+    expect(store.get(info.id)?.enabledPlugins).toEqual([MpStore.keyOf('plugB', 'mp1')])
+
+    // Re-enable restores the contribution live and appends to the pinned set.
+    await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), true, { materialize: true })
+    expect(core.enabledPlugins).toEqual([MpStore.keyOf('plugB', 'mp1'), MpStore.keyOf('plugA', 'mp1')])
+    const restored = ((await live.handle.supportedCommands?.()) as Array<{ name: string }>).map((row) => row.name)
+    expect(restored).toContain('plugA:about')
+  })
+
+  it('reloadPlugins resolves on native and re-reads disk-side plugin changes', async () => {
+    const info = await sm.create({ provider: 'native', cwd: dir, model: 'test-model' } as any)
+    const result = await sm.reloadPlugins(info.id) as { skills: Array<{ name: string }> }
+    expect(result.skills.map((row) => row.name)).toContain('plugA:about')
+    writeFileSync(join(dir, 'plugA', 'commands', 'extra.md'), '---\ndescription: Extra\n---\n\nEXTRA', 'utf8')
+    const reloaded = await sm.reloadPlugins(info.id) as { skills: Array<{ name: string }> }
+    expect(reloaded.skills.map((row) => row.name)).toContain('plugA:extra')
   })
 })
 

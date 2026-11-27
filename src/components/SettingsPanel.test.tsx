@@ -1223,16 +1223,16 @@ describe('SettingsPanel plugins tab — per-session enabled state', () => {
 })
 
 describe('SettingsPanel locked-feature gates (native vs claude vs legacy)', () => {
-  // The projected native frame: every locked-feature boolean explicit false
-  // (the Task 1 capability projection). The gate convention is `!== false`,
-  // so a legacy frame (booleans undefined) stays claude-compatible — pinned
-  // in its own tests below.
+  // The projected native frame: plugins supported (the T6 capability flip),
+  // the other four locked-feature booleans explicit false. The gate convention
+  // is `!== false`, so a legacy frame (booleans undefined) stays
+  // claude-compatible — pinned in its own tests below.
   const nativeSession = {
     id: 's1',
     provider: 'native',
     running: true,
     terminated: false,
-    pluginsSupported: false,
+    pluginsSupported: true,
     hooksSupported: false,
     memorySupported: false,
     sandboxSupported: false,
@@ -1291,8 +1291,12 @@ describe('SettingsPanel locked-feature gates (native vs claude vs legacy)', () =
     expect(leaves(container)).toEqual(['MCP Servers', 'Plugins'])
   })
 
-  it('a Plugins deep link lands on the locked tab with the notice and never reloads plugins', async () => {
-    const { container } = renderPanel({ session: nativeSession, tab: 'plugins' })
+  it('a Plugins deep link on a plugins-locked frame lands on the locked tab with the notice and never reloads plugins', async () => {
+    // Native projects pluginsSupported: true now; the lock gate itself is
+    // exercised on a frame whose plugins boolean is false (the `!== false`
+    // convention, same as the single-false-boolean test below).
+    const session = { ...nativeSession, pluginsSupported: false } as SessionInfo
+    const { container } = renderPanel({ session, tab: 'plugins' })
     await waitFor(() =>
       expect(container.querySelector('.settings-tab-leaves .active')?.textContent).toBe('Plugins'),
     )
@@ -1308,8 +1312,9 @@ describe('SettingsPanel locked-feature gates (native vs claude vs legacy)', () =
     expect(reloadCalls).toHaveLength(0)
   })
 
-  it('clicking the Plugins leaf on a native session shows the locked notice', async () => {
-    const { container } = renderPanel({ session: nativeSession, tab: 'mcp' })
+  it('clicking the Plugins leaf on a plugins-locked frame shows the locked notice', async () => {
+    const session = { ...nativeSession, pluginsSupported: false } as SessionInfo
+    const { container } = renderPanel({ session, tab: 'mcp' })
     await waitFor(() => expect(container.querySelector('.settings-tab-leaves')).not.toBeNull())
     const pluginsLeaf = [...container.querySelectorAll<HTMLButtonElement>('.settings-tab-leaves button')]
       .find((b) => b.textContent === 'Plugins')!
@@ -1320,6 +1325,12 @@ describe('SettingsPanel locked-feature gates (native vs claude vs legacy)', () =
       String(url).endsWith('/plugins/reload'),
     )
     expect(reloadCalls).toHaveLength(0)
+  })
+
+  it('native plugins tab renders the live panel, no notice (the T6 capability flip)', async () => {
+    const { container } = renderPanel({ session: nativeSession, tab: 'plugins' })
+    await waitFor(() => expect(container.textContent).toContain('Reload plugins'))
+    expect(notice(container)).toBeNull()
   })
 
   it('claude plugins tab renders the live panel, no notice', async () => {

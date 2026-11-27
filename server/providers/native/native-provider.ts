@@ -127,7 +127,7 @@ export class NativeProvider implements AgentProvider {
     supportsInterrupt: true,
     supportsResume: true,
     supportsFork: true,
-    supportsPlugins: false,
+    supportsPlugins: true,
     supportsFastMode: true,
     supportsEffortLevel: true,
     supportsThinkingControl: true,

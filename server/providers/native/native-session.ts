@@ -129,6 +129,7 @@ import {
 } from './hooks/transcript.js'
 import type { HookDecision, HookEvent, HookMatcherConfig, HookSource } from './hooks/types.js'
 import { formatHooksValidationErrors, validateSessionHooksConfig, type AgentHookConfig, type HttpHookConfig, type PromptHookConfig, type SessionHooksConfig } from '../../../shared/hooks.js'
+import { isPlainObject } from '../../../shared/type-guards.js'
 
 interface PendingDurableInitial {
   message: RequestMessage
@@ -587,6 +588,13 @@ export class NativeSession implements NativeSessionCore {
   /** Local SKILL.md catalog. Discovery is kicked off at construction and
    *  awaited per turn, the same shape as MCP's `whenReady`. */
   private readonly skills: NativeSkillCatalog
+  /** Live per-session plugin subset (compound `<plugin>@<marketplace>` keys).
+   *  Seeded from opts.enabledPlugins at spawn (undefined = all globally
+   *  enabled, [] = none); applyFlagSettings({enabledPlugins}) pins a concrete
+   *  post-toggle list. Both the skill catalog and the command reload read
+   *  THIS field, so a toggle re-resolves every contribution type through the
+   *  shared discovery commit. */
+  private enabledPlugins: string[] | undefined
   /** WebFetch reads the LIVE model through its getter at call time (a model
    *  switch must reach the auxiliary call) and the session's profile
    *  credentials. Prompt sections are registered by the provider from the
@@ -909,7 +917,8 @@ export class NativeSession implements NativeSessionCore {
     // Skills are discovered before the first turn can ask for them. The
     // policy is stored separately from discovery (the catalog resolves state
     // lazily), so configure-before/after-reload makes no difference.
-    this.skills = new NativeSkillCatalog(opts.cwd, opts.ports.skill, opts.enabledPlugins)
+    this.enabledPlugins = opts.enabledPlugins
+    this.skills = new NativeSkillCatalog(opts.cwd, opts.ports.skill, this.enabledPlugins)
     this.skills.configure(opts.skills)
     this.skillsReady = this.startSkillReload()
     // Custom commands are discovered before the first turn can invoke them,
@@ -2027,7 +2036,7 @@ export class NativeSession implements NativeSessionCore {
    *  error. The generation fence keeps a slower earlier pass from overwriting
    *  a newer committed snapshot. Custom files and plugin contributions commit
    *  together as ONE command-surface snapshot: the plugin port (when the host
-   *  has a marketplace store) receives the same per-session `enabledPlugins`
+   *  has a marketplace store) receives the same LIVE per-session `enabledPlugins`
    *  subset the skill catalog forwards. The commit also projects the plugin
    *  MCP half and re-composes the connection set, so spawn discovery and every
    *  reload reach MCP through the same single commit point. */
@@ -2036,7 +2045,7 @@ export class NativeSession implements NativeSessionCore {
     const pluginPort = this.opts.ports.plugin
     const reload = Promise.all([
       discoverCommands(this.opts.cwd, this.opts.commandsUserRoot),
-      pluginPort ? pluginPort.listContributions(this.opts.enabledPlugins) : Promise.resolve([]),
+      pluginPort ? pluginPort.listContributions(this.enabledPlugins) : Promise.resolve([]),
     ]).then(async ([commands, contributions]) => {
       if (generation <= this.committedCommandGeneration) return
       this.customCommands = commands
@@ -3499,6 +3508,15 @@ export class NativeSession implements NativeSessionCore {
     return { skills: this.commandCatalog(this.customCommands, this.pluginCommands, this.currentSkillView().commands()) }
   }
 
+  /** Re-resolve the plugin port and refresh every contribution type. Native
+   *  has no CLI plugin state to reload: the plugin half (commands / agents /
+   *  hooks / MCP) commits together with the skill and command roots in the
+   *  SAME discovery pass, so the plugin reload IS the shared catalog reload —
+   *  no parallel path. Answers the same `{ skills }` catalog contract. */
+  async reloadPlugins(): Promise<unknown> {
+    return this.reloadSkills()
+  }
+
   /** The single hook decision point for the trigger seams: delegates to the
    *  engine, which re-collects the live flag/plugin config for EVERY event, so
    *  a config replacement between dispatches is observed without a respawn
@@ -3683,14 +3701,17 @@ export class NativeSession implements NativeSessionCore {
    *  takes true to enable and false/null to clear; `agent` selects a stored
    *  main-thread persona or clears it with null; `hooks` replaces the flag
    *  hooks config (`{}` clears it) — per-event re-collection makes the
-   *  replacement live on the next dispatch (RS §12.3).
+   *  replacement live on the next dispatch (RS §12.3); `enabledPlugins` takes
+   *  the SDK's `{[pluginKey]: boolean}` toggle dict, pins the post-toggle
+   *  subset and re-resolves every contribution type through the shared
+   *  discovery commit.
    *
    *  Every key and any incoming definition is validated BEFORE state changes.
    *  Agent/base snapshots take effect on the next turn; fast mode and skill
    *  overrides keep their existing live-field behavior. Every other key fails
    *  loudly rather than reporting a change the native provider cannot honor. */
   async applyFlagSettings(settings: Record<string, unknown>): Promise<void> {
-    const supported = new Set(['skillOverrides', 'effortLevel', 'fastMode', 'agent', 'hooks'])
+    const supported = new Set(['skillOverrides', 'effortLevel', 'fastMode', 'agent', 'hooks', 'enabledPlugins'])
     const unknownKeys = Object.keys(settings).filter((key) => !supported.has(key))
     if (unknownKeys.length > 0) {
       throw new Error(`native provider does not support flag settings: ${unknownKeys.join(', ')}`)
@@ -3722,6 +3743,31 @@ export class NativeSession implements NativeSessionCore {
         throw new Error(`invalid hooks config: ${formatHooksValidationErrors(parsedHooks.errors)}`)
       }
       nextHooks = parsedHooks.value
+    }
+
+    // Plugin subset toggle: resolve the post-toggle list against the LIVE base
+    // — the pinned subset, or the current global enabled keys when the session
+    // still follows the global set (undefined). A content no-op (enabling a
+    // present key / disabling an absent one) keeps the spawn contract instead
+    // of pinning, mirroring the manager's materialize no-op guard so the live
+    // subset and the persisted spawn set agree.
+    let nextEnabledPlugins: string[] | undefined
+    if (settings.enabledPlugins !== undefined) {
+      const pluginFlags = settings.enabledPlugins
+      if (!isPlainObject(pluginFlags) || Object.values(pluginFlags).some((on) => typeof on !== 'boolean')) {
+        throw new Error('native provider enabledPlugins flag must be a {[pluginKey]: boolean} map')
+      }
+      const pluginPort = this.opts.ports.plugin
+      const base = this.enabledPlugins
+        ?? (pluginPort ? (await pluginPort.listContributions()).map((contribution) => contribution.key) : [])
+      const next = new Set(base)
+      for (const [key, on] of Object.entries(pluginFlags)) {
+        if (on) next.add(key)
+        else next.delete(key)
+      }
+      if (next.size !== base.length || base.some((key) => !next.has(key))) {
+        nextEnabledPlugins = [...next]
+      }
     }
 
     let agentIntent: {
@@ -3761,6 +3807,15 @@ export class NativeSession implements NativeSessionCore {
     // Replace (never merge): the flag source re-collects per dispatch, so the
     // next hook event observes exactly this config (RS §12.3).
     if (nextHooks !== undefined) this.hooksConfig = nextHooks
+
+    // Plugin subset: pin the post-toggle list on both discovery readers and
+    // ride the shared reload commit, so skills, commands, agents, hooks and
+    // the MCP composition all re-resolve with the new subset.
+    if (nextEnabledPlugins !== undefined) {
+      this.enabledPlugins = nextEnabledPlugins
+      this.skills.setEnabledPlugins(nextEnabledPlugins)
+      await this.reloadSkills()
+    }
 
     const overrides = settings.skillOverrides
     if (overrides === undefined) return

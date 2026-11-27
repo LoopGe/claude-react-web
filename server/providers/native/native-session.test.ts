@@ -3579,8 +3579,9 @@ describe('NativeSession', () => {
     await writeProjectSkill(dir, 'demo', { frontmatter: { 'argument-hint': "'[topic]'" } })
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     expect(provider.capabilities.supportsCommands).toBe(true)
-    // Plugins stay unsupported — the catalog is builtin + custom + skill rows.
-    expect(provider.capabilities.supportsPlugins).toBe(false)
+    // Plugins are supported (the T6 capability flip); the catalog here is
+    // builtin + custom + skill rows because no plugin port is wired.
+    expect(provider.capabilities.supportsPlugins).toBe(true)
     const session = provider.createSession({ id: 'skill-commands', cwd: dir })
     expect(await session.supportedCommands?.()).toEqual([
       ...BUILTIN_ROWS,
@@ -8969,4 +8970,299 @@ describe('NativeSession plugin MCP', () => {
       disableLogRing()
     }
   }, 20_000)
+})
+// ── Plugin toggle (plugin parity T6) ─────────────────────────────────────────
+// The capability flip + live per-session toggle: applyFlagSettings({enabledPlugins})
+// re-resolves the plugin subset and refreshes ALL five contribution types through
+// the SAME shared discovery commit reloadSkills uses; reloadPlugins is that pass.
+// Driven through the REAL host loader over a stub marketplace source (the T2–T5
+// fixture shape), with a subset-aware stub skill port for the skill half (the
+// host contract: undefined = all enabled, [] = none, else compound-key membership).
+describe('NativeSession plugin toggle', () => {
+  const stdioFixture = fileURLToPath(new URL('./mcp/fixtures/stdio-server.mjs', import.meta.url))
+  const stdioCfg = (byePath: string) => ({ type: 'stdio', command: 'node', args: [stdioFixture, byePath] })
+  const BLOCK_CMD = 'echo plugin-block >&2; exit 2'
+  const ALLOW_CMD = `echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"plugin-allow"}}'`
+
+  async function makePluginEntry(root: string, name: string): Promise<EnabledPluginEntry> {
+    const dir = join(root, 'plugins', name)
+    await mkdir(dir, { recursive: true })
+    return { key: `${name}@mp`, name, dir, cloneDir: join(root, 'mp-clone') }
+  }
+
+  async function writePluginCommand(entry: EnabledPluginEntry, rel: string, description: string, body: string): Promise<void> {
+    const file = join(entry.dir, 'commands', rel)
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, `---\ndescription: ${description}\n---\n\n${body}`, 'utf8')
+  }
+
+  async function writePluginAgent(entry: EnabledPluginEntry, rel: string, description: string, body: string): Promise<void> {
+    const file = join(entry.dir, 'agents', rel)
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, `---\ndescription: ${description}\n---\n\n${body}\n`, 'utf8')
+  }
+
+  async function writePluginHooks(entry: EnabledPluginEntry, command: string): Promise<void> {
+    const file = join(entry.dir, 'hooks', 'hooks.json')
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, JSON.stringify({
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command, shell: 'bash' }] }] },
+    }), 'utf8')
+  }
+
+  async function writePluginMcp(entry: EnabledPluginEntry, servers: Record<string, unknown>): Promise<void> {
+    await writeFile(join(entry.dir, '.mcp.json'), JSON.stringify({ mcpServers: servers }), 'utf8')
+  }
+
+  /** A real plugin-scope SKILL.md + its catalog record, served by the stub skill
+   *  port only while the subset admits the owning plugin key. */
+  async function makePluginSkill(root: string, entry: EnabledPluginEntry, name: string): Promise<{ key: string; record: SkillRecord }> {
+    const skillDir = join(root, 'plugin-skills', name)
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} description\n---\n\n# ${name}\n`, 'utf8')
+    return {
+      key: entry.key,
+      record: {
+        scope: 'plugin', name: `${entry.name}:${name}`, description: `${name} description`,
+        path: join(skillDir, 'SKILL.md'), relativePath: name,
+        readOnly: true, valid: true, errors: [], plugin: entry.name,
+      },
+    }
+  }
+
+  function portsWithPlugins(
+    stateDir: string,
+    entries: EnabledPluginEntry[],
+    pluginSkills: Array<{ key: string; record: SkillRecord }> = [],
+  ): NativeHostPorts {
+    const source = {
+      getEnabledPluginEntries: (keys?: string[]) =>
+        keys === undefined ? entries : entries.filter((entry) => keys.includes(entry.key)),
+    }
+    return {
+      ...makeNativePorts({ stateDir }),
+      plugin: { listContributions: (enabled) => listPluginContributions(source, enabled) },
+      skill: {
+        listSkills: async (_cwd, enabled) => ({
+          roots: [],
+          skills: pluginSkills.filter((s) => enabled === undefined || enabled.includes(s.key)).map((s) => s.record),
+        }),
+      },
+    }
+  }
+
+  /** No-turn provider: the toggle tests drive control reads + hook dispatch. */
+  function makeProvider(stateDir: string, ports: NativeHostPorts): NativeProvider {
+    const provider = new NativeProvider({ stateDir, ports })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {}
+    return provider
+  }
+
+  interface HookCore {
+    dispatchHook(event: string, input: Record<string, unknown>, ctx: { signal: AbortSignal; hasContext: boolean }): Promise<{
+      action: string
+      block?: { reason: string }
+      permission?: { behavior: string; reason?: string }
+      additionalContext: string[]
+    }>
+  }
+  const hookCoreOf = (session: unknown) => coreOf(session) as unknown as HookCore
+  const preToolUseInput = {
+    session_id: 'plugin-toggle',
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Bash',
+    tool_input: { command: 'ls' },
+  }
+  const dispatchCtx = () => ({ signal: new AbortController().signal, hasContext: true })
+
+  const commandNames = async (session: ProviderSessionHandle): Promise<string[]> =>
+    ((await session.supportedCommands?.()) as Array<{ name: string }>).map((row) => row.name)
+  const agentNames = async (session: ProviderSessionHandle): Promise<string[]> =>
+    ((await session.supportedAgents?.()) as Array<{ name: string }>).map((row) => row.name)
+  const connectedNames = async (session: ProviderSessionHandle): Promise<string[]> =>
+    ((await session.mcpServerStatus?.()) as Array<{ name: string; status: string }>)
+      .filter((row) => row.status === 'connected').map((row) => row.name).sort()
+
+  /** Plant all five contribution types for one plugin. */
+  async function plantAllFive(dir: string, entry: EnabledPluginEntry, byePath: string): Promise<{ key: string; record: SkillRecord }> {
+    await writePluginCommand(entry, 'about.md', 'About', 'ABOUT')
+    await writePluginAgent(entry, 'reviewer.md', 'Plugin reviewer', 'PLUGIN-REVIEW-PROMPT')
+    await writePluginHooks(entry, BLOCK_CMD)
+    await writePluginMcp(entry, { plug: stdioCfg(byePath) })
+    return makePluginSkill(dir, entry, 'helper')
+  }
+
+  it('plugin toggle: supportsPlugins is true and reloadPlugins re-resolves disk-side changes', async () => {
+    const dir = await tempDir('native-plugin-toggle-cap-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, 'about.md', 'About', 'ABOUT')
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry]))
+    expect(provider.capabilities.supportsPlugins).toBe(true)
+    const session = provider.createSession({ id: 'plugin-toggle-cap', cwd: dir })
+    try {
+      expect(typeof session.reloadPlugins).toBe('function')
+      const first = await session.reloadPlugins!() as { skills: Array<{ name: string }> }
+      expect(first.skills.map((row) => row.name)).toEqual([...BUILTIN_NAMES, 'demo:about'])
+      // A disk-side mutation is picked up by the plugin reload (the claude
+      // provider's reloadPlugins purpose) through the shared discovery commit.
+      await writePluginCommand(entry, 'extra.md', 'Extra', 'EXTRA')
+      const second = await session.reloadPlugins!() as { skills: Array<{ name: string }> }
+      expect(second.skills.map((row) => row.name)).toEqual([...BUILTIN_NAMES, 'demo:about', 'demo:extra'])
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('plugin toggle: disable revokes all five contribution types; re-enable restores them', async () => {
+    const dir = await tempDir('native-plugin-toggle-five-')
+    const entry = await makePluginEntry(dir, 'demo')
+    const byePlug = join(dir, 'bye-plug.txt')
+    const skill = await plantAllFive(dir, entry, byePlug)
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry], [skill]))
+    const session = provider.createSession({ id: 'plugin-toggle-five', cwd: dir })
+    try {
+      await session.supportedCommands?.()
+      expect(await commandNames(session)).toContain('demo:about')
+      expect(await commandNames(session)).toContain('demo:helper')
+      expect(await agentNames(session)).toContain('demo:reviewer')
+      const blocked = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      expect(blocked.action).toBe('block')
+      expect(blocked.block?.reason).toContain('plugin-block')
+      expect(await connectedNames(session)).toEqual(['plug'])
+
+      // Disable: every contribution type revokes through the shared commit.
+      await session.applyFlagSettings?.({ enabledPlugins: { 'demo@mp': false } })
+      const names = await commandNames(session)
+      expect(names).not.toContain('demo:about')
+      expect(names).not.toContain('demo:helper')
+      expect(await agentNames(session)).not.toContain('demo:reviewer')
+      const cleared = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      expect(cleared).toEqual({ action: 'continue', additionalContext: [] })
+      expect(await connectedNames(session)).toEqual([])
+      // The plugin's MCP child actually closed (the bye marker), not just its row.
+      await vi.waitFor(() => expect(existsSync(byePlug)).toBe(true), { timeout: 5000 })
+
+      // Re-enable: all five return; the MCP server reconnects.
+      await session.applyFlagSettings?.({ enabledPlugins: { 'demo@mp': true } })
+      expect(await commandNames(session)).toContain('demo:about')
+      expect(await commandNames(session)).toContain('demo:helper')
+      expect(await agentNames(session)).toContain('demo:reviewer')
+      const reblocked = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      expect(reblocked.action).toBe('block')
+      expect(await connectedNames(session)).toEqual(['plug'])
+    } finally {
+      await session.destroy()
+    }
+  }, 30_000)
+
+  it('plugin toggle: a pinned spawn subset re-resolves on toggle', async () => {
+    const dir = await tempDir('native-plugin-toggle-pinned-')
+    const entry = await makePluginEntry(dir, 'demo')
+    const byePlug = join(dir, 'bye-plug.txt')
+    await writePluginCommand(entry, 'about.md', 'About', 'ABOUT')
+    await writePluginMcp(entry, { plug: stdioCfg(byePlug) })
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry]))
+    // Spawn pinned to NONE: the plugin contributes nothing.
+    const session = provider.createSession({ id: 'plugin-toggle-pinned', cwd: dir, enabledPlugins: [] })
+    try {
+      await session.supportedCommands?.()
+      expect(await commandNames(session)).toEqual(BUILTIN_NAMES)
+      expect(await connectedNames(session)).toEqual([])
+
+      await session.applyFlagSettings?.({ enabledPlugins: { 'demo@mp': true } })
+      expect(await commandNames(session)).toEqual([...BUILTIN_NAMES, 'demo:about'])
+      expect(await connectedNames(session)).toEqual(['plug'])
+
+      await session.applyFlagSettings?.({ enabledPlugins: { 'demo@mp': false } })
+      expect(await commandNames(session)).toEqual(BUILTIN_NAMES)
+      expect(await connectedNames(session)).toEqual([])
+      await vi.waitFor(() => expect(existsSync(byePlug)).toBe(true), { timeout: 5000 })
+    } finally {
+      await session.destroy()
+    }
+  }, 20_000)
+
+  it('plugin toggle: a content no-op keeps the session following the global set', async () => {
+    const dir = await tempDir('native-plugin-toggle-noop-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, 'about.md', 'About', 'ABOUT')
+    // The stub source reads the LIVE entries array — a global toggle mutates it.
+    const entries: EnabledPluginEntry[] = [entry]
+    const provider = makeProvider(dir, portsWithPlugins(dir, entries))
+    const session = provider.createSession({ id: 'plugin-toggle-noop', cwd: dir })
+    try {
+      await session.supportedCommands?.()
+      // Enabling an already-enabled key is a content no-op: the session must
+      // stay unpinned (undefined = follow the global set), matching the
+      // manager's materialize no-op guard.
+      await session.applyFlagSettings?.({ enabledPlugins: { 'demo@mp': true } })
+      const extra = await makePluginEntry(dir, 'extra')
+      await writePluginCommand(extra, 'bonus.md', 'Bonus', 'BONUS')
+      entries.push(extra)
+      // The global ripple path: a plain catalog re-read with no subset change.
+      await session.reloadSkills?.()
+      expect(await commandNames(session)).toContain('extra:bonus')
+
+      // Disabling an absent key is likewise a no-op — still following global.
+      await session.applyFlagSettings?.({ enabledPlugins: { 'ghost@mp': false } })
+      entries.splice(0, entries.length)
+      await session.reloadSkills?.()
+      expect(await commandNames(session)).toEqual(BUILTIN_NAMES)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('plugin toggle: invalid enabledPlugins shapes throw and apply nothing', async () => {
+    const dir = await tempDir('native-plugin-toggle-invalid-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, 'about.md', 'About', 'ABOUT')
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry]))
+    const session = provider.createSession({ id: 'plugin-toggle-invalid', cwd: dir })
+    try {
+      await session.supportedCommands?.()
+      await expect(session.applyFlagSettings?.({ enabledPlugins: ['demo@mp'] })).rejects.toThrow(/enabledPlugins/)
+      await expect(session.applyFlagSettings?.({ enabledPlugins: { 'demo@mp': 'yes' } })).rejects.toThrow(/enabledPlugins/)
+      await expect(session.applyFlagSettings?.({ enabledPlugins: null })).rejects.toThrow(/enabledPlugins/)
+      // Nothing applied: the plugin surface is intact.
+      expect(await commandNames(session)).toContain('demo:about')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('plugin toggle: one shared reload refreshes all five types together (the global ripple pass)', async () => {
+    const dir = await tempDir('native-plugin-toggle-ripple-')
+    const entry = await makePluginEntry(dir, 'demo')
+    const byePlug = join(dir, 'bye-plug.txt')
+    const byePlug2 = join(dir, 'bye-plug2.txt')
+    const skill = await plantAllFive(dir, entry, byePlug)
+    const skills = [skill]
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry], skills))
+    const session = provider.createSession({ id: 'plugin-toggle-ripple', cwd: dir })
+    try {
+      await session.supportedCommands?.()
+      expect(await connectedNames(session)).toEqual(['plug'])
+
+      // Mutate ALL five contribution surfaces on disk, then ONE reload pass.
+      await writePluginCommand(entry, 'extra.md', 'Extra', 'EXTRA')
+      await writePluginAgent(entry, 'extra.md', 'Plugin extra', 'PLUGIN-EXTRA-PROMPT')
+      await writePluginHooks(entry, ALLOW_CMD)
+      await writePluginMcp(entry, { plug: stdioCfg(byePlug), plug2: stdioCfg(byePlug2) })
+      skills.push(await makePluginSkill(dir, entry, 'helper2'))
+      await session.reloadSkills?.()
+
+      expect(await commandNames(session)).toContain('demo:extra')
+      expect(await commandNames(session)).toContain('demo:helper2')
+      expect(await agentNames(session)).toContain('demo:extra')
+      const after = await hookCoreOf(session).dispatchHook('PreToolUse', preToolUseInput, dispatchCtx())
+      expect(after.action).toBe('allow')
+      expect(after.permission?.reason).toBe('plugin-allow')
+      expect(await connectedNames(session)).toEqual(['plug', 'plug2'])
+      // The re-carried unchanged plugin child was never restarted.
+      expect(existsSync(byePlug)).toBe(false)
+    } finally {
+      await session.destroy()
+    }
+  }, 30_000)
 })

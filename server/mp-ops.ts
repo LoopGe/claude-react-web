@@ -174,8 +174,10 @@ export async function checkMarketplaceUpdates(store: MpStore): Promise<MpUpdateS
  *  persisted state via spawn-time injection anyway.
  *
  *  Provider branch: claude sessions get the SDK plugin-flag toggle; native
- *  sessions have no SDK plugin flags — their skill catalog reads the store's
- *  global enabled set directly, so a catalog re-read is the whole live push. */
+ *  sessions have no SDK plugin flags — their discovery reads the store's
+ *  global enabled set directly, and the shared reload commit re-composes ALL
+ *  five contribution types (skills, commands, agents, hooks, MCP), so one
+ *  catalog re-read is the whole live push. */
 export async function applyPluginToggleToLiveSessions(
   sm: SessionManager,
   pluginKey: string,
@@ -188,8 +190,10 @@ export async function applyPluginToggleToLiveSessions(
     try {
       if (info.provider === 'native') {
         // The store's enabled flag was persisted before this call, so the
-        // re-read sees the new global set; reloadSkills also broadcasts
-        // commands-changed so an open picker updates live.
+        // re-read sees the new global set. reloadSkills rides the shared
+        // discovery commit: it refreshes plugin skills AND commands/agents/
+        // hooks/MCP together, and broadcasts commands-changed so an open
+        // picker updates live.
         await sm.reloadSkills(info.id)
       } else {
         await sm.togglePlugin(info.id, pluginKey, enabled)
@@ -286,7 +290,8 @@ export async function removeMarketplace(store: MpStore, sm: SessionManager, id: 
   // The disable pass pushed SDK toggles to claude sessions, but a native
   // catalog re-read during it still saw the persisted enabled flags (pushing
   // a disable does not clear them — only removeEntry just did). Re-read native
-  // catalogs now so their pickers drop the removed marketplace's skills.
+  // catalogs now so the shared commit drops the removed marketplace's
+  // contributions (skills, commands, agents, hooks, MCP) from every surface.
   // Claude sessions need no second push: their SDK toggle already landed.
   for (const info of sm.list()) {
     if (!info.running || info.provider !== 'native') continue
