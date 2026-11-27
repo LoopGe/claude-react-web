@@ -10,7 +10,9 @@ import { ToolInputError, type ToolDef } from './types.js'
 
 export const TASK_GET_GUIDANCE = 'Read one task by #N id.'
 
-export interface TaskGetInput {
+// Type alias (not interface): the implicit index signature lets
+// ToolDef<TaskGetInput> compose with the session's ToolDef list.
+export type TaskGetInput = {
   taskId: string
 }
 

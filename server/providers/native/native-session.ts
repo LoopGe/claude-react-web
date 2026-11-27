@@ -70,6 +70,11 @@ import { createTaskOutputTool } from './tools/task-output.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
 import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
+import { NativeTaskStore } from './task-store.js'
+import { createTaskCreateTool } from './tools/task-create.js'
+import { createTaskUpdateTool } from './tools/task-update.js'
+import { createTaskGetTool } from './tools/task-get.js'
+import { createTaskListTool } from './tools/task-list.js'
 import { createEnterPlanModeTool, createExitPlanModeTool, PLAN_MODE_GUIDANCE } from './tools/plan-mode.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import { agentUnusableReason } from '../../../shared/agent-definitions.js'
@@ -553,6 +558,14 @@ export class NativeSession implements NativeSessionCore {
   /** TodoWrite is per-session because the tool instance owns the live todo
    *  list; two sessions must never share tasks. */
   private readonly todoWriteTool: ToolDef
+  /** The Task* family's per-session store: the FULL task records (the client
+   *  fold keeps only checklist fields). Rebuilt from the neutral log on
+   *  resume/fork beside the pdf-budget rebuild; the four tools share it. */
+  private readonly taskStore: NativeTaskStore
+  private readonly taskCreateTool: ToolDef
+  private readonly taskUpdateTool: ToolDef
+  private readonly taskGetTool: ToolDef
+  private readonly taskListTool: ToolDef
   /** The CURRENT discovery/reload in flight. Re-assigned by `reloadSkills`, so
    *  a manual reload supersedes the construction one (and can recover from a
    *  transient construction failure) for every per-turn await. */
@@ -828,6 +841,13 @@ export class NativeSession implements NativeSessionCore {
     })
     this.webSearchTool = createWebSearchTool()
     this.todoWriteTool = createTodoWriteTool({ todos: [] })
+    // The Task* family rides alongside TodoWrite (the CLI carries both). The
+    // store is per-session; resume/fork rebuild it from the log below.
+    this.taskStore = new NativeTaskStore()
+    this.taskCreateTool = createTaskCreateTool(this.taskStore)
+    this.taskUpdateTool = createTaskUpdateTool(this.taskStore)
+    this.taskGetTool = createTaskGetTool(this.taskStore)
+    this.taskListTool = createTaskListTool(this.taskStore)
     // Skills are discovered before the first turn can ask for them. The
     // policy is stored separately from discovery (the catalog resolves state
     // lazily), so configure-before/after-reload makes no difference.
@@ -896,6 +916,9 @@ export class NativeSession implements NativeSessionCore {
       this.log = this.openFreshLog(opts)
     }
     this.pdfBudgets.rebuildFromEvents(neutralEventsOf(this.log))
+    // Replay the durable Task* calls so a resumed/forked session's store equals
+    // the live one (a fresh log folds to nothing).
+    this.taskStore.rebuild(neutralEventsOf(this.log))
     this.syncAttachmentReferences()
     // session-health's stuck-GC force-unloads sessions whose init never
     // lands — push it first, before any turn output. `fast_mode_state` is
@@ -1995,11 +2018,18 @@ export class NativeSession implements NativeSessionCore {
     // EnterPlanMode binds to the session's host-bound entry hook so a
     // tool-driven mode change routes through the manager. Stateless, so a
     // fresh instance per rebuild is fine (the hook reads live opts at call).
+    // The Task* family rides every list as well (both main and nested derive
+    // from this array): a subagent can create and update tasks in the session
+    // store. TaskGet/TaskList are read-only queries — never backgroundable.
     const tools: ToolDef[] = [
       ...this.opts.tools,
       this.webFetchTool,
       this.webSearchTool,
       this.todoWriteTool,
+      this.taskCreateTool,
+      this.taskUpdateTool,
+      this.taskGetTool,
+      this.taskListTool,
       this.agentTool,
       this.taskTool,
       this.taskOutputTool,

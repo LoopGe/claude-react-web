@@ -36,7 +36,9 @@ export interface NativeTaskRecord {
   metadata?: Record<string, unknown>
 }
 
-export interface TaskCreateInput {
+// Type aliases (not interfaces): the implicit index signature lets
+// ToolDef<TaskCreateInput> compose with the session's ToolDef list.
+export type TaskCreateInput = {
   subject: string
   description: string
   activeForm?: string
@@ -46,7 +48,7 @@ export interface TaskCreateInput {
 /** The TaskUpdate mutation surface (mirrors the CLI TaskUpdateInput).
  *  `status: 'deleted'` removes the record; addBlocks/addBlockedBy merge with
  *  dedup; metadata merges key-by-key (a null value deletes that key). */
-export interface TaskUpdatePatch {
+export type TaskUpdatePatch = {
   subject?: string
   description?: string
   activeForm?: string
