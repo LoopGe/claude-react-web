@@ -4,9 +4,12 @@
 // TaskCreate's result text carries the assigned #N id (the host fold parses it);
 // TaskUpdate returns a JSON mutation report and fails SOFT (isError) on an
 // unknown id, while malformed input throws ToolInputError like every tool.
+// TaskGet/TaskList are read-only JSON projections over store.get/store.list.
 import { describe, expect, it } from 'vitest'
 import { NativeTaskStore, type TaskCreateInput } from '../task-store.js'
 import { createTaskCreateTool } from './task-create.js'
+import { createTaskGetTool, type TaskGetInput } from './task-get.js'
+import { createTaskListTool } from './task-list.js'
 import { createTaskUpdateTool, type TaskUpdateInput } from './task-update.js'
 import { ToolInputError, type ToolContext } from './types.js'
 
@@ -21,6 +24,21 @@ interface UpdateReport {
   updatedFields: string[]
   statusChange?: { from: string; to: string }
   error?: string
+}
+
+interface GetReport {
+  task: {
+    id: string
+    subject: string
+    description: string
+    status: string
+    blocks: string[]
+    blockedBy: string[]
+  } | null
+}
+
+interface ListReport {
+  tasks: Array<{ id: string; subject: string; status: string; owner?: string; blockedBy: string[] }>
 }
 
 describe('createTaskCreateTool', () => {
@@ -126,5 +144,86 @@ describe('createTaskUpdateTool', () => {
     expect(out.success).toBe(true)
     expect(out.statusChange).toEqual({ from: 'pending', to: 'deleted' })
     expect(store.get('1')).toBeNull()
+  })
+})
+
+describe('createTaskGetTool', () => {
+  it('returns the record incl. blocks/blockedBy for an existing id', async () => {
+    const store = new NativeTaskStore()
+    store.create({ subject: 'A', description: 'Ship it', activeForm: 'Shipping', metadata: { p: 1 } })
+    store.create({ subject: 'B', description: 'd' })
+    store.update('1', { addBlocks: ['2'], addBlockedBy: ['2'], owner: 'agent-7', status: 'in_progress' })
+    const tool = createTaskGetTool(store)
+    expect(tool.name).toBe('TaskGet')
+    expect(tool.promptOrder).toBe(180)
+    expect(tool.guidance).toBe('Read one task by #N id.')
+    expect(tool.readOnlyHint).toBe(true)
+    expect(tool.backgroundable).toBeUndefined()
+    const result = await tool.run({ taskId: '1' }, ctx())
+    expect(result.isError).toBeUndefined()
+    expect(parse<GetReport>(result.text).task).toEqual({
+      id: '1',
+      subject: 'A',
+      description: 'Ship it',
+      status: 'in_progress',
+      blocks: ['2'],
+      blockedBy: ['2'],
+    })
+  })
+
+  it('unknown id returns {task:null} without isError', async () => {
+    const tool = createTaskGetTool(new NativeTaskStore())
+    const result = await tool.run({ taskId: '99' }, ctx())
+    expect(result.isError).toBeUndefined()
+    expect(parse<GetReport>(result.text)).toEqual({ task: null })
+  })
+
+  it('throws ToolInputError on missing or empty taskId', async () => {
+    const tool = createTaskGetTool(new NativeTaskStore())
+    await expect(tool.run({} as TaskGetInput, ctx())).rejects.toThrow(ToolInputError)
+    await expect(tool.run({ taskId: '  ' }, ctx())).rejects.toThrow(ToolInputError)
+  })
+})
+
+describe('createTaskListTool', () => {
+  it('lists all records in creation order with owner/blockedBy', async () => {
+    const store = new NativeTaskStore()
+    store.create({ subject: 'A', description: 'd' })
+    store.create({ subject: 'B', description: 'd' })
+    store.create({ subject: 'C', description: 'd' })
+    store.update('2', { owner: 'agent-7', addBlockedBy: ['1'] })
+    store.update('3', { status: 'completed' })
+    const tool = createTaskListTool(store)
+    expect(tool.name).toBe('TaskList')
+    expect(tool.promptOrder).toBe(180)
+    expect(tool.guidance).toBe('List all tasks with status and dependencies.')
+    expect(tool.readOnlyHint).toBe(true)
+    expect(tool.backgroundable).toBeUndefined()
+    expect(tool.schema).toEqual({ type: 'object', properties: {} })
+    const result = await tool.run({}, ctx())
+    expect(result.isError).toBeUndefined()
+    expect(parse<ListReport>(result.text).tasks).toEqual([
+      { id: '1', subject: 'A', status: 'pending', blockedBy: [] },
+      { id: '2', subject: 'B', status: 'pending', owner: 'agent-7', blockedBy: ['1'] },
+      { id: '3', subject: 'C', status: 'completed', blockedBy: [] },
+    ])
+  })
+
+  it('deleted tasks drop out, remaining order is preserved', async () => {
+    const store = new NativeTaskStore()
+    store.create({ subject: 'A', description: 'd' })
+    store.create({ subject: 'B', description: 'd' })
+    store.create({ subject: 'C', description: 'd' })
+    store.update('2', { status: 'deleted' })
+    const tool = createTaskListTool(store)
+    const result = await tool.run({}, ctx())
+    expect(parse<ListReport>(result.text).tasks.map((t) => t.id)).toEqual(['1', '3'])
+  })
+
+  it('empty store returns {tasks:[]}', async () => {
+    const tool = createTaskListTool(new NativeTaskStore())
+    const result = await tool.run({}, ctx())
+    expect(result.isError).toBeUndefined()
+    expect(parse<ListReport>(result.text)).toEqual({ tasks: [] })
   })
 })
