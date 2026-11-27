@@ -428,14 +428,17 @@ export class PermissionBroker {
       // restrictive posture); bypassPermissions is unaffected. Inert when
       // session.memoryRoots is undefined (claude sessions).
       if (session.memoryRoots && mode !== 'plan' && mode !== 'dontAsk') {
-        if (await isMemoryRootWrite(toolName, toolInput, session.memoryRoots)) {
+        // session.cwd anchors relative path fields against the same base the
+        // tool executes against (the acceptEdits convention), so the exemption
+        // judges the path actually written, not one anchored at process.cwd().
+        if (await isMemoryRootWrite(toolName, toolInput, session.memoryRoots, session.cwd)) {
           return {
             behavior: 'allow',
             updatedInput: toolInput,
             toolUseID: ctx.toolUseID,
           } satisfies PermissionResult
         }
-        if (await isMemoryRootRead(toolName, toolInput, session.memoryRoots)) {
+        if (await isMemoryRootRead(toolName, toolInput, session.memoryRoots, session.cwd)) {
           return {
             behavior: 'allow',
             updatedInput: toolInput,

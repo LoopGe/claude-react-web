@@ -5,7 +5,7 @@
 
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { isMemoryRootRead, isMemoryRootWrite, type MemoryRoots } from './memory-permission.js'
 
@@ -24,7 +24,7 @@ async function tempDir(prefix = 'memory-permission-'): Promise<string> {
 }
 
 /** A real own root + claude root + an outside dir, each with a sample file. */
-async function layout(): Promise<{ roots: MemoryRoots; own: string; claude: string; outside: string }> {
+async function layout(): Promise<{ roots: MemoryRoots; base: string; own: string; claude: string; outside: string }> {
   const base = await tempDir()
   const own = join(base, 'own')
   const claude = join(base, 'claude')
@@ -35,7 +35,7 @@ async function layout(): Promise<{ roots: MemoryRoots; own: string; claude: stri
   await writeFile(join(own, 'existing.md'), 'own')
   await writeFile(join(claude, 'existing.md'), 'claude')
   await writeFile(join(outside, 'secret.md'), 'outside')
-  return { roots: { own, claude }, own, claude, outside }
+  return { roots: { own, claude }, base, own, claude, outside }
 }
 
 describe('isMemoryRootWrite', () => {
@@ -155,5 +155,57 @@ describe('isMemoryRootRead', () => {
     const { roots, own, outside } = await layout()
     await symlink(outside, join(own, 'escape'), 'junction')
     expect(await isMemoryRootRead('Read', { file_path: join(own, 'escape', 'secret.md') }, roots)).toBe(false)
+  })
+})
+
+// Relative path fields must be anchored at the SESSION cwd (the base the tool
+// executes against), never at process.cwd() — otherwise the exemption judges a
+// different path than the one written (decision-integrity defect).
+describe('relative path resolution against session cwd', () => {
+  it('write: a forward relative path is exempt when anchored at a cwd that reaches own', async () => {
+    const { roots, base } = await layout()
+    // resolve(base, 'own/existing.md') === join(base, 'own', 'existing.md').
+    expect(await isMemoryRootWrite('Write', { file_path: 'own/existing.md' }, roots, base)).toBe(true)
+    expect(await isMemoryRootWrite('Write', { file_path: 'own/new.md' }, roots, base)).toBe(true)
+  })
+
+  it('write: the SAME relative path is not exempt from a different cwd (anchor divergence)', async () => {
+    const { roots, base, outside } = await layout()
+    // From base it reaches own; from outside it lands in outside/own (not own).
+    expect(await isMemoryRootWrite('Write', { file_path: 'own/existing.md' }, roots, base)).toBe(true)
+    expect(await isMemoryRootWrite('Write', { file_path: 'own/existing.md' }, roots, outside)).toBe(false)
+  })
+
+  it('write: a .. relative path anchored at the session cwd reaches own', async () => {
+    const { roots, own, outside } = await layout()
+    const rel = relative(outside, join(own, 'existing.md')) // ../own/existing.md
+    expect(await isMemoryRootWrite('Write', { file_path: rel }, roots, outside)).toBe(true)
+  })
+
+  it('write: a relative path with no cwd fails closed', async () => {
+    const { roots } = await layout()
+    expect(await isMemoryRootWrite('Write', { file_path: 'own/existing.md' }, roots)).toBe(false)
+    expect(await isMemoryRootWrite('Write', { file_path: 'own/existing.md' }, roots, undefined)).toBe(false)
+  })
+
+  it('write: an absolute path is unchanged regardless of cwd', async () => {
+    const { roots, own, outside } = await layout()
+    const abs = join(own, 'existing.md')
+    expect(await isMemoryRootWrite('Write', { file_path: abs }, roots, outside)).toBe(true)
+    expect(await isMemoryRootWrite('Write', { file_path: abs }, roots)).toBe(true)
+  })
+
+  it('read: relative Read / Glob paths anchor at the session cwd', async () => {
+    const { roots, base, outside } = await layout()
+    expect(await isMemoryRootRead('Read', { file_path: 'own/existing.md' }, roots, base)).toBe(true)
+    expect(await isMemoryRootRead('Read', { file_path: 'claude/existing.md' }, roots, base)).toBe(true)
+    expect(await isMemoryRootRead('Glob', { path: 'own' }, roots, base)).toBe(true)
+    // From a different cwd the same relative path does not reach the roots.
+    expect(await isMemoryRootRead('Read', { file_path: 'own/existing.md' }, roots, outside)).toBe(false)
+  })
+
+  it('read: a relative path with no cwd fails closed', async () => {
+    const { roots } = await layout()
+    expect(await isMemoryRootRead('Read', { file_path: 'own/existing.md' }, roots)).toBe(false)
   })
 })

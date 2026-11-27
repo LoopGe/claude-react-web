@@ -15,7 +15,7 @@
 // runs and the tool layer surfaces the real error.
 
 import { realpath } from 'node:fs/promises'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { EDIT_TOOL_PATH_FIELD } from './accept-edits-bash.js'
 import { createLogger } from './log.js'
 
@@ -83,6 +83,18 @@ function pathField(input: unknown, field: string): string | null {
   return typeof raw === 'string' && raw ? raw : null
 }
 
+/** Resolve the target against the SESSION cwd — the same base the tool executes
+ *  against (`resolveAgainstCwd(ctx.cwd, …)`) and the broker's acceptEdits
+ *  convention (`isInScopePath` → `resolve(cwd, p)`). `resolve(cwd, raw)` anchors
+ *  a relative path at cwd and leaves an absolute path unchanged, so the exemption
+ *  judges the path actually written, not one anchored at `process.cwd()`. A
+ *  relative path with no cwd to anchor it cannot be proven contained → null
+ *  (fail-closed); an absolute path still resolves without a cwd. */
+function targetPath(raw: string, cwd: string | undefined): string | null {
+  if (cwd) return resolve(cwd, raw)
+  return isAbsolute(raw) ? resolve(raw) : null
+}
+
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
@@ -91,20 +103,25 @@ function errMessage(err: unknown): string {
  *  a path inside the session's OWN memory root, by realpath containment. The
  *  claude compat root is deliberately never consulted — write isolation holds
  *  by construction. A new (absent) target under an existing root is exempt; an
- *  absent root or a symlink escape is not. */
+ *  absent root or a symlink escape is not. `cwd` is the session working
+ *  directory: relative path fields are anchored against it (the base the tool
+ *  writes against), absolute fields are unchanged. */
 export async function isMemoryRootWrite(
   toolName: string,
   input: unknown,
   roots: MemoryRoots | undefined,
+  cwd?: string,
 ): Promise<boolean> {
   if (!roots) return false
   const field = EDIT_TOOL_PATH_FIELD[toolName]
   if (!field) return false
   const raw = pathField(input, field)
   if (!raw) return false
+  const target = targetPath(raw, cwd)
+  if (!target) return false
   try {
     const realRoot = await realpath(roots.own)
-    const realTarget = await realpathNearestExisting(resolve(raw))
+    const realTarget = await realpathNearestExisting(target)
     return isAtOrBelow(realTarget, realRoot)
   } catch (err) {
     log.debug(`memory write exemption declined for ${toolName}: ${errMessage(err)}`)
@@ -116,18 +133,21 @@ export async function isMemoryRootWrite(
  *  session's own OR claude memory root, by realpath containment. Reads are
  *  read-only, so both roots are exempt; the target must exist (a read of an
  *  absent path is not exempt — the tool layer reports it). An absent path field
- *  (cwd-scoped search) is not memory-targeted. */
+ *  (cwd-scoped search) is not memory-targeted. `cwd` anchors relative path
+ *  fields against the session working directory (absolute fields unchanged). */
 export async function isMemoryRootRead(
   toolName: string,
   input: unknown,
   roots: MemoryRoots | undefined,
+  cwd?: string,
 ): Promise<boolean> {
   if (!roots) return false
   const field = READ_TOOL_PATH_FIELD[toolName]
   if (!field) return false
   const raw = pathField(input, field)
   if (!raw) return false
-  const target = resolve(raw)
+  const target = targetPath(raw, cwd)
+  if (!target) return false
   for (const root of [roots.own, roots.claude]) {
     if (!root) continue
     try {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { PermissionBroker, firstPartyReadOnlyTools, isQuestionResult, type BrokerPermissionResult } from './permission-broker.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 import type { Session, PendingPermission } from './session-types.js'
@@ -1515,7 +1515,7 @@ describe('memory-root exemption', () => {
     }
   })
 
-  async function memoryLayout(): Promise<{ own: string; claude: string; outside: string }> {
+  async function memoryLayout(): Promise<{ base: string; own: string; claude: string; outside: string }> {
     const base = await mkdtemp(join(tmpdir(), 'broker-memory-'))
     memDirs.push(base)
     const own = join(base, 'own')
@@ -1526,7 +1526,7 @@ describe('memory-root exemption', () => {
     await mkdir(outside)
     await writeFile(join(own, 'existing.md'), 'own')
     await writeFile(join(claude, 'existing.md'), 'claude')
-    return { own, claude, outside }
+    return { base, own, claude, outside }
   }
 
   function nativeSession(roots: { own: string; claude: string | null }, mode: string, cwd: string): Session {
@@ -1649,5 +1649,50 @@ describe('memory-root exemption', () => {
     const canUseTool = broker.buildCanUseTool(session, vi.fn())
     canUseTool('Write', { file_path: join(own, 'existing.md'), content: 'x' }, ctx('tu-claude-session'))
     expect(session.pending.size).toBe(1)
+  })
+
+  // Decision-integrity pin: a relative file_path must be judged against the
+  // SESSION cwd (the base the tool writes against), never process.cwd(). Both
+  // tests chdir so process.cwd() (base) deliberately differs from session.cwd
+  // (base/proj), then restore in finally.
+  it('relative file_path is judged against session.cwd, not process.cwd() (prompts when the session anchor escapes own)', async () => {
+    const { base, own, claude } = await memoryLayout()
+    const proj = join(base, 'proj')
+    await mkdir(proj)
+    const session = nativeSession({ own, claude }, 'default', proj)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    const prevCwd = process.cwd()
+    process.chdir(base)
+    try {
+      // From process.cwd() (base) this forward relative path resolves INSIDE
+      // own — the old bare-resolve code would exempt it. From the session cwd
+      // (proj) it lands in proj/own, outside own, so it must prompt.
+      canUseTool('Write', { file_path: 'own/existing.md', content: 'x' }, ctx('tu-rel-escape'))
+      await vi.waitFor(() => expect(session.pending.size).toBe(1))
+    } finally {
+      process.chdir(prevCwd)
+    }
+  })
+
+  it('relative file_path that reaches own from session.cwd is allowed', async () => {
+    const { base, own, claude } = await memoryLayout()
+    const proj = join(base, 'proj')
+    await mkdir(proj)
+    const session = nativeSession({ own, claude }, 'default', proj)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    const prevCwd = process.cwd()
+    process.chdir(base)
+    try {
+      // '../own/existing.md' from proj resolves into own; from process.cwd()
+      // (base) it would resolve outside own — so allowing proves the exemption
+      // anchored at session.cwd, not process.cwd().
+      const rel = relative(proj, join(own, 'existing.md'))
+      const input = { file_path: rel, content: 'x' }
+      const result = await canUseTool('Write', input, ctx('tu-rel-own'))
+      expect(result).toEqual({ behavior: 'allow', updatedInput: input, toolUseID: 'tu-rel-own' })
+      expect(session.pending.size).toBe(0)
+    } finally {
+      process.chdir(prevCwd)
+    }
   })
 })
