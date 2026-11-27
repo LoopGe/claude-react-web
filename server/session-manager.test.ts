@@ -738,6 +738,30 @@ describe('SessionManager', () => {
       }
     })
 
+    it('zero migration: an existing claude session stays claude after the token flips the default to native', async () => {
+      const before = defaultConfig.authToken
+      __setConfigForTest({ authToken: '' })
+      try {
+        // No token: a provider-less create resolves (and stamps) claude.
+        const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+        expect(sm.list().find((s) => s.id === claude.id)?.provider).toBe('claude')
+        expect(store.get(claude.id)?.provider).toBe('claude')
+
+        // The SAME live manager's effective default flips to native...
+        __setConfigForTest({ authToken: 'tok' })
+        expect(smDefaultProvider(sm)).toBe('native')
+
+        // ...but the existing session never reaches the getter: its stamped
+        // meta.provider keeps it claude, live and dormant (zero migration).
+        expect(sm.list().find((s) => s.id === claude.id)?.provider).toBe('claude')
+        expect(store.get(claude.id)?.provider).toBe('claude')
+        await sm.unload(claude.id)
+        expect(sm.list().find((s) => s.id === claude.id)?.provider).toBe('claude')
+      } finally {
+        __setConfigForTest({ authToken: before })
+      }
+    })
+
     it('explicit opts.defaultProvider override wins over the auth-aware default', async () => {
       const before = defaultConfig.authToken
       try {

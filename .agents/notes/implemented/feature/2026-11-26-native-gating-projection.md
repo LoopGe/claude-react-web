@@ -190,8 +190,9 @@ legacy/prototype-key default; `server/providers/provider-capabilities-pin.test.t
 pins agreement with the real provider literals (verified non-vacuous by a
 drift mutation). `SettingsPanel.test.tsx` / `UsagePanel.test.tsx` pin
 show-but-locked panels with zero fetches, per-boolean independence, and
-claude/legacy no-regression; `NewSessionDialog.test.tsx` pins the locked
-picker and live unlock in both provider-switch directions.
+claude/legacy no-regression; `NewSessionDialog.test.tsx` pinned the locked
+picker and live unlock in both provider-switch directions (superseded by
+the functional picker — see Related).
 
 ## Related
 

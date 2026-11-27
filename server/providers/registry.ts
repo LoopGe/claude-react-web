@@ -8,7 +8,7 @@ export class ProviderRegistry {
     this.providers.set(provider.name, provider)
   }
 
-  get(name = 'claude'): AgentProvider {
+  get(name: string): AgentProvider {
     const provider = this.providers.get(name)
     if (!provider) throw new HttpError(400, 'unknown provider: ' + name)
     return provider
