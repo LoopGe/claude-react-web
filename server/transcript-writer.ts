@@ -3,7 +3,7 @@
  * ledger (spec §8.1–§8.3).
  *
  * Two serial chains: `writerQueue` orders durable commits (append/reconcile/
- * eviction/reset/input/lifecycle); `dispatchQueue` orders provider dispatch by
+ * eviction/input/lifecycle); `dispatchQueue` orders provider dispatch by
  * dispatchOrdinal. The provider call NEVER holds writerQueue, so a synchronous
  * direct hand-off `onUserMessageConsumed` can re-enter the writer to commit
  * lifecycle metadata without deadlock. Durable-before-publish: a frame is
@@ -15,7 +15,6 @@
 
 import { makeCommitV2, makeRebuildPendingRow, type GenerationRecord } from './transcript-sidecar.js'
 import type { PendingOperation } from './transcript-reconcile.js'
-import type { ResetJournal } from './reset-journal.js'
 
 export interface DispatchOp {
   operationId: string
@@ -95,34 +94,6 @@ export class TranscriptWriter {
     initialGeneration = 0,
   ) {
     this.ledger = new GenerationLedger(initialGeneration)
-  }
-
-  /** A writer scoped to generation RESETS only (spec §8.3 clear/compact):
-   *  resetGeneration uses just `appendBatch` + the ledger, so the live-append
-   *  deps (record/publish/dispatch) are not wired here and fail LOUDLY if
-   *  called — live durable append through the writer is the T7b follow-up.
-   *  Initialized to the holder's current generation so ledger.next yields the
-   *  same `prev + 1` the caller prepared in the journal. */
-  static forReset(appendBatch: WriterDeps['appendBatch'], initialGeneration: number): TranscriptWriter {
-    const notWired = (): never => {
-      throw new Error('reset-only writer: live append/dispatch not wired (T7b)')
-    }
-    return new TranscriptWriter(
-      {
-        appendBatch,
-        recordSeq: notWired,
-        headSeq: () => initialGeneration,
-        publish: notWired,
-        dispatchUser: async () => { notWired() },
-        dispatchSupplement: async () => notWired(),
-        dispatchControl: async () => { notWired() },
-        isTurnActive: () => false,
-        generation: () => initialGeneration,
-        publishQueued: notWired,
-        afterMaterialize: notWired,
-      },
-      initialGeneration,
-    )
   }
 
   get degraded(): boolean {
@@ -526,37 +497,5 @@ export class TranscriptWriter {
     for (const d of deferred) this.deps.publish(d.msg, d.seq)
     if (outcome === 'failed') this.degradedFlag = true
     this.rebuildingFlag = false
-  }
-
-  /** Write a reset generation batch (empty for clear) + commit + fsync, bump the
-   *  matching epoch (spec §8.3). The sidecar is NOT deleted.
-   *
-   *  Two-phase with a journal: the caller `prepare`s the journal BEFORE the
-   *  provider op, then calls this (batch + fsync), then this `commit`s the
-   *  journal AFTER the batch is durable — the journal commit is the publication
-   *  marker. Epochs then live in the journal (persisted); the writer's epoch
-   *  fields sync from it. Journal-less callers keep the in-memory bump. */
-  async resetGeneration(reason: GenerationRecord['reason'], clientFloor?: number, journal?: ResetJournal): Promise<number> {
-    const gen = this.ledger.next(reason, clientFloor)
-    const batchId = nextBatchId()
-    const commit = makeCommitV2({
-      batchId,
-      batchType: 'reset',
-      generation: gen,
-      reason,
-      contentPolicy: reason === 'clear' ? 'replace' : 'preserve',
-      rows: [],
-    })
-    await this.commit([], commit)
-    if (journal) {
-      await journal.commit(gen)
-      this.clearEpoch = journal.clearEpoch
-      this.rebaseEpoch = journal.rebaseEpoch
-    } else if (reason === 'clear' || reason === 'compact') {
-      this.clearEpoch++
-    } else {
-      this.rebaseEpoch++
-    }
-    return gen
   }
 }

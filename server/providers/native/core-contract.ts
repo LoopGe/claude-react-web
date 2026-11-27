@@ -133,6 +133,18 @@ export interface NativeSessionCore {
   getAttachmentOccurrences?(): readonly NativeAttachmentOccurrence[]
   getAttachmentCatalog?(): readonly NativeFileAttachment[]
   getSkillCompactionEntries?(): readonly { afterUserUuid: string; body: string }[]
+  /** The authoritative NEUTRAL model history for compaction input: the uncapped
+   *  replay (`historyFromEvents`), already floored at the last compact and with
+   *  sidechain internals excluded (subagent RESULTS remain in the main history).
+   *  The host adapter projects this to SDK shape and recovers the floor summary
+   *  identity — the core exposes ONLY neutral RequestMessage[], never SDK. */
+  getCompactionHistory?(): RequestMessage[]
+  /** The LAST compact boundary's neutral facts — the summary text the model
+   *  continues from and the context snapshot captured at compaction time — or
+   *  null when the log has no compact. The adapter matches these against the
+   *  floor messages to mark the summary `isCompactSummary` and to drop the
+   *  context snapshot from the summarizer input (it is not a human turn). */
+  getCompactionBoundary?(): { text: string; context: string } | null
   getContextUsage?(opts?: { detail?: 'summary' | 'full' }): Promise<unknown>
   getEffectiveSettings?(): NativeEffectiveSettings
   getResetBaseSettings?(): NativeResetBaseSettings

@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { aliasPathOf, attachmentRoot } from './attachment-paths.js'
+import { aliasPathOf, attachmentRoot, imageObjectPathOf } from './attachment-paths.js'
+import { AttachmentObjectStore } from './attachment-object-store.js'
 import { UploadStore } from './upload-store.js'
+import { inspectImageBytes } from '../shared/image-inspect.js'
+import { imageRefId, type ImageAttachmentRef, type ImageRefBlock } from '../shared/image-attachment.js'
 import type { NativeFileAttachment } from './providers/native/session-log/format.js'
 import {
   buildCompactAttachmentContent,
@@ -69,6 +72,31 @@ function publicFile(attachment: NativeFileAttachment) {
       id: attachment.id, name: attachment.name, size: attachment.size, digest: attachment.digest,
     },
   }
+}
+
+const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+
+type ImageMeta = { mediaType: ImageAttachmentRef['mediaType']; width: number; height: number }
+
+/** Publish bytes into the real image object store and return the ref the upload
+ *  route would hand back. The resolver verifies digest/length/declared facts but
+ *  never re-inspects image validity (an upload-time concern), so a budget test
+ *  may publish opaque bytes. */
+async function addImage(fixture: { stateDir: string }, bytes: Buffer, meta: ImageMeta): Promise<ImageAttachmentRef> {
+  const objects = new AttachmentObjectStore(fixture.stateDir)
+  const pub = await objects.publishImage(bytes, meta)
+  return { id: imageRefId(pub.digest), mediaType: meta.mediaType, bytes: pub.bytes, width: meta.width, height: meta.height }
+}
+
+function inspectedPng(): { bytes: Buffer; meta: ImageMeta } {
+  const bytes = Buffer.from(PNG_1X1, 'base64')
+  const inspected = inspectImageBytes(bytes)
+  if (!inspected.ok) throw new Error('fixture PNG must inspect')
+  return { bytes, meta: inspected.image }
+}
+
+function imageRefBlock(ref: ImageAttachmentRef): ImageRefBlock {
+  return { type: 'image', attachment: ref }
 }
 
 describe('buildCompactAttachmentContent', () => {
@@ -298,4 +326,89 @@ describe('buildCompactAttachmentContent', () => {
       f,
     )).rejects.toThrow()
   })
+
+  it('resolves image refs to verified base64 source in the API image shape', async () => {
+    const f = await fixture()
+    const { bytes, meta } = inspectedPng()
+    const ref = await addImage(f, bytes, meta)
+    const legacy = { type: 'image', source: { type: 'base64', data: 'aGVsbG8=', media_type: 'image/png' } }
+    const messages = [user('u1', [imageRefBlock(ref), legacy])]
+    const before = JSON.stringify(messages)
+
+    const result = await buildCompactAttachmentContent(messages, [], f)
+
+    expect(result.hasAttachments).toBe(true)
+    expect(result.hasNativeMedia).toBe(true)
+    expect(result.content).toHaveLength(2)
+    // Hydration rewrites only the projected clones, never the input history.
+    expect(JSON.stringify(messages)).toBe(before)
+    // The ref is hydrated to the clean API image shape: the verified base64 of
+    // the stored bytes, with no server-only attachment/path fields (the
+    // Messages API rejects those). toEqual pins the exact shape.
+    expect(result.content[0]).toEqual({
+      type: 'image',
+      source: { type: 'base64', data: PNG_1X1, media_type: 'image/png' },
+    })
+    // The legacy base64 block rides alongside unchanged.
+    expect(result.content[1]).toEqual(legacy)
+  })
+
+  it('passes legacy base64 image blocks through unchanged', async () => {
+    const f = await fixture()
+    const legacy = { type: 'image', source: { type: 'base64', data: 'aGVsbG8=', media_type: 'image/png' } }
+
+    const result = await buildCompactAttachmentContent([user('u1', [legacy])], [], f)
+
+    expect(result.hasNativeMedia).toBe(true)
+    expect(result.content).toHaveLength(1)
+    expect(result.content[0]).toEqual(legacy)
+  })
+
+  it.each(['missing', 'corrupt', 'mismatch'] as const)('fails closed on a %s image ref', async (failure) => {
+    const f = await fixture()
+    const { bytes, meta } = inspectedPng()
+    let ref: ImageAttachmentRef
+    if (failure === 'missing') {
+      ref = { id: imageRefId('f'.repeat(64)), mediaType: 'image/png', bytes: 68, width: 1, height: 1 }
+    } else {
+      ref = await addImage(f, bytes, meta)
+      if (failure === 'corrupt') {
+        const objectPath = imageObjectPathOf(attachmentRoot(f.stateDir), ref.id.slice('sha256:'.length))
+        await chmod(objectPath, 0o600)
+        const tampered = Buffer.from(bytes)
+        tampered[0] ^= 0xff
+        await writeFile(objectPath, tampered)
+      } else {
+        ref = { ...ref, width: ref.width + 1 }
+      }
+    }
+
+    await expect(buildCompactAttachmentContent([user('u1', [imageRefBlock(ref)])], [], f))
+      .rejects.toMatchObject({ status: 400 })
+  })
+
+  it('counts resolved image base64 against the per-message PDF budget', async () => {
+    const f = await fixture('compact-image-budget-')
+    // 9.6 MB of opaque bytes -> 12.8M base64 chars; the 12 MB PDF adds 16M, so
+    // the message exceeds the 28M merged budget only once the image is hydrated
+    // (an unresolved ref contributes 0 and would wrongly let the PDF fit).
+    const ref = await addImage(f, Buffer.alloc(9_600_000, 'x'), { mediaType: 'image/png', width: 1, height: 1 })
+    const pdf = await addUpload(
+      f,
+      'budget-pdf',
+      Buffer.concat([Buffer.from('%PDF-'), Buffer.alloc(12_000_000 - 5, 'p')]),
+      { name: 'budget.pdf', modelForm: 'pdf-document', mediaType: 'application/pdf' },
+    )
+
+    const result = await buildCompactAttachmentContent(
+      [user('budget', [imageRefBlock(ref), publicFile(pdf)])],
+      [occurrence('budget', [1], pdf)],
+      f,
+    )
+
+    expect(result.content.map((block) => (block as { type: string }).type)).toEqual(['image', 'text'])
+    expect((result.content[0] as { source: { data: string } }).source.data).toHaveLength(12_800_000)
+    expect((result.content[1] as { text: string }).text).toContain('28,000,000')
+    expect((result.content[1] as { text: string }).text).toContain('omitted')
+  }, 30_000)
 })

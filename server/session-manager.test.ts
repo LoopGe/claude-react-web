@@ -401,6 +401,9 @@ import { projectNeutralEventToLegacy } from './providers/native/session-log/form
 import type { NativeSessionEvent } from './providers/native/vocabulary/session-event.js'
 import { nativeCoreOf } from './providers/native-host-frame-adapter.js'
 import { neutralEventsOf } from './providers/native/session-log/neutral-read.js'
+import { pushBounded, stampReceivedAt } from './history-utils.js'
+import { brandString } from './providers/native/vocabulary/brand.js'
+import { createAssistantMessage, createToolResultMessage } from './providers/native/vocabulary/message.js'
 
 // T6 read-side shrink: a v3 log exposes no live legacy read view. Reconstruct
 // the legacy shape from the canonical neutral baseline via the pinned compat
@@ -653,6 +656,26 @@ describe('SessionManager', () => {
     expect(native.taskControlSupported).toBe(true)
     await sm.unload(native.id)
     expect(sm.list().find((session) => session.id === native.id)?.taskControlSupported).toBe(true)
+  })
+
+  it('projects locked-feature booleans false for native, true for claude (live and dormant)', async () => {
+    const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+    const keys = ['pluginsSupported', 'hooksSupported', 'memorySupported', 'sandboxSupported', 'accountInfoSupported'] as const
+    for (const k of keys) {
+      expect(claude[k]).toBe(true)
+      expect(native[k]).toBe(false)
+    }
+    // Dormant projection (infoFromMeta) re-derives the same booleans from the
+    // provider registry — no live handle is involved.
+    await sm.unload(native.id)
+    await sm.unload(claude.id)
+    const dormantNative = sm.list().find((session) => session.id === native.id)
+    const dormantClaude = sm.list().find((session) => session.id === claude.id)
+    for (const k of keys) {
+      expect(dormantNative?.[k]).toBe(false)
+      expect(dormantClaude?.[k]).toBe(true)
+    }
   })
 
   it('create() defaults betas to the 1M-context flag when none is supplied', async () => {
@@ -3608,6 +3631,122 @@ describe('SessionManager', () => {
       expect(inputUuids).not.toContain((firstBoundary as { uuid: string }).uuid)
       expect(live.history.some(isBoundary)).toBe(true) // ring still retains everything
       expect(live.history.length).toBe(10) // 3 seed + 2 marker1 + 3 post turn + 2 marker2
+    })
+
+    it('compact summary input survives ring eviction of the boundary (authoritative model history)', async () => {
+      captureNativeRequests(sm)
+      const info = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      const live = liveSession(info.id)
+      const phaseOf = (s: Session) => (sm as unknown as { phaseOf(s: Session): string }).phaseOf(s)
+      const resultCount = () => live.history.filter((m) => (m as { type?: string }).type === 'result').length
+      const waitSettled = async (results: number) =>
+        expect(await waitFor(() => resultCount() >= results && phaseOf(live) === 'idle')).toBe(true)
+
+      // A real pre-compact turn, then the first compact floors it out.
+      await sm.send(info.id, 'pre turn')
+      await waitSettled(1)
+      await callAutoCompact(live, overThreshold)
+      expect(live.history.some(isBoundary)).toBe(true)
+      expect(live.history.some(isSummary)).toBe(true)
+
+      // An early post-compact turn lands in BOTH the ring and the durable log.
+      const earlySent = await sm.send(info.id, 'early post turn')
+      await waitSettled(2)
+
+      // Flood the ring past its cap so the boundary, the previous summary and
+      // the early post-compact turn are all evicted from the capped ring. The
+      // durable log (the authoritative model history) still holds them.
+      const cap = (sm as unknown as { historyCap: number }).historyCap
+      for (let i = 0; i < cap + 20; i++) {
+        const flood = {
+          type: 'assistant', uuid: `flood-${i}`, session_id: info.id, parent_tool_use_id: null,
+          message: { role: 'assistant', content: [{ type: 'text', text: `flood filler ${i}` }] },
+        } as unknown as SDKMessage
+        stampReceivedAt(flood)
+        pushBounded(live.history, flood, cap)
+      }
+      expect(live.history.some(isBoundary)).toBe(false)
+      expect(live.history.some(isSummary)).toBe(false)
+      expect(live.history.some((m) => (m as { uuid?: string }).uuid === earlySent.uuid)).toBe(false)
+
+      // The second compact must still summarize the previous summary + the
+      // early post-compact turn (taken from getCompactionInput, not the ring).
+      vi.mocked(summarizeForCompact).mockClear()
+      vi.mocked(summarizeForCompact).mockResolvedValueOnce('SECOND SUMMARY')
+      await callAutoCompact(live, overThreshold)
+      const input = vi.mocked(summarizeForCompact).mock.calls[0][0]
+      const serialized = JSON.stringify(input)
+      expect(serialized).toContain('MOCK SUMMARY') // prior summary survives eviction
+      expect(serialized).toContain('early post turn') // early post-compact turn survives
+      expect(serialized).not.toContain('pre turn') // compact floor still excludes pre-compact
+      expect(serialized).not.toContain('flood filler') // ring-only flood is never model-visible
+      expect(input.filter(isSummary)).toHaveLength(1) // exactly the floor summary identity
+    })
+
+    it('runInPlaceCompact prefers getCompactionInput over ring-slice', async () => {
+      const { info, live } = await seededSession()
+      const authoritative = [{
+        type: 'user', uuid: 'authoritative-span', session_id: info.id, parent_tool_use_id: null,
+        message: { role: 'user', content: [{ type: 'text', text: 'AUTHORITATIVE SPAN' }] },
+      }] as unknown as SDKMessage[]
+      live.handle.getCompactionInput = () => authoritative
+      vi.mocked(summarizeForCompact).mockClear()
+
+      await callAutoCompact(live, overThreshold)
+
+      // The exact authoritative array reaches the summarizer verbatim — not the
+      // ring slice (which holds the seed turn).
+      expect(vi.mocked(summarizeForCompact).mock.calls[0][0]).toBe(authoritative)
+      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+    })
+
+    it('native compact summary excludes subagent internals, keeps results', async () => {
+      const info = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      const live = liveSession(info.id)
+      const core = nativeCoreOf(live.handle) as unknown as { log: NativeSessionLog }
+      const time = Date.now()
+      const agentCall = brandString<'ToolCallId'>('toolu_agent')
+      // Authoritative log fixture: a main-thread delegation, its Agent result,
+      // and sidechain internals (non-null parent) the model never sees.
+      core.log.append({
+        type: 'user/message', time, parentToolUseId: null,
+        data: { role: 'user', id: brandString<'MessageId'>('u-delegate'), content: [{ type: 'text', text: 'delegate to the agent' }], source: { kind: 'user' } },
+      })
+      core.log.append({
+        type: 'assistant/message', time, parentToolUseId: null,
+        data: { message: createAssistantMessage({ content: [{ type: 'tool-call', id: agentCall, name: 'Agent', arguments: '{"prompt":"do"}' }], source: { provider: 'anthropic', model: 'test-model' } }), stream: [] },
+      })
+      core.log.append({
+        type: 'tool/result', time, parentToolUseId: null,
+        data: { message: createToolResultMessage({ callId: agentCall, content: [{ type: 'text', text: 'subagent result report' }], isError: false }) },
+      })
+      core.log.append({
+        type: 'assistant/message', time, parentToolUseId: 'toolu_agent',
+        data: { message: createAssistantMessage({ content: [{ type: 'text', text: 'subagent-internal-chatter' }], source: { provider: 'anthropic', model: 'test-model' } }), stream: [] },
+      })
+      // Mirror the frames into the rings so the capped-ring fallback WOULD see
+      // the sidechain chatter (the merged view includes subagentHistory).
+      const ringFrame = (uuid: string, parent: string | null, content: unknown[], role: 'user' | 'assistant'): SDKMessage => {
+        const m = { type: role, uuid, session_id: info.id, parent_tool_use_id: parent, message: { role, content } } as unknown as SDKMessage
+        stampReceivedAt(m)
+        return m
+      }
+      live.history.push(
+        ringFrame('u-delegate', null, [{ type: 'text', text: 'delegate to the agent' }], 'user'),
+        ringFrame('a-agent', null, [{ type: 'tool_use', id: 'toolu_agent', name: 'Agent', input: { prompt: 'do' } }], 'assistant'),
+        ringFrame('u-agent-result', null, [{ type: 'tool_result', tool_use_id: 'toolu_agent', content: 'subagent result report' }], 'user'),
+      )
+      live.subagentHistory.push(
+        ringFrame('a-side', 'toolu_agent', [{ type: 'text', text: 'subagent-internal-chatter' }], 'assistant'),
+      )
+      vi.mocked(summarizeForCompact).mockClear()
+
+      await callAutoCompact(live, overThreshold)
+
+      const serialized = JSON.stringify(vi.mocked(summarizeForCompact).mock.calls[0][0])
+      expect(serialized).toContain('delegate to the agent')
+      expect(serialized).toContain('subagent result report') // main-history Agent result kept
+      expect(serialized).not.toContain('subagent-internal-chatter') // sidechain internals excluded
     })
 
     it('handoff summary input unchanged by D6 floor (shared helper untouched)', async () => {

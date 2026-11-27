@@ -326,6 +326,15 @@ export interface ProviderSessionHandle {
    *  projection. The manager anchors each canonical body to the original user
    *  UUID without exposing the instruction in UI history or search. */
   getSkillCompactionEntries?(): readonly { afterUserUuid: string; body: string }[]
+  /** Authoritative compaction input: the provider's UNCAPPED model history
+   *  projected to SDK shape (native). Floored at the last compact, sidechain
+   *  internals excluded (subagent RESULTS remain in the main history), the floor
+   *  summary marked `isCompactSummary` and the context snapshot dropped (not a
+   *  human turn). The manager's in-place compact prefers this over the capped
+   *  ring slice, so the summarizer never loses early post-compact content or the
+   *  prior summary to ring eviction. Providers without an authoritative model
+   *  history omit it (the manager falls back to the ring slice). */
+  getCompactionInput?(): AgentMessage[]
   /** Full-log attachment occurrences for compact hydration. Public top-level
    * FileBlocks join by message UUID + blockPath; nested tool-result occurrences
    * use the provider's resolved metadata directly. */
@@ -388,6 +397,11 @@ export interface ProviderCapabilities {
   supportsAgents: boolean
   supportsContextUsage: boolean
   supportsUsage: boolean
+  /** Displayable authenticated-account info (email / org / subscription /
+   *  auth backend). False when the provider has no account state to report
+   *  (native's API-key auth — accountInfo() resolves undefined): the account
+   *  route rejects with 501 and the UI locks the section instead of rendering
+   *  empty rows. */
   supportsAccountInfo: boolean
   supportsSessionTitle: boolean
   supportsTaskControl: boolean
@@ -403,6 +417,12 @@ export interface ProviderCapabilities {
   /** Sandboxed execution (claude's flag-settings sandbox layer). Providers
    *  without it reject a sandbox-enabled create with 501. */
   supportsSandbox: boolean
+  /** Hook engine (claude's settings hooks). Native has none — a hooks config
+   *  edited there would never execute, so the surface locks. */
+  supportsHooks: boolean
+  /** Auto-memory settings (claude's flag-settings memory layer). Native
+   *  rejects the memory keys in applyFlagSettings, so the surface locks. */
+  supportsMemory: boolean
   /** Background tasks survive a server restart (the claude CLI resumes its
    *  own). When false, the host reconciles non-terminal task records to
    *  'stopped' on hydrate — the provider's workers died with the process. */

@@ -184,5 +184,5 @@ P1.1 plan（`2026-11-09-native-p1.1-context-efficiency.md`）不变量 3/4 与�
 ## 8. 风险
 
 - **ordered-reconcile spec 耦合**：compact-as-reset 写在 `2026-11-16-transcript-ordered-reconcile-design.md` §8.3。本设计解耦后需同步更新该 spec（compact 不再是 reset reason 的生产者，仅 legacy 恢复消费）。这是文档同步，不是机制风险。
-- **摘要输入地板依赖 ring 中的 boundary 帧**：若 ring 因 500 上限 eviction 丢了 boundary 帧，`mergedHistoryForCompaction` 找不到地板会退化为全量。builder 需评估：超长 session 多次压缩时 boundary 帧是否可能被 evict；如可能，摘要输入应改从 provider 模型历史取（更权威）。列为 builder 核验项。
+- **摘要输入地板依赖 ring 中的 boundary 帧**：若 ring 因 500 上限 eviction 丢了 boundary 帧，ring 切片找不到地板会退化为全量（最新 500 帧），漏掉模型仍看到的早期 post-compact 内容与上一份摘要。已由 followups B（权威模型历史输入）解决，见 `2026-11-26-native-compact-followups-design.md`：in-place compact（auto + manual）的摘要输入取自 provider 的权威模型历史（`getCompactionInput`，无上限、始终地板在最后 compact），ring 切片仅为无此能力 provider 的回退。
 - **legacy 呈现微调**：D7 让新 compact 磁盘投影含分隔线，legacy 维持 summary-only。两种投影并存是有意为之（前向 fence），非缺陷。

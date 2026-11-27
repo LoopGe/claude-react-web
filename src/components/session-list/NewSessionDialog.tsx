@@ -29,6 +29,8 @@ import { NEW_SESSION_AUTO_COMPACT_WINDOW_KEY } from '../../constants/recentKeys'
 import { clamp } from '../../utils/clamp'
 import { groupNameIssue } from '../../utils/group-name'
 import { PROVIDER_LABELS, providerLabel } from '../../utils/provider-display'
+import { providerSupports } from '../../../shared/provider-capabilities'
+import { RequiresCliNotice } from '../RequiresCliNotice'
 
 /** The form seeds its state (group pre-target, cwd, model, …) on MOUNT and
  *  does not reset on an `open` rising edge. A host that keeps the component
@@ -77,8 +79,14 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // Opt-in worktree isolation — off by default; only sent when checked.
   const [isolate, setIsolate] = useState(false)
   // Which agent runtime backs the session. `claude` (the CLI subprocess) is
-  // the historical default; `native` runs in-process and ignores plugins.
+  // the historical default; `native` runs in-process. The draft name is the
+  // pre-create capability source (no SessionInfo exists yet): locked features
+  // gate on providerSupports below, not on a hardcoded provider check.
   const [provider, setProvider] = useState('claude')
+  // Show-but-locked plugin picker: native keeps the cluster visible with
+  // disabled checkboxes + a RequiresCliNotice; switching the provider
+  // selector re-renders and unlocks live.
+  const pluginsLocked = !providerSupports(provider, 'plugins')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [systemPrompt, setSystemPrompt] = useState('')
@@ -597,7 +605,8 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
 
   // The dialog body grows after open as the MCP-server and plugin fetches land
   // (their sections mount inside Advanced options) and as fields toggle
-  // (thinking budget, env rows, the provider switch hiding plugins). Tween the
+  // (thinking budget, env rows, the provider switch adding/removing the
+  // plugin picker's requires-CLI notice). Tween the
   // body height instead of jumping. The measure caps at the `.modal` ceiling
   // (pin-independent); the observer watches the content-sized wrapper, which
   // also catches the uncontrolled <details> open/close. The nested
@@ -1025,12 +1034,13 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                     })}
                   </div>
                 )}
-                {provider !== 'native' && allPluginKeys.length > 0 && (
+                {allPluginKeys.length > 0 && (
                   <div className="settings-field" style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
                     <label style={{ margin: 0 }}>Plugins</label>
                     <span className="hint" style={{ marginTop: 4, display: 'block' }}>
                       Plugins can't be added after the session starts — choose them here.
                     </span>
+                    {pluginsLocked && <RequiresCliNotice />}
                     {allPluginKeys.map((key) => {
                       // Compound key is "<plugin>@<marketplace>"; neither
                       // segment contains '@' (assertSafeName enforces
@@ -1039,11 +1049,12 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                       return (
                         <label
                           key={key}
-                          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', cursor: 'pointer' }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', cursor: pluginsLocked ? 'default' : 'pointer' }}
                         >
                           <input
                             type="checkbox"
                             checked={enabledPlugins.has(key)}
+                            disabled={pluginsLocked}
                             onChange={() => togglePlugin(key)}
                           />
                           <span style={{ flex: 1 }}>{pluginName}</span>

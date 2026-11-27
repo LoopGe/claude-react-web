@@ -655,7 +655,7 @@ describe('native skill invocation recovery end to end', () => {
     seen.unsubscribe()
   })
 
-  it('feeds manual and automatic compaction the hidden instruction and real subagent context without exposing either projection', async () => {
+  it('feeds manual and automatic compaction the hidden instruction and the subagent report without exposing either projection', async () => {
     const { cwd, stateDir } = await makeEnv()
     await writeSkill(cwd, 'demo', 'COMPACT SKILL BODY\n')
     const fx = await makeFixture(stateDir)
@@ -702,8 +702,13 @@ describe('native skill invocation recovery end to end', () => {
         (frame as Frame).subtype === 'compact_boundary')).toBe(true)
     }, { timeout: 5000 })
     expect(autoInput.map(frameText).join('\n')).toContain(body)
+    // The authoritative model-history input is model-visible only: the child's
+    // sidechain copy is excluded; its report survives as the main-history Agent
+    // tool_result. The manual half above keeps the full sidechain context —
+    // sm.compact is the shared merged-ring path (/handoff + plugin-compact).
+    expect(autoInput.some((frame) => frame.parent_tool_use_id === 'agent-auto')).toBe(false)
     expect(autoInput.some((frame) =>
-      frame.parent_tool_use_id === 'agent-auto' && frameText(frame).includes('CHILD RESULT'))).toBe(true)
+      frame.parent_tool_use_id === null && frameText(frame).includes('CHILD RESULT'))).toBe(true)
     expect(framesText(fx.sm.getHistory(autoId))).not.toContain(body)
     expect(framesText((await fx.provider.readHistoryPage(autoId, { limit: 50 })).messages)).not.toContain(body)
     expect(await fx.sm.searchMessages(body, { sessionId: autoId })).toHaveLength(0)

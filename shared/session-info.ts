@@ -264,6 +264,19 @@ export interface SessionInfoBase<PM = string> {
    *  UI; explicit false hides mutation controls. Not persisted — re-derived
    *  from the provider registry on every live and dormant projection. */
   taskControlSupported?: boolean
+  /** Locked-feature capability booleans, each mirroring its
+   *  ProviderCapabilities flag for this session's provider (plugins, hooks,
+   *  auto-memory, sandbox, account info). Three-state like
+   *  taskControlSupported: undefined on legacy frames retains the
+   *  Claude-compatible UI (gate with `!== false`); explicit false means the
+   *  provider lacks the feature and the surface shows-but-disables with a
+   *  "requires Claude CLI" note. Not persisted — re-derived from the provider
+   *  registry on every live and dormant projection. */
+  pluginsSupported?: boolean
+  hooksSupported?: boolean
+  memorySupported?: boolean
+  sandboxSupported?: boolean
+  accountInfoSupported?: boolean
   /** Whether the embedded terminal is available on this server (the
    *  node-pty capability probe — a host property, not a provider one).
    *  Undefined on legacy frames retains the Claude-compatible UI; explicit

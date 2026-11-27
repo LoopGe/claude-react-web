@@ -549,6 +549,26 @@ describe('session log format v3 (neutral)', () => {
     expect(ev.data.summaryUuid).toBeUndefined()
   })
 
+  it('parseEventLineV3 session/compact drops malformed markers (retainHistory only ===true, summaryUuid only non-empty string)', () => {
+    const base = { text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' }
+    const parse = (data: Record<string, unknown>) =>
+      parseEventLineV3({ type: 'session/compact', seq: 5, time: 0, data }, 5, 's1', '/log') as any
+    for (const bad of [false, 'true', 1, null]) {
+      const ev = parse({ ...base, retainHistory: bad })
+      expect(ev.data.retainHistory).toBeUndefined()
+      expect(ev.data).not.toHaveProperty('retainHistory')
+    }
+    for (const bad of ['', 123, true, null, {}]) {
+      const ev = parse({ ...base, summaryUuid: bad })
+      expect(ev.data.summaryUuid).toBeUndefined()
+      expect(ev.data).not.toHaveProperty('summaryUuid')
+    }
+    // A malformed marker never poisons its well-formed sibling.
+    const mixed = parse({ ...base, retainHistory: true, summaryUuid: '' })
+    expect(mixed.data.retainHistory).toBe(true)
+    expect(mixed.data.summaryUuid).toBeUndefined()
+  })
+
   it('enforces the dt[0]=0 inter-arrival convention and texts/dt alignment', () => {
     const assistant = neutralEvents[1] as Record<string, unknown>
     const data = assistant.data as { stream: unknown[] }

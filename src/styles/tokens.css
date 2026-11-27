@@ -415,6 +415,16 @@
   /* Focus ring + optional glow halo. Default = the existing flat ring. */
   --focus-ring: 2px solid var(--accent);
   --focus-glow: none;
+  /* ── Locked-feature notice (RequiresCliNotice) ─────────────────────
+     A calm informational card — a faint accent wash on the elevated fill,
+     a quiet rim, muted ink — not a warning tint: the feature is locked by
+     the provider, nothing failed. Defined in BOTH themes (the light copy
+     weakens the mix: light's accent is darker, so the same wash would read
+     heavier there — same rationale as --code-nav-band). The mixes resolve
+     against the live theme/skin tokens, so skins follow automatically. */
+  --requires-cli-note-bg: color-mix(in srgb, var(--accent) 7%, var(--bg-elev));
+  --requires-cli-note-border: color-mix(in srgb, var(--accent) 25%, var(--border));
+  --requires-cli-note-fg: var(--fg-muted);
 }
 
 [data-theme="light"] {
@@ -472,6 +482,11 @@
   /* Navigation band peak, light theme (see :root). Lower percentage: the light
      accent is darker, so the same wash would read heavier here. */
   --code-nav-band: color-mix(in srgb, var(--accent) 20%, transparent);
+  /* Locked-feature notice, light theme (see :root) — weaker wash for the
+     same reason as --code-nav-band above. */
+  --requires-cli-note-bg: color-mix(in srgb, var(--accent) 5%, var(--bg-elev));
+  --requires-cli-note-border: color-mix(in srgb, var(--accent) 20%, var(--border));
+  --requires-cli-note-fg: var(--fg-muted);
   --bg-elev-1: #f0f1f4;
   /* Syntax-highlighting token colours (atom-one-light palette) */
   --hljs-fg: #383a42;

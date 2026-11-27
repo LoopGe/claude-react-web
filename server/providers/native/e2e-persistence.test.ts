@@ -537,6 +537,10 @@ describe('native provider persistence through SessionManager', () => {
     expect(pageMsgs.filter(isBoundaryFrame)).toHaveLength(1)
     expect(pageMsgs.filter(isSummaryFrame)).toHaveLength(1)
     expect((pageMsgs.find(isSummaryFrame) as { uuid: string }).uuid).toBe(summaryUuid)
+    expect((pageMsgs.find(isBoundaryFrame) as { uuid: string }).uuid).toBe(boundaryUuid)
+    // The pair renders in write order: the boundary divider precedes its
+    // summary on the page surface (both exist, pinned by the counts above).
+    expect(pageMsgs.findIndex(isBoundaryFrame)).toBeLessThan(pageMsgs.findIndex(isSummaryFrame))
 
     const resumedRing = liveSession(second.sm, info.id).history
     expect(resumedRing.filter(isBoundaryFrame)).toHaveLength(1)
@@ -588,6 +592,7 @@ describe('native provider persistence through SessionManager', () => {
     expect(entryMsgs.filter(isSummaryFrame)).toHaveLength(1)
 
     const snapshot = await second.provider.readHistoryForReconcile(id, {})
+    expect(snapshot.status).toBe('ok')
     const snapMsgs = snapshot.entries.map((e) => e.message as Record<string, unknown>)
     expect(snapMsgs.filter(isBoundaryFrame)).toHaveLength(1)
     expect(snapMsgs.filter(isSummaryFrame)).toHaveLength(1)

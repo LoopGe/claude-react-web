@@ -2199,6 +2199,28 @@ export class NativeSession implements NativeSessionCore {
     return entries
   }
 
+  /** Authoritative neutral model history for the host's compaction input: the
+   *  uncapped replay, floored at the last compact, sidechain excluded. The host
+   *  adapter owns the SDK projection + floor-summary identity recovery; the
+   *  core returns only neutral messages (no SDK import). */
+  getCompactionHistory(): RequestMessage[] {
+    return historyFromEvents(neutralEventsOf(this.log))
+  }
+
+  /** The last compact boundary's neutral facts (summary text + context
+   *  snapshot), or null when the log has none. Reverse scan mirrors replay's
+   *  `lastCompactIndex` floor (ES2022 — no Array.findLastIndex). */
+  getCompactionBoundary(): { text: string; context: string } | null {
+    const events = neutralEventsOf(this.log)
+    for (let i = events.length - 1; i >= 0; i--) {
+      const event = events[i]
+      if (event.type === 'session/compact') {
+        return { text: event.data.text, context: event.data.context }
+      }
+    }
+    return null
+  }
+
   /** Compact the conversation in place (P1.1 auto-compact): append the
    *  append-only `session/compact` boundary, then restart the model history
    *  from the captured context snapshot plus the summary. Only legal while the
