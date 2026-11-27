@@ -257,10 +257,11 @@ export class NativeProvider implements AgentProvider {
     const system = renderSystem({ withAgentSection: true, systemPromptAppend }, tools)
     const subagentSystem = renderSystem({ withAgentSection: false, systemPromptAppend }, tools)
     // The manager has already resolved globals + inline configs + first-party
-    // `injectAll` results into `mcpServers`. Connections start here and are
+    // `injectAll` results into `mcpServers`. The session owns that map as the
+    // user half of its two-map MCP composition (user ∪ plugin, user-wins) and
+    // starts the initial connect pass in its constructor; connections are
     // awaited per turn, so spawn never blocks on a slow server.
     const mcp = new NativeMcpConnections({ transportPort: this.ports.mcpTransport, authFor: this.authFor, registry: this.mcpRegistry })
-    mcp.load(opts.mcpServers as Record<string, unknown> | undefined)
     // Spawn skill policy and the auto-compact window pin ride the SDK-shaped
     // create body the manager already forwards through providerExtras
     // (`Options.skills`, `Options.settings.autoCompactWindow`). The pin is
@@ -273,9 +274,9 @@ export class NativeProvider implements AgentProvider {
       ? Math.round(rawAutoCompactWindow)
       : undefined
     // The constructor can throw on real paths (corrupt/unsupported log, missing
-    // fork log). The queued connect has no owner then, so it must be torn down
-    // here or it would run forever and leak its children. `closeAll` closes the
-    // local connects AND releases any shared-registry refs the load acquired.
+    // fork log). Its initial connect pass has no owner then, so it must be torn
+    // down here or it would run forever and leak its children. `closeAll` closes
+    // the local connects AND releases any shared-registry refs the load acquired.
     const profile = opts.profile ?? (configPort.hasProfiles ? configPort.activeProfile() : configPort.fallbackProfile())
     const credentials = () => {
       if (opts.profile === undefined && !profile.authToken) {
@@ -331,6 +332,7 @@ export class NativeProvider implements AgentProvider {
         readState,
         tools,
         mcp,
+        mcpServers: opts.mcpServers as Record<string, unknown> | undefined,
         agentStore: this.agentStore,
         skills: sdkOptions?.skills,
         enabledPlugins: opts.enabledPlugins,

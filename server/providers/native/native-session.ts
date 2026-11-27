@@ -58,7 +58,7 @@ import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
 import type { NativeFileAttachment, NativeTurnEndReason } from './session-log/format.js'
 import { mcpToolDefs } from './mcp/tools.js'
-import type { NativeMcpConnections } from './mcp/connections.js'
+import type { NativeMcpConnections, NativeMcpSetServersResult } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
 import { createAgentTool, type AgentToolDeps } from './subagent.js'
 import { EXPLORE_AGENT_DESCRIPTION, EXPLORE_AGENT_NAME } from './explore.js'
@@ -362,6 +362,27 @@ function mergePluginHooks(contributions: readonly PluginContributions[]): Sessio
   return merged
 }
 
+/** Merge the enabled plugins' MCP server maps in plugin key order (the port's
+ *  enabled-entry order). FIRST declaration wins a cross-plugin name collision,
+ *  with a logged warning naming both plugins; the user map wins over ALL plugin
+ *  entries at compose time. A Map + fromEntries keeps a hostile server name
+ *  (e.g. `__proto__`) an own data property, never a prototype write. */
+function mergePluginMcpServers(sessionId: string, contributions: readonly PluginContributions[]): Record<string, unknown> {
+  const merged = new Map<string, unknown>()
+  const owner = new Map<string, string>()
+  for (const contribution of contributions) {
+    for (const [name, config] of Object.entries(contribution.mcpServers)) {
+      if (merged.has(name)) {
+        log.warn(`[${sessionId}] plugin MCP server "${name}" from ${contribution.key} collides with ${owner.get(name)}; keeping the first declaration`)
+        continue
+      }
+      merged.set(name, config)
+      owner.set(name, contribution.key)
+    }
+  }
+  return Object.fromEntries(merged)
+}
+
 export interface NativeSessionOptions {
   id: string
   cwd: string
@@ -428,6 +449,11 @@ export interface NativeSessionOptions {
   /** Per-session MCP connections (external servers + first-party in-process
    *  ones). Absent in unit tests that drive the session without MCP. */
   mcp?: NativeMcpConnections
+  /** The spawn-time USER MCP map (the manager's merge of globals + inline +
+   *  first-party injection). The session owns it as the user half of the
+   *  two-map composition; the initial connection load applies it, and every
+   *  later apply re-composes it with the plugin half. */
+  mcpServers?: Record<string, unknown>
   /** Custom agent definitions the Agent tool resolves `subagent_type`
    *  against. Absent = only the built-in general-purpose agent. */
   agentStore?: AgentDefinitionStore
@@ -610,6 +636,15 @@ export class NativeSession implements NativeSessionCore {
    *  FQN (it may be truncated and hashed). */
   private mcpToolServers: ReadonlyMap<string, { name: string; source: 'sdk' | 'dynamic' }> = new Map()
   private readonly mcp: NativeMcpConnections | undefined
+  /** The two halves of the MCP composition. `userMcpServers` is the LAST
+   *  user-supplied map (spawn `mcpServers` opts, then every live
+   *  `setMcpServers`); `pluginMcpServers` is the plugin port's merged map as of
+   *  the last command-reload commit (same generation fence as the other plugin
+   *  projections). Every apply to `mcp` is `composeMcpServers()` — user ∪
+   *  plugin, user-wins — so a user-driven wholesale replace never drops plugin
+   *  servers, and a plugin reload never drops user servers. */
+  private userMcpServers: Record<string, unknown>
+  private pluginMcpServers: Record<string, unknown> = {}
   /** Base values survive independently of the selected persona. The effective
    *  fields below are what the next request and permission broker observe. */
   private readonly baseSystem: string
@@ -742,6 +777,7 @@ export class NativeSession implements NativeSessionCore {
     this.output = createPushable<NativeCoreFrame>(`native-session[${opts.id}]`)
     this.ctx = defaultFrameContext(opts.id)
     this.mcp = opts.mcp
+    this.userMcpServers = opts.mcpServers ?? {}
     this.tools = [...opts.tools]
     this.nestedTools = [...opts.tools]
     this.baseSystem = opts.system
@@ -879,6 +915,12 @@ export class NativeSession implements NativeSessionCore {
     // Custom commands are discovered before the first turn can invoke them,
     // the same per-turn-await shape as the skill catalog.
     this.commandsReady = this.startCommandReload()
+    // Initial MCP connect pass: the composed set with the plugin half still
+    // empty (the command reload above commits it asynchronously and re-composes
+    // then). Fire-and-forget like the old provider-side load — `whenReady()`
+    // waits for it, and a ctor throw after this point is torn down by the
+    // provider's closeAll guard.
+    this.mcp?.load(this.composeMcpServers())
     // One merged read-only resolution surface for the Agent tool and the
     // persona path: the user store plus the live qualified plugin defs.
     this.agentLookup = new PluginAgentLookup(opts.agentStore, () => this.pluginAgentDefs)
@@ -932,65 +974,74 @@ export class NativeSession implements NativeSessionCore {
     // The mode switch owns the log, the model history, and the usage
     // counters. It runs before `system/init` so a storage failure (fresh id
     // that already has a log, corrupt resume) throws out of createSession
-    // instead of leaving a half-started session.
-    if (opts.forkSession && opts.resume) {
-      this.log = this.openForkLog(opts, opts.resume)
-    } else if (opts.resume) {
-      this.log = this.openResumeLog(opts)
-    } else {
-      this.log = this.openFreshLog(opts)
-    }
-    this.pdfBudgets.rebuildFromEvents(neutralEventsOf(this.log))
-    this.syncAttachmentReferences()
-    // session-health's stuck-GC force-unloads sessions whose init never
-    // lands — push it first, before any turn output. `fast_mode_state` is
-    // intent-based, so the client's chip is correct before the first turn
-    // ends (the native provider has no CLI to report a runtime state).
-    this.output.push({
-      type: 'init',
-      sessionId: opts.id,
-      uuid: this.ctx.uuid(),
-      parentToolUseId: null,
-      fastMode: this.fastMode,
-    })
-    if (this.legacyAgentDropNotice !== undefined) {
+    // instead of leaving a half-started session. Everything from here on is
+    // wrapped: a throw after the async startup passes (command reload, MCP
+    // load) were launched must mark the stillborn session CLOSED, so their
+    // in-flight commits stand down instead of re-connecting MCP after the
+    // provider's ctor-throw closeAll guard.
+    try {
+      if (opts.forkSession && opts.resume) {
+        this.log = this.openForkLog(opts, opts.resume)
+      } else if (opts.resume) {
+        this.log = this.openResumeLog(opts)
+      } else {
+        this.log = this.openFreshLog(opts)
+      }
+      this.pdfBudgets.rebuildFromEvents(neutralEventsOf(this.log))
+      this.syncAttachmentReferences()
+      // session-health's stuck-GC force-unloads sessions whose init never
+      // lands — push it first, before any turn output. `fast_mode_state` is
+      // intent-based, so the client's chip is correct before the first turn
+      // ends (the native provider has no CLI to report a runtime state).
       this.output.push({
-        type: 'informational',
+        type: 'init',
         sessionId: opts.id,
         uuid: this.ctx.uuid(),
         parentToolUseId: null,
-        text: this.legacyAgentDropNotice,
+        fastMode: this.fastMode,
       })
+      if (this.legacyAgentDropNotice !== undefined) {
+        this.output.push({
+          type: 'informational',
+          sessionId: opts.id,
+          uuid: this.ctx.uuid(),
+          parentToolUseId: null,
+          text: this.legacyAgentDropNotice,
+        })
+      }
+      // `tools` is now the effective list from birth, not builtins-only until
+      // the first turn: the invariant tools = builtins + Agent + Task + MCP defs
+      // must hold for every reader, not just the pump after discovery.
+      this.rebuildTools()
+      // MCP discovery is fire-and-forget (`load` enqueues the connect pass), so
+      // the rebuild above ran before it settled and saw no MCP defs. Refresh the
+      // snapshot once discovery lands so pre-turn readers (the context
+      // composition) honor the birth invariant above without waiting for a turn.
+      // Later live mutations rebuild themselves; this closes only the initial
+      // discovery gap. A destroy before settlement no-ops.
+      if (this.mcp) {
+        void this.mcp.whenReady()
+          .then(() => { if (!this._closed) this.rebuildTools() })
+          .catch((err) => log.debug(`[${opts.id}] post-discovery tool refresh failed:`, err))
+      }
+      // Seed the memory snapshot fire-and-forget so pre-turn readers see the
+      // CLAUDE.md chain without waiting for a turn. The per-turn read below is
+      // authoritative and surfaces failures loudly; this seed only warns. A
+      // destroy before settlement no-ops (same closed guard).
+      void this.opts.ports.memory.read(this.opts.cwd)
+        .then((r) => { if (!this._closed) this.memorySnapshot = r })
+        .catch((err) => log.warn(`[${this.opts.id}] memory seed failed:`, err))
+      // SessionStart seam (RS §3, §13.2): fires at init with the source mapped
+      // from the spawn mode — the SAME branch the log open used. CRW's /clear is
+      // a host-driven fresh spawn, so it surfaces as 'startup'; there is no
+      // 'clear' source. Async (hook subprocesses): the first turn awaits
+      // `sessionStartInit` before UserPromptSubmit.
+      const initSource = opts.forkSession && opts.resume ? 'fork' : opts.resume ? 'resume' : 'startup'
+      this.sessionStartInit = this.runSessionStart(initSource)
+    } catch (err) {
+      this._closed = true
+      throw err
     }
-    // `tools` is now the effective list from birth, not builtins-only until
-    // the first turn: the invariant tools = builtins + Agent + Task + MCP defs
-    // must hold for every reader, not just the pump after discovery.
-    this.rebuildTools()
-    // MCP discovery is fire-and-forget (`load` enqueues the connect pass), so
-    // the rebuild above ran before it settled and saw no MCP defs. Refresh the
-    // snapshot once discovery lands so pre-turn readers (the context
-    // composition) honor the birth invariant above without waiting for a turn.
-    // Later live mutations rebuild themselves; this closes only the initial
-    // discovery gap. A destroy before settlement no-ops.
-    if (this.mcp) {
-      void this.mcp.whenReady()
-        .then(() => { if (!this._closed) this.rebuildTools() })
-        .catch((err) => log.debug(`[${opts.id}] post-discovery tool refresh failed:`, err))
-    }
-    // Seed the memory snapshot fire-and-forget so pre-turn readers see the
-    // CLAUDE.md chain without waiting for a turn. The per-turn read below is
-    // authoritative and surfaces failures loudly; this seed only warns. A
-    // destroy before settlement no-ops (same closed guard).
-    void this.opts.ports.memory.read(this.opts.cwd)
-      .then((r) => { if (!this._closed) this.memorySnapshot = r })
-      .catch((err) => log.warn(`[${this.opts.id}] memory seed failed:`, err))
-    // SessionStart seam (RS §3, §13.2): fires at init with the source mapped
-    // from the spawn mode — the SAME branch the log open used. CRW's /clear is
-    // a host-driven fresh spawn, so it surfaces as 'startup'; there is no
-    // 'clear' source. Async (hook subprocesses): the first turn awaits
-    // `sessionStartInit` before UserPromptSubmit.
-    const initSource = opts.forkSession && opts.resume ? 'fork' : opts.resume ? 'resume' : 'startup'
-    this.sessionStartInit = this.runSessionStart(initSource)
   }
 
   private currentSkillView(): ReturnType<NativeSkillCatalog['view']> {
@@ -1977,20 +2028,28 @@ export class NativeSession implements NativeSessionCore {
    *  a newer committed snapshot. Custom files and plugin contributions commit
    *  together as ONE command-surface snapshot: the plugin port (when the host
    *  has a marketplace store) receives the same per-session `enabledPlugins`
-   *  subset the skill catalog forwards. */
+   *  subset the skill catalog forwards. The commit also projects the plugin
+   *  MCP half and re-composes the connection set, so spawn discovery and every
+   *  reload reach MCP through the same single commit point. */
   private startCommandReload(): Promise<void> {
     const generation = ++this.commandGeneration
     const pluginPort = this.opts.ports.plugin
     const reload = Promise.all([
       discoverCommands(this.opts.cwd, this.opts.commandsUserRoot),
       pluginPort ? pluginPort.listContributions(this.opts.enabledPlugins) : Promise.resolve([]),
-    ]).then(([commands, contributions]) => {
+    ]).then(async ([commands, contributions]) => {
       if (generation <= this.committedCommandGeneration) return
       this.customCommands = commands
       this.pluginCommands = pluginCommandRows(contributions)
       this.pluginAgentDefs = pluginAgentDefs(contributions)
       this.pluginHooks = mergePluginHooks(contributions)
+      this.pluginMcpServers = mergePluginMcpServers(this.opts.id, contributions)
       this.committedCommandGeneration = generation
+      // Re-compose the MCP set with the freshly committed plugin half. Riding
+      // the reload promise makes `reloadSkills` (and every per-turn
+      // commandsReady await) observe the applied composition, not just the
+      // catalog snapshot.
+      await this.applyComposedMcpServers()
     })
     void reload.catch((err) => log.warn(`[${this.opts.id}] command discovery failed:`, err))
     return reload
@@ -3724,18 +3783,39 @@ export class NativeSession implements NativeSessionCore {
 
   // ── MCP control (optional NativeSessionCore members) ───────────────────
 
+  /** The composed MCP set: user ∪ plugin, USER-WINS on a name collision (a
+   *  plugin cannot shadow an explicitly configured global/session server).
+   *  Plugin-vs-plugin collisions are already resolved in the plugin half
+   *  (first key wins, logged). Spread copies own properties, so a hostile
+   *  server name stays a data property. */
+  private composeMcpServers(): Record<string, unknown> {
+    return { ...this.pluginMcpServers, ...this.userMcpServers }
+  }
+
+  /** The single apply point for the composed set. Unchanged entries keep their
+   *  connections (the replace diff's identity rule), so re-composing on a
+   *  plugin reload or a user-driven replace never churns the other half.
+   *  A destroy before the async plugin commit lands must not enqueue connects
+   *  after closeAll — hence the closed guard. */
+  private async applyComposedMcpServers(): Promise<NativeMcpSetServersResult | undefined> {
+    if (!this.mcp || this._closed) return undefined
+    const result = await this.mcp.setServers(this.composeMcpServers())
+    if (!this._closed) this.rebuildTools()
+    return result
+  }
+
   async mcpServerStatus(): Promise<unknown> {
     return this.mcp?.statuses() ?? []
   }
 
-  /** Replace the dynamic MCP server set (Task 3 semantics: unchanged entries
-   *  are kept, changed/removed ones close, added ones connect). The next turn
-   *  sees the new tool list; a running turn keeps its snapshot. */
+  /** Replace the USER MCP map (Task 3 semantics: unchanged entries are kept,
+   *  changed/removed ones close, added ones connect). The incoming map is
+   *  STORED as the user half and the COMPOSED set is applied — never a blind
+   *  replaceAll of the user map, which would drop every plugin server. The
+   *  next turn sees the new tool list; a running turn keeps its snapshot. */
   async setMcpServers(servers: Record<string, unknown>): Promise<unknown> {
-    if (!this.mcp) return { added: [], removed: [], errors: {} }
-    const result = await this.mcp.setServers(servers)
-    this.rebuildTools()
-    return result
+    this.userMcpServers = servers
+    return (await this.applyComposedMcpServers()) ?? { added: [], removed: [], errors: {} }
   }
 
   async reconnectMcpServer(name: string): Promise<void> {

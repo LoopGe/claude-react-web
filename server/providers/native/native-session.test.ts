@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { NativeProvider } from './native-provider.js'
@@ -51,6 +52,7 @@ import { buildRequestBody } from './anthropic-stream.js'
 import { DEFAULT_MAX_TOKENS } from './native-session.js'
 import type { Frame } from '../native-frames.js'
 import { config, __setConfigForTest } from '../../config.js'
+import { disableLogRing, enableLogRing, readLogRing } from '../../log.js'
 import { AnthropicModelDiscovery } from './model-discovery.js'
 import { NativeModelContextResolver, type NativeModelContext, type NativeModelRoute } from './model-context.js'
 import { HttpError } from '../../errors.js'
@@ -3775,6 +3777,7 @@ describe('NativeSession', () => {
       whenReady: () => mcpGate.promise,
       tools: () => [],
       statuses: () => [],
+      setServers: async () => ({ added: [], removed: [], errors: {} }),
       closeAll: async () => {},
     }
     const streamFor = internals.streamFor.bind(internals)
@@ -3827,6 +3830,7 @@ describe('NativeSession', () => {
       whenReady: () => mcpGate.promise,
       tools: () => [],
       statuses: () => [],
+      setServers: async () => ({ added: [], removed: [], errors: {} }),
       closeAll: async () => {},
     }
     try {
@@ -4877,7 +4881,12 @@ describe('NativeSession', () => {
     const frames: Frame[] = []
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
     const internals = coreOf(session) as unknown as { mcp: unknown; pumping: boolean }
-    internals.mcp = { whenReady: async () => { throw new Error('MCP not ready') } }
+    internals.mcp = {
+      whenReady: async () => { throw new Error('MCP not ready') },
+      tools: () => [],
+      statuses: () => [],
+      setServers: async () => ({ added: [], removed: [], errors: {} }),
+    }
 
     session.enqueueUserMessage(userMsg('/demo do this', 'u1') as never)
     await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
@@ -8744,4 +8753,220 @@ describe('NativeSession plugin hooks', () => {
       await session.destroy()
     }
   }, 30_000)
+})
+
+// ── Plugin MCP (plugin parity T5) ───────────────────────────────────────────
+// The two-map composition: the session owns the last user-supplied MCP map and
+// the plugin port's merged map, and EVERY apply (spawn load, live setMcpServers,
+// plugin reload) is their union with user-wins. Driven through the REAL host
+// loader over a plugin .mcp.json fixture and the SDK-shaped handle — the same
+// path the manager's live setMcpServers takes — so the durability pins cover
+// the wholesale-replace gap, not just a spawn-only merge. The stdio fixture's
+// bye marker proves a kept plugin child was never restarted by a replace.
+describe('NativeSession plugin MCP', () => {
+  const stdioFixture = fileURLToPath(new URL('./mcp/fixtures/stdio-server.mjs', import.meta.url))
+  const stdioCfg = (byePath: string) => ({ type: 'stdio', command: 'node', args: [stdioFixture, byePath] })
+
+  async function makePluginEntry(root: string, name: string): Promise<EnabledPluginEntry> {
+    const dir = join(root, 'plugins', name)
+    await mkdir(dir, { recursive: true })
+    return { key: `${name}@mp`, name, dir, cloneDir: join(root, 'mp-clone') }
+  }
+
+  /** Plant the plugin's convention MCP document (.mcp.json). */
+  async function writePluginMcp(entry: EnabledPluginEntry, servers: Record<string, unknown>): Promise<void> {
+    await writeFile(join(entry.dir, '.mcp.json'), JSON.stringify({ mcpServers: servers }), 'utf8')
+  }
+
+  function portsWithPlugins(stateDir: string, entries: EnabledPluginEntry[]): NativeHostPorts {
+    const source = {
+      getEnabledPluginEntries: (keys?: string[]) =>
+        keys === undefined ? entries : entries.filter((entry) => keys.includes(entry.key)),
+    }
+    return {
+      ...makeNativePorts({ stateDir }),
+      plugin: { listContributions: (enabled) => listPluginContributions(source, enabled) },
+    }
+  }
+
+  /** No-turn provider: these tests drive MCP control, not model turns. */
+  function makeProvider(stateDir: string, ports: NativeHostPorts): NativeProvider {
+    const provider = new NativeProvider({ stateDir, ports })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {}
+    return provider
+  }
+
+  interface McpStatusRow {
+    name: string
+    status: string
+    source?: string
+    serverInfo?: { name: string; version: string }
+    config?: { type: string; command?: string; args?: string[] }
+  }
+  async function mcpStatusRows(session: ProviderSessionHandle): Promise<McpStatusRow[]> {
+    return (await session.mcpServerStatus?.()) as McpStatusRow[]
+  }
+  const connectedNames = (rows: McpStatusRow[]) =>
+    rows.filter((row) => row.status === 'connected').map((row) => row.name).sort()
+
+  it('plugin MCP survives user-driven setMcpServers replaces (the durability gap)', async () => {
+    const dir = await tempDir('native-plugin-mcp-durable-')
+    const entry = await makePluginEntry(dir, 'demo')
+    const byePlug = join(dir, 'bye-plug.txt')
+    await writePluginMcp(entry, { plug: stdioCfg(byePlug) })
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry]))
+    const aCfg = { type: 'sdk', instance: echoServer() }
+    const bCfg = { type: 'sdk', instance: echoServer() }
+    const spawnMap: Record<string, unknown> = { a: aCfg }
+    const session = provider.createSession({ id: 'plugin-mcp-durable', cwd: dir, mcpServers: spawnMap })
+    try {
+      // supportedCommands awaits the construction-time command reload, whose
+      // commit applies the composed MCP set — plugin connections included.
+      await session.supportedCommands?.()
+      expect(connectedNames(await mcpStatusRows(session))).toEqual(['a', 'plug'])
+
+      // A user-driven add (the manager re-carries the dynamic map verbatim and
+      // appends the new entry): BOTH the user servers AND the plugin remain.
+      const added = await session.setMcpServers?.({ a: aCfg, b: bCfg }) as { added: string[]; removed: string[] }
+      expect(added.added).toEqual(['b'])
+      expect(added.removed).toEqual([])
+      expect(connectedNames(await mcpStatusRows(session))).toEqual(['a', 'b', 'plug'])
+
+      // Removing one user server keeps the plugin and the other user server.
+      const removed = await session.setMcpServers?.({ b: bCfg }) as { added: string[]; removed: string[] }
+      expect(removed.added).toEqual([])
+      expect(removed.removed).toEqual(['a'])
+      expect(connectedNames(await mcpStatusRows(session))).toEqual(['b', 'plug'])
+
+      // Clearing EVERY user server still keeps the plugin.
+      const cleared = await session.setMcpServers?.({}) as { added: string[]; removed: string[] }
+      expect(cleared.added).toEqual([])
+      expect(cleared.removed).toEqual(['b'])
+      expect(connectedNames(await mcpStatusRows(session))).toEqual(['plug'])
+
+      // No replace ever restarted the plugin child, and composition never
+      // mutated the caller-owned spawn map.
+      expect(existsSync(byePlug)).toBe(false)
+      expect(Object.keys(spawnMap)).toEqual(['a'])
+    } finally {
+      await session.destroy()
+    }
+    await vi.waitFor(() => expect(existsSync(byePlug)).toBe(true), { timeout: 5000 })
+  }, 20_000)
+
+  it('a plugin reload re-composes: added servers connect, removed ones close, user servers stay', async () => {
+    const dir = await tempDir('native-plugin-mcp-reload-')
+    const entry = await makePluginEntry(dir, 'demo')
+    const byePlug = join(dir, 'bye-plug.txt')
+    const byePlug2 = join(dir, 'bye-plug2.txt')
+    await writePluginMcp(entry, { plug: stdioCfg(byePlug) })
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry]))
+    const aCfg = { type: 'sdk', instance: echoServer() }
+    const session = provider.createSession({ id: 'plugin-mcp-reload', cwd: dir, mcpServers: { a: aCfg } })
+    try {
+      await session.supportedCommands?.()
+      expect(connectedNames(await mcpStatusRows(session))).toEqual(['a', 'plug'])
+
+      // A new plugin server appears on reload; the re-carried unchanged one
+      // keeps its child (no restart), and the user server is untouched.
+      await writePluginMcp(entry, { plug: stdioCfg(byePlug), plug2: stdioCfg(byePlug2) })
+      await session.reloadSkills?.()
+      expect(connectedNames(await mcpStatusRows(session))).toEqual(['a', 'plug', 'plug2'])
+      expect(existsSync(byePlug)).toBe(false)
+
+      // Removing the plugin's servers (a disabled/uninstalled plugin shape)
+      // closes them while the user server stays.
+      await writePluginMcp(entry, {})
+      await session.reloadSkills?.()
+      expect(connectedNames(await mcpStatusRows(session))).toEqual(['a'])
+      await vi.waitFor(() => expect(existsSync(byePlug)).toBe(true), { timeout: 5000 })
+      await vi.waitFor(() => expect(existsSync(byePlug2)).toBe(true), { timeout: 5000 })
+    } finally {
+      await session.destroy()
+    }
+  }, 20_000)
+
+  it('the per-session plugin subset gates plugin MCP', async () => {
+    const dir = await tempDir('native-plugin-mcp-subset-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginMcp(entry, { plug: stdioCfg(join(dir, 'bye-plug.txt')) })
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry]))
+    const none = provider.createSession({ id: 'plugin-mcp-subset-none', cwd: dir, enabledPlugins: [] })
+    try {
+      await none.supportedCommands?.()
+      expect(connectedNames(await mcpStatusRows(none))).toEqual([])
+    } finally {
+      await none.destroy()
+    }
+    const some = provider.createSession({ id: 'plugin-mcp-subset-some', cwd: dir, enabledPlugins: ['demo@mp'] })
+    try {
+      await some.supportedCommands?.()
+      expect(connectedNames(await mcpStatusRows(some))).toEqual(['plug'])
+    } finally {
+      await some.destroy()
+    }
+  }, 20_000)
+
+  it('a user server wins a name collision with a plugin server — until the user drops it', async () => {
+    const dir = await tempDir('native-plugin-mcp-collision-')
+    const entry = await makePluginEntry(dir, 'demo')
+    const byePlug = join(dir, 'bye-plug.txt')
+    await writePluginMcp(entry, { shared: stdioCfg(byePlug) })
+    const provider = makeProvider(dir, portsWithPlugins(dir, [entry]))
+    const userShared = { type: 'sdk', instance: echoServer('user-shared') }
+    const session = provider.createSession({ id: 'plugin-mcp-collision', cwd: dir, mcpServers: { shared: userShared } })
+    try {
+      await session.supportedCommands?.()
+      const rows = await mcpStatusRows(session)
+      expect(rows.map((row) => row.name)).toEqual(['shared'])
+      expect(rows[0]).toMatchObject({ status: 'connected', source: 'sdk', serverInfo: { name: 'user-shared' } })
+      // The plugin's stdio child never spawned under the user's shadow.
+      expect(existsSync(byePlug)).toBe(false)
+
+      // A live replace re-carrying the user entry keeps user-wins.
+      await session.setMcpServers?.({ shared: userShared })
+      expect((await mcpStatusRows(session))[0]).toMatchObject({ source: 'sdk', serverInfo: { name: 'user-shared' } })
+
+      // Dropping the user entry lets the plugin's server take over: the win is
+      // per-compose, not sticky.
+      await session.setMcpServers?.({})
+      const pluginRow = (await mcpStatusRows(session))[0]
+      expect(pluginRow).toMatchObject({ name: 'shared', status: 'connected', config: { type: 'stdio' } })
+    } finally {
+      await session.destroy()
+    }
+    await vi.waitFor(() => expect(existsSync(byePlug)).toBe(true), { timeout: 5000 })
+  }, 20_000)
+
+  it('plugin-vs-plugin collision: first key wins, with a logged warning', async () => {
+    const dir = await tempDir('native-plugin-mcp-vs-plugin-')
+    const first = await makePluginEntry(dir, 'a')
+    const second = await makePluginEntry(dir, 'b')
+    const byeA = join(dir, 'bye-a.txt')
+    const byeB = join(dir, 'bye-b.txt')
+    await writePluginMcp(first, { dup: stdioCfg(byeA) })
+    await writePluginMcp(second, { dup: stdioCfg(byeB) })
+    enableLogRing()
+    try {
+      const provider = makeProvider(dir, portsWithPlugins(dir, [first, second]))
+      const session = provider.createSession({ id: 'plugin-mcp-vs-plugin', cwd: dir })
+      try {
+        await session.supportedCommands?.()
+        const rows = await mcpStatusRows(session)
+        expect(rows.map((row) => row.name)).toEqual(['dup'])
+        expect(rows[0].status).toBe('connected')
+        expect(rows[0].config?.args).toEqual([stdioFixture, byeA])
+        // The second plugin's child never spawned.
+        expect(existsSync(byeB)).toBe(false)
+        const warned = readLogRing({ scope: 'native', level: 'warn', grep: 'dup' }).lines
+        expect(warned.length).toBeGreaterThan(0)
+        expect(warned[0].msg).toContain('a@mp')
+        expect(warned[0].msg).toContain('b@mp')
+      } finally {
+        await session.destroy()
+      }
+    } finally {
+      disableLogRing()
+    }
+  }, 20_000)
 })

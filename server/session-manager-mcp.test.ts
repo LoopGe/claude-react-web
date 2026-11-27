@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import { SessionMcpManager, type McpManagerDeps } from './session-manager-mcp.js'
+import { firstPartyRegistry } from './sdk-tools/registry.js'
 
 function makeDeps(session: Record<string, unknown>, extraConfigs: Record<string, unknown> = {}) {
-  const setMcpServers = vi.fn(async () => ({ added: ['b'], removed: [], errors: {} }))
+  const setMcpServers = vi.fn(async (_servers: Record<string, unknown>) => ({ added: ['b'], removed: [], errors: {} }))
   const configs: Record<string, unknown> = {
     a: { type: 'stdio', command: 'node' },
     b: { type: 'stdio', command: 'node' },
@@ -89,6 +90,26 @@ describe('SessionMcpManager setFirstPartyTool', () => {
     expect(session.firstPartyTools).toEqual(prior)
     // The legacy appToolsGit surface is reverted alongside the canonical map.
     expect(session.appToolsGit).toBe(true)
+  })
+})
+
+// Plugin MCP composition is NATIVE-CORE-owned (the two-map union lives in
+// NativeSession). The shared manager funnel — which also feeds the claude
+// provider, whose CLI reads plugin .mcp.json itself — must never carry plugin
+// servers: a plugin entry here would double-load on the claude path.
+describe('SessionMcpManager plugin boundary', () => {
+  it('live replace forwards only the user map + first-party injection', async () => {
+    const session: Record<string, unknown> = { id: 's1', cwd: undefined, dynamicMcpServers: {} }
+    const { deps, setMcpServers } = makeDeps(session)
+    const m = new SessionMcpManager(deps)
+    const userMap = { inline: { type: 'stdio', command: 'node' } }
+    await m.setMcpServers('s1', userMap)
+    const forwarded = setMcpServers.mock.calls[0][0]
+    expect(forwarded.inline).toEqual(userMap.inline)
+    const firstPartyNames = new Set(firstPartyRegistry.list().map((server) => server.name))
+    for (const name of Object.keys(forwarded)) {
+      expect(name === 'inline' || firstPartyNames.has(name)).toBe(true)
+    }
   })
 })
 

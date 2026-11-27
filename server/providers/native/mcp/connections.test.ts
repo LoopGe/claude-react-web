@@ -268,6 +268,35 @@ describe('NativeMcpConnections', () => {
     await conns.closeAll()
   }, 15_000)
 
+  it('a replace re-carrying an unchanged stdio entry keeps its child (plugin re-compose shape)', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const conns = new NativeMcpConnections({ transportPort })
+    // A FRESH config object per call — the shape a plugin .mcp.json re-read
+    // produces on every compose. Identity is the serializable fingerprint, not
+    // the object, so the child must survive user-only replaces around it.
+    const plugCfg = () => ({ type: 'stdio', command: 'node', args: [fixturePath, byePath] })
+    const userA = { type: 'sdk', instance: echoServer() }
+    conns.load({ plug: plugCfg(), a: userA })
+    await conns.whenReady()
+
+    const first = await conns.setServers({ plug: plugCfg(), a: userA, b: { type: 'sdk', instance: echoServer() } })
+    expect(first.added).toEqual(['b'])
+    expect(first.removed).toEqual([])
+    expect(existsSync(byePath)).toBe(false)
+
+    const second = await conns.setServers({ plug: plugCfg() })
+    expect(second.added).toEqual([])
+    expect([...second.removed].sort()).toEqual(['a', 'b'])
+    expect(conns.statuses().map((s) => s.name)).toEqual(['plug'])
+    expect(conns.statuses()[0].status).toBe('connected')
+    expect((await conns.call('mcp__plug__echo', { text: 'still here' }, abortSignal())).text).toContain('still here')
+    expect(existsSync(byePath)).toBe(false)
+
+    await conns.closeAll()
+    await waitFor(() => existsSync(byePath), 5000, 'the plugin child to exit on closeAll')
+  }, 15_000)
+
   it('toggles a server off and back on', async () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
