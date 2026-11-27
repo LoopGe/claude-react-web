@@ -404,6 +404,12 @@ export interface ProviderCapabilities {
   supportsResume: boolean
   supportsFork: boolean
   supportsPlugins: boolean
+  /** Selective plugin-SKILL discovery from `enabledPlugins` (the create-dialog
+   *  plugin picker). Distinct from supportsPlugins (plugins as agent
+   *  extensions): native has no plugin agent-extension runtime but consumes
+   *  enabledPlugins to narrow its plugin-skill catalog, so both providers
+   *  support this. */
+  supportsPluginSkills: boolean
   supportsFastMode: boolean
   supportsEffortLevel: boolean
   supportsThinkingControl: boolean

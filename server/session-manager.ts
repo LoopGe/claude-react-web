@@ -11880,6 +11880,11 @@ export class SessionManager {
       memorySupported: caps.supportsMemory,
       sandboxSupported: caps.supportsSandbox,
       accountInfoSupported: caps.supportsAccountInfo,
+      // Plugin-skill discovery (the create-dialog picker) is distinct from
+      // plugin agent extensions (pluginsSupported): native consumes
+      // enabledPlugins to narrow its plugin-skill catalog, so both providers
+      // project true here while native's plugins tab stays locked.
+      pluginSkillsSupported: caps.supportsPluginSkills,
       // Host property (the cached node-pty probe), not a provider one — the
       // same value for every session, live or dormant.
       terminalSupported: terminalCapability().supported,

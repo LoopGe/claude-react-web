@@ -668,6 +668,7 @@ describe('SessionManager', () => {
       supportsResume: false,
       supportsFork: false,
       supportsPlugins: false,
+      supportsPluginSkills: false,
       supportsFastMode: false,
       supportsEffortLevel: false,
       supportsThinkingControl: false,
@@ -842,6 +843,24 @@ describe('SessionManager', () => {
       expect(dormantNative?.[k]).toBe(false)
       expect(dormantClaude?.[k]).toBe(true)
     }
+  })
+
+  it('projects pluginSkillsSupported true for both providers (live and dormant)', async () => {
+    const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+    expect(claude.pluginSkillsSupported).toBe(true)
+    expect(native.pluginSkillsSupported).toBe(true)
+    // Distinct from pluginsSupported (plugins as agent extensions): native
+    // consumes enabledPlugins for plugin-SKILL discovery, but its plugins tab
+    // stays locked.
+    expect(claude.pluginsSupported).toBe(true)
+    expect(native.pluginsSupported).toBe(false)
+    // Dormant projection (infoFromMeta) re-derives the same boolean from the
+    // provider registry — no live handle is involved.
+    await sm.unload(native.id)
+    await sm.unload(claude.id)
+    expect(sm.list().find((session) => session.id === native.id)?.pluginSkillsSupported).toBe(true)
+    expect(sm.list().find((session) => session.id === claude.id)?.pluginSkillsSupported).toBe(true)
   })
 
   it('create() defaults betas to the 1M-context flag when none is supplied', async () => {

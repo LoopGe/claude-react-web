@@ -75,17 +75,18 @@ placeholder button. Its color tokens are defined in both themes.
 
 A session being created has no `SessionInfo` — only a draft provider name.
 `shared/provider-capabilities.ts` exports `providerSupports(provider,
-feature)` over a provider-name → locked-feature map (`LOCKED_FEATURES`:
-plugins, hooks, memory, sandbox, account). This is the SAME capability
-mechanism sourced before create, not a fourth gating system; the post-create
-`SessionInfo` booleans remain the source for existing sessions. The module
-is browser-safe (zero imports) and total over all string inputs (a `Map`, so
-prototype-key names like `constructor` cannot resolve); unknown/undefined
-providers default claude-compatible.
+feature)` over a provider-name → feature-support map (`GATED_FEATURES`:
+plugins, hooks, memory, sandbox, account, pluginSkills). This is the SAME
+capability mechanism sourced before create, not a fourth gating system; the
+post-create `SessionInfo` booleans remain the source for existing sessions.
+The module is browser-safe (zero imports) and total over all string inputs (a
+`Map`, so prototype-key names like `constructor` cannot resolve);
+unknown/undefined providers default claude-compatible.
 
-The map mirrors the server literals (native all false, claude all true) and
-cannot drift unnoticed: `server/providers/provider-capabilities-pin.test.ts`
-constructs the real providers and asserts `providerSupports` agrees with each
+The map mirrors the server literals (the five CLI features: native false,
+claude true; pluginSkills: true for both) and cannot drift unnoticed:
+`server/providers/provider-capabilities-pin.test.ts` constructs the real
+providers and asserts `providerSupports` agrees with each
 `ProviderCapabilities` flag, through an exhaustively typed feature→flag
 roster. The create-dialog picker gates on this source; its submit payload is
 unchanged — but `enabledPlugins` is NOT inert on native: native consumes it
