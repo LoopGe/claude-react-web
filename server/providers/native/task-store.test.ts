@@ -25,10 +25,10 @@ const assistant = (seq: number, content: ContentBlock[]): NativeSessionEvent => 
     stream: [],
   },
 })
-const toolResult = (seq: number, id: string, t: string): NativeSessionEvent => ({
+const toolResult = (seq: number, id: string, t: string, isError = false): NativeSessionEvent => ({
   type: 'tool/result', seq, time: TIME, parentToolUseId: null,
   data: {
-    message: { role: 'tool', id: msgId(`r${seq}`), source: { kind: 'tool', callId: callId(id) }, toolCallId: callId(id), content: [text(t)], isError: false },
+    message: { role: 'tool', id: msgId(`r${seq}`), source: { kind: 'tool', callId: callId(id) }, toolCallId: callId(id), content: [text(t)], isError },
   },
 })
 
@@ -206,5 +206,74 @@ describe('NativeTaskStore.rebuild', () => {
     const store = new NativeTaskStore()
     store.rebuild(events)
     expect(store.list()).toEqual([])
+  })
+
+  // The log persists the model's RAW tool-call arguments before tools validate
+  // or run, so rejected/never-executed updates are present too. None mutated the
+  // store live, so rebuild must skip them — both to reproduce live state and to
+  // avoid crashing on malformed input (addBlocks:42 / metadata:null would throw
+  // in a naive fold). Each rejected call carries an isError tool/result.
+  it('skips rejected updates (isError results) and reproduces live state without throwing', () => {
+    const live = new NativeTaskStore()
+    live.create({ subject: 'A', description: 'd' })
+    live.update('1', { status: 'in_progress' }) // the one mutation that ran live
+
+    const events: NativeSessionEvent[] = [
+      ...createEvents(0, 'c1', '1', { subject: 'A', description: 'd' }),
+      // invalid status — live ToolInputError, no mutation
+      assistant(2, [toolCall('u1', 'TaskUpdate', { taskId: '1', status: 'bogus' })]),
+      toolResult(3, 'u1', 'status must be one of pending, in_progress, completed, deleted', true),
+      // addBlocks not an array — live ToolInputError; a naive for…of would crash
+      assistant(4, [toolCall('u2', 'TaskUpdate', { taskId: '1', addBlocks: 42 })]),
+      toolResult(5, 'u2', 'addBlocks must be an array of non-empty strings', true),
+      // metadata null — live ToolInputError; a naive Object.entries(null) would crash
+      assistant(6, [toolCall('u3', 'TaskUpdate', { taskId: '1', metadata: null })]),
+      toolResult(7, 'u3', 'metadata must be an object', true),
+      // the valid update that actually ran live
+      assistant(8, [toolCall('u4', 'TaskUpdate', { taskId: '1', status: 'in_progress' })]),
+      toolResult(9, 'u4', '{"success":true,"taskId":"1","updatedFields":["status"],"statusChange":{"from":"pending","to":"in_progress"}}'),
+    ]
+    const rebuilt = new NativeTaskStore()
+    expect(() => rebuilt.rebuild(events)).not.toThrow()
+    expect(rebuilt.list()).toEqual(live.list())
+  })
+
+  it('skips an update whose result never landed (never executed)', () => {
+    const live = new NativeTaskStore()
+    live.create({ subject: 'A', description: 'd' })
+    const events: NativeSessionEvent[] = [
+      ...createEvents(0, 'c1', '1', { subject: 'A', description: 'd' }),
+      assistant(2, [toolCall('u1', 'TaskUpdate', { taskId: '1', status: 'completed' })]),
+      // no tool/result for u1 — interrupted before execution
+    ]
+    const rebuilt = new NativeTaskStore()
+    rebuilt.rebuild(events)
+    expect(rebuilt.list()).toEqual(live.list()) // status stays pending
+  })
+
+  it('skips a never-executed update closed by a synthetic repair result', () => {
+    const live = new NativeTaskStore()
+    live.create({ subject: 'A', description: 'd' })
+    const events: NativeSessionEvent[] = [
+      ...createEvents(0, 'c1', '1', { subject: 'A', description: 'd' }),
+      assistant(2, [toolCall('u1', 'TaskUpdate', { taskId: '1', status: 'completed' })]),
+      toolResult(3, 'u1', 'tool result missing (session interrupted)', true),
+    ]
+    const rebuilt = new NativeTaskStore()
+    rebuilt.rebuild(events)
+    expect(rebuilt.list()).toEqual(live.list())
+  })
+
+  it('skips a soft-failed update (success:false isError result)', () => {
+    const live = new NativeTaskStore()
+    live.create({ subject: 'A', description: 'd' })
+    const events: NativeSessionEvent[] = [
+      ...createEvents(0, 'c1', '1', { subject: 'A', description: 'd' }),
+      assistant(2, [toolCall('u1', 'TaskUpdate', { taskId: '99', status: 'completed' })]),
+      toolResult(3, 'u1', '{"success":false,"taskId":"99","updatedFields":[],"error":"Task #99 not found"}', true),
+    ]
+    const rebuilt = new NativeTaskStore()
+    rebuilt.rebuild(events)
+    expect(rebuilt.list()).toEqual(live.list())
   })
 })

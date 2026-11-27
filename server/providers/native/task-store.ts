@@ -9,8 +9,10 @@
 // Ids are sequential numeric strings ("1", "2", …), monotone per session. The
 // assigned `#N` appears only in TaskCreate's tool_result text, so `rebuild`
 // (resume) parses it from the result via the shared parseTaskId — never from the
-// create input — and replays every TaskUpdate patch through the SAME `update`
-// mutation path the live tool uses, so a rebuilt store equals the live one.
+// create input — and replays each SUCCESSFUL TaskUpdate (gated on a landed,
+// non-error result) through the SAME `update` mutation path the live tool uses,
+// so a rebuilt store equals the live one. Rejected/never-executed calls are in
+// the log too (raw arguments are persisted before tools run) and are skipped.
 //
 // Neutral CORE: imports only neutral shared/* + sibling vocabulary. No SDK, no
 // host frame vocabulary (the neutrality pin in vocabulary/neutrality.test.ts
@@ -142,32 +144,47 @@ export class NativeTaskStore {
     this.tasks.clear()
     this.nextId = 1
 
-    // 1) Index every tool result's text by the call id it answers.
-    const resultByCallId = new Map<string, string>()
+    // 1) Index every tool result by the call id it answers: its text (the create
+    //    id source) AND its isError flag (the durable mutation fact for updates).
+    const resultByCallId = new Map<string, { text: string; isError: boolean }>()
     for (const event of events) {
       if (event.type === 'tool/result') {
-        resultByCallId.set(event.data.message.toolCallId, resultText(event.data.message.content))
+        const message = event.data.message
+        resultByCallId.set(message.toolCallId, { text: resultText(message.content), isError: message.isError === true })
       }
     }
 
     // 2) Walk assistant tool-call blocks in log order, folding create/update.
-    //    Inputs are the raw JSON the model sent — the same values the live tool
-    //    validated and stored verbatim — so replaying them through `update`
-    //    reproduces the live record exactly.
+    //    The log carries the model's RAW arguments — persistFrame settles the
+    //    assistant round BEFORE tools validate/run — so a rejected or never-
+    //    executed call is present too. Each fold is therefore gated on its
+    //    result: a create needs its assigned-id text, an update needs a landed
+    //    NON-ERROR result. Only those calls mutated the store live, and their
+    //    inputs are the values the tool stored verbatim, so replaying them
+    //    through `insert`/`update` reproduces the live record exactly.
     for (const event of events) {
       if (event.type !== 'assistant/message') continue
       for (const block of event.data.message.content) {
         if (block.type !== 'tool-call') continue
         const input = parseToolInput(block.arguments)
         if (block.name === TASK_CREATE) {
-          const text = resultByCallId.get(block.id)
-          const id = text === undefined ? null : parseTaskId(text)
+          const result = resultByCallId.get(block.id)
+          const id = result === undefined ? null : parseTaskId(result.text)
           if (id === null) continue
           this.insert(id, input as unknown as TaskCreateInput)
           this.nextId = Math.max(this.nextId, Number(id) + 1)
         } else if (block.name === TASK_UPDATE) {
           const taskId = typeof input.taskId === 'string' ? input.taskId : null
           if (taskId === null) continue
+          // Replay ONLY a landed, non-error result. A rejected update
+          // (ToolInputError, permission/hook denial, unknown tool, max-turns,
+          // abort) or a never-executed one (absent result, or the synthetic
+          // repair result) never mutated the store live; each carries an isError
+          // result, as does the unknown-id soft fail (the tool sets isError
+          // exactly when the mutation failed). isError is the authoritative fact
+          // — unlike the result text, which a PostToolUse hook may rewrite.
+          const result = resultByCallId.get(block.id)
+          if (result === undefined || result.isError) continue
           this.update(taskId, input as unknown as TaskUpdatePatch)
         }
       }
