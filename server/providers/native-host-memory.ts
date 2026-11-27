@@ -94,7 +94,11 @@ function originRootOf(gitdir: string): string {
   return root
 }
 
-export function createMemoryReader(deps?: { configDir?: string }): NativeMemoryPort {
+/** `fsRoot` is a host-factory test seam: it bounds both upward walks so
+ *  fixture tests never read real ancestors above their tmpdirs. Absent =
+ *  the real filesystem root (full CLI-parity ancestor coverage). The
+ *  neutral port shape is unchanged. */
+export function createMemoryReader(deps?: { configDir?: string; fsRoot?: string }): NativeMemoryPort {
   // Per-instance (path → mtimeMs+size+content) cache: a turn-boundary re-read
   // re-stats every candidate but only re-reads files that actually changed.
   const cache = new Map<string, CacheEntry>()
@@ -137,6 +141,7 @@ export function createMemoryReader(deps?: { configDir?: string }): NativeMemoryP
     async read(cwd: string): Promise<NativeMemoryReadResult> {
       const out: NativeMemoryFile[] = []
       const configDir = deps?.configDir ?? claudeConfigDir()
+      const fsRoot = deps?.fsRoot ? resolve(deps.fsRoot) : null
       await loadOne(out, join(configDir, 'CLAUDE.md'), 'user')
 
       // Phase 1: cwd upward. A normal `.git` directory records the repo root
@@ -148,6 +153,7 @@ export function createMemoryReader(deps?: { configDir?: string }): NativeMemoryP
       let repoRoot: string | null = null
       let originRoot: string | null = null
       for (;;) {
+        if (fsRoot && !isAtOrBelow(current, fsRoot)) break
         chain1.push(current)
         const marker = await gitMarker(current)
         if (marker === 'file') {
@@ -162,16 +168,18 @@ export function createMemoryReader(deps?: { configDir?: string }): NativeMemoryP
         current = up
       }
 
-      // Phase 2 (worktree only): the origin root upward to the filesystem
-      // root, following nested pointer files the same way (bounded hops,
-      // visited-set cycle guard). Emitted origin-first: the worktree's own
-      // files, then the origin repo's, then the origin's ancestors.
+      // Phase 2 (worktree only): the origin root upward to the walk boundary
+      // (the fsRoot seam, else the filesystem root), following nested pointer
+      // files the same way (bounded hops, visited-set cycle guard). Emitted
+      // origin-first: the worktree's own files, then the origin repo's, then
+      // the origin's ancestors.
       const chain2: string[] = []
       if (worktreeRoot && originRoot) {
         const visited = new Set<string>([worktreeRoot])
         let cur = originRoot
         let hops = 0
         for (;;) {
+          if (fsRoot && !isAtOrBelow(cur, fsRoot)) break
           if (visited.has(cur)) break
           visited.add(cur)
           chain2.push(cur)

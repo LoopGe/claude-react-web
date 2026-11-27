@@ -1,7 +1,7 @@
 // Behavior pin for the host-side CLAUDE.md chain reader (the native memory
 // port). Every test builds real fixture dirs and injects configDir, so the
-// developer's own ~/.claude is never read. The ancestor walks reach the real
-// filesystem root above tmpdir; the fixtures place no memory files there.
+// developer's own ~/.claude is never read; fsRoot bounds the ancestor walks
+// at the fixture root, so no real tmpdir ancestor is ever read either.
 
 import { afterEach, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
@@ -58,7 +58,7 @@ describe('createMemoryReader', () => {
     const cwd = join(root, 'sub')
     write(cwd, 'CLAUDE.md', 'S')
 
-    const result = await createMemoryReader({ configDir }).read(cwd)
+    const result = await createMemoryReader({ configDir, fsRoot: base }).read(cwd)
 
     expect(result.files.map((f) => f.content)).toEqual(['U', 'R', 'S'])
     expect(result.files.map((f) => f.scope)).toEqual(['user', 'project', 'project'])
@@ -75,7 +75,7 @@ describe('createMemoryReader', () => {
     write(root, '.claude/CLAUDE.md', 'B')
     write(root, 'CLAUDE.local.md', 'C')
 
-    const result = await createMemoryReader({ configDir }).read(root)
+    const result = await createMemoryReader({ configDir, fsRoot: base }).read(root)
 
     expect(result.files.map((f) => f.content)).toEqual(['A', 'B', 'C'])
     expect(result.files.map((f) => f.scope)).toEqual(['project', 'project', 'local'])
@@ -93,7 +93,7 @@ describe('createMemoryReader', () => {
     const cwd = join(base, 'plain')
     mkdirSync(cwd, { recursive: true })
 
-    const result = await createMemoryReader({ configDir }).read(cwd)
+    const result = await createMemoryReader({ configDir, fsRoot: base }).read(cwd)
 
     expect(result.files.map((f) => f.content)).toEqual(['U'])
     expect(result.files.map((f) => f.scope)).toEqual(['user'])
@@ -106,7 +106,7 @@ describe('createMemoryReader', () => {
     mkdirSync(configDir, { recursive: true })
     const root = repoRoot(base)
 
-    const result = await createMemoryReader({ configDir }).read(root)
+    const result = await createMemoryReader({ configDir, fsRoot: base }).read(root)
 
     expect(result.files).toEqual([])
     expect(result.isGitRepo).toBe(true)
@@ -120,7 +120,7 @@ describe('createMemoryReader', () => {
     write(root, 'CLAUDE.md', 'x'.repeat(1_048_577))
     write(root, 'CLAUDE.local.md', 'L')
 
-    const result = await createMemoryReader({ configDir }).read(root)
+    const result = await createMemoryReader({ configDir, fsRoot: base }).read(root)
 
     expect(result.files.map((f) => f.content)).toEqual(['L'])
     expect(result.files.map((f) => f.scope)).toEqual(['local'])
@@ -136,7 +136,7 @@ describe('createMemoryReader', () => {
     const wt = worktree(origin, join(origin, '.claude', 'worktrees', 'wt'))
     write(wt, 'CLAUDE.md', 'WT')
 
-    const result = await createMemoryReader({ configDir }).read(wt)
+    const result = await createMemoryReader({ configDir, fsRoot: base }).read(wt)
 
     expect(result.files.map((f) => f.content)).toEqual(['WT', 'LOCAL'])
     expect(result.files.filter((f) => basename(f.path) === 'CLAUDE.md')).toHaveLength(1)
@@ -154,7 +154,7 @@ describe('createMemoryReader', () => {
     const wt = worktree(origin, join(base, 'wt'))
     write(wt, 'CLAUDE.md', 'WT')
 
-    const result = await createMemoryReader({ configDir }).read(wt)
+    const result = await createMemoryReader({ configDir, fsRoot: base }).read(wt)
 
     expect(result.files.map((f) => f.content)).toEqual(['WT', 'LOCAL', 'ABOVE'])
     expect(result.isGitRepo).toBe(true)
@@ -172,7 +172,7 @@ describe('createMemoryReader', () => {
     const cwd = join(wt, 'src')
     write(cwd, 'CLAUDE.md', 'SUB')
 
-    const result = await createMemoryReader({ configDir }).read(cwd)
+    const result = await createMemoryReader({ configDir, fsRoot: base }).read(cwd)
 
     expect(result.files.map((f) => f.content)).toEqual(['WT', 'SUB'])
   })
@@ -183,7 +183,7 @@ describe('createMemoryReader', () => {
     const userFile = write(configDir, 'CLAUDE.md', 'V1')
     const cwd = join(base, 'plain')
     mkdirSync(cwd, { recursive: true })
-    const reader = createMemoryReader({ configDir })
+    const reader = createMemoryReader({ configDir, fsRoot: base })
 
     expect((await reader.read(cwd)).files.map((f) => f.content)).toEqual(['V1'])
     writeFileSync(userFile, 'V2')
@@ -206,8 +206,21 @@ describe('createMemoryReader', () => {
     writeFileSync(join(wt, '.git'), 'garbage, not a gitdir pointer\n')
     write(wt, 'CLAUDE.md', 'WT')
 
-    const result = await createMemoryReader({ configDir }).read(wt)
+    const result = await createMemoryReader({ configDir, fsRoot: base }).read(wt)
 
     expect(result.files.map((f) => f.content)).toEqual(['WT'])
+  })
+
+  it('declared fsRoot bounds the walk: files above it are not loaded', async () => {
+    const outer = tmp()
+    write(outer, 'CLAUDE.md', 'OUTSIDE')
+    const configDir = join(outer, 'config')
+    mkdirSync(configDir, { recursive: true })
+    const root = repoRoot(outer, 'inner')
+    write(root, 'CLAUDE.md', 'INSIDE')
+
+    const result = await createMemoryReader({ configDir, fsRoot: root }).read(root)
+
+    expect(result.files.map((f) => f.content)).toEqual(['INSIDE'])
   })
 })
