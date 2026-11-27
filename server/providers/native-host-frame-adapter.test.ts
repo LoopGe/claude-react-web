@@ -314,6 +314,26 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
     expect(projectNativeEventToSdk(event)).toEqual(golden)
   })
 
+  it('task_started: local_monitor projects the monitor discriminant verbatim (Phase C)', () => {
+    const golden = taskStartedFrame({
+      taskId: 'task-3', toolUseId: 'tu-3', taskType: 'local_monitor', description: 'watch the deploy log', receivedAt: 7,
+    })
+    const event: OperationalFrame = {
+      type: 'task/started', taskId: 'task-3', toolUseId: 'tu-3', taskType: 'local_monitor',
+      description: 'watch the deploy log', isBackgrounded: true, time: 7,
+    }
+    const projected = projectNativeEventToSdk(event) as Record<string, any>
+    expect(projected).toEqual(golden)
+    // The wire carries the internal discriminant; the host fold normalizes it
+    // to the friendly 'monitor' label (normalizeTaskType, shared/tasks.ts).
+    expect(projected.subtype).toBe('task_started')
+    expect(projected.task_type).toBe('local_monitor')
+    expect('subagent_type' in projected).toBe(false)
+    expect('session_id' in projected).toBe(false)
+    expect('uuid' in projected).toBe(false)
+    expect('parent_tool_use_id' in projected).toBe(false)
+  })
+
   it('task_started: is_backgrounded projects the neutral isBackgrounded fact (false and true)', () => {
     const event: OperationalFrame = {
       type: 'task/started', taskId: 'task-9', toolUseId: 'tu-9', taskType: 'local_agent',

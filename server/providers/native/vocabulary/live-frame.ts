@@ -75,7 +75,7 @@ export type OperationalFrame =
       type: 'task/started'
       taskId: string
       toolUseId: string
-      taskType: 'local_bash' | 'local_agent'
+      taskType: 'local_bash' | 'local_agent' | 'local_monitor'
       description: string
       subagentType?: string
       isBackgrounded: boolean

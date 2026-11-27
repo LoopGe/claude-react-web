@@ -154,4 +154,17 @@ describe('live-frame shapes (runtime)', () => {
     expect(typeof suggestion.suggestion).toBe('string')
     expect(suggestion.parentToolUseId).toBeNull()
   })
+
+  it('task/started taskType accepts the monitor discriminant (Phase C type plumbing)', () => {
+    // The neutral union carries the internal discriminant; the host fold
+    // (normalizeTaskType) maps local_monitor → the friendly 'monitor' label.
+    expectTypeOf<Extract<OperationalFrame, { type: 'task/started' }>['taskType']>().toEqualTypeOf<
+      'local_bash' | 'local_agent' | 'local_monitor'
+    >()
+    const monitor: Extract<OperationalFrame, { type: 'task/started' }> = {
+      type: 'task/started', taskId: 't', toolUseId: 'tu', taskType: 'local_monitor',
+      description: 'watch the deploy log', isBackgrounded: true, time: 1,
+    }
+    expect(monitor.taskType).toBe('local_monitor')
+  })
 })
