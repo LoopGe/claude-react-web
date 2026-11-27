@@ -45,10 +45,13 @@ const MAX_OUTPUT_TIMEOUT = 600_000
 export class NativeTaskManager {
   private readonly records = new Map<string, TaskRecord>()
 
-  // Emits NEUTRAL live-only operational task frames (R6): task/started on
-  // detach, task/notification on a backgrounded settle. The host adapter owns
-  // the SDK projection (task_started / task_notification); the core never
-  // constructs SDK shapes. These frames are live-only — never persisted.
+  // Emits NEUTRAL live-only operational task frames (R6): task/started on a
+  // foreground-subagent launch (isBackgrounded:false) and on detach of either
+  // type (isBackgrounded:true); task/notification when a backgrounded task
+  // settles (either type) or a foreground subagent settles. Foreground shells
+  // emit nothing — claude parity. The host adapter owns the SDK projection
+  // (task_started / task_notification); the core never constructs SDK shapes.
+  // These frames are live-only — never persisted.
   constructor(private readonly emit: (frame: OperationalFrame) => void) {}
 
   runForeground(
@@ -78,6 +81,21 @@ export class NativeTaskManager {
     }
     this.records.set(metadata.toolUseId, record)
 
+    // Claude parity: a foreground subagent announces its launch immediately
+    // (isBackgrounded:false); a foreground shell stays silent.
+    if (metadata.taskType === 'subagent') {
+      this.emit({
+        type: 'task/started',
+        taskId: metadata.toolUseId,
+        toolUseId: metadata.toolUseId,
+        taskType: 'local_agent',
+        description: metadata.description,
+        ...(metadata.subagentType !== undefined ? { subagentType: metadata.subagentType } : {}),
+        isBackgrounded: false,
+        time: record.startedAt,
+      })
+    }
+
     let execution: Promise<ToolOutcome>
     try {
       execution = Promise.resolve(execute(controller.signal))
@@ -97,6 +115,21 @@ export class NativeTaskManager {
       this.resolveOutputWaiters(record, this.terminalOutcome(record))
       if (wasForeground) {
         record.resolveLoop(outcome)
+        // A foreground subagent reports its settle too (claude parity); a
+        // foreground shell resolves the loop only. A subagent backgrounded
+        // mid-flight has wasForeground === false and takes the branch below,
+        // so it notifies exactly once.
+        if (metadata.taskType === 'subagent') {
+          this.emit({
+            type: 'task/notification',
+            taskId: record.metadata.toolUseId,
+            toolUseId: record.metadata.toolUseId,
+            description: record.metadata.description,
+            status: record.status,
+            result: outcome.text,
+            time: Date.now(),
+          })
+        }
       } else {
         this.emit({
           type: 'task/notification',

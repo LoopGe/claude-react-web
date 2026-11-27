@@ -54,6 +54,85 @@ describe('NativeTaskManager', () => {
     expect(frames).toEqual([])
   })
 
+  it('foreground subagent emits task/started at launch and task/notification at settle', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = {
+      toolUseId: 'tu-fg-agent', taskType: 'subagent', description: 'research', subagentType: 'Explore',
+    }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+
+    // The launch frame fires synchronously at registration, before execution settles.
+    expect(started(frames)).toHaveLength(1)
+    expect(started(frames)[0]).toMatchObject({
+      type: 'task/started',
+      taskId: 'tu-fg-agent',
+      toolUseId: 'tu-fg-agent',
+      taskType: 'local_agent',
+      description: 'research',
+      subagentType: 'Explore',
+      isBackgrounded: false,
+    })
+    expect(typeof started(frames)[0].time).toBe('number')
+    expect(notifications(frames)).toHaveLength(0)
+
+    execution.resolve({ text: 'foreground report' })
+    await expect(waiting).resolves.toEqual({ text: 'foreground report' })
+    await flush()
+
+    expect(notifications(frames)).toHaveLength(1)
+    expect(notifications(frames)[0]).toMatchObject({
+      taskId: 'tu-fg-agent',
+      toolUseId: 'tu-fg-agent',
+      description: 'research',
+      status: 'completed',
+      result: 'foreground report',
+    })
+    // Exactly one started (the launch) — no detach frame for a never-backgrounded task.
+    expect(started(frames)).toHaveLength(1)
+  })
+
+  it('foreground shell emits no task frames and resolves the loop', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-fg-shell'), () => execution.promise, new AbortController().signal)
+
+    expect(frames).toEqual([])
+    execution.resolve({ text: 'shell output' })
+    await expect(waiting).resolves.toEqual({ text: 'shell output' })
+    await flush()
+    expect(frames).toEqual([])
+  })
+
+  it('foreground subagent backgrounded mid-flight emits exactly one notification', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = {
+      toolUseId: 'tu-fg-flip', taskType: 'subagent', description: 'flip', subagentType: 'Explore',
+    }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+
+    // Foreground launch frame.
+    expect(started(frames)).toHaveLength(1)
+    expect(started(frames)[0].isBackgrounded).toBe(false)
+
+    expect(manager.background('tu-fg-flip')).toBe(true)
+    await waiting
+
+    // Detach frame added; the settle now takes the backgrounded branch.
+    expect(started(frames)).toHaveLength(2)
+    expect(started(frames)[1].isBackgrounded).toBe(true)
+
+    execution.resolve({ text: 'flipped report' })
+    await flush()
+
+    // Exactly ONE notification — the backgrounded branch, never a duplicate foreground one.
+    expect(notifications(frames)).toHaveLength(1)
+    expect(notifications(frames)[0]).toMatchObject({
+      taskId: 'tu-fg-flip', status: 'completed', result: 'flipped report',
+    })
+  })
+
   it('detaches with a TaskOutput acknowledgement while execution remains unresolved', async () => {
     const { manager, frames } = setup()
     const execution = deferred<ToolOutcome>()
@@ -189,7 +268,13 @@ describe('NativeTaskManager', () => {
     expect(manager.background('tu-child')).toBe(true)
     await expect(childWait).resolves.toMatchObject({ isError: false })
     await expect(manager.stop('tu-outer')).rejects.toThrow(/not backgrounded/i)
-    expect(started(frames).map((frame) => frame.taskId)).toEqual(['tu-child'])
+    // The foreground subagent parent carries only its launch frame (false) —
+    // detaching the child never detaches the parent; the child carries its
+    // detach frame (true).
+    expect(started(frames).map((frame) => [frame.taskId, frame.isBackgrounded])).toEqual([
+      ['tu-outer', false],
+      ['tu-child', true],
+    ])
 
     outerExecution.resolve({ text: 'outer report' })
     childExecution.resolve({ text: 'child output' })
@@ -524,7 +609,9 @@ describe('NativeTaskManager neutral emission projects to the identical legacy SD
     manager.background('tu-agent')
     await waiting
 
-    const neutral = started(frames)[0]
+    // The foreground launch frame (isBackgrounded:false) now precedes the
+    // detach frame; this pin projects the DETACH frame (isBackgrounded:true).
+    const neutral = started(frames).find((frame) => frame.isBackgrounded)!
     expect(neutral.subagentType).toBe('Explore')
     expect(projectNativeEventToSdk(neutral)).toEqual(taskStartedFrame({
       taskId: 'tu-agent', toolUseId: 'tu-agent', taskType: 'local_agent',
