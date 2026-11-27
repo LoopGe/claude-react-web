@@ -7941,6 +7941,40 @@ describe('NativeSession', () => {
         __setConfigForTest(origConfig)
       }
     })
+
+    it('disabling auto-memory heals a failed spawn seed (the next turn proceeds)', async () => {
+      const { root, configDir, provider } = await memoryFixture()
+      const origConfig = { ...config }
+      __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+      streamAnthropicMessagesMock.mockImplementation(async function* () {
+        for (const ev of textTurn('ok')) yield ev
+      })
+      const target = join(configDir, 'mem-target')
+      await mkdir(target, { recursive: true })
+      const alias = join(root, 'alias')
+      await symlink(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
+      const session = provider.createSession({ id: 'mem-bad-spawn-disable', cwd: root, memory: { autoMemoryDirectory: alias } })
+      const frames: Frame[] = []
+      void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+      try {
+        session.enqueueUserMessage(userMsg('first') as never)
+        await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+        expect(frames.filter((f) => f.type === 'result')[0].is_error).toBe(true)
+
+        // Turn the feature OFF (the bad directory stays pinned): every memory
+        // consumer is gated off when disabled, so the rejected seed must no
+        // longer fail turns.
+        await session.applyFlagSettings?.({ autoMemoryEnabled: false })
+        expect(memoryCoreOf(session).memorySettings.autoMemoryEnabled).toBe(false)
+        session.enqueueUserMessage(userMsg('second') as never)
+        await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.subtype === 'success')).toBe(true))
+      } finally {
+        await session.destroy()
+        streamAnthropicMessagesMock.mockReset()
+        streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
+        __setConfigForTest(origConfig)
+      }
+    })
   })
 })
 describe('dream run wiring (Task 10)', () => {
@@ -8893,7 +8927,7 @@ describe('auto-memory prompt section (Task 5)', () => {
     }
   })
 
-  it('the subagent system inherits the auto-memory section', async () => {
+  it('the subagent system omits the auto-memory section (recall is main-turn-only)', async () => {
     const { root, provider } = await fixture()
     const dirA = join(root, 'mem-a')
     await writeIndex(dirA, 'INDEX-A')
@@ -8916,9 +8950,13 @@ describe('auto-memory prompt section (Task 5)', () => {
       const own = memoryCoreOf(session).autoMemoryRoots!.ownDir
       const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))
       expect(nested, 'a nested subagent request (no Agent tool) must be captured').toBeDefined()
-      expect(nested!.system).toContain('# Memory\n')
-      expect(nested!.system).toContain(own)
-      expect(nested!.system).toContain('INDEX-A')
+      // The nested tools are cwd-contained (no memoryRoots), so the write
+      // discipline must not name a dir the run cannot reach (spec §7.1).
+      expect(nested!.system).not.toContain('# Memory\n')
+      expect(nested!.system).not.toContain('persistent file-based memory')
+      expect(nested!.system).not.toContain(own)
+      expect(nested!.system).not.toContain('INDEX-A')
+      // The main turn keeps the section.
       expect(requests[0].system).toContain('# Memory\n')
       expect(requests[0].system).toContain('INDEX-A')
     } finally {

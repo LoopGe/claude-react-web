@@ -251,6 +251,28 @@ describe('createAutoMemoryPort.listCandidates', () => {
     const merged = await port.listCandidates([dir, join(dir, 'absent')])
     expect(merged).toHaveLength(5)
   })
+
+  it('a large body does not affect frontmatter parsing (head read)', async () => {
+    const dir = await tempDir('memory-candidates-large-')
+    const body = 'x'.repeat(2 * 1024 * 1024)
+    await writeFile(join(dir, 'big.md'), `---\ndescription: Big fact\nmetadata:\n  type: user\n---\n${body}\n`)
+    const port = createAutoMemoryPort({ stateDir: dir })
+    const candidates = await port.listCandidates([dir])
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0]).toMatchObject({ filename: 'big.md', description: 'Big fact', memoryType: 'user' })
+  })
+
+  it('enumeration reads only a head: a closing delimiter beyond the head budget reads as malformed', async () => {
+    const dir = await tempDir('memory-candidates-head-')
+    // Frontmatter whose closing delimiter sits past the head budget: a
+    // full-file read would parse it, the bounded head read sees a missing
+    // delimiter (the malformed contract) and skips the file. This is the
+    // black-box proof the scan never reads the whole file.
+    const padding = Array.from({ length: 400 }, (_, i) => `key${i}: ${'v'.repeat(40)}`).join('\n')
+    await writeFile(join(dir, 'huge-fm.md'), `---\ndescription: Hidden\n${padding}\n---\nBody\n`)
+    const port = createAutoMemoryPort({ stateDir: dir })
+    expect(await port.listCandidates([dir])).toEqual([])
+  })
 })
 
 describe('createAutoMemoryPort.readIndex', () => {

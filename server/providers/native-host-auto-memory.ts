@@ -36,6 +36,14 @@ const MEMORY_MAX_LINES = 200
 const INDEX_MAX_BYTES = 25000
 const INDEX_MAX_LINES = 200
 
+/** Candidate enumeration reads only a head of each file: the frontmatter sits
+ *  at the top, and the scan runs on every main turn — a multi-MB body must not
+ *  be read just to parse description/type. 8 KiB is far above any realistic
+ *  frontmatter block; a closing delimiter beyond the head reads as malformed
+ *  (the missing-delimiter contract), so an oversized block is skipped, never
+ *  half-parsed. */
+const FRONTMATTER_MAX_BYTES = 8192
+
 /** The CLI's projects-dir slug cap: longer encodings keep the first 200
  *  characters plus a base36 hash suffix of the original cwd. */
 const SLUG_MAX_LENGTH = 200
@@ -217,8 +225,10 @@ async function collectCandidates(root: string, current: string, out: MemoryCandi
     }
     if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md') || entry.name === INDEX_FILE) continue
     try {
-      const [st, content] = await Promise.all([stat(full), readFile(full, 'utf8')])
-      const fm = parseMemoryFrontmatter(content)
+      // Byte head only (no line cap) — the parser needs the raw frontmatter
+      // lines; the body is never read here (readMemoryFile bounds it later).
+      const [st, head] = await Promise.all([stat(full), readBounded(full, FRONTMATTER_MAX_BYTES, Infinity)])
+      const fm = parseMemoryFrontmatter(head.content)
       if (fm === null) {
         log.debug(`frontmatter malformed, skipped: ${full}`)
         continue
@@ -245,8 +255,8 @@ export function createAutoMemoryPort(deps: { stateDir: string; configDir?: strin
   const { stateDir } = deps
 
   // Dream consolidation state: one file beside the per-cwd memory roots,
-  // keyed by cwdKey (the claudeProjectSlug of the cwd). Only completion
-  // timestamps are durable — the running lease below is process-local.
+  // keyed by an opaque caller-supplied cwdKey. Only completion timestamps
+  // are durable — the running lease below is process-local.
   const dreamStateFile = join(stateDir, 'native-memory', 'dream-state.json')
   // Per-cwd single-flight lease. Claim never persists running state: a crash
   // resets the lock and the next trigger window retries (spec §8 failure

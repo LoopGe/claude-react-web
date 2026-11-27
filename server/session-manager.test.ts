@@ -7610,6 +7610,61 @@ describe('SessionManager', () => {
       await sm.setMemorySettings(info.id, { autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
       expect(liveRoots(info.id)).toBeUndefined()
     })
+
+    // The generic /settings route is a second door onto the same live memory
+    // state: it must run the SAME normalisation + mirror + roots refresh as
+    // the dedicated /memory route, or the live core and the persisted meta /
+    // broker roots diverge.
+    it('generic applySettings with memory keys mirrors s.memory and refreshes roots (setMemorySettings parity)', async () => {
+      const override = join(dir, 'custom-mem-generic')
+      const partial = { autoMemoryEnabled: true, autoMemoryDirectory: `  ${override}  `, autoDreamEnabled: false }
+      const generic = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      const viaGeneric = await sm.applySettings(generic.id, partial as never)
+      expect(viaGeneric.memory).toEqual({ autoMemoryEnabled: true, autoMemoryDirectory: override, autoDreamEnabled: false })
+      expect(liveRoots(generic.id)?.own).toBe(override)
+
+      const dedicated = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      const viaDedicated = await sm.setMemorySettings(dedicated.id, partial)
+      // Identical host state (mirror + broker roots) AND core state: the flag
+      // layer saw the same normalised values (the trimmed directory), so the
+      // core's live memorySettings agree with the persisted record.
+      expect(viaGeneric.memory).toEqual(viaDedicated.memory)
+      expect(liveRoots(generic.id)).toEqual(liveRoots(dedicated.id))
+      const coreOfSession = (id: string): { memorySettings: Record<string, unknown> } => nativeCoreOf(
+        (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)!.handle,
+      ) as unknown as { memorySettings: Record<string, unknown> }
+      expect(coreOfSession(generic.id).memorySettings).toEqual(coreOfSession(dedicated.id).memorySettings)
+      expect(coreOfSession(generic.id).memorySettings.autoMemoryDirectory).toBe(override)
+      await store.flush()
+      expect(store.get(generic.id)?.memory).toEqual(viaDedicated.memory)
+    })
+
+    it('generic applySettings null-clears memory keys exactly like setMemorySettings', async () => {
+      const info = await sm.create({})
+      await sm.applySettings(info.id, { autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' } as never)
+      expect(sm.get(info.id).memory).toEqual({ autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
+      await sm.applySettings(info.id, { autoMemoryEnabled: null, autoMemoryDirectory: null } as never)
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({ autoMemoryEnabled: null, autoMemoryDirectory: null })
+      expect(sm.get(info.id).memory).toBeUndefined()
+    })
+
+    it('generic applySettings forwards memory keys alongside other settings in one call', async () => {
+      const info = await sm.create({})
+      await sm.applySettings(info.id, { autoMemoryEnabled: true, autoCompactEnabled: true } as never)
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({ autoMemoryEnabled: true, autoCompactEnabled: true })
+      expect(sm.get(info.id).memory).toEqual({ autoMemoryEnabled: true })
+    })
+
+    it('generic applySettings rejects bad memory key types with 400 before forwarding (the /memory route guard)', async () => {
+      const info = await sm.create({})
+      const callsBefore = mockHandles[0].applyFlagSettings.mock.calls.length
+      await expect(sm.applySettings(info.id, { autoMemoryEnabled: 'yes' } as never)).rejects.toMatchObject({ status: 400 })
+      await expect(sm.applySettings(info.id, { autoDreamEnabled: 1 } as never)).rejects.toMatchObject({ status: 400 })
+      await expect(sm.applySettings(info.id, { autoMemoryDirectory: 42 } as never)).rejects.toMatchObject({ status: 400 })
+      await expect(sm.applySettings(info.id, { autoMemoryDirectory: '/mem\n/../etc' } as never)).rejects.toMatchObject({ status: 400 })
+      expect(mockHandles[0].applyFlagSettings.mock.calls.length).toBe(callsBefore)
+      expect(sm.get(info.id).memory).toBeUndefined()
+    })
   })
 
   it('applyHooks() forwards, records, and persists structured hooks', async () => {

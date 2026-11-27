@@ -733,8 +733,9 @@ export class NativeSession implements NativeSessionCore {
   /** The auto-memory spawn/settings validation seed. The first turn awaits it
    *  BEFORE any tool dispatch (the sessionStartInit precedent): a rejected
    *  directory override fails every turn loudly with the port's HttpError until
-   *  applyFlagSettings re-validates and replaces the seed. A resolved promise on
-   *  every later turn — no per-turn cost. */
+   *  applyFlagSettings re-validates and replaces the seed — or the feature is
+   *  disabled, which skips the await entirely (no memory path runs then). A
+   *  resolved promise on every later turn — no per-turn cost. */
   private memorySettingsSeed: Promise<void>
   /** Live flag-source hooks config. Seeded from opts.hooks at spawn;
    *  applyFlagSettings({hooks}) REPLACES it (never merges). The flag HookSource
@@ -2194,14 +2195,16 @@ export class NativeSession implements NativeSessionCore {
 
   /** The nested (Agent/Task) prompt: the subagent system plus the nested run's
    *  scoped Skill section. The view reads the shared catalog at call time, so
-   *  a reload reaches the next run without reviving an excluded skill. */
+   *  a reload reaches the next run without reviving an excluded skill. No
+   *  auto-memory section: recall is main-turn-only (spec §7.1) and the nested
+   *  tools are cwd-contained (no memoryRoots), so a memory write discipline
+   *  would name a dir the run cannot reach. */
   private subagentSystem(skillView: NativeSkillView): string {
     const memory = this.memorySnapshot
     return withSkillsSection(
       joinPromptParts(
         this.opts.subagentSystem ?? this.baseSystem,
         memory ? renderMemorySection(memory.files) : '',
-        this.autoMemorySection(),
         memory
           ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
           : '',
@@ -2361,7 +2364,11 @@ export class NativeSession implements NativeSessionCore {
         // parks the prompt for durable retry, so no tool ever runs under an
         // unvalidated override. A settings fix replaces the seed with a resolved
         // promise; every later turn awaits that resolved promise — no cost.
-        await this.memorySettingsSeed
+        // Disabling the feature skips the await: every memory consumer (prompt
+        // section, recall, dream) is gated off when autoMemoryEnabled === false,
+        // so a bad override must not keep failing turns after the user turned
+        // the feature off.
+        if (this.memorySettings.autoMemoryEnabled !== false) await this.memorySettingsSeed
         let turnSkillView: NativeSkillInvocationView | undefined
         // `/compact` control-action flag: the user branch's catalog discovery
         // sets it; the shared tail reads it to route the control turn (no model

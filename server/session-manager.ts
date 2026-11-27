@@ -1010,6 +1010,17 @@ function autoCompactPressureFromRaw(raw: unknown): AutoCompactPressure | null {
   }
 }
 
+/** The memory-key partial both settings doors accept: the dedicated /memory
+ *  route (setMemorySettings) and the generic /settings route (applySettings).
+ *  A null value clears the key back to its project/SDK default. */
+type MemorySettingsPartial = {
+  autoMemoryEnabled?: boolean | null
+  autoMemoryDirectory?: string | null
+  autoDreamEnabled?: boolean | null
+}
+
+const MEMORY_SETTING_KEYS = ['autoMemoryEnabled', 'autoMemoryDirectory', 'autoDreamEnabled'] as const
+
 export class SessionManager {
   private sessions = new Map<string, Session>()
   /** Latest auto-compact operation per session. Retained after settlement so a
@@ -6833,6 +6844,30 @@ export class SessionManager {
       forwarded.agent = parsed.name
       agentIntent = { next: parsed.name }
     }
+    // The memory keys are a SECOND door onto the same live state as the
+    // dedicated /memory route: the core accepts them, so forwarding them raw
+    // would mutate its live memorySettings/roots while s.memory and the
+    // broker's containment roots kept the old values. Extract them and run
+    // the SAME normalisation + mirror as setMemorySettings (the env/agent
+    // second-door precedent above); the type guards match the /memory route's.
+    let memoryPartial: MemorySettingsPartial | undefined
+    if (MEMORY_SETTING_KEYS.some((key) => key in forwarded)) {
+      memoryPartial = {}
+      for (const key of MEMORY_SETTING_KEYS) {
+        if (!(key in forwarded)) continue
+        const value = forwarded[key]
+        if (key === 'autoMemoryDirectory') {
+          if (value !== null && typeof value !== 'string') throw new HttpError(400, 'autoMemoryDirectory must be a string or null')
+          if (typeof value === 'string' && /[\0\n\r]/.test(value)) throw new HttpError(400, 'autoMemoryDirectory contains invalid characters')
+          memoryPartial.autoMemoryDirectory = value
+        } else {
+          if (value !== null && typeof value !== 'boolean') throw new HttpError(400, `${key} must be a boolean or null`)
+          memoryPartial[key] = value
+        }
+        delete forwarded[key]
+      }
+      Object.assign(forwarded, this.memoryFlagsOf(memoryPartial))
+    }
     let normalizedHooks: SessionHooksConfig | undefined
     if (hooksResult && !hooksResult.ok) {
       throw new HttpError(400, `invalid hooks settings: ${formatHooksValidationErrors(hooksResult.errors)}`)
@@ -6846,6 +6881,8 @@ export class SessionManager {
       // Mirror the persona onto the session so SessionInfo / the persisted
       // meta / every re-spawn path agree with what the CLI was just told.
       if (agentIntent) s.agent = agentIntent.next ?? undefined
+      // Memory keys ride the same mirror + roots refresh as setMemorySettings.
+      if (memoryPartial) this.mirrorMemorySettings(s, memoryPartial)
       // `autoCompactEnabled` (the CLI's on/off toggle) — refresh the cached
       // CLI facts so the ContextBar's off-state display follows. The
       // compaction WINDOW is no longer managed here: it rides spawn-time
@@ -7072,35 +7109,45 @@ export class SessionManager {
    *  present in `partial` are touched; when the last key is cleared the
    *  whole `memory` object becomes undefined ("never pinned"). The SDK
    *  silently ignores autoMemoryDirectory when projectSettings pins it —
-   *  no error surfaces here. */
-  async setMemorySettings(
-    id: string,
-    partial: { autoMemoryEnabled?: boolean | null; autoMemoryDirectory?: string | null; autoDreamEnabled?: boolean | null },
-  ): Promise<SessionInfo> {
+   *  no error surfaces here. The generic /settings route (applySettings)
+   *  shares the same normalisation and mirror, so both doors produce
+   *  identical host + core state. */
+  async setMemorySettings(id: string, partial: MemorySettingsPartial): Promise<SessionInfo> {
+    const flags = this.memoryFlagsOf(partial)
+    if (Object.keys(flags).length === 0) return this.info(this.requireLive(id))
+    return this.applyFlagSettingAndPersist(id, flags, 'memory settings', (s) => this.mirrorMemorySettings(s, partial))
+  }
+
+  /** Normalise the memory keys for the flag layer: only present keys ride,
+   *  null clears, and the directory is trimmed / whitespace-only normalised
+   *  to null (a literal " " dir would otherwise reach the SDK while the UI
+   *  shows "not set"). Shared by setMemorySettings and applySettings so both
+   *  doors forward identical flags. */
+  private memoryFlagsOf(partial: MemorySettingsPartial): Record<string, boolean | string | null> {
     const flags: Record<string, boolean | string | null> = {}
     if ('autoMemoryEnabled' in partial) flags.autoMemoryEnabled = partial.autoMemoryEnabled ?? null
     if ('autoDreamEnabled' in partial) flags.autoDreamEnabled = partial.autoDreamEnabled ?? null
-    // Forward the directory trimmed / null-normalised so the SDK's view
-    // matches the persisted record below (a whitespace-only string would
-    // otherwise set a literal " " dir in the SDK while the UI shows "not set").
     if ('autoMemoryDirectory' in partial) {
       flags.autoMemoryDirectory = (partial.autoMemoryDirectory ?? '').trim() || null
     }
-    if (Object.keys(flags).length === 0) return this.info(this.requireLive(id))
-    return this.applyFlagSettingAndPersist(id, flags, 'memory settings', (s) => {
-      const next: SessionMemorySettings = { ...(s.memory ?? {}) }
-      for (const [key, value] of Object.entries(partial)) {
-        const k = key as keyof SessionMemorySettings
-        if (value == null || (k === 'autoMemoryDirectory' && !String(value).trim())) delete next[k]
-        else if (k === 'autoMemoryDirectory') next[k] = String(value).trim()
-        else next[k] = value as boolean
-      }
-      s.memory = Object.keys(next).length > 0 ? next : undefined
-      // The directory override may have changed — re-resolve the broker's
-      // containment roots so the exemption tracks the new ownDir (native only;
-      // a claude session keeps memoryRoots undefined).
-      this.refreshMemoryRoots(s)
-    })
+    return flags
+  }
+
+  /** Mirror a memory partial onto the session record and re-resolve the
+   *  broker's containment roots so the exemption tracks the new ownDir
+   *  (native only; a claude session keeps memoryRoots undefined). Shared by
+   *  both settings doors so the live core, the persisted meta and the broker
+   *  roots never diverge. */
+  private mirrorMemorySettings(s: Session, partial: MemorySettingsPartial): void {
+    const next: SessionMemorySettings = { ...(s.memory ?? {}) }
+    for (const [key, value] of Object.entries(partial)) {
+      const k = key as keyof SessionMemorySettings
+      if (value == null || (k === 'autoMemoryDirectory' && !String(value).trim())) delete next[k]
+      else if (k === 'autoMemoryDirectory') next[k] = String(value).trim()
+      else next[k] = value as boolean
+    }
+    s.memory = Object.keys(next).length > 0 ? next : undefined
+    this.refreshMemoryRoots(s)
   }
 
   /** Resolve the host auto-memory containment roots for the permission broker

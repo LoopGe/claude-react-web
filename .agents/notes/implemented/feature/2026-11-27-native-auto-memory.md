@@ -121,6 +121,32 @@ the session-log tree (Read's read roots are `own` + `claude`; Grep/Glob/LS are
 cwd-only), so only the dream — whose read roots include that tree — benefits.
 The session-log root is read-only and never a write root.
 
+### Settings parity, disable posture, prompt reach
+
+The three memory keys have two doors — the dedicated `/memory` route
+(`setMemorySettings`) and the generic `/settings` route (`applySettings`).
+Both run one shared normalisation (`memoryFlagsOf`: present keys only, null
+clears, directory trimmed / whitespace-only → null) and one shared mirror
+(`mirrorMemorySettings`: `s.memory` + `refreshMemoryRoots` + persist), so the
+live core, the persisted meta and the broker roots cannot diverge by door.
+The generic door applies the same type guards as the dedicated route (the
+env/agent second-door precedent).
+
+The spawn/settings validation seed fails turns loudly on a bad directory
+override until a settings change re-validates it — and disabling the feature
+(`autoMemoryEnabled: false`) skips the seed await entirely: every memory
+consumer (prompt section, recall, dream) is gated off when disabled, so
+turning the feature off stops its errors. The directory-change heal stays.
+
+The `# Memory` write-discipline section is main-turn-only (spec §7.1 excludes
+subagent turns from recall). The nested Agent/Task system omits it: nested
+tools are cwd-contained (no `memoryRoots`), so the section would name a dir
+the run cannot reach. The dream run keeps it — its own loop deps carry
+write-`ownDir` roots. Candidate enumeration reads only an 8 KiB head of each
+file for frontmatter (the scan runs every main turn); a closing delimiter
+beyond the head reads as malformed and the file is skipped, the same contract
+as a genuinely missing delimiter.
+
 ## Alternatives considered
 
 **A new `session/memory-recall` v3 event word.** The intuitive way to persist the
