@@ -14,7 +14,9 @@ import { rmRf } from './__test-utils__/index.js'
 import { SUBSCRIBER_QUEUE_CAP } from './async-subscription.js'
 import { encodeCwd, subagentTranscriptPath } from './subagent-watcher.js'
 import type { ProcessExitInfo } from './process-monitor.js'
-import type { AgentProvider, ProviderSessionHandle } from './providers/types.js'
+import type { AgentProvider, ProviderCapabilities, ProviderSessionHandle } from './providers/types.js'
+import { ProviderRegistry } from './providers/registry.js'
+import type { StructuredRunRequest, StructuredRunResult } from '../shared/structured.js'
 
 // Wrap node:fs/promises so `stat` is a controllable mock that defaults to the
 // real implementation (preexisting stat users keep working) but individual
@@ -646,6 +648,170 @@ describe('SessionManager', () => {
     // matches `id` (the bug this guards against: SDK auto-generated its own
     // UUID, so our id matched no jsonl and fork/resume probes failed).
     expect(mockHandles[0].options.sessionId).toBe(info.id)
+  })
+
+  describe('auth-aware effective default provider', () => {
+    // The manager's effective default is private; read it through the same
+    // cast precedent as subagentProviderForTest. Every create / resume /
+    // runStructured fallback reads this one member.
+    function smDefaultProvider(manager: SessionManager): string {
+      return (manager as unknown as { defaultProvider: string }).defaultProvider
+    }
+
+    // Only the structured-output flag matters on these paths (runStructured
+    // checks the method's presence, not caps); everything else stays off.
+    const EFFECTIVE_DEFAULT_CAPS: ProviderCapabilities = {
+      supportsFineGrainedPermissions: false,
+      supportsMcp: false,
+      supportsModelSwitch: false,
+      supportsInterrupt: false,
+      supportsResume: false,
+      supportsFork: false,
+      supportsPlugins: false,
+      supportsFastMode: false,
+      supportsEffortLevel: false,
+      supportsThinkingControl: false,
+      supportsCommands: false,
+      supportsAgents: false,
+      supportsContextUsage: false,
+      supportsUsage: false,
+      supportsAccountInfo: false,
+      supportsSessionTitle: false,
+      supportsTaskControl: false,
+      supportsStructuredOutput: true,
+      supportsReadFile: false,
+      supportsSubagentTranscripts: false,
+      supportsSteering: false,
+      supportsSandbox: false,
+      supportsHooks: false,
+      supportsMemory: false,
+      tasksSurviveRestart: false,
+      interleavedSubagentHistory: false,
+      hostDrivenAutoCompact: false,
+      persistentAttachmentRefs: false,
+      cliSidePlanSteering: false,
+      ownsCliTranscriptJsonl: false,
+    }
+
+    function structuredProvider(name: string) {
+      const runStructured = vi.fn(async (): Promise<StructuredRunResult> => ({ ok: true, structuredOutput: { via: name } }))
+      const provider: AgentProvider = {
+        name,
+        capabilities: EFFECTIVE_DEFAULT_CAPS,
+        createSession(): ProviderSessionHandle {
+          throw new Error('createSession is not part of the effective-default contract')
+        },
+        runStructured,
+      }
+      return { provider, runStructured }
+    }
+
+    it('effective default is native when a token is configured, claude when not', () => {
+      const before = defaultConfig.authToken
+      try {
+        __setConfigForTest({ authToken: 'tok' })
+        expect(smDefaultProvider(sm)).toBe('native')
+        __setConfigForTest({ authToken: '' })
+        expect(smDefaultProvider(sm)).toBe('claude')
+        // Boot state (config.json never loaded): undefined is also "no token".
+        __setConfigForTest({ authToken: undefined })
+        expect(smDefaultProvider(sm)).toBe('claude')
+      } finally {
+        __setConfigForTest({ authToken: before })
+      }
+    })
+
+    it('effective default is dynamic (reflects config change without restart)', async () => {
+      const before = defaultConfig.authToken
+      __setConfigForTest({ authToken: '' })
+      const live = new SessionManager({ store, modelSwitchRetryDelayMs: 5 })
+      try {
+        expect(smDefaultProvider(live)).toBe('claude')
+        __setConfigForTest({ authToken: 'tok' })
+        expect(smDefaultProvider(live)).toBe('native')
+        __setConfigForTest({ authToken: '' })
+        expect(smDefaultProvider(live)).toBe('claude')
+      } finally {
+        await live.shutdown()
+        __setConfigForTest({ authToken: before })
+      }
+    })
+
+    it('explicit opts.defaultProvider override wins over the auth-aware default', async () => {
+      const before = defaultConfig.authToken
+      try {
+        __setConfigForTest({ authToken: 'tok' })
+        const pinnedClaude = new SessionManager({ store, defaultProvider: 'claude', modelSwitchRetryDelayMs: 5 })
+        try {
+          expect(smDefaultProvider(pinnedClaude)).toBe('claude')
+        } finally {
+          await pinnedClaude.shutdown()
+        }
+        __setConfigForTest({ authToken: '' })
+        const pinnedNative = new SessionManager({ store, defaultProvider: 'native', modelSwitchRetryDelayMs: 5 })
+        try {
+          expect(smDefaultProvider(pinnedNative)).toBe('native')
+        } finally {
+          await pinnedNative.shutdown()
+        }
+      } finally {
+        __setConfigForTest({ authToken: before })
+      }
+    })
+
+    it('runStructured follows the effective default', async () => {
+      const before = defaultConfig.authToken
+      const claude = structuredProvider('claude')
+      const native = structuredProvider('native')
+      const registry = new ProviderRegistry()
+      registry.register(claude.provider)
+      registry.register(native.provider)
+      const runner = new SessionManager({ store, providers: registry, modelSwitchRetryDelayMs: 5 })
+      const req: StructuredRunRequest = { prompt: 'p', schema: { type: 'object' } }
+      try {
+        __setConfigForTest({ authToken: 'tok' })
+        await runner.runStructured(req)
+        expect(native.runStructured).toHaveBeenCalledTimes(1)
+        expect(claude.runStructured).not.toHaveBeenCalled()
+        // Removing the token flips the same live manager back to claude.
+        __setConfigForTest({ authToken: '' })
+        await runner.runStructured(req)
+        expect(claude.runStructured).toHaveBeenCalledTimes(1)
+        expect(native.runStructured).toHaveBeenCalledTimes(1)
+      } finally {
+        await runner.shutdown()
+        __setConfigForTest({ authToken: before })
+      }
+    })
+
+    it('resume-picker adoption rank follows the effective default', async () => {
+      const before = defaultConfig.authToken
+      // Both providers claim the same disk id; claude is registered FIRST so
+      // only the default-first rank can make native win under a token.
+      const claimant = (name: string): AgentProvider => ({
+        name,
+        capabilities: EFFECTIVE_DEFAULT_CAPS,
+        createSession(): ProviderSessionHandle {
+          throw new Error('createSession is not part of the effective-default contract')
+        },
+        getSessionInfo: async (id) => ({ sessionId: id, cwd: TEST_CWD, lastModified: 1234, createdAt: 1000, known: false, running: false, terminated: false }),
+      })
+      const registry = new ProviderRegistry()
+      registry.register(claimant('claude'))
+      registry.register(claimant('native'))
+      const adopter = new SessionManager({ store, providers: registry, modelSwitchRetryDelayMs: 5 })
+      const adopt = (id: string) =>
+        (adopter as unknown as { adoptDiskSession(id: string): Promise<{ provider?: string } | undefined> }).adoptDiskSession(id)
+      try {
+        __setConfigForTest({ authToken: 'tok' })
+        expect((await adopt('disk-1'))?.provider).toBe('native')
+        __setConfigForTest({ authToken: '' })
+        expect((await adopt('disk-2'))?.provider).toBe('claude')
+      } finally {
+        await adopter.shutdown()
+        __setConfigForTest({ authToken: before })
+      }
+    })
   })
 
   it('projects provider task-control capability for live and dormant sessions', async () => {
