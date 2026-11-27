@@ -93,8 +93,7 @@ and the agreement pin covers it (12 cases against the real provider literals).
 
 The pre-create roster renamed `LOCKED_FEATURES` → `GATED_FEATURES`: it is the
 set of features `providerSupports` covers, not an all-locked list —
-`pluginSkills` is locked on neither provider. (B1's design/plan docs do not use
-the old symbol; only the Block 3 plan's pre-rename brief text does.)
+`pluginSkills` is locked on neither provider.
 
 The create-dialog plugin picker gates on `pluginSkills`, so it is FUNCTIONAL
 for both providers:
