@@ -6,6 +6,7 @@
 // The remaining ports get a delegation smoke check.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -20,6 +21,9 @@ import { NativeProvider } from './native/native-provider.js'
 import type { ProviderSessionHandle } from './types.js'
 import { createNativeHostPorts, makeNativePorts } from './native-host-adapters.js'
 import { nativeCoreOf } from './native-host-frame-adapter.js'
+import { NativeSessionLog } from './native/session-log/log.js'
+import { nativeSessionLogPath } from './native/session-log/paths.js'
+import { createUserMessage } from './native/vocabulary/message.js'
 import type { NativeAutoMemoryPort, NativeConfigPort, NativeHostPorts } from './native/ports.js'
 
 const dirs: string[] = []
@@ -227,7 +231,7 @@ describe('host adapters aggregate', () => {
     expect(await ports.memory.read('/repo')).toEqual(fixture)
   })
 
-  it('makeNativePorts defaults autoMemory to a hermetic stub that never touches fs', async () => {
+  it('makeNativePorts defaults autoMemory to a hermetic stub that creates nothing', async () => {
     const dir = await tempDir()
     const ports = makeNativePorts({ stateDir: dir })
     expect(await ports.autoMemory.listCandidates([dir])).toEqual([])
@@ -248,5 +252,22 @@ describe('host adapters aggregate', () => {
     const ports = makeNativePorts({ autoMemory: injected })
     expect(ports.autoMemory).toBe(injected)
     expect(await ports.autoMemory.readIndex('any')).toBe('sentinel')
+  })
+
+  it('makeNativePorts autoMemory stub keeps the real session scan over the test stateDir', async () => {
+    const dir = await tempDir()
+    const ports = makeNativePorts({ stateDir: dir })
+    const id = randomUUID()
+    const log = NativeSessionLog.open({ stateDir: dir, id, cwd: 'D:\\repo', resume: false })
+    log.append({
+      type: 'user/message',
+      time: Date.now(),
+      parentToolUseId: null,
+      data: createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } }),
+    })
+    await log.flush()
+    await log.close()
+    expect(await ports.autoMemory.listSessionsTouchedSince('D:\\repo', 0))
+      .toEqual([{ id, logPath: nativeSessionLogPath(dir, id) }])
   })
 })

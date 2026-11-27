@@ -133,7 +133,10 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
  *  so test ports stay hermetic on machines with a real ~/.claude/CLAUDE.md or
  *  memory store; inject deps.memory / deps.autoMemory for fixture-backed
  *  chains. The autoMemory stub's resolve is the lexical root computation
- *  only: it never creates directories. */
+ *  only (it never creates directories) and its dream methods are no-ops, but
+ *  listSessionsTouchedSince keeps the REAL scan over the resolved stateDir:
+ *  dream tests seed session logs into their test stateDir and read them back
+ *  through this surface. */
 export function makeNativePorts(deps: NativeHostPortsDeps = {}): NativeHostPorts {
   const ports = createNativeHostPorts(deps)
   return {
@@ -141,6 +144,7 @@ export function makeNativePorts(deps: NativeHostPortsDeps = {}): NativeHostPorts
     ...(deps.memory ? {} : { memory: { read: async () => ({ files: [], isGitRepo: false }) } }),
     ...(deps.autoMemory ? {} : {
       autoMemory: {
+        ...ports.autoMemory,
         resolve: async (cwd, override) => {
           const roots = resolveMemoryRoots(cwd, resolveNativeStateDir(deps.stateDir), override)
           return { ownDir: roots.own, claudeDir: null }
@@ -148,7 +152,6 @@ export function makeNativePorts(deps: NativeHostPortsDeps = {}): NativeHostPorts
         listCandidates: async () => [],
         readIndex: async () => null,
         readMemoryFile: async () => ({ content: '', truncated: false }),
-        listSessionsTouchedSince: async () => [],
         readDreamState: async () => ({}),
         claimDream: async () => false,
         releaseDream: async () => {},
