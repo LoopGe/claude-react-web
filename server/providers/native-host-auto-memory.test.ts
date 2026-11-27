@@ -98,6 +98,8 @@ describe('resolveMemoryRoots (lexical variant)', () => {
     const roots = resolveMemoryRoots('D:\\codes\\repo', 'D:\\state')
     expect(roots.own).toBe(join('D:\\state', 'native-memory', 'D--codes-repo'))
     expect(roots.claude).toBe(join(configDir, 'projects', 'D--codes-repo', 'memory'))
+    // The dream's read-only consolidation source rides the broker roots.
+    expect(roots.sessionLogs).toBe(join('D:\\state', 'native-sessions'))
   })
 
   it('override replaces own only; the claude compat root is unchanged', () => {

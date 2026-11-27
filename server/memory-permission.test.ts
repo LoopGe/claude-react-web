@@ -158,6 +158,47 @@ describe('isMemoryRootRead', () => {
   })
 })
 
+// The native session-log tree is the dream consolidation's read-only source
+// material. The broker exempts reads there so a background dream never stalls
+// on an interactive prompt; it is NEVER a write root (write isolation).
+describe('session-log read root (dream consolidation source)', () => {
+  async function logLayout(): Promise<{ roots: MemoryRoots; logs: string; own: string; outside: string }> {
+    const base = await tempDir()
+    const own = join(base, 'own')
+    const logs = join(base, 'native-sessions')
+    const outside = join(base, 'outside')
+    await mkdir(own)
+    await mkdir(join(logs, 'sess-a'), { recursive: true })
+    await mkdir(outside)
+    await writeFile(join(own, 'existing.md'), 'own')
+    await writeFile(join(logs, 'sess-a', 'session.v1.jsonl'), '{"type":"session/header"}\n')
+    await writeFile(join(outside, 'secret.md'), 'outside')
+    return { roots: { own, claude: null, sessionLogs: logs }, logs, own, outside }
+  }
+
+  it('exempts a Read of a session log inside the session-log root', async () => {
+    const { roots, logs } = await logLayout()
+    expect(await isMemoryRootRead('Read', { file_path: join(logs, 'sess-a', 'session.v1.jsonl') }, roots)).toBe(true)
+  })
+
+  it('NEVER exempts a Write inside the session-log root (read-only root)', async () => {
+    const { roots, logs } = await logLayout()
+    expect(await isMemoryRootWrite('Write', { file_path: join(logs, 'sess-a', 'session.v1.jsonl') }, roots)).toBe(false)
+    expect(await isMemoryRootWrite('Write', { file_path: join(logs, 'new.jsonl') }, roots)).toBe(false)
+  })
+
+  it('returns false for a Read outside the session-log root', async () => {
+    const { roots, outside } = await logLayout()
+    expect(await isMemoryRootRead('Read', { file_path: join(outside, 'secret.md') }, roots)).toBe(false)
+  })
+
+  it('grants no session-log exemption when the root is absent', async () => {
+    const { roots, logs } = await logLayout()
+    const without: MemoryRoots = { own: roots.own, claude: null }
+    expect(await isMemoryRootRead('Read', { file_path: join(logs, 'sess-a', 'session.v1.jsonl') }, without)).toBe(false)
+  })
+})
+
 // Relative path fields must be anchored at the SESSION cwd (the base the tool
 // executes against), never at process.cwd() — otherwise the exemption judges a
 // different path than the one written (decision-integrity defect).

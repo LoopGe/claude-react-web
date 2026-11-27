@@ -23,7 +23,7 @@ import { HttpError } from '../errors.js'
 import { writeAtomic } from '../json-file-store.js'
 import { createLogger } from '../log.js'
 import { listNativeResumableRows } from './native-resumable-listing.js'
-import { nativeSessionLogPath } from './native/session-log/paths.js'
+import { nativeSessionLogPath, nativeSessionsDir } from './native/session-log/paths.js'
 import type { MemoryCandidate, NativeAutoMemoryPort } from './native/ports.js'
 
 const log = createLogger('native-auto-memory')
@@ -109,9 +109,12 @@ function memoryRoots(cwd: string, stateDir: string, configDir: string, override?
  *  No fs: the claude root is reported as a path whether or not it exists (a
  *  read exemption must not depend on the directory being there yet), and the
  *  override gets the lexical guards only. `resolve` on the port is the async
- *  variant that adds the realpath guard, creation and the existence report. */
-export function resolveMemoryRoots(cwd: string, stateDir: string, override?: string): { own: string; claude: string | null } {
-  return memoryRoots(cwd, stateDir, claudeConfigDir(), override)
+ *  variant that adds the realpath guard, creation and the existence report.
+ *  `sessionLogs` is the native session-log tree — a READ-only root for the
+ *  dream consolidation (never a write root); the broker exempts reads there so
+ *  a background dream never stalls on an interactive prompt. */
+export function resolveMemoryRoots(cwd: string, stateDir: string, override?: string): { own: string; claude: string | null; sessionLogs: string } {
+  return { ...memoryRoots(cwd, stateDir, claudeConfigDir(), override), sessionLogs: nativeSessionsDir(stateDir) }
 }
 
 /** realpath of the nearest existing ancestor, with the not-yet-existing tail

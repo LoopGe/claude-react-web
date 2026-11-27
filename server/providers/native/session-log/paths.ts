@@ -17,9 +17,16 @@ export function resolveNativeStateDir(stateDir?: string): string {
   return stateDir ?? join(homedir(), DEFAULT_DIR_NAME)
 }
 
+/** The native session-log tree root — the dream consolidation's read-only
+ *  source material. Shared by the log path helpers, the dream run's read root
+ *  and the broker's memory-root read exemption so the three never drift. */
+export function nativeSessionsDir(stateDir: string): string {
+  return join(stateDir, NATIVE_SESSIONS_DIR)
+}
+
 export function nativeSessionDir(stateDir: string, id: string): string {
   if (!isSafeSessionId(id)) throw new Error(`Invalid session id: ${id}`)
-  return join(stateDir, NATIVE_SESSIONS_DIR, id)
+  return join(nativeSessionsDir(stateDir), id)
 }
 
 export function nativeSessionLogPath(stateDir: string, id: string): string {

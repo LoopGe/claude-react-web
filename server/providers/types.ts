@@ -466,6 +466,12 @@ export interface ProviderCapabilities {
    *  other providers (native logs elsewhere) would pay a scan for a file that
    *  cannot exist. */
   ownsCliTranscriptJsonl: boolean
+  /** Learned memory lives in the host-managed stateDir store (native): the
+   *  manager resolves its containment roots (`Session.memoryRoots`) so the
+   *  permission broker can exempt memory writes/reads and the dream's
+   *  session-log reads. When false (claude), the CLI manages its own memory in
+   *  its config dir and the host resolves no roots (the exemption stays inert). */
+  hostAutoMemoryStore: boolean
 }
 
 export interface ListResumableOptions {

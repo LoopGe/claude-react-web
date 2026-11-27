@@ -15,11 +15,11 @@
 // existing subagent surface.
 //
 // Neutrality: this module imports only sibling core modules, the neutral
-// vocabulary, neutral shared types and node builtins — no host services, no SDK.
-// The native-sessions read root is a neutral path join over the injected
-// stateDir, never a host import.
+// vocabulary and neutral shared types — no host services, no SDK. The
+// native-sessions read root comes from the core session-log path helper over
+// the injected stateDir (the same root the broker's read exemption resolves),
+// never a host import.
 
-import { join } from 'node:path'
 import { createLogger } from '../../log.js'
 import { runTurn, type LoopDeps } from './loop.js'
 import type { AgentToolDeps } from './subagent.js'
@@ -28,6 +28,7 @@ import type { ToolDef, ToolOutcome } from './tools/types.js'
 import { filterToolsForProfile } from './agent-tools.js'
 import type { RequestMessage } from './vocabulary/message.js'
 import type { NativeAutoMemoryPort } from './ports.js'
+import { nativeSessionsDir as nativeSessionsRoot } from './session-log/paths.js'
 
 const log = createLogger('native-dream')
 
@@ -170,7 +171,7 @@ export interface DreamRunHandle {
  *  (not once the run finishes); await `handle.settled` for the outcome. */
 export async function startDreamRun(deps: DreamRunDeps, input: DreamRunInput): Promise<DreamRunHandle> {
   const toolUseId = `dream-${deps.frameCtx.uuid()}`
-  const nativeSessionsDir = join(input.stateDir, 'native-sessions')
+  const nativeSessionsDir = nativeSessionsRoot(input.stateDir)
   const nestedCtx: FrameContext = { ...deps.frameCtx, parentToolUseId: toolUseId }
   const nestedPermissionMode = deps.permissionMode()
   const nestedEffort = deps.effortLevel()

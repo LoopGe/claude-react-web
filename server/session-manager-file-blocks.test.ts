@@ -119,6 +119,7 @@ const CAPS: ProviderCapabilities = {
   persistentAttachmentRefs: false,
   cliSidePlanSteering: true,
   ownsCliTranscriptJsonl: false,
+  hostAutoMemoryStore: false,
 }
 
 class TestHandle implements ProviderSessionHandle {

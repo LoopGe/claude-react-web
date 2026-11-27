@@ -7103,24 +7103,29 @@ export class SessionManager {
     })
   }
 
-  /** Resolve the native auto-memory containment roots for the permission
-   *  broker (`Session.memoryRoots`). Native-only: claude sessions keep their
-   *  CLI-managed memory and leave this undefined, so the broker's root-scoped
-   *  exemption is inert for them. Runtime-derived (never persisted) — called at
-   *  spawn and whenever the memory directory setting changes.
+  /** Resolve the host auto-memory containment roots for the permission broker
+   *  (`Session.memoryRoots`). Capability-gated on `hostAutoMemoryStore` (native):
+   *  a provider that manages its own memory in the CLI config dir (claude) keeps
+   *  this undefined, so the broker's root-scoped exemption is inert for it.
+   *  Runtime-derived (never persisted) — called at spawn and whenever the memory
+   *  directory setting changes.
    *
-   *  Fail-closed: a cwd-less session, or an override that fails lexical
-   *  validation (inside the claude config dir, raw `..` segments), leaves the
-   *  roots undefined → no exemption, every memory tool call prompts. The
-   *  override is independently rejected by the native port's realpath resolve at
-   *  settings time; this guard keeps a bad create-body/persisted intent from
-   *  crashing the spawn or granting access. */
+   *  Fail-closed: a cwd-less session, a provider without the capability, or an
+   *  override that fails lexical validation (inside the claude config dir, raw
+   *  `..` segments) leaves the roots undefined → no exemption, every memory tool
+   *  call prompts. The override is independently rejected by the native port's
+   *  realpath resolve at settings time; this guard keeps a bad create-body /
+   *  persisted intent from crashing the spawn or granting access. */
   private refreshMemoryRoots(s: Session): void {
-    if (s.provider !== 'native' || !s.cwd || !this.store) {
+    if (!s.cwd || !this.store) {
       s.memoryRoots = undefined
       return
     }
     try {
+      if (!this.providers.get(s.provider).capabilities.hostAutoMemoryStore) {
+        s.memoryRoots = undefined
+        return
+      }
       s.memoryRoots = resolveMemoryRoots(s.cwd, this.store.getDir(), s.memory?.autoMemoryDirectory)
     } catch (err) {
       s.memoryRoots = undefined

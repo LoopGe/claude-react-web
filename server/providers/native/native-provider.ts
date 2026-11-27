@@ -155,6 +155,7 @@ export class NativeProvider implements AgentProvider {
     persistentAttachmentRefs: true,
     cliSidePlanSteering: false,
     ownsCliTranscriptJsonl: false,
+    hostAutoMemoryStore: true,
   }
 
   readonly subagentTranscripts = {

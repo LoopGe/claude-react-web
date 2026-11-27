@@ -385,6 +385,7 @@ export class ClaudeProvider implements AgentProvider {
     persistentAttachmentRefs: false,
     cliSidePlanSteering: true,
     ownsCliTranscriptJsonl: true,
+    hostAutoMemoryStore: false,
   }
 
   readonly subagentTranscripts = {

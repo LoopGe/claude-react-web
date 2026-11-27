@@ -8427,7 +8427,10 @@ describe('SessionManager', () => {
         expect((await resultPromise).behavior).toBe('allow')
         expect(sm.listPending(info.id)).toHaveLength(0)
       } else {
-        await tick()
+        // The memory-root exemption judges containment via an async realpath
+        // before the request parks, so a single setImmediate tick no longer
+        // spans the path — wait for the pending to land.
+        await waitFor(() => sm.listPending(info.id).length === 1)
         const pending = sm.listPending(info.id)
         expect(pending).toHaveLength(1)
         await sm.decide(info.id, pending[0].id, { behavior: 'deny', message: 'done' })

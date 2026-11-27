@@ -420,13 +420,16 @@ export class PermissionBroker {
       // covers it and every "save what I learned" write would prompt (a
       // background dream run would stall on a permission decision). Auto-allow
       // ONLY targets whose REALPATH lands inside the session's resolved memory
-      // roots: writes inside ownDir, reads inside ownDir or the claude compat
-      // dir. claudeDir NEVER gets a write exemption (write-isolation invariant —
+      // roots: writes inside ownDir, reads inside ownDir, the claude compat
+      // dir, or the native session-log tree (the dream's consolidation source).
+      // claudeDir NEVER gets a write exemption (write-isolation invariant —
       // the write helper checks own only). Realpath, not lexical, so a symlink
       // inside a root cannot escape it. Placed AFTER the plan hard gate (plan
       // stays fail-closed) and gated off dontAsk (CI lockdown keeps its
       // restrictive posture); bypassPermissions is unaffected. Inert when
-      // session.memoryRoots is undefined (claude sessions).
+      // session.memoryRoots is undefined (claude sessions). The session-log
+      // read root grants the main session no new reach — its tool-layer
+      // containment already refuses that tree — it only unblocks the dream.
       if (session.memoryRoots && mode !== 'plan' && mode !== 'dontAsk') {
         // session.cwd anchors relative path fields against the same base the
         // tool executes against (the acceptEdits convention), so the exemption

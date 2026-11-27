@@ -23,10 +23,13 @@ const log = createLogger('memory-permission')
 
 /** The session's resolved auto-memory roots (`Session.memoryRoots`, produced
  *  by `resolveMemoryRoots`). `own` is the CRW-managed writable store; `claude`
- *  is the CLI-managed read-only compat dir (null when absent). */
+ *  is the CLI-managed read-only compat dir (null when absent). `sessionLogs` is
+ *  the native session-log tree — the dream consolidation's read-only source
+ *  material; it is a READ root only and never grants a write exemption. */
 export interface MemoryRoots {
   own: string
   claude: string | null
+  sessionLogs?: string | null
 }
 
 /** Read tools whose target rides a path input field. Read uses `file_path`;
@@ -130,11 +133,15 @@ export async function isMemoryRootWrite(
 }
 
 /** Whether a read tool call (Read/Glob/Grep/LS) targets a path inside the
- *  session's own OR claude memory root, by realpath containment. Reads are
- *  read-only, so both roots are exempt; the target must exist (a read of an
- *  absent path is not exempt — the tool layer reports it). An absent path field
- *  (cwd-scoped search) is not memory-targeted. `cwd` anchors relative path
- *  fields against the session working directory (absolute fields unchanged). */
+ *  session's own OR claude memory root OR the native session-log tree, by
+ *  realpath containment. Reads are read-only, so all three roots are exempt;
+ *  the target must exist (a read of an absent path is not exempt — the tool
+ *  layer reports it). An absent path field (cwd-scoped search) is not
+ *  memory-targeted. `cwd` anchors relative path fields against the session
+ *  working directory (absolute fields unchanged). The session-log root is what
+ *  lets a background dream run Read its consolidation source without stalling
+ *  on an interactive prompt; the main session's tool-layer containment still
+ *  refuses that tree, so the exemption grants it no new reach. */
 export async function isMemoryRootRead(
   toolName: string,
   input: unknown,
@@ -148,7 +155,7 @@ export async function isMemoryRootRead(
   if (!raw) return false
   const target = targetPath(raw, cwd)
   if (!target) return false
-  for (const root of [roots.own, roots.claude]) {
+  for (const root of [roots.own, roots.claude, roots.sessionLogs]) {
     if (!root) continue
     try {
       const realRoot = await realpath(root)
