@@ -288,6 +288,43 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
     expect(projectNativeEventToSdk(event)).toEqual(golden)
   })
 
+  it('memory/recall: system/memory_recall + mode/memories passthrough + envelope (file-backed, no content)', () => {
+    const event: OperationalFrame = {
+      type: 'memory/recall', sessionId: SESSION, uuid: UUID, parentToolUseId: null,
+      mode: 'select',
+      memories: [
+        { path: '/mem/a.md', scope: 'personal' },
+        { path: '/mem/b.md', scope: 'personal' },
+      ],
+    }
+    const projected = projectNativeEventToSdk(event) as Record<string, any>
+    expect(projected).toEqual({
+      type: 'system', subtype: 'memory_recall',
+      session_id: SESSION, uuid: UUID, parent_tool_use_id: null,
+      mode: 'select',
+      memories: [
+        { path: '/mem/a.md', scope: 'personal' },
+        { path: '/mem/b.md', scope: 'personal' },
+      ],
+    })
+    // File-backed entries carry NO content — the renderer lazy-loads by path.
+    for (const m of projected.memories) expect('content' in m).toBe(false)
+  })
+
+  it('memory/recall: an entry carrying content passes through verbatim (projection strips nothing)', () => {
+    const event: OperationalFrame = {
+      type: 'memory/recall', sessionId: SESSION, uuid: UUID, parentToolUseId: null,
+      mode: 'select',
+      memories: [{ path: '/mem/a.md', scope: 'personal', content: 'inline body' }],
+    }
+    expect(projectNativeEventToSdk(event)).toEqual({
+      type: 'system', subtype: 'memory_recall',
+      session_id: SESSION, uuid: UUID, parent_tool_use_id: null,
+      mode: 'select',
+      memories: [{ path: '/mem/a.md', scope: 'personal', content: 'inline body' }],
+    })
+  })
+
   it('task_started: full field set, is_backgrounded, original start time, NO session envelope', () => {
     const golden = taskStartedFrame({
       taskId: 'task-1', toolUseId: 'tu-1', taskType: 'local_agent',

@@ -1985,7 +1985,7 @@ export class NativeSession implements NativeSessionCore {
   private isOperationalFrame(frame: NativeLoopFrame): frame is OperationalFrame {
     if (!('type' in frame)) return false
     switch (frame.type) {
-      case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/progress': case 'task/notification': case 'result': case 'prompt/suggestion': case 'hook/run':
+      case 'init': case 'api/retry': case 'informational': case 'memory/recall': case 'task/started': case 'task/progress': case 'task/notification': case 'result': case 'prompt/suggestion': case 'hook/run':
         return true
       default:
         return false
@@ -3294,9 +3294,10 @@ export class NativeSession implements NativeSessionCore {
    *
    *  Fail-soft (spec §7.2): ANY failure (enumeration, aux, abort, read) skips
    *  recall for this turn with a log.warn and NEVER blocks or fails the user
-   *  turn. No frame is emitted here — the user-visible recall card is Task 8.
-   *  The surfaced-path/byte state advances only after a successful enqueue, so
-   *  a skipped or unadmitted turn leaves the budget untouched. */
+   *  turn. On a successful enqueue it emits the memory/recall live frame (the
+   *  user-visible card, uuid shared with the supplement). The surfaced-path/byte
+   *  state advances only after a successful enqueue, so a skipped or unadmitted
+   *  turn leaves the budget untouched. */
   private async runMemoryRecall(queryText: string): Promise<void> {
     if (this.memorySettings.autoMemoryEnabled === false) return
     const roots = this.resolvedMemoryRoots
@@ -3340,11 +3341,25 @@ export class NativeSession implements NativeSessionCore {
       }
       if (items.length === 0) return
       const text = buildRecallText(items)
-      if (!this.enqueueSupplement({ uuid: this.ctx.uuid(), text, kind: 'memory' })) return
+      const uuid = this.ctx.uuid()
+      if (!this.enqueueSupplement({ uuid, text, kind: 'memory' })) return
       for (const item of items) {
         this.recallState.surfacedPaths.add(item.path)
         this.recallState.surfacedBytes += Buffer.byteLength(item.content, 'utf8')
       }
+      // The user-visible recall card: uuid SHARED with the supplement entry so
+      // the live card and the durable injection pair by identity. File-backed
+      // entries carry NO content — the renderer lazy-loads by path (the SDK
+      // memory_recall contract). The host adapter projects this to system/
+      // memory_recall, which the pump admits to the ring + seq sidecar.
+      this.output.push({
+        type: 'memory/recall',
+        sessionId: this.opts.id,
+        uuid,
+        parentToolUseId: null,
+        mode: 'select',
+        memories: items.map((item) => ({ path: item.path, scope: 'personal' as const })),
+      })
     } catch (err) {
       log.warn(`[${this.opts.id}] memory recall skipped: ${err instanceof Error ? err.message : String(err)}`)
     }
