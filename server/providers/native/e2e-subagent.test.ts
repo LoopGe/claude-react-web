@@ -31,6 +31,8 @@ import { makeNativePorts } from '../native-host-adapters.js'
 import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import type { ProviderSessionHandle } from '../types.js'
 import type { CanonicalEvent } from './canonical.js'
+import type { TaskRecordUi } from '../../../shared/tasks.js'
+import { PROGRESS_INTERVAL_MS } from './subagent-progress.js'
 
 const AGENT_ID = 'agent-1'
 const PENDING_TOOL_ID = 'read-after-agent'
@@ -117,14 +119,7 @@ type Frame = Record<string, any>
 interface LiveSession {
   history: Frame[]
   subagentHistory: Frame[]
-  tasks: Map<string, {
-    taskId: string
-    toolUseId?: string
-    description: string
-    taskType?: string
-    subagentType?: string
-    isBackgrounded?: boolean
-  }>
+  tasks: Map<string, TaskRecordUi>
   handle: {
     history: unknown[]
     backgroundTasks?(toolUseId?: string): Promise<boolean>
@@ -460,7 +455,14 @@ describe('native synchronous Agent detach', () => {
     )?.message.content[0]
     expect(parentToolResult.is_error).toBe(false)
     expect(parentToolResult.content[0].text).toBe('nested Bash complete')
-    expect(frames.some((f) => f.subtype === 'task_started' || f.subtype === 'task_notification')).toBe(false)
+    // The nested Bash stays foreground: no task lifecycle keyed by it. The outer
+    // foreground Agent announces its OWN running→terminal lifecycle (claude
+    // parity), so the turn carries exactly one task_notification — the Agent's.
+    expect(frames.some((f) => f.subtype === 'task_notification' && f.tool_use_id === 'nested-bash')).toBe(false)
+    expect(liveSession(first.sm, info.id).tasks.has('nested-bash')).toBe(false)
+    const agentNotification = frames.find((f) => f.subtype === 'task_notification' && f.tool_use_id === AGENT_ID)
+    expect(agentNotification?.result).toBe('nested Bash complete')
+    expect(liveSession(first.sm, info.id).tasks.get(AGENT_ID)).toMatchObject({ isBackgrounded: false, status: 'completed' })
     const nestedResult = frames.find(
       (f) => f.type === 'user' && f.message?.content?.[0]?.tool_use_id === 'nested-bash',
     )
@@ -584,5 +586,190 @@ describe('native subagent abort propagation', () => {
       is_error: true,
     })
     expect(JSON.stringify(pendingResult)).toContain('aborted')
+  }, 30000)
+})
+
+// Foreground-subagent TasksPanel parity (claude parity): a foreground Agent
+// dispatch folds into a RUNNING `session.tasks` record (isBackgrounded:false),
+// carries live progress mid-run, and settles TERMINAL with its final report —
+// the same running→terminal lifecycle the claude provider's background tasks
+// show, without ever backgrounding. A foreground shell stays silent (no record).
+//
+// The fold under test is the REAL pump: `applyTaskEvent` (session-pump.ts) folds
+// the adapter-projected SDK `task_started` / `task_progress` / `task_notification`
+// frames into `session.tasks`, so asserting the live map proves the whole
+// neutral-emission → SDK-projection → pump-fold pipeline, not a re-implementation.
+describe('native foreground subagent TasksPanel parity', () => {
+  const PROGRESS_SUMMARY = 'Reading the package manifest'
+
+  it('folds a foreground subagent into a running record that settles terminal with its report', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-subagent-panel-'))
+    dirs.push(dir)
+
+    // Hold the nested run open at its SECOND round so a progress cadence tick
+    // lands mid-run (after the first round's Read tool_use was observed).
+    let releaseNested!: () => void
+    const nestedGate = new Promise<void>((resolve) => { releaseNested = resolve })
+    let parentRounds = 0
+    let nestedRounds = 0
+    const first = await makeFixture(dir)
+    ;(first.provider as unknown as { _testStream: unknown })._testStream = async function* (
+      req: StreamReq & { forkProfile?: boolean },
+    ) {
+      // The progress-summary fork reuses the subagent's own model/tools and is
+      // tagged forkProfile; the test seam flattens its appendMessages tail into
+      // messages. Answer it with a one-line summary, never a tool round.
+      if (req.forkProfile) {
+        for (const ev of textTurn(PROGRESS_SUMMARY)) yield ev
+        return
+      }
+      if (isNestedRequest(req)) {
+        nestedRounds++
+        if (nestedRounds === 1) {
+          for (const ev of toolUseTurn('nested-read-0', 'Read', JSON.stringify({ file_path: 'package.json' }))) yield ev
+          return
+        }
+        await nestedGate
+        for (const ev of textTurn(NESTED_REPORT)) yield ev
+        return
+      }
+      parentRounds++
+      const script = parentRounds === 1
+        ? agentTurn(AGENT_ID, { description: 'research the code', prompt: 'p' })
+        : textTurn(PARENT_DONE)
+      for (const ev of script) yield ev
+    }
+
+    const info = await first.sm.create({
+      cwd: dir,
+      model: 'test-model',
+      provider: 'native',
+      title: 'subagent-panel',
+      canUseTool: allowingCanUseTool(),
+    })
+    sessionIds.push({ sm: first.sm, id: info.id })
+    const sub = first.sm.subscribe(info.id)
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of sub.iterable) frames.push(f as Frame)
+    })()
+
+    // Fake ONLY the interval clock so the 30s progress cadence is deterministic;
+    // setTimeout / Date / Promises stay real. vi.waitFor polls on vitest's safe
+    // (real) timers, so it is unaffected by the fake interval.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      await first.sm.send(info.id, PROMPT)
+
+      // 1. Launch folds a RUNNING foreground record keyed by the Agent tool_use
+      //    id — isBackgrounded:false, taskType normalized to the friendly label.
+      await vi.waitFor(() => {
+        expect(liveSession(first.sm, info.id).tasks.get(AGENT_ID)).toMatchObject({
+          taskId: AGENT_ID,
+          toolUseId: AGENT_ID,
+          taskType: 'subagent',
+          description: 'research the code',
+          subagentType: 'general-purpose',
+          status: 'running',
+          isBackgrounded: false,
+        })
+      }, { timeout: 5000 })
+
+      // 2. Mid-run: one cadence tick folds the mechanical lastToolName plus the
+      //    fork-generated progressSummary onto the still-running record.
+      vi.advanceTimersByTime(PROGRESS_INTERVAL_MS)
+      await vi.waitFor(() => {
+        expect(liveSession(first.sm, info.id).tasks.get(AGENT_ID)).toMatchObject({
+          status: 'running',
+          isBackgrounded: false,
+          lastToolName: 'Read',
+          progressSummary: PROGRESS_SUMMARY,
+        })
+      }, { timeout: 5000 })
+
+      // 3. Release the nested run; it settles and the parent turn completes.
+      releaseNested()
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+      }, { timeout: 5000 })
+    } finally {
+      vi.useRealTimers()
+      releaseNested() // never leave the nested gate held on a failed assertion
+    }
+    sub.unsubscribe()
+
+    // 4. The record settles TERMINAL with the nested final report as its result,
+    //    still foreground (isBackgrounded:false). The nested Read is not a
+    //    backgroundable task, so the Agent record is the ONLY one.
+    const live = liveSession(first.sm, info.id)
+    expect(live.tasks.size).toBe(1)
+    expect(live.tasks.get(AGENT_ID)).toMatchObject({
+      taskId: AGENT_ID,
+      toolUseId: AGENT_ID,
+      taskType: 'subagent',
+      status: 'completed',
+      isBackgrounded: false,
+      result: NESTED_REPORT,
+    })
+
+    // 5. The completion rides the message channel as a task_notification carrying
+    //    the inline report (the client reducer's completion signal), and the
+    //    parent's Agent tool_result carries the same report (claude parity).
+    const notification = frames.find((f) => f.subtype === 'task_notification')
+    expect(notification).toMatchObject({
+      task_id: AGENT_ID,
+      tool_use_id: AGENT_ID,
+      status: 'completed',
+      result: NESTED_REPORT,
+    })
+    const agentResult = frames.find(
+      (f) => f.type === 'user'
+        && f.parent_tool_use_id == null
+        && Array.isArray(f.message?.content)
+        && f.message.content[0]?.tool_use_id === AGENT_ID,
+    )
+    expect(agentResult?.message.content[0]).toMatchObject({ type: 'tool_result', is_error: false })
+    expect(JSON.stringify(agentResult)).toContain(NESTED_REPORT)
+    expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+  }, 30000)
+
+  it('leaves no task record for a foreground shell (claude parity: shells stay silent)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-subagent-panel-shell-'))
+    dirs.push(dir)
+    const scripts: CanonicalEvent[][] = [
+      toolUseTurn('shell-1', 'Bash', JSON.stringify({ command: 'echo foreground-shell-output' })),
+      textTurn(PARENT_DONE),
+    ]
+    const first = await makeFixture(dir, scripts)
+    const info = await first.sm.create({
+      cwd: dir,
+      model: 'test-model',
+      provider: 'native',
+      title: 'subagent-panel-shell',
+      canUseTool: allowingCanUseTool(),
+    })
+    sessionIds.push({ sm: first.sm, id: info.id })
+    const sub = first.sm.subscribe(info.id)
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of sub.iterable) frames.push(f as Frame)
+    })()
+
+    await first.sm.send(info.id, PROMPT)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    }, { timeout: 5000 })
+    sub.unsubscribe()
+
+    // A foreground shell resolves its tool loop without announcing a task: no
+    // record in the fold, no lifecycle frame on the channel.
+    expect(liveSession(first.sm, info.id).tasks.size).toBe(0)
+    expect(frames.some((f) => f.subtype === 'task_started' || f.subtype === 'task_notification')).toBe(false)
+    const shellResult = frames.find(
+      (f) => f.type === 'user'
+        && Array.isArray(f.message?.content)
+        && f.message.content[0]?.tool_use_id === 'shell-1',
+    )
+    expect(JSON.stringify(shellResult)).toContain('foreground-shell-output')
   }, 30000)
 })

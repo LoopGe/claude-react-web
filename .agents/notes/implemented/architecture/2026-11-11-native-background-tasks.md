@@ -12,9 +12,9 @@ One session-scoped `NativeTaskManager` sits between `runTurn()` and backgroundab
 
 Backgrounding resolves the originating tool wait with one normal acknowledgement while the real execution continues. The actual completion becomes a task notification with inline output, never a second `tool_result` for the original call or a second top-level turn result. The same manager is shared with nested Agent loops so a nested Bash call can detach without implicitly detaching its parent Agent. Detaching a nested call leaves the outer Agent foreground, and independently detached nested work survives an outer Agent stop.
 
-Detached work survives a later parent interrupt. TasksPanel lists only detached calls, including their terminal state and final output, and Stop terminates the selected task. `TaskOutput` supports non-blocking reads and bounded blocking waits for tasks in the current process. Destroy settles every execution; a later spawn reconciles stale active native records to stopped with `worker_restart` while preserving their historical rows.
+Detached work survives a later parent interrupt. TasksPanel lists detached calls, including their terminal state and final output, and Stop terminates the selected task. Foreground subagents also appear live (running → terminal) through the parity emission; foreground shells stay silent. `TaskOutput` supports non-blocking reads and bounded blocking waits for tasks in the current process. Destroy settles every execution; a later spawn reconciles stale active native records to stopped with `worker_restart` while preserving their historical rows.
 
-The shipped scope covers mid-flight Bash and synchronous Agent detach, TasksPanel status/output, explicit stop, and model-facing `TaskOutput`. Launch-time background flags, automatic completion turns, incremental progress, and cross-process execution recovery remain deferred. Provider capability projections enable the existing controls for native live and dormant sessions, while unsupported providers still hide per-card background actions and `Alt+B`.
+The shipped scope covers mid-flight Bash and synchronous Agent detach, TasksPanel status/output, explicit stop, and model-facing `TaskOutput`. Launch-time background flags, automatic completion turns, incremental output streaming, and cross-process execution recovery remain deferred. Provider capability projections enable the existing controls for native live and dormant sessions, while unsupported providers still hide per-card background actions and `Alt+B`.
 
 The full behavior and lifecycle contract is in `docs/superpowers/specs/2026-11-11-native-background-tasks-design.md`.
 
@@ -45,3 +45,5 @@ Final-output-only retrieval is less useful for very long commands than streaming
 ## Related
 
 [Task output streaming architecture](../../proposed/architecture/2026-11-14-task-output-streaming.md) proposes the live-output and cross-process output-storage architecture deferred here. It remains blocked on the upstream event and byte contracts; the final-output-only behavior above is still the shipped reality.
+
+[Native TasksPanel foreground parity](../feature/2026-11-27-native-task-panel-parity.md) extends the emission scope owned here: foreground subagents emit a live running → terminal lifecycle and running subagents carry progress, while the execution / signal / detach architecture above is unchanged.

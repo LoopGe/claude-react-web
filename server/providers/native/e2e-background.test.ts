@@ -326,7 +326,10 @@ describe('native background task acceptance through direct provider handles', ()
       await expect(handle.backgroundTasks!('nested-bash')).resolves.toBe(true)
       await vi.waitFor(() => expect(nestedRounds).toBe(2), { timeout: 5000 })
       await expect(handle.stopTask!('outer-agent')).rejects.toThrow('not backgrounded')
-      expect(liveSession(fx.sm, id).tasks.has('outer-agent')).toBe(false)
+      // The outer Agent stays foreground: it has a live task record (foreground
+      // subagents appear in the panel — claude parity) but is NOT backgrounded,
+      // so detaching the nested Bash did not detach it.
+      expect(liveSession(fx.sm, id).tasks.get('outer-agent')).toMatchObject({ isBackgrounded: false })
       expect(toolResultBlocks(frames, 'outer-agent')).toHaveLength(0)
       const acknowledgements = toolResultBlocks(frames, 'nested-bash')
       expect(acknowledgements).toHaveLength(1)

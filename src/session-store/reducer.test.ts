@@ -5330,6 +5330,66 @@ describe('reducer: a pure foreground (sync) subagent that also gets a task_notif
     state = reduceSessionState(state, { type: 'MESSAGE', message: notification('tu_sync', 20) })
     expect(state.mirror.activeSubagents.get('tu_sync')).toMatchObject({ status: 'done', isAsync: false })
   })
+
+  it('native foreground record + its terminal notification + tool_result settle ONE sync record exactly once', () => {
+    // Zero-client-change pin for the native provider's foreground-subagent
+    // TasksPanel parity. Native emits the SAME fold vocabulary claude does, in
+    // the wire order the task manager produces: a running foreground snapshot
+    // (isBackgrounded:false), then a TERMINAL snapshot carrying the inline
+    // report, then the task_notification frame, then the Agent tool_result.
+    // The terminal snapshot's inline result settles the sync record early
+    // (hasTaskOutput), and the later notification + tool_result must merge into
+    // that SAME record — never a second terminal card, never an async flip.
+    const REPORT = 'NATIVE_FOREGROUND_REPORT'
+    const nativeNotification: SdkMessage = {
+      type: 'system', subtype: 'task_notification', uuid: 'n-native', task_id: 't-1',
+      tool_use_id: 'tu_native', status: 'completed', result: REPORT, receivedAt: 20,
+    } as unknown as SdkMessage
+    const toolResult: SdkMessage = {
+      type: 'user', uuid: 'u-native', parent_tool_use_id: null, receivedAt: 30,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_native', content: REPORT, is_error: false }] },
+    } as unknown as SdkMessage
+    const resultFrame: SdkMessage = { type: 'result', subtype: 'success', uuid: 'r-native' } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_native', 'a1') })
+    expect(state.mirror.activeSubagents.get('tu_native')?.status).toBe('running')
+
+    // Running foreground snapshot: isAsync stamped false, record stays running
+    // (a sync record's real output is still owed as the Agent tool_result).
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_native', taskType: 'subagent', isBackgrounded: false, status: 'running' })],
+    })
+    expect(state.mirror.activeSubagents.get('tu_native')).toMatchObject({ status: 'running', isAsync: false })
+
+    // Terminal snapshot carrying the inline report settles the record to done.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_native', taskType: 'subagent', isBackgrounded: false, status: 'completed', result: REPORT })],
+    })
+    expect(state.mirror.activeSubagents.get('tu_native')).toMatchObject({ status: 'done', isAsync: false })
+    expect(state.mirror.activeSubagents.get('tu_native')?.result?.content).toBe(REPORT)
+
+    // The completion notification coexists: same single record, still sync,
+    // still done — it does not spawn a second terminal entry or flip isAsync.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: nativeNotification })
+    expect(state.mirror.activeSubagents.get('tu_native')).toMatchObject({ status: 'done', isAsync: false })
+
+    // The canonical Agent tool_result merges into the SAME record (its payload
+    // outranks the repackaged notification result), still exactly one entry.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult })
+    const settled = state.mirror.activeSubagents.get('tu_native')
+    expect(settled).toMatchObject({ status: 'done', isAsync: false, resultOrigin: 'tool_result' })
+    expect(settled?.result?.content).toBe(REPORT)
+    expect(state.mirror.activeSubagents.size).toBe(1)
+
+    // Turn end keeps the single settled record and its result (no orphan card).
+    state = reduceSessionState(state, { type: 'MESSAGE', message: resultFrame })
+    expect(state.mirror.activeSubagents.get('tu_native')).toMatchObject({ status: 'done', isAsync: false })
+    expect(state.mirror.activeSubagents.get('tu_native')?.result?.content).toBe(REPORT)
+    expect(state.mirror.activeSubagents.size).toBe(1)
+  })
 })
 
 describe('REPLAY_REPLACE payload dedup (superseded-burst concatenation)', () => {
