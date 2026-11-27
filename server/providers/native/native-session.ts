@@ -64,7 +64,7 @@ import { createAgentTool, type AgentToolDeps } from './subagent.js'
 import { EXPLORE_AGENT_DESCRIPTION, EXPLORE_AGENT_NAME } from './explore.js'
 import { NativeTaskManager } from './task-manager.js'
 import { NativeSkillCatalog, LISTING_BUDGET_FRACTION, type NativeSkillCommand, type NativeSkillInvocationView, type NativeSkillView } from './skills.js'
-import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, type NativeCommand } from './commands.js'
+import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, pluginCommandRows, type NativeCommand } from './commands.js'
 import { createSkillTool } from './tools/skill.js'
 import { createTaskOutputTool } from './tools/task-output.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
@@ -222,10 +222,11 @@ export function packAssistantStream(
   return records
 }
 
-/** `/name args` — the composer's slash-command shape for a user-invoked skill.
- *  The name grammar is the CLI's canonical skill-name rule (a bare name or a
- *  single `plugin:`-composed name), compiled from the shared canonical source
- *  so the slash parser and the name validator never drift. */
+/** `/name args` — the composer's slash-command shape for a user-invoked skill
+ *  or command. The name grammar is the CLI's canonical name rule (a bare name
+ *  or a `:`-composed name — `plugin:skill`, `plugin:frontend:component`),
+ *  compiled from the shared canonical source so the slash parser and the name
+ *  validator never drift. */
 const SKILL_COMMAND_RE = new RegExp('^/(' + CANONICAL_SKILL_NAME_SOURCE + ')(?:\\s+([\\s\\S]*))?$')
 
 /** The first text block of a user turn — the only block that can carry a
@@ -561,6 +562,10 @@ export class NativeSession implements NativeSessionCore {
    *  wholesale (never mutated), so a turn's captured reference is a stable
    *  snapshot. Builtin rows are concatenated separately at every read. */
   private customCommands: NativeCommand[] = []
+  /** Plugin command rows (qualified `plugin:command`) projected from the
+   *  plugin port's contributions as of the last command reload. Replaced
+   *  wholesale alongside `customCommands` under the same generation fence. */
+  private pluginCommands: NativeCommand[] = []
   /** The CURRENT command discovery in flight — the same supersede semantics
    *  as `skillsReady`, re-assigned by `reloadSkills`. */
   private commandsReady: Promise<void>
@@ -1929,12 +1934,20 @@ export class NativeSession implements NativeSessionCore {
    *  the catch marks the promise handled at process level while the turn path
    *  still awaits the ORIGINAL promise, so a real failure stays a loud turn
    *  error. The generation fence keeps a slower earlier pass from overwriting
-   *  a newer committed snapshot. */
+   *  a newer committed snapshot. Custom files and plugin contributions commit
+   *  together as ONE command-surface snapshot: the plugin port (when the host
+   *  has a marketplace store) receives the same per-session `enabledPlugins`
+   *  subset the skill catalog forwards. */
   private startCommandReload(): Promise<void> {
     const generation = ++this.commandGeneration
-    const reload = discoverCommands(this.opts.cwd, this.opts.commandsUserRoot).then((commands) => {
+    const pluginPort = this.opts.ports.plugin
+    const reload = Promise.all([
+      discoverCommands(this.opts.cwd, this.opts.commandsUserRoot),
+      pluginPort ? pluginPort.listContributions(this.opts.enabledPlugins) : Promise.resolve([]),
+    ]).then(([commands, contributions]) => {
       if (generation <= this.committedCommandGeneration) return
       this.customCommands = commands
+      this.pluginCommands = pluginCommandRows(contributions)
       this.committedCommandGeneration = generation
     })
     void reload.catch((err) => log.warn(`[${this.opts.id}] command discovery failed:`, err))
@@ -1942,10 +1955,16 @@ export class NativeSession implements NativeSessionCore {
   }
 
   /** The full slash surface: builtin rows, then discovered custom rows, then
-   *  the current skill view's rows — deduped by lowercased name so a command
-   *  wins a same-name skill and a builtin wins a same-name custom file.
-   *  Display names stay as authored; only the dedupe key is case-folded. */
-  private commandCatalog(custom: readonly NativeCommand[], skillCommands: readonly NativeSkillCommand[]): NativeSkillCommand[] {
+   *  qualified plugin rows, then the current skill view's rows — deduped by
+   *  lowercased name so a command wins a same-name skill, a builtin wins a
+   *  same-name custom file, and a plugin command wins a same-name plugin
+   *  skill. Display names stay as authored; only the dedupe key is
+   *  case-folded. */
+  private commandCatalog(
+    custom: readonly NativeCommand[],
+    plugin: readonly NativeCommand[],
+    skillCommands: readonly NativeSkillCommand[],
+  ): NativeSkillCommand[] {
     const out: NativeSkillCommand[] = []
     const seen = new Set<string>()
     const push = (row: NativeSkillCommand): void => {
@@ -1958,6 +1977,9 @@ export class NativeSession implements NativeSessionCore {
       push({ name: cmd.name, description: cmd.description, argumentHint: cmd.argumentHint, builtin: true })
     }
     for (const cmd of custom) {
+      push({ name: cmd.name, description: cmd.description, argumentHint: cmd.argumentHint })
+    }
+    for (const cmd of plugin) {
       push({ name: cmd.name, description: cmd.description, argumentHint: cmd.argumentHint })
     }
     for (const row of skillCommands) push(row)
@@ -2209,7 +2231,7 @@ export class NativeSession implements NativeSessionCore {
             // captured once so a later reload cannot mix into this turn.
             compactControl = isCompactControlInvocation(next.content)
             if (!compactControl) {
-              const turnCommands = [...BUILTIN_COMMANDS, ...this.customCommands]
+              const turnCommands = [...BUILTIN_COMMANDS, ...this.customCommands, ...this.pluginCommands]
               invocation = commandInvocationForTurn(next.content, turnCommands)
                 ?? skillInvocationForTurn(next.content, turnSkillView)
             }
@@ -3295,7 +3317,7 @@ export class NativeSession implements NativeSessionCore {
   async supportedCommands(): Promise<unknown> {
     await this.skillsReady
     await this.commandsReady
-    return this.commandCatalog(this.customCommands, this.currentSkillView().commands())
+    return this.commandCatalog(this.customCommands, this.pluginCommands, this.currentSkillView().commands())
   }
 
   /** Auto-title through the injected auxiliary LLM port. The model is
@@ -3373,7 +3395,7 @@ export class NativeSession implements NativeSessionCore {
     this.commandsReady = this.startCommandReload()
     await this.skillsReady
     await this.commandsReady
-    return { skills: this.commandCatalog(this.customCommands, this.currentSkillView().commands()) }
+    return { skills: this.commandCatalog(this.customCommands, this.pluginCommands, this.currentSkillView().commands()) }
   }
 
   /** The single hook decision point for the trigger seams: delegates to the

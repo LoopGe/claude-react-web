@@ -159,6 +159,19 @@ describe('buildForkSeed (neutral)', () => {
     expect(seed.inheritedEventCount).toBe(2)
     expect(seed.events[1]).toEqual({ ...nSkill(1, 'alpha', 'PERSISTED COMMAND BODY'), seq: 1 })
   })
+  it('pairs a multi-segment plugin command invocation with its instruction at the cut', () => {
+    // Plugin commands qualify as `plugin:command`, and a nested command file
+    // adds further segments (`plugin:frontend:component`). The cut pairing
+    // shares the live slash grammar, so the whole qualified name must match.
+    const withPlugin = neutralSource([
+      nUser(0, 'u1', null, [text('/demo:frontend:component args')]),
+      nSkill(1, 'demo:frontend:component', 'PLUGIN COMMAND BODY'),
+      nAssistant(2, 'a1', [text('done')]),
+    ])
+    const seed = buildForkSeed({ source: withPlugin, sourceId: 'src', cwd: '/new', resumeSessionAt: 'u1' })
+    expect(seed.inheritedEventCount).toBe(2)
+    expect(seed.events[1]).toEqual({ ...nSkill(1, 'demo:frontend:component', 'PLUGIN COMMAND BODY'), seq: 1 })
+  })
   it.each([
     { label: 'ordinary text', parent: null, content: [text('ordinary prompt')] },
     { label: 'sidechain invocation', parent: 'agent-1', content: [text('/alpha')] },

@@ -197,10 +197,10 @@ describe('projectRootOfSkill', () => {
 })
 
 describe('CANONICAL_SKILL_NAME', () => {
-  it.each(['demo', 'my.skill', 'a-b_c', 'plugin:skill', 'superpowers:brainstorming'])('accepts %s', (n) => {
+  it.each(['demo', 'my.skill', 'a-b_c', 'plugin:skill', 'superpowers:brainstorming', 'plugin:frontend:component', 'a:b:c'])('accepts %s', (n) => {
     expect(CANONICAL_SKILL_NAME.test(n)).toBe(true)
   })
-  it.each(['plugin:', ':skill', 'a::b', 'a:b:c', '-bad', ''])('rejects %s', (n) => {
+  it.each(['plugin:', ':skill', 'a::b', '-bad', ''])('rejects %s', (n) => {
     expect(CANONICAL_SKILL_NAME.test(n)).toBe(false)
   })
 })

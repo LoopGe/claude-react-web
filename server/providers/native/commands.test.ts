@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody } from './commands.js'
+import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, pluginCommandRows } from './commands.js'
+import type { PluginCommand, PluginContributions } from './ports.js'
 
 // Creating a file symlink needs no privileges on POSIX but does on Windows
 // unless developer mode is on. Probe once so the escape test is skipped only
@@ -172,6 +173,58 @@ describe('discoverCommands', () => {
   it('returns an empty list when neither root exists', async () => {
     const cmds = await discoverCommands(join(root, 'no-project'), join(root, 'no-user'))
     expect(cmds).toEqual([])
+  })
+})
+
+describe('pluginCommandRows', () => {
+  const contribution = (name: string, commands: PluginCommand[]): PluginContributions => ({
+    key: `${name}@mp`,
+    name,
+    dir: `/plugins/${name}`,
+    commands,
+    agents: [],
+    hooks: {},
+    mcpServers: {},
+    errors: [],
+  })
+  const command = (name: string, body: string): PluginCommand => ({
+    name,
+    description: `${name} description`,
+    argumentHint: '[topic]',
+    body,
+  })
+
+  it('namespaces each plugin command with the plugin name and keeps its metadata', () => {
+    const rows = pluginCommandRows([contribution('demo', [command('about', 'Tell me about $ARGUMENTS')])])
+    expect(rows).toEqual([
+      {
+        name: 'demo:about',
+        description: 'about description',
+        argumentHint: '[topic]',
+        builtin: false,
+        body: 'Tell me about $ARGUMENTS',
+      },
+    ])
+  })
+
+  it('passes a multi-segment bare name through under the plugin prefix', () => {
+    // The loader's path-derived name for commands/frontend/component.md is
+    // already `frontend:component`; qualification only adds the plugin prefix.
+    const rows = pluginCommandRows([contribution('demo', [command('frontend:component', 'BUILD')])])
+    expect(rows.map((row) => row.name)).toEqual(['demo:frontend:component'])
+  })
+
+  it('sorts rows by qualified name across plugins', () => {
+    const rows = pluginCommandRows([
+      contribution('zeta', [command('last', 'Z')]),
+      contribution('demo', [command('zulu', 'DZ'), command('about', 'DA')]),
+    ])
+    expect(rows.map((row) => row.name)).toEqual(['demo:about', 'demo:zulu', 'zeta:last'])
+  })
+
+  it('returns an empty list for no contributions and for plugins without commands', () => {
+    expect(pluginCommandRows([])).toEqual([])
+    expect(pluginCommandRows([contribution('empty', [])])).toEqual([])
   })
 })
 

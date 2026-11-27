@@ -2,16 +2,19 @@
 // for the native provider.
 //
 // Neutral core module: Node builtins, the neutral shared frontmatter parser,
-// and the sibling skill-render substitution contract only. The user root is
-// PASSED IN (the host resolves its config dir); nothing here reads host
-// config. Discovery mirrors server/skills.ts (readdir, frontmatter,
-// containment, project-wins dedupe), but commands are FLAT `.md` files under
-// `.claude/commands` — not skill subdirectories — and a command's
-// frontmatter is optional metadata, not a validity gate.
+// the sibling skill-render substitution contract, and the neutral plugin-port
+// payload types only. The user root is PASSED IN (the host resolves its config
+// dir); nothing here reads host config. Discovery mirrors server/skills.ts
+// (readdir, frontmatter, containment, project-wins dedupe), but commands are
+// FLAT `.md` files under `.claude/commands` — not skill subdirectories — and a
+// command's frontmatter is optional metadata, not a validity gate. Plugin
+// commands arrive already discovered through the plugin port; the projection
+// here only qualifies their names.
 
 import { promises as fs } from 'node:fs'
 import { basename, isAbsolute, relative, resolve } from 'node:path'
 import { MAX_SKILL_BYTES, VALID_SKILL_NAME, parseSkillFrontmatter } from '../../../shared/skills.js'
+import type { PluginContributions } from './ports.js'
 import { substituteSkillArguments } from './skill-render.js'
 
 /** One row of the native slash-command surface. Builtin rows carry a
@@ -152,6 +155,31 @@ export async function discoverCommands(cwd: string | undefined, userRoot: string
     for (const cmd of await listCommandRoot(root)) byName.set(cmd.name, cmd)
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** Project host-resolved plugin contributions into catalog command rows.
+ *  Each command is qualified `${pluginName}:${cmd.name}` — the loader's bare
+ *  name may itself be multi-segment for a nested command file
+ *  (`frontend:component`), so the qualified name can carry several `:`.
+ *  Manifest shadowing and per-plugin containment are the loader's contract
+ *  (already applied); rows keep the authored metadata and prompt body and
+ *  sort by qualified name for a deterministic catalog. Same-qualified-name
+ *  collisions across plugins are left to the session catalog's first-wins
+ *  dedupe, exactly like custom rows. */
+export function pluginCommandRows(contributions: readonly PluginContributions[]): NativeCommand[] {
+  const out: NativeCommand[] = []
+  for (const contribution of contributions) {
+    for (const cmd of contribution.commands) {
+      out.push({
+        name: `${contribution.name}:${cmd.name}`,
+        description: cmd.description,
+        argumentHint: cmd.argumentHint,
+        builtin: false,
+        body: cmd.body,
+      })
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name))
 }
 
 /** The command body with the invocation's positional arguments substituted,

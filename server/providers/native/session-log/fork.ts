@@ -25,6 +25,7 @@ import type { NativeSessionLogSnapshot, NativeNeutralEventInput } from './log.js
 import { neutralEventsOf } from './neutral-read.js'
 import { contextSnapshot, repairInterruptedTurn } from './replay.js'
 import type { NativeSessionEvent, SessionEvent } from '../vocabulary/session-event.js'
+import { CANONICAL_SKILL_NAME_SOURCE } from '../../../../shared/skills.js'
 
 export interface BuildForkSeedOptions {
   source: NativeSessionLogSnapshot
@@ -41,8 +42,10 @@ export interface NativeForkSeed {
   version: number
 }
 
-/** `/name args` — the same whole-text grammar used by live slash expansion. */
-const SKILL_COMMAND_RE = /^\/([A-Za-z0-9][A-Za-z0-9._-]{0,79})(?:\s+([\s\S]*))?$/
+/** `/name args` — the same whole-text grammar used by live slash expansion,
+ *  compiled from the shared canonical source so a qualified plugin command
+ *  (`plugin:frontend:component`) pairs at the cut exactly like a bare name. */
+const SKILL_COMMAND_RE = new RegExp('^/(' + CANONICAL_SKILL_NAME_SOURCE + ')(?:\\s+([\\s\\S]*))?$')
 
 /** The durable uuid of a neutral event, or undefined for an operational event
  *  that carries none. Mirrors the legacy top-level `uuid` field: user /

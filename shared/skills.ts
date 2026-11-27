@@ -20,15 +20,18 @@ export const MAX_SKILL_BYTES = 1024 * 1024
 
 export const VALID_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
 
-/** The CLI's canonical skill-name grammar: a bare name, optionally composed
- *  with a single `plugin:` prefix (`plugin:skill`). Unlike {@link VALID_SKILL_NAME}
- *  (the filesystem-basename / frontmatter validator, which stays bare because
- *  `:` cannot be a Windows directory character), a `:` name is only ever a
- *  composed canonical name — never a discovered directory. The unanchored
- *  source is shared so the slash-command parser and any future canonical-name
- *  consumer compile from one grammar. Browser-safe: pure string/regex. */
+/** The CLI's canonical skill/command-name grammar: a bare name, optionally
+ *  composed with `:`-separated namespace segments (`plugin:skill`, and a
+ *  nested plugin command's `plugin:frontend:component`). Unlike
+ *  {@link VALID_SKILL_NAME} (the filesystem-basename / frontmatter validator,
+ *  which stays bare because `:` cannot be a Windows directory character), a
+ *  `:` name is only ever a composed canonical name — never a discovered
+ *  directory. Every segment must be non-empty and start alphanumeric. The
+ *  unanchored source is shared so the slash-command parser and any future
+ *  canonical-name consumer compile from one grammar. Browser-safe: pure
+ *  string/regex. */
 export const CANONICAL_SKILL_NAME_SOURCE =
-  '[A-Za-z0-9][A-Za-z0-9._-]{0,79}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,79})?'
+  '[A-Za-z0-9][A-Za-z0-9._-]{0,79}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,79})*'
 
 export const CANONICAL_SKILL_NAME = new RegExp('^' + CANONICAL_SKILL_NAME_SOURCE + '$')
 

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -61,6 +61,9 @@ import { UploadStore } from '../../upload-store.js'
 import { aliasPathOf, attachmentRoot } from '../../attachment-paths.js'
 import { estimateText, estimateMessage, estimateToolSchema, ROLE_OVERHEAD } from './estimate.js'
 import { BUILTIN_COMMANDS } from './commands.js'
+import { listPluginContributions } from '../../plugin-contributions.js'
+import type { EnabledPluginEntry } from '../../mp-store.js'
+import type { SkillRecord } from '../../../shared/skills.js'
 
 /** Hermetic memory default: session tests must never read the developer's real
  *  CLAUDE.md chain (the host reader walks cwd ancestors + the user config dir).
@@ -8194,5 +8197,237 @@ describe('per-turn memory + environment overlay', () => {
     } finally {
       await session.destroy()
     }
+  })
+})
+
+// ── Plugin commands (plugin parity T2) ──────────────────────────────────────
+// The plugin port is exercised through the REAL host loader over a stub
+// marketplace source (the same shape plugin-contributions.test.ts uses), so
+// these tests cover path-derived nested names and manifest shadowing end to
+// end, not a hand-fed contribution list.
+describe('NativeSession plugin commands', () => {
+  const INIT_BODY = BUILTIN_COMMANDS.find((cmd) => cmd.name === 'init')!.body!
+
+  async function makePluginEntry(root: string, name: string, manifest?: Record<string, unknown>): Promise<EnabledPluginEntry> {
+    const dir = join(root, 'plugins', name)
+    await mkdir(dir, { recursive: true })
+    if (manifest) {
+      await mkdir(join(dir, '.claude-plugin'), { recursive: true })
+      await writeFile(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify(manifest), 'utf8')
+    }
+    return { key: `${name}@mp`, name, dir, cloneDir: join(root, 'mp-clone') }
+  }
+
+  /** Plant one plugin command document. `rel` may carry subdirectories
+   *  (frontend/component.md) — the loader derives the nested bare name. */
+  async function writePluginCommand(
+    entry: EnabledPluginEntry,
+    rel: string,
+    fields: Record<string, string> | null,
+    body: string,
+  ): Promise<void> {
+    const file = join(entry.dir, 'commands', rel)
+    await mkdir(dirname(file), { recursive: true })
+    const frontmatter = fields === null
+      ? ''
+      : ['---', ...Object.entries(fields).map(([key, value]) => `${key}: ${value}`), '---', ''].join('\n')
+    await writeFile(file, `${frontmatter}${body}`, 'utf8')
+  }
+
+  function portsWithPlugins(
+    stateDir: string,
+    entries: EnabledPluginEntry[],
+    overrides: Partial<NativeHostPorts> = {},
+  ): NativeHostPorts {
+    const source = {
+      getEnabledPluginEntries: (keys?: string[]) =>
+        keys === undefined ? entries : entries.filter((entry) => keys.includes(entry.key)),
+    }
+    return {
+      ...makeNativePorts({ stateDir }),
+      plugin: { listContributions: (enabled) => listPluginContributions(source, enabled) },
+      ...overrides,
+    }
+  }
+
+  /** One slash turn through a fresh session; returns the request's last two
+   *  messages (the raw invocation + whatever expansion followed it). */
+  async function slashTurnMessages(
+    ports: NativeHostPorts,
+    dir: string,
+    id: string,
+    text: string,
+    createOpts: Partial<Parameters<NativeProvider['createSession']>[0]> = {},
+  ): Promise<unknown[]> {
+    const provider = new NativeProvider({ stateDir: dir, ports })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('ok')], requests)
+    const session = provider.createSession({ id, cwd: dir, ...createOpts })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg(text) as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      return requests[0].messages.slice(-2)
+    } finally {
+      await session.destroy()
+    }
+  }
+
+  it('lists plugin commands namespaced, after custom rows and before skill rows', async () => {
+    const dir = await tempDir('native-plugin-cmd-catalog-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, 'about.md', { description: 'About this plugin', 'argument-hint': '[topic]' }, 'Tell me about $ARGUMENTS')
+    await writePluginCommand(entry, 'frontend/component.md', { description: 'Scaffold a component' }, 'Build a $ARGUMENTS component')
+    // A user/project custom command with the same BARE name must not collide:
+    // the plugin row is qualified, the custom row stays bare.
+    await mkdir(join(dir, '.claude', 'commands'), { recursive: true })
+    await writeFile(join(dir, '.claude', 'commands', 'about.md'), '---\ndescription: Custom about\n---\n\nCUSTOM ABOUT', 'utf8')
+    await writeProjectSkill(dir, 'zskill')
+    const provider = new NativeProvider({ stateDir: dir, ports: portsWithPlugins(dir, [entry]) })
+    const session = provider.createSession({ id: 'plugin-cmd-catalog', cwd: dir })
+    expect(await session.supportedCommands?.()).toEqual([
+      ...BUILTIN_ROWS,
+      { name: 'about', description: 'Custom about', argumentHint: '' },
+      { name: 'demo:about', description: 'About this plugin', argumentHint: '[topic]' },
+      { name: 'demo:frontend:component', description: 'Scaffold a component', argumentHint: '' },
+      { name: 'zskill', description: 'zskill description', argumentHint: '' },
+    ])
+    await session.destroy()
+  })
+
+  it('a multi-segment plugin command appears in supportedCommands AND invocates', async () => {
+    const dir = await tempDir('native-plugin-cmd-nested-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, 'frontend/component.md', { description: 'Scaffold a component' }, 'Build a $ARGUMENTS component')
+    const provider = new NativeProvider({ stateDir: dir, ports: portsWithPlugins(dir, [entry]) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'plugin-cmd-nested', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      expect((await session.supportedCommands?.() as Array<{ name: string }>).map((row) => row.name))
+        .toContain('demo:frontend:component')
+      session.enqueueUserMessage(userMsg('/demo:frontend:component Button') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      expect(requests[0].messages.slice(-2)).toEqual([
+        { role: 'user', content: [{ type: 'text', text: '/demo:frontend:component Button' }] },
+        { role: 'user', content: [{ type: 'text', text: 'Build a Button component' }] },
+      ])
+      // The durable instruction carries the qualified catalog name.
+      const instruction = neutralLogEvents(session).find((event) => event.type === 'session/skill')
+      expect(instruction && instruction.type === 'session/skill' && instruction.data.name).toBe('demo:frontend:component')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('a single-segment plugin command invocates with argument substitution', async () => {
+    const dir = await tempDir('native-plugin-cmd-invoke-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, 'about.md', { description: 'About this plugin' }, 'Tell me about $ARGUMENTS')
+    expect(await slashTurnMessages(portsWithPlugins(dir, [entry]), dir, 'plugin-cmd-invoke', '/demo:about widgets')).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/demo:about widgets' }] },
+      { role: 'user', content: [{ type: 'text', text: 'Tell me about widgets' }] },
+    ])
+  })
+
+  it('consumes the loader-applied manifest shadowing of the commands/ dir', async () => {
+    const dir = await tempDir('native-plugin-cmd-shadow-')
+    const entry = await makePluginEntry(dir, 'demo', { commands: ['./commands/listed.md'] })
+    await writePluginCommand(entry, 'about.md', { description: 'Dir about' }, 'DIR ABOUT')
+    await writePluginCommand(entry, 'listed.md', { description: 'Listed' }, 'LISTED BODY')
+    const provider = new NativeProvider({ stateDir: dir, ports: portsWithPlugins(dir, [entry]) })
+    const session = provider.createSession({ id: 'plugin-cmd-shadow', cwd: dir })
+    const names = (await session.supportedCommands?.() as Array<{ name: string }>).map((row) => row.name)
+    expect(names).toContain('demo:listed')
+    expect(names).not.toContain('demo:about')
+    await session.destroy()
+  })
+
+  it('builtin precedence holds with plugin rows present', async () => {
+    const dir = await tempDir('native-plugin-cmd-builtin-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, 'about.md', { description: 'About' }, 'PLUGIN ABOUT')
+    // A custom hijack of a builtin name still loses while plugin rows ride
+    // the same catalog (builtin → custom → plugin → skill, first wins).
+    await mkdir(join(dir, '.claude', 'commands'), { recursive: true })
+    await writeFile(join(dir, '.claude', 'commands', 'init.md'), 'HIJACKED INIT', 'utf8')
+    const ports = portsWithPlugins(dir, [entry])
+    const provider = new NativeProvider({ stateDir: dir, ports })
+    const session = provider.createSession({ id: 'plugin-cmd-builtin', cwd: dir })
+    const catalog = await session.supportedCommands?.() as Array<{ name: string; builtin?: boolean }>
+    expect(catalog.filter((row) => row.name === 'init')).toEqual([
+      { name: 'init', description: BUILTIN_ROWS[0].description, argumentHint: '', builtin: true },
+    ])
+    await session.destroy()
+    expect(await slashTurnMessages(ports, dir, 'plugin-cmd-builtin-turn', '/init')).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/init' }] },
+      { role: 'user', content: [{ type: 'text', text: INIT_BODY }] },
+    ])
+  })
+
+  it('a plugin command wins over a same-name plugin skill', async () => {
+    const dir = await tempDir('native-plugin-cmd-vs-skill-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, 'about.md', { description: 'Command about' }, 'COMMAND ABOUT $ARGUMENTS')
+    // A plugin-scope skill sharing the qualified name, served by a stub skill
+    // port over a real SKILL.md document (the catalog reads record.path).
+    const skillDir = join(dir, 'plugin-skills', 'about')
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, 'SKILL.md'), '---\nname: about\ndescription: Skill about\n---\n\nSKILL ABOUT', 'utf8')
+    const skillRecord: SkillRecord = {
+      scope: 'plugin', name: 'demo:about', description: 'Skill about',
+      path: join(skillDir, 'SKILL.md'), relativePath: 'about',
+      readOnly: true, valid: true, errors: [], plugin: 'demo',
+    }
+    const ports = portsWithPlugins(dir, [entry], {
+      skill: { listSkills: async () => ({ roots: [], skills: [skillRecord] }) },
+    })
+    const provider = new NativeProvider({ stateDir: dir, ports })
+    const session = provider.createSession({ id: 'plugin-cmd-vs-skill', cwd: dir })
+    const catalog = await session.supportedCommands?.() as Array<{ name: string; description: string }>
+    expect(catalog.filter((row) => row.name === 'demo:about')).toEqual([
+      { name: 'demo:about', description: 'Command about', argumentHint: '' },
+    ])
+    await session.destroy()
+    expect(await slashTurnMessages(ports, dir, 'plugin-cmd-vs-skill-turn', '/demo:about X')).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/demo:about X' }] },
+      { role: 'user', content: [{ type: 'text', text: 'COMMAND ABOUT X' }] },
+    ])
+  })
+
+  it('reloadSkills refreshes plugin commands', async () => {
+    const dir = await tempDir('native-plugin-cmd-reload-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, 'about.md', { description: 'About' }, 'ABOUT')
+    const provider = new NativeProvider({ stateDir: dir, ports: portsWithPlugins(dir, [entry]) })
+    const session = provider.createSession({ id: 'plugin-cmd-reload', cwd: dir })
+    expect((await session.supportedCommands?.() as Array<{ name: string }>).map((row) => row.name))
+      .toEqual([...BUILTIN_NAMES, 'demo:about'])
+
+    await writePluginCommand(entry, 'extra.md', { description: 'Extra' }, 'EXTRA')
+    const reloaded = await session.reloadSkills?.() as { skills: Array<{ name: string }> }
+    expect(reloaded.skills.map((row) => row.name)).toEqual([...BUILTIN_NAMES, 'demo:about', 'demo:extra'])
+
+    await rm(join(entry.dir, 'commands', 'about.md'), { force: true })
+    const afterDelete = await session.reloadSkills?.() as { skills: Array<{ name: string }> }
+    expect(afterDelete.skills.map((row) => row.name)).toEqual([...BUILTIN_NAMES, 'demo:extra'])
+    await session.destroy()
+  })
+
+  it('forwards the per-session plugin subset to the plugin port', async () => {
+    const dir = await tempDir('native-plugin-cmd-subset-')
+    const entry = await makePluginEntry(dir, 'demo')
+    await writePluginCommand(entry, 'about.md', { description: 'About' }, 'ABOUT')
+    const provider = new NativeProvider({ stateDir: dir, ports: portsWithPlugins(dir, [entry]) })
+    const none = provider.createSession({ id: 'plugin-cmd-subset-none', cwd: dir, enabledPlugins: [] })
+    expect((await none.supportedCommands?.() as Array<{ name: string }>).map((row) => row.name)).toEqual(BUILTIN_NAMES)
+    await none.destroy()
+    const some = provider.createSession({ id: 'plugin-cmd-subset-some', cwd: dir, enabledPlugins: ['demo@mp'] })
+    expect((await some.supportedCommands?.() as Array<{ name: string }>).map((row) => row.name))
+      .toEqual([...BUILTIN_NAMES, 'demo:about'])
+    await some.destroy()
   })
 })
