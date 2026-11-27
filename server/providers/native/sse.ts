@@ -8,32 +8,44 @@ export interface SseEvent {
 
 export async function* parseSseStream(body: ReadableStream<Uint8Array>): AsyncIterable<SseEvent> {
   const decoder = new TextDecoder()
+  // Read via getReader()/read() rather than `for await (… of body)`: the DOM-lib
+  // ReadableStream (this module is pulled into the browser tsconfig through a
+  // src test's transitive import) has no [Symbol.asyncIterator], so the async
+  // iterator form fails TS2504 there. The reader loop is portable across the
+  // DOM and Node libs and behavior-identical.
+  const reader = body.getReader()
   let buffer = ''
   let eventName = ''
   let dataLines: string[] = []
-  for await (const chunk of body) {
-    buffer += decoder.decode(chunk, { stream: true })
-    let idx: number
-    while ((idx = buffer.search(/\r?\n/)) >= 0) {
-      const line = buffer.slice(0, idx)
-      buffer = buffer.slice(idx + (buffer[idx] === '\r' ? 2 : 1))
-      if (line.startsWith(':')) continue
-      if (line.startsWith('event:')) eventName = line.slice(6).trim()
-      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
-      else if (line === '') {
-        if (dataLines.length > 0) {
-          const raw = dataLines.join('\n')
-          let data: unknown
-          try {
-            data = JSON.parse(raw)
-          } catch {
-            throw new Error('invalid sse data')
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done || value === undefined) break
+      buffer += decoder.decode(value, { stream: true })
+      let idx: number
+      while ((idx = buffer.search(/\r?\n/)) >= 0) {
+        const line = buffer.slice(0, idx)
+        buffer = buffer.slice(idx + (buffer[idx] === '\r' ? 2 : 1))
+        if (line.startsWith(':')) continue
+        if (line.startsWith('event:')) eventName = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+        else if (line === '') {
+          if (dataLines.length > 0) {
+            const raw = dataLines.join('\n')
+            let data: unknown
+            try {
+              data = JSON.parse(raw)
+            } catch {
+              throw new Error('invalid sse data')
+            }
+            yield { event: eventName, data }
           }
-          yield { event: eventName, data }
+          eventName = ''
+          dataLines = []
         }
-        eventName = ''
-        dataLines = []
       }
     }
+  } finally {
+    reader.releaseLock()
   }
 }
