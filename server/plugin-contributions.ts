@@ -14,13 +14,15 @@
 // `modules` (executable code) — modules are REFUSED per plugin: native loads
 // plugin data, never plugin code.
 //
-// commands/ and agents/ are walked RECURSIVELY: a file's name is its sanitized
-// subdirectory namespace joined with its sanitized basename (`frontend:component`),
-// the plugin prefix being added at integration. A declared entry may name a
+// commands/ and agents/ are walked RECURSIVELY: a file's name is its
+// subdirectory namespace joined with its basename (`frontend:component`), the
+// plugin prefix being added at integration. A declared entry may name a
 // DIRECTORY, which is walked the same way. Command walks stop at a skill dir
-// (a directory holding SKILL.md) and never load SKILL.md itself. Names are
-// SANITIZED, not validated away — a CJK-named command loads under its dashed
-// name instead of vanishing.
+// (a directory holding SKILL.md) and never load SKILL.md itself. Command/agent
+// names keep RAW Unicode letters/digits (CJK intact — CLI command parity); only
+// characters outside letters/digits/`_-` (spaces, dots, punctuation, control
+// chars) fold to '-'. Two files that still fold to one name are a LOUD
+// collision (reported, later file refused), never a silent first-wins drop.
 //
 // Every manifest and file is untrusted. Containment is REALPATH-based (the
 // CLI's rule): a lexical escape and a symlink resolving outside the plugin are
@@ -71,15 +73,19 @@ function report(errors: PluginContributionError[], kind: string, detail: string)
   errors.push({ kind, detail })
 }
 
-/** CLI sanitizer (plugin-skills.ts's rule): every character outside
- *  [a-zA-Z0-9_-] becomes '-'. Applied per path segment, so a non-ASCII name
- *  loads under a dashed name rather than being dropped. Also applied to
- *  manifest object-map command KEYS: the CLI uses those raw, but a spaced key
- *  would list a row the slash parser can never tokenize — native keeps the
- *  whole command-name domain inside the slash grammar (no listed-but-broken
- *  rows). */
+/** Command/agent name fold — NOT the skill sanitizer. Every character outside
+ *  Unicode letters/digits + `_-` becomes '-', applied per path segment and to
+ *  manifest object-map command KEYS. Unicode letters/digits are kept RAW so a
+ *  CJK basename loads under its own name (CLI command parity: the CLI's
+ *  command-name offering gate is a shell-metacharacter blocklist that CJK
+ *  passes, not an ASCII allowlist), while spaces and other grammar-invalid
+ *  characters still fold to '-' so the name stays inside the slash grammar (no
+ *  listed-but-broken rows). Skills keep the stricter ASCII-only rule
+ *  (plugin-skills.ts). The composed slash grammar
+ *  (shared/skills.ts CANONICAL_SKILL_NAME_SOURCE) accepts the Unicode this
+ *  preserves, so a raw CJK segment lists AND invocates. */
 function sanitizeName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9_-]/g, '-')
+  return name.replace(/[^\p{L}\p{N}_-]/gu, '-')
 }
 
 /** One object-map command declaration: `source` (file path(s)) XOR `content`
@@ -410,6 +416,26 @@ async function readCommandFile(
   }
 }
 
+/** Within-plugin name collision guard. The first declaration of a bare name
+ *  wins; a later file/key resolving to the SAME name is refused LOUDLY (a
+ *  reported error naming both sources), never silently dropped by the catalog's
+ *  first-wins dedupe. Raw Unicode names keep distinct CJK basenames distinct;
+ *  this catches the residual folds (e.g. `my cmd.md` + `my-cmd.md` both fold to
+ *  `my-cmd`). The claim is keyed on the bare name — within one plugin the
+ *  qualified name is `plugin:bare`, so a bare collision IS a qualified one. */
+function nameClaimer(kind: string, errors: PluginContributionError[]): (name: string, source: string) => boolean {
+  const seen = new Map<string, string>()
+  return (name, source) => {
+    const prior = seen.get(name)
+    if (prior !== undefined) {
+      report(errors, kind, `${source}: name "${name}" is already declared by ${prior}; refusing the duplicate`)
+      return false
+    }
+    seen.set(name, source)
+    return true
+  }
+}
+
 async function scanCommands(
   dir: string,
   pluginReal: string,
@@ -417,6 +443,7 @@ async function scanCommands(
   errors: PluginContributionError[],
 ): Promise<PluginCommand[]> {
   const out: PluginCommand[] = []
+  const claim = nameClaimer('commands', errors)
   const files: DiscoveredFile[] = []
   if (manifest?.commandsDeclared) {
     for (const raw of manifest.commandPaths) {
@@ -427,7 +454,7 @@ async function scanCommands(
   }
   for (const { file, name } of files) {
     const cmd = await readCommandFile(file, name, {}, errors)
-    if (cmd) out.push(cmd)
+    if (cmd && claim(name, file)) out.push(cmd)
   }
   for (const { name, spec } of manifest?.commandMap ?? []) {
     const overrides = { description: spec.description, argumentHint: spec.argumentHint }
@@ -441,12 +468,14 @@ async function scanCommands(
         report(errors, 'commands', `commands.${name}: inline content frontmatter is missing its closing ---`)
         continue
       }
-      out.push({
-        name,
-        description: overrides.description ?? doc.description,
-        argumentHint: overrides.argumentHint ?? doc.argumentHint,
-        body: doc.body,
-      })
+      if (claim(name, `commands.${name}`)) {
+        out.push({
+          name,
+          description: overrides.description ?? doc.description,
+          argumentHint: overrides.argumentHint ?? doc.argumentHint,
+          body: doc.body,
+        })
+      }
       continue
     }
     if (spec.sources.length !== 1) {
@@ -460,7 +489,7 @@ async function scanCommands(
     }
     for (const { file } of sources) {
       const cmd = await readCommandFile(file, name, overrides, errors)
-      if (cmd) out.push(cmd)
+      if (cmd && claim(name, `commands.${name}`)) out.push(cmd)
     }
   }
   return out
@@ -582,9 +611,10 @@ async function scanAgents(
     files.push(...await walkMarkdown(join(dir, AGENTS_DIR), pluginReal, 'agents', errors, false))
   }
   const out: StoredAgentDefinition[] = []
+  const claim = nameClaimer('agents', errors)
   for (const { file, name } of files) {
     const def = await readAgentFile(file, name, errors)
-    if (def) out.push(def)
+    if (def && claim(name, file)) out.push(def)
   }
   return out
 }
@@ -669,7 +699,11 @@ function mergeMcpServers(target: Record<string, unknown>, raw: unknown, source: 
     return
   }
   for (const [name, config] of Object.entries(raw)) {
-    if (name in target) log.warn(`plugin ${dir}: MCP server ${name} redeclared by ${source}, the later declaration wins`)
+    // Object.hasOwn (not `in`) so an inherited key never reads as a redeclaration;
+    // the target is null-prototype (scanMcpServers), so a hostile name like
+    // `__proto__` lands as an own data property, never a prototype write — the
+    // same discipline mergePluginMcpServers keeps with its Map.
+    if (Object.hasOwn(target, name)) log.warn(`plugin ${dir}: MCP server ${name} redeclared by ${source}, the later declaration wins`)
     target[name] = config
   }
 }
@@ -680,7 +714,9 @@ async function scanMcpServers(
   manifest: PluginManifest | undefined,
   errors: PluginContributionError[],
 ): Promise<Record<string, unknown>> {
-  const servers: Record<string, unknown> = {}
+  // Null-prototype so a hostile server name (`__proto__`, `constructor`) is an
+  // own data property, never a prototype write (mergeMcpServers assigns by key).
+  const servers: Record<string, unknown> = Object.create(null)
   const base = await realInside(pluginReal, join(dir, MCP_FILE), 'mcp', errors)
   const baseDoc = base ? await readJsonDocument(base, 'mcp', false, errors) : null
   if (baseDoc) mergeMcpServers(servers, baseDoc.mcpServers, MCP_FILE, dir, errors)

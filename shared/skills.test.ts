@@ -203,4 +203,14 @@ describe('CANONICAL_SKILL_NAME', () => {
   it.each(['plugin:', ':skill', 'a::b', '-bad', '', 'demo:a b', 'demo:--:', 'demo: '])('rejects %s', (n) => {
     expect(CANONICAL_SKILL_NAME.test(n)).toBe(false)
   })
+  // Raw CJK command/agent names (CLI command parity): composed segments accept
+  // Unicode letters/digits, so a raw CJK segment lists AND invocates.
+  it.each(['demo:中文命令', 'demo:前端:组件', 'demo:审查员', 'parity:中文命令', 'demo:组件2', 'demo:测试命令'])('accepts raw CJK composed name %s', (n) => {
+    expect(CANONICAL_SKILL_NAME.test(n)).toBe(true)
+  })
+  // The FIRST segment stays ASCII-led (the plugin prefix); a bare CJK name and
+  // a spaced CJK segment still reject — the widening adds letters/digits only.
+  it.each(['中文命令', 'demo:中文 命令', 'demo:中文:命令 ', '中文:命令'])('rejects %s', (n) => {
+    expect(CANONICAL_SKILL_NAME.test(n)).toBe(false)
+  })
 })
