@@ -132,8 +132,7 @@ would block the manager's post-turn probe on a slow server.
 ## Related
 
 - Memory loading behind the Memory Files row (memory port, per-turn
-  overlay, constructor seed): `2026-11-27-native-memory-and-behavior.md`
-  in this directory.
+  overlay, constructor seed): [native memory and behavior](2026-11-27-native-memory-and-behavior.md).
 - Capacity resolution for the same payload's `maxTokens` /
   `autoCompactThreshold`: [native model context resolution](../architecture/2026-11-14-native-model-context-resolution.md).
 - Design spec: `docs/superpowers/specs/2026-11-25-native-context-composition-design.md`.

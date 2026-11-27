@@ -1,7 +1,7 @@
 # Native provider: CLAUDE.md loading + behavior/tone guidance + environment context
 
 Date: 2026-11-27
-Status: draft (pending approval)
+Status: implemented
 
 ## Intent and why
 
