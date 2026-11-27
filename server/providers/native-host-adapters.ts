@@ -15,6 +15,7 @@ import { createMcpTransport, isMcpAuthError } from '../mcp-config.js'
 import { AttachmentObjectStore } from '../attachment-object-store.js'
 import { resolveAuthorizedAttachment } from '../attachment-access.js'
 import { listSkills } from '../skills.js'
+import { listPluginContributions } from '../plugin-contributions.js'
 import type { MpStore } from '../mp-store.js'
 import { normalize, paginateRenderable } from '../history-reader.js'
 import { normalizeSubagentLine } from '../subagent-transcripts.js'
@@ -36,8 +37,10 @@ export interface NativeHostPortsDeps {
    *  which resolves the per-server provider and passes it to
    *  createTransport as opts.authProvider. */
   authFor?: (name: string) => OAuthClientProvider | undefined
-  /** Marketplace store for read-only plugin-skill discovery. Absent = the
-   *  skill port stays user/project-only (handle-only unit sessions). */
+  /** Marketplace store for read-only plugin discovery (skills + the
+   *  commands/agents/hooks/MCP contributions). Absent = the skill port stays
+   *  user/project-only and the plugin port is undefined (handle-only unit
+   *  sessions). */
   mpStore?: MpStore
   /** CLAUDE.md chain-reader override (tests inject fixture-backed readers);
    *  absent = the real host reader, createMemoryReader(). */
@@ -51,6 +54,7 @@ export interface NativeHostPortsDeps {
 export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHostPorts {
   const stateDir = resolveNativeStateDir(deps.stateDir)
   const objects = new AttachmentObjectStore(stateDir)
+  const mpStore = deps.mpStore
   // Mirrors native-provider.ts's per-config fallback cache: one snapshot per
   // config generation (the frozen binding is replaced on reload), so requests
   // and discovery share one route within a generation.
@@ -100,8 +104,11 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
       },
     },
     skill: {
-      listSkills: (cwd, enabledPlugins) => listSkills(cwd, deps.mpStore ? { mpStore: deps.mpStore, enabledPlugins } : undefined),
+      listSkills: (cwd, enabledPlugins) => listSkills(cwd, mpStore ? { mpStore, enabledPlugins } : undefined),
     },
+    // Present only with a marketplace store — the seven always-on ports keep
+    // their key set when plugin discovery is unavailable.
+    ...(mpStore ? { plugin: { listContributions: (enabledPlugins?: string[]) => listPluginContributions(mpStore, enabledPlugins) } } : {}),
     transcript: {
       normalize: (line, sessionId, trim) => normalize(line, sessionId, trim),
       paginateRenderable: (renderable, sessionId, opts) => paginateRenderable(renderable, sessionId, opts),
