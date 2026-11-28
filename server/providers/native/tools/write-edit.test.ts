@@ -1,5 +1,5 @@
 // server/providers/native/tools/write-edit.test.ts
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -33,6 +33,11 @@ beforeEach(() => {
 })
 
 const ctx = (cwd: string) => ({ cwd, signal: new AbortController().signal })
+const memCtx = (cwd: string, roots: { write?: string[]; read?: string[] }) => ({
+  cwd,
+  signal: new AbortController().signal,
+  memoryRoots: { write: roots.write ?? [], read: roots.read ?? [] },
+})
 const input = (old_string: string, new_string: string, replace_all?: boolean) => ({
   file_path: 'a.txt', old_string, new_string, ...(replace_all === undefined ? {} : { replace_all }),
 })
@@ -320,5 +325,89 @@ describe('editTool', () => {
     await expect(editTool.run(input('before', 'ok'), ctx(dir))).rejects.toThrow(/readback|changed|verify/i)
     expect(requested).toBeLessThanOrEqual(Buffer.byteLength('ok') + 1)
     await expect(state.assertEditable(dir, 'a.txt')).rejects.toThrow(/read|changed/i)
+  })
+})
+
+describe('memory roots', () => {
+  async function layout() {
+    dir = await mkdtemp(join(tmpdir(), 'native-mem-'))
+    const cwd = join(dir, 'cwd')
+    const memory = join(dir, 'memory')
+    const outside = join(dir, 'outside')
+    await mkdir(cwd)
+    await mkdir(memory)
+    await mkdir(outside)
+    return { cwd, memory, outside }
+  }
+
+  it('Write rejects an absolute path outside the cwd without roots', async () => {
+    const { cwd, outside } = await layout()
+    const file = join(outside, 'x.txt')
+    await expect(writeTool.run({ file_path: file, content: 'x' }, ctx(cwd))).rejects.toThrow(/escapes/i)
+  })
+
+  it('Write creates a file inside a write root outside the cwd', async () => {
+    const { cwd, memory } = await layout()
+    const file = join(memory, 'm.txt')
+    await writeTool.run({ file_path: file, content: 'hello' }, memCtx(cwd, { write: [memory] }))
+    expect(await readFile(file, 'utf-8')).toBe('hello')
+  })
+
+  it('Write still rejects a target outside the cwd and every write root', async () => {
+    const { cwd, memory, outside } = await layout()
+    const file = join(outside, 'x.txt')
+    await expect(writeTool.run({ file_path: file, content: 'x' }, memCtx(cwd, { write: [memory] })))
+      .rejects.toThrow(/escapes/i)
+  })
+
+  it('Write is not authorized by a read-only root', async () => {
+    const { cwd, memory } = await layout()
+    const file = join(memory, 'm.txt')
+    await expect(writeTool.run({ file_path: file, content: 'x' }, memCtx(cwd, { read: [memory] })))
+      .rejects.toThrow(/escapes/i)
+  })
+
+  it('Read reads a file inside a read root outside the cwd', async () => {
+    const { cwd, memory } = await layout()
+    const file = join(memory, 'm.txt')
+    await writeFile(file, 'memory line\n')
+    const res = await readTool.run({ file_path: file }, memCtx(cwd, { read: [memory] }))
+    expect(res.text).toContain('     1\tmemory line')
+  })
+
+  it('Read is not authorized by a write-only root', async () => {
+    const { cwd, memory } = await layout()
+    const file = join(memory, 'm.txt')
+    await writeFile(file, 'memory')
+    await expect(readTool.run({ file_path: file }, memCtx(cwd, { write: [memory] }))).rejects.toThrow(/escapes/i)
+  })
+
+  it('Edit edits a memory file after a complete read', async () => {
+    const { cwd, memory } = await layout()
+    const file = join(memory, 'm.txt')
+    await writeFile(file, 'foo bar')
+    const c = memCtx(cwd, { write: [memory], read: [memory] })
+    await readTool.run({ file_path: file }, c)
+    await editTool.run({ file_path: file, old_string: 'bar', new_string: 'baz' }, c)
+    expect(await readFile(file, 'utf-8')).toBe('foo baz')
+  })
+
+  it('Edit still requires read evidence for a memory file', async () => {
+    const { cwd, memory } = await layout()
+    const file = join(memory, 'm.txt')
+    await writeFile(file, 'foo')
+    const c = memCtx(cwd, { write: [memory], read: [memory] })
+    await expect(editTool.run({ file_path: file, old_string: 'foo', new_string: 'bar' }, c)).rejects.toThrow(/read/i)
+    expect(await readFile(file, 'utf-8')).toBe('foo')
+  })
+
+  it('Edit is not authorized by a read-only root', async () => {
+    const { cwd, memory } = await layout()
+    const file = join(memory, 'm.txt')
+    await writeFile(file, 'foo')
+    await readTool.run({ file_path: file }, memCtx(cwd, { read: [memory] }))
+    await expect(editTool.run({ file_path: file, old_string: 'foo', new_string: 'bar' }, memCtx(cwd, { read: [memory] })))
+      .rejects.toThrow(/escapes/i)
+    expect(await readFile(file, 'utf-8')).toBe('foo')
   })
 })

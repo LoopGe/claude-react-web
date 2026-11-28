@@ -318,6 +318,44 @@ The fallback is an over-estimate for routes that are genuinely smaller AND fail 
 
 ---
 
+### `nativeDreamAfterMs`
+
+|         |            |
+| ------- | ---------- |
+| Type    | `number`   |
+| Default | `86400000` |
+
+Minimum milliseconds since a cwd's last dream consolidation before the **native provider's** auto-dream may fire again. Dream is per-cwd: at turn end the provider checks that at least this much time has passed since that cwd's last consolidation AND that at least `nativeDreamSessionCount` same-cwd native sessions were touched since then. Completion timestamps persist in `<stateDir>/native-memory/dream-state.json`; the running lock is process-local, so a restart resets it and the next qualifying window retries.
+
+```json
+{
+  "nativeDreamAfterMs": 86400000
+}
+```
+
+Must be a finite number `>= 0`; fractional values are rounded. Anything else is ignored and the default applies. `0` means elapsed time never blocks a dream (the session-count threshold still applies). Read live (config reload-safe). The per-session `autoDreamEnabled` memory switch is the master gate; the `claude` provider does not read this field.
+
+---
+
+### `nativeDreamSessionCount`
+
+|         |          |
+| ------- | -------- |
+| Type    | `number` |
+| Default | `5`      |
+
+Minimum number of same-cwd native sessions touched since that cwd's last dream consolidation before auto-dream fires. Together with `nativeDreamAfterMs` this is the trigger threshold checked at turn end; a dream consolidates only that cwd's own memory directory.
+
+```json
+{
+  "nativeDreamSessionCount": 5
+}
+```
+
+Must be a positive safe integer; anything else is ignored and the default applies. Read live (config reload-safe). The `claude` provider does not read this field.
+
+---
+
 ### `nativeAttachmentFidelity`
 
 |         |           |

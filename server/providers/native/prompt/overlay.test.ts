@@ -1,6 +1,6 @@
 // server/providers/native/prompt/overlay.test.ts
 import { describe, expect, it } from 'vitest'
-import { joinPromptParts, renderMemorySection, renderEnvironment } from './overlay.js'
+import { joinPromptParts, renderMemorySection, renderAutoMemorySection, renderEnvironment } from './overlay.js'
 import type { NativeMemoryFile } from '../ports.js'
 
 describe('joinPromptParts', () => {
@@ -36,6 +36,43 @@ describe('renderMemorySection', () => {
     expect(renderMemorySection(files)).toBe(
       '# Memory Files\n\nContents of /home/.claude/CLAUDE.md (user instructions):\nUSER-RULES',
     )
+  })
+})
+
+describe('renderAutoMemorySection', () => {
+  // The verbatim section copy (task brief), directory + index interpolated.
+  const COPY = (ownDir: string, index: string): string =>
+    '# Memory\n\n'
+    + `You have a persistent file-based memory at \`${ownDir}\`. This directory already exists — write to it directly with the Write tool.\n\n`
+    + 'Each memory is one file with frontmatter: name (short kebab-case slug), description (one-line summary), metadata.type (user | feedback | project | reference). The body is the fact.\n\n'
+    + `Maintain \`${ownDir}/MEMORY.md\` as an index: one line per memory, \`- [Title](file.md) — hook\`.\n\n`
+    + `Save when you learn something worth persisting across sessions: user preferences, feedback on how to work, project constraints not derivable from code, external references. Do not save what the repo already records (code structure, git history, CLAUDE.md). Check for an existing memory before creating a duplicate; update rather than duplicate; delete memories that turn out wrong. Save in the same reply where you learn the fact. Write only inside \`${ownDir}\`.\n\n`
+    + `Current index:\n${index}`
+
+  it('renders the exact copy with the directory and index interpolated', () => {
+    expect(renderAutoMemorySection({ ownDir: '/store/mem', index: '- [A](a.md) — hook' }))
+      .toBe(COPY('/store/mem', '- [A](a.md) — hook'))
+  })
+
+  it('a null index renders the "(empty index)" placeholder', () => {
+    expect(renderAutoMemorySection({ ownDir: '/store/mem', index: null }))
+      .toBe(COPY('/store/mem', '(empty index)'))
+  })
+
+  it('an empty or whitespace-only index renders the placeholder (the port provisions an empty MEMORY.md)', () => {
+    expect(renderAutoMemorySection({ ownDir: '/store/mem', index: '' }))
+      .toBe(COPY('/store/mem', '(empty index)'))
+    expect(renderAutoMemorySection({ ownDir: '/store/mem', index: '\n' }))
+      .toBe(COPY('/store/mem', '(empty index)'))
+  })
+
+  it('names the absolute directory, the frontmatter convention and the index content', () => {
+    const section = renderAutoMemorySection({ ownDir: '/abs/dir', index: 'INDEX-BODY' })
+    expect(section).toContain('# Memory')
+    expect(section).toContain('/abs/dir')
+    expect(section).toContain('frontmatter')
+    expect(section).toContain('metadata.type (user | feedback | project | reference)')
+    expect(section).toContain('INDEX-BODY')
   })
 })
 

@@ -45,8 +45,8 @@ import { finishReasonOf, type ContentBlock, type TokenUsage, type Usage } from '
 import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './vocabulary/session-event.js'
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
-import type { NativeHostPorts, NativeMemoryReadResult, PluginContributions } from './ports.js'
-import { joinPromptParts, renderMemorySection, renderEnvironment } from './prompt/overlay.js'
+import type { MemoryCandidate, NativeHostPorts, NativeMemoryReadResult, PluginContributions } from './ports.js'
+import { joinPromptParts, renderMemorySection, renderAutoMemorySection, renderEnvironment } from './prompt/overlay.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel, type RequestOutputFormat, type StreamRequest } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, type FrameContext } from './vocabulary/frame-context.js'
@@ -93,9 +93,18 @@ import {
 } from './agent-profile.js'
 import { filterToolsForProfile } from './agent-tools.js'
 import type { SessionToolProfile } from '../../../shared/tool-profile.js'
-import { formatSupplementInstruction, type SupplementOutcome } from '../steering-format.js'
+import { formatSupplementInstruction, formatMemoryRecallInstruction, type SupplementOutcome } from '../steering-format.js'
+import {
+  newRecallState,
+  excludeCandidates,
+  selectMemories,
+  buildRecallText,
+  RECALL_DEADLINE_MS,
+  type RecallState,
+} from './memory.js'
+import { startDreamRun as startDreamRunCore, runDreamTrigger, type DreamRunHandle } from './dream.js'
 import { isQuestionResult } from '../../../shared/question-result.js'
-import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
+import type { SessionMemorySettings, ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import type { UploadStore } from '../../upload-store.js'
 import type { NativeAttachmentReferenceIndex } from './attachment-reference-index.js'
 import {
@@ -425,6 +434,11 @@ export interface NativeSessionOptions {
   /** Fast-mode intent carried over from `SessionMeta.fastMode`. Only the
    *  starting point: `applyFlagSettings({fastMode})` keeps a live field. */
   fastMode?: boolean
+  /** Auto-memory intent carried over from `SessionMeta.memory`. Only the
+   *  starting point: `applyFlagSettings` keeps a live `memorySettings` field.
+   *  The directory override is validated through the auto-memory port's
+   *  realpath resolve at the spawn seed (awaited before the first turn). */
+  memory?: SessionMemorySettings
   /** The resolved provider profile, threaded from the manager. `supportedModels`
    *  prefers its model list; absent = the ConfigPort's active profile / model list. */
   profile?: ProviderProfile
@@ -719,6 +733,30 @@ export class NativeSession implements NativeSessionCore {
   private effortLevel: EffortLevel | undefined
   /** Live fast-mode intent, read when the next request is built. */
   private fastMode: boolean
+  /** Live auto-memory intent (the shared SessionMemorySettings shape). Seeded
+   *  from opts.memory at spawn; the applyFlagSettings memory keys replace keys
+   *  live (null clears). Per-turn consumers read this field, never the spawn
+   *  snapshot. */
+  private memorySettings: SessionMemorySettings
+  /** The validated auto-memory roots from the spawn/settings seed — null until
+   *  the seed settles. `ownDir` is the writable CRW-managed store (default or
+   *  the validated override); `claudeDir` the read-only CLI compat root when it
+   *  exists. Stored for the session's live use (the prompt section / recall). */
+  private resolvedMemoryRoots: { ownDir: string; claudeDir: string | null } | null = null
+  /** The session-level auto-memory index snapshot (spec §6): the validated
+   *  ownDir plus the MEMORY.md index text, loaded once at the spawn/settings
+   *  seed. The per-turn render reads THIS — never a fresh readIndex — so
+   *  directory CONTENT changes (model writes, dream) become visible next
+   *  session; only a memory-settings change reloads it. Null until the seed
+   *  settles. */
+  private autoMemorySnapshot: { ownDir: string; index: string | null } | null = null
+  /** The auto-memory spawn/settings validation seed. The first turn awaits it
+   *  BEFORE any tool dispatch (the sessionStartInit precedent): a rejected
+   *  directory override fails every turn loudly with the port's HttpError until
+   *  applyFlagSettings re-validates and replaces the seed — or the feature is
+   *  disabled, which skips the await entirely (no memory path runs then). A
+   *  resolved promise on every later turn — no per-turn cost. */
+  private memorySettingsSeed: Promise<void>
   /** Live flag-source hooks config. Seeded from opts.hooks at spawn;
    *  applyFlagSettings({hooks}) REPLACES it (never merges). The flag HookSource
    *  reads this field on every collection, so a replacement takes effect on
@@ -763,8 +801,17 @@ export class NativeSession implements NativeSessionCore {
    *  landing between the manager's turn-end drain and the pump's `finally`
    *  would then be admitted with no round left to inject it into (stranded). */
   private steeringOpen = false
-  /** Supplements admitted during the current turn, not yet injected. */
-  private supplementQueue: Array<{ uuid: string; text: string }> = []
+  /** Supplements admitted during the current turn, not yet injected. `kind`
+   *  selects the wrap template at injection: 'memory' (turn-start recall) uses
+   *  the recall wrapper and skips the steering delivery callback; absent /
+   *  'steering' is the mid-run user-guidance path. */
+  private supplementQueue: Array<{ uuid: string; text: string; kind?: 'steering' | 'memory' }> = []
+  /** Session-level recall state (spec §7/§10): the paths already surfaced and
+   *  the cumulative surfaced bytes (the budget walk). Fresh per session
+   *  instance — resume/clear/fork each construct a new NativeSession, so the
+   *  field initializer IS the reset; in-place compact preserves the instance
+   *  (and thus the budget set), matching the read-state preservation precedent. */
+  private recallState: RecallState = newRecallState()
   /** T23 (RS §4.4): system injections — asyncRewake exit-2 wakes (hook
    *  feedback) and backgrounded-task completion notifications. The engine's
    *  background completion and the task manager's settle sink enqueue here.
@@ -829,6 +876,16 @@ export class NativeSession implements NativeSessionCore {
     this.thinkingDisplay = opts.thinking && 'display' in opts.thinking ? opts.thinking.display : undefined
     this.effortLevel = this.baseEffortLevel
     this.fastMode = opts.fastMode === true
+    this.memorySettings = { ...opts.memory }
+    // Validate the effective memory directory through the auto-memory port's
+    // realpath resolve and store the roots. Fire-and-forget here (the ctor is
+    // sync); the first turn awaits the seed before any tool dispatch, so a bad
+    // override fails loudly rather than letting a tool run under unvalidated
+    // roots. The no-op catch only marks the promise handled for the case where
+    // no turn ever runs (destroy before first send) — the stored promise still
+    // rejects for the turn's await.
+    this.memorySettingsSeed = this.seedAutoMemoryRoots()
+    void this.memorySettingsSeed.catch(() => {})
     this.pdfBudgets = opts.pdfBudgets ?? new PdfBudgetLedger()
     this.preparedPdfs = opts.preparedPdfs ?? new PreparedPdfStore(this.pdfBudgets)
     this.hooksConfig = opts.hooks ?? {}
@@ -1098,6 +1155,29 @@ export class NativeSession implements NativeSessionCore {
     } catch (err) {
       this._closed = true
       throw err
+    }
+  }
+
+  /** Resolve the effective auto-memory directory (default or the live override)
+   *  through the host port's realpath write-isolation guard and store the roots.
+   *  The port throws HttpError(400) for an override that resolves inside the
+   *  claude config dir (symlink aliases included); the core never imports
+   *  HttpError — it just awaits the port and lets the rejection propagate. A
+   *  live settings change supersedes an in-flight seed: the roots are stored
+   *  only when the directory this seed resolved is still the live one (the
+   *  settings path's own resolve is authoritative). */
+  private async seedAutoMemoryRoots(): Promise<void> {
+    const override = this.memorySettings.autoMemoryDirectory
+    const roots = await this.opts.ports.autoMemory.resolve(this.opts.cwd, override)
+    if (this.memorySettings.autoMemoryDirectory !== override) return
+    this.resolvedMemoryRoots = roots
+    // Load the session-level index snapshot once (spec §6). readIndex is bounded
+    // and never throws (the port returns null on an unreadable index). The guard
+    // is re-checked after the read so a settings change landing mid-read supersedes
+    // this snapshot — the settings path loads its own.
+    const index = await this.opts.ports.autoMemory.readIndex(roots.ownDir)
+    if (this.memorySettings.autoMemoryDirectory === override) {
+      this.autoMemorySnapshot = { ownDir: roots.ownDir, index }
     }
   }
 
@@ -1476,6 +1556,23 @@ export class NativeSession implements NativeSessionCore {
 
   get closed(): boolean {
     return this._closed
+  }
+
+  /** The validated auto-memory roots (null until the spawn/settings seed
+   *  settles). The neutral read surface for the per-turn memory consumers:
+   *  `ownDir` is the writable store the prompt section names and recall scans;
+   *  `claudeDir` the read-only CLI compat root when present. */
+  get autoMemoryRoots(): { ownDir: string; claudeDir: string | null } | null {
+    return this.resolvedMemoryRoots
+  }
+
+  /** The `# Memory` auto-memory section for the per-turn overlay, or '' when
+   *  disabled (`autoMemoryEnabled === false`; default on, CLI parity) or the
+   *  session-level snapshot has not settled. Reads the snapshot — never a fresh
+   *  index read (spec §6: content changes surface next session). */
+  private autoMemorySection(): string {
+    if (this.memorySettings.autoMemoryEnabled === false) return ''
+    return this.autoMemorySnapshot ? renderAutoMemorySection(this.autoMemorySnapshot) : ''
   }
 
   private requestPermission = async (
@@ -1938,7 +2035,7 @@ export class NativeSession implements NativeSessionCore {
   private isOperationalFrame(frame: NativeLoopFrame): frame is OperationalFrame {
     if (!('type' in frame)) return false
     switch (frame.type) {
-      case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/progress': case 'task/notification': case 'result': case 'prompt/suggestion': case 'hook/run':
+      case 'init': case 'api/retry': case 'informational': case 'memory/recall': case 'task/started': case 'task/progress': case 'task/notification': case 'result': case 'prompt/suggestion': case 'hook/run':
         return true
       default:
         return false
@@ -2146,7 +2243,10 @@ export class NativeSession implements NativeSessionCore {
 
   /** The nested (Agent/Task) prompt: the subagent system plus the nested run's
    *  scoped Skill section. The view reads the shared catalog at call time, so
-   *  a reload reaches the next run without reviving an excluded skill. */
+   *  a reload reaches the next run without reviving an excluded skill. No
+   *  auto-memory section: recall is main-turn-only (spec §7.1) and the nested
+   *  tools are cwd-contained (no memoryRoots), so a memory write discipline
+   *  would name a dir the run cannot reach. */
   private subagentSystem(skillView: NativeSkillView): string {
     const memory = this.memorySnapshot
     return withSkillsSection(
@@ -2319,6 +2419,16 @@ export class NativeSession implements NativeSessionCore {
         // UserPromptSubmit so its context/seed lead this turn's messages. A
         // resolved promise on every later turn — no per-turn cost.
         await this.sessionStartInit
+        // The auto-memory seed must settle before any tool dispatch: a rejected
+        // directory override fails this turn loudly (the port's HttpError) and
+        // parks the prompt for durable retry, so no tool ever runs under an
+        // unvalidated override. A settings fix replaces the seed with a resolved
+        // promise; every later turn awaits that resolved promise — no cost.
+        // Disabling the feature skips the await: every memory consumer (prompt
+        // section, recall, dream) is gated off when autoMemoryEnabled === false,
+        // so a bad override must not keep failing turns after the user turned
+        // the feature off.
+        if (this.memorySettings.autoMemoryEnabled !== false) await this.memorySettingsSeed
         let turnSkillView: NativeSkillInvocationView | undefined
         // `/compact` control-action flag: the user branch's catalog discovery
         // sets it; the shared tail reads it to route the control turn (no model
@@ -2603,6 +2713,12 @@ export class NativeSession implements NativeSessionCore {
           this.steeringOpen = true
           await this.log.flush()
           if (catalogError !== undefined) throw catalogError
+          // Turn-start recall (spec §7): main user turns only. The wake branch
+          // never reaches here; the compact-control turn is gated out below.
+          // Runs AFTER steering opens (so the memory supplement is admitted)
+          // and BEFORE runTurn (so the round-start drain injects it ahead of
+          // the first model round). Fail-soft — never blocks the turn.
+          if (!compactControl) await this.runMemoryRecall(promptTextOf(next.content))
         }
         if (compactControl) {
           // Control turn: no model round for the literal text. Request the
@@ -2654,6 +2770,7 @@ export class NativeSession implements NativeSessionCore {
                 ? `${this.baseSystem}\n\n${turnProfile.instruction}`
                 : this.baseSystem,
               renderMemorySection(memory.files),
+              this.autoMemorySection(),
               renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() }),
             ),
             skillView.section(),
@@ -2685,6 +2802,17 @@ export class NativeSession implements NativeSessionCore {
               turnStats,
               tasks: this.tasks,
               cwd: this.opts.cwd,
+              // Main-turn tool roots (spec §5.4): the validated own root is
+              // writable, own + claude compat roots readable. Live read so a
+              // mid-turn settings change tracks the broker's exemption roots.
+              memoryRoots: () => {
+                const roots = this.resolvedMemoryRoots
+                if (!roots) return undefined
+                return {
+                  write: [roots.ownDir],
+                  read: [roots.ownDir, roots.claudeDir].filter((dir): dir is string => dir !== null),
+                }
+              },
               requestPermission: (toolName, input, toolUseId, signal, readOnlyHint) =>
                 this.requestPermission(toolName, input, toolUseId, signal, turnMode.mode, readOnlyHint),
               dispatchHook: async (event, input, hookCtx) => {
@@ -2861,6 +2989,10 @@ export class NativeSession implements NativeSessionCore {
       // and turn/end persistence. The gate reads turnResult (null on the catch
       // path → last_response_error); a spawned fork never blocks the next turn.
       void this.maybeSuggestPrompt(turnResult)
+      // Turn-end dream consolidation: fire-and-forget on the same seam. The
+      // per-cwd trigger owns its failure contract (log + release, never a user-
+      // turn error), so this detached call can never strand the pump.
+      void this.maybeDream(turnResult)
       // Park even when later input is already queued. Only an enqueue observed
       // after this failure (including during turn/end finalization) releases
       // the pause, exactly once; older queued input cannot drive a retry loop.
@@ -3187,7 +3319,7 @@ export class NativeSession implements NativeSessionCore {
    *  the pump consumed its prompt and before the manager settles the turn.
    *  False means "not now", and the manager transparently falls back to its
    *  normal next-turn queue. */
-  enqueueSupplement(entry: { uuid: string; text: string }): boolean {
+  enqueueSupplement(entry: { uuid: string; text: string; kind?: 'steering' | 'memory' }): boolean {
     if (!this.steeringOpen) return false
     this.supplementQueue.push(entry)
     return true
@@ -3223,7 +3355,10 @@ export class NativeSession implements NativeSessionCore {
     const timestamp = new Date().toISOString()
     const wrapped = batch.map((entry) => ({
       uuid: entry.uuid,
-      text: formatSupplementInstruction(entry.text),
+      text: entry.kind === 'memory'
+        ? formatMemoryRecallInstruction(entry.text)
+        : formatSupplementInstruction(entry.text),
+      kind: entry.kind,
     }))
     for (const entry of wrapped) {
       this.log.append({
@@ -3238,9 +3373,173 @@ export class NativeSession implements NativeSessionCore {
     const retained = wrapped.filter((_entry, index) => this.supplementQueue.includes(batch[index]))
     this.supplementQueue = this.supplementQueue.filter((entry) => !batch.includes(entry))
     for (const entry of retained) {
+      // Memory recall is a core-owned injection, not a host steered message:
+      // it has no host bubble to settle, so the delivery callback (which drives
+      // the manager's steered-message ledger) never fires for it.
+      if (entry.kind === 'memory') continue
       this.onSupplementDelivered?.(entry.uuid, { ok: true, boundary: 'PreToolUse' })
     }
     return retained
+  }
+
+  /** Turn-start memory recall (spec §7): enumerate the validated roots' topic
+   *  files, exclude already-surfaced / already-read paths and the exhausted
+   *  budget, ask the aux selector which are relevant, read the selections
+   *  (bounded host-side) and enqueue ONE memory-kind supplement drained before
+   *  the first model round. Main user turns only — the caller gates wake /
+   *  compact-control / aux / subagent paths out.
+   *
+   *  Fail-soft (spec §7.2): ANY failure (enumeration, aux, abort, read) skips
+   *  recall for this turn with a log.warn and NEVER blocks or fails the user
+   *  turn. On a successful enqueue it emits the memory/recall live frame (the
+   *  user-visible card, uuid shared with the supplement). The surfaced-path/byte
+   *  state advances only after a successful enqueue, so a skipped or unadmitted
+   *  turn leaves the budget untouched. */
+  private async runMemoryRecall(queryText: string): Promise<void> {
+    if (this.memorySettings.autoMemoryEnabled === false) return
+    const roots = this.resolvedMemoryRoots
+    if (!roots) return
+    try {
+      const dirs = [roots.ownDir, roots.claudeDir].filter((dir): dir is string => dir !== null)
+      const candidates = await this.opts.ports.autoMemory.listCandidates(dirs)
+      const eligible = excludeCandidates(candidates, this.recallState, this.opts.readState.readPaths())
+      if (eligible.length === 0) return
+      const selected = await selectMemories(
+        {
+          auxLlm: this.opts.ports.auxLlm,
+          // Same aux-model source as the dream run (this.profile — the resolved
+          // profile, opts.profile ?? activeProfile()), so a spawn without an
+          // explicit profile still selects on the configured recap model rather
+          // than silently falling back to the session model.
+          model: this.profile.recapModel || this.model,
+          credentials: this.opts.credentials,
+        },
+        queryText,
+        eligible,
+        AbortSignal.timeout(RECALL_DEADLINE_MS),
+      )
+      if (selected.length === 0) return
+      // Resolve filenames → candidates, first match in the port's returned
+      // order (mtime-desc) winning a cross-root filename collision, then dedup
+      // by resolved path so a repeated selector name never double-injects or
+      // double-counts.
+      const byFilename = new Map<string, MemoryCandidate>()
+      for (const candidate of eligible) {
+        if (!byFilename.has(candidate.filename)) byFilename.set(candidate.filename, candidate)
+      }
+      const chosen: MemoryCandidate[] = []
+      const seen = new Set<string>()
+      for (const name of selected) {
+        const candidate = byFilename.get(name)
+        if (!candidate || seen.has(candidate.path)) continue
+        seen.add(candidate.path)
+        chosen.push(candidate)
+      }
+      const items: Array<{ filename: string; content: string; truncated: boolean; path: string }> = []
+      for (const candidate of chosen) {
+        const { content, truncated } = await this.opts.ports.autoMemory.readMemoryFile(candidate.path)
+        items.push({ filename: candidate.filename, content, truncated, path: candidate.path })
+      }
+      if (items.length === 0) return
+      const text = buildRecallText(items)
+      const uuid = this.ctx.uuid()
+      if (!this.enqueueSupplement({ uuid, text, kind: 'memory' })) return
+      for (const item of items) {
+        this.recallState.surfacedPaths.add(item.path)
+        this.recallState.surfacedBytes += Buffer.byteLength(item.content, 'utf8')
+      }
+      // The user-visible recall card: uuid SHARED with the supplement entry so
+      // the live card and the durable injection pair by identity. File-backed
+      // entries carry NO content — the renderer lazy-loads by path (the SDK
+      // memory_recall contract). The host adapter projects this to system/
+      // memory_recall, which the pump admits to the ring + seq sidecar.
+      this.output.push({
+        type: 'memory/recall',
+        sessionId: this.opts.id,
+        uuid,
+        parentToolUseId: null,
+        mode: 'select',
+        memories: items.map((item) => ({ path: item.path, scope: 'personal' as const })),
+      })
+    } catch (err) {
+      log.warn(`[${this.opts.id}] memory recall skipped: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  /** Turn-end dream trigger (spec §8). Fire-and-forget after turn settlement:
+   *  gate on the auto-memory master switch and the dream switch (both default
+   *  ON, the `=== false` convention), then delegate the per-cwd lease lifecycle
+   *  to the neutral core's runDreamTrigger. The dream key is the raw session cwd
+   *  (opaque to the port — no slug derivation in the core). `turnResult` is
+   *  accepted for placement parity with maybeSuggestPrompt; consolidation is
+   *  periodic, so it does not gate on the last turn's success. The trigger owns
+   *  its failure contract (log + release), so this never errors the user turn. */
+  private async maybeDream(_turnResult: TurnResult | null): Promise<void> {
+    if (this.memorySettings.autoMemoryEnabled === false) return
+    if (this.memorySettings.autoDreamEnabled === false) return
+    const roots = this.resolvedMemoryRoots
+    if (!roots) return
+    await runDreamTrigger({
+      port: this.opts.ports.autoMemory,
+      cwd: this.opts.cwd,
+      sessionId: this.opts.id,
+      ownDir: roots.ownDir,
+      cfg: {
+        afterMs: this.opts.ports.config.nativeDreamAfterMs,
+        sessionCount: this.opts.ports.config.nativeDreamSessionCount,
+      },
+      startRun: (input) => this.startDreamRun(input),
+    })
+  }
+
+  /** Launch a background dream consolidation run (the Task 10 mechanism),
+   *  called by the turn-end trigger (maybeDream → runDreamTrigger). Binds the
+   *  session-owned seams the dream core needs — the same live getters and
+   *  stream / permission / persist+push paths the Agent tool uses — and resolves
+   *  the dream model (the profile's recapModel, empty → the session's own model).
+   *  The caller supplies the resolved own root, the touched session-log paths
+   *  and the current index snapshot. Returns once the task is registered (not
+   *  once the run finishes); await the handle's `settled` for the outcome. */
+  private startDreamRun(input: { ownDir: string; logPaths: string[]; index: string | null }): Promise<DreamRunHandle> {
+    const memory = this.memorySnapshot
+    const system = joinPromptParts(
+      this.opts.subagentSystem ?? this.baseSystem,
+      this.autoMemorySection(),
+      memory
+        ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
+        : '',
+    )
+    return startDreamRunCore({
+      cwd: this.opts.cwd,
+      frameCtx: this.ctx,
+      tasks: this.tasks,
+      tools: () => this.nestedTools,
+      permissionMode: () => this.permissionMode,
+      effortLevel: () => this.effortLevel,
+      streamFor: (req, streamOpts) => this.streamFor(req, { ...streamOpts, suppressRetryFrames: true }),
+      requestPermission: this.requestPermission,
+      emit: (frame, parentToolUseId) => {
+        this.persistFrame(frame, parentToolUseId)
+        this.emitFrame(frame, parentToolUseId)
+      },
+      persistToolResult: (result, parentToolUseId) => this.persistToolResult(result, parentToolUseId),
+      attachmentProjection: {
+        attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
+        preparedPdfs: this.preparedPdfs,
+      },
+      appendDescriptor: async (descriptor) => {
+        const appended = await this.log.appendDurable(descriptor)
+        return { ...descriptor, seq: appended.seq } as SessionEvent<'subagent/descriptor'>
+      },
+    }, {
+      ownDir: input.ownDir,
+      logPaths: input.logPaths,
+      index: input.index,
+      stateDir: this.opts.stateDir,
+      model: this.profile.recapModel || this.model,
+      system,
+      signal: this.sessionAbort.signal,
+    })
   }
 
   /** The loop's per-round MID-TURN injection drain (Task 10): pull ONLY
@@ -3477,12 +3776,16 @@ export class NativeSession implements NativeSessionCore {
     // snapshot (read probe before the constructor seed lands) omits both.
     const memory = this.memorySnapshot
     const memorySection = memory ? renderMemorySection(memory.files) : ''
+    // The auto-memory section prices the same session-level snapshot the per-turn
+    // overlay renders (its own category, distinct from the instruction chain).
+    const autoMemorySection = this.autoMemorySection()
     const envSection = memory
       ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
       : ''
     const system = joinPromptParts(persona ? `${this.baseSystem}\n\n${persona}` : this.baseSystem, envSection)
     const systemTokens = estimateText(system) + ROLE_OVERHEAD
     const memoryTokens = memorySection ? estimateText(memorySection) + ROLE_OVERHEAD : 0
+    const autoMemoryTokens = autoMemorySection ? estimateText(autoMemorySection) + ROLE_OVERHEAD : 0
     const skillTokens = skillSection ? estimateText(skillSection) + ROLE_OVERHEAD : 0
     const builtinTools = this.tools.filter((t) => !this.mcpToolServers.has(t.name))
     const mcpTools = this.tools.filter((t) => this.mcpToolServers.has(t.name))
@@ -3490,7 +3793,7 @@ export class NativeSession implements NativeSessionCore {
     // Per-FQN prices computed ONCE, shared by the MCP row and the payload.
     const mcpPrices = new Map(mcpTools.map((t) => [t.name, estimateToolSchema(t)]))
     const mcpToolsTokens = [...mcpPrices.values()].reduce((s, n) => s + n, 0)
-    const estimated = systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens + memoryTokens
+    const estimated = systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens + memoryTokens + autoMemoryTokens
     const messagesTokens = totalTokens > 0
       ? Math.max(0, totalTokens - estimated)
       : this.history.reduce((s, m) => s + estimateMessage(m), 0)
@@ -3503,6 +3806,7 @@ export class NativeSession implements NativeSessionCore {
       ...(mcpToolsTokens > 0 ? [{ name: 'MCP tools', tokens: mcpToolsTokens, kind: 'used' as const }] : []),
       ...(skillTokens > 0 ? [{ name: 'Skills', tokens: skillTokens, kind: 'used' as const }] : []),
       ...(memoryTokens > 0 ? [{ name: 'Memory Files', tokens: memoryTokens, kind: 'used' as const }] : []),
+      ...(autoMemoryTokens > 0 ? [{ name: 'Memory', tokens: autoMemoryTokens, kind: 'used' as const }] : []),
       { name: 'Messages', tokens: messagesTokens, kind: 'used' },
       ...(bufferTokens > 0 ? [{ name: 'Autocompact buffer', tokens: bufferTokens, kind: 'buffer' as const }] : []),
       { name: 'Free space', tokens: freeTokens, kind: 'free' },
@@ -3842,14 +4146,18 @@ export class NativeSession implements NativeSessionCore {
    *  replacement live on the next dispatch (RS §12.3); `enabledPlugins` takes
    *  the SDK's `{[pluginKey]: boolean}` toggle dict, pins the post-toggle
    *  subset and re-resolves every contribution type through the shared
-   *  discovery commit.
+   *  discovery commit; `autoMemoryEnabled` / `autoDreamEnabled` take a boolean
+   *  or null (clear) and `autoMemoryDirectory` a string or null (clear back to
+   *  the default root), the directory validated through the auto-memory port's
+   *  realpath resolve and the live roots/seed refreshed plus the session-level
+   *  index snapshot reloaded on change.
    *
    *  Every key and any incoming definition is validated BEFORE state changes.
    *  Agent/base snapshots take effect on the next turn; fast mode and skill
    *  overrides keep their existing live-field behavior. Every other key fails
    *  loudly rather than reporting a change the native provider cannot honor. */
   async applyFlagSettings(settings: Record<string, unknown>): Promise<void> {
-    const supported = new Set(['skillOverrides', 'effortLevel', 'fastMode', 'agent', 'hooks', 'enabledPlugins'])
+    const supported = new Set(['skillOverrides', 'effortLevel', 'fastMode', 'agent', 'hooks', 'enabledPlugins', 'autoMemoryEnabled', 'autoMemoryDirectory', 'autoDreamEnabled'])
     const unknownKeys = Object.keys(settings).filter((key) => !supported.has(key))
     if (unknownKeys.length > 0) {
       throw new Error(`native provider does not support flag settings: ${unknownKeys.join(', ')}`)
@@ -3870,6 +4178,28 @@ export class NativeSession implements NativeSessionCore {
     const fastMode = settings.fastMode
     if (fastMode !== undefined && fastMode !== null && typeof fastMode !== 'boolean') {
       throw new Error(`native provider does not support fast mode: ${String(fastMode)}`)
+    }
+
+    // Auto-memory intent: boolean|null for the two switches, string|null for the
+    // directory. The directory is validated through the auto-memory port's
+    // realpath resolve — the SAME write-isolation guard as the spawn seed — so an
+    // override resolving inside the claude config dir (symlink aliases included)
+    // rejects with the port's HttpError(400), which propagates to the route. That
+    // resolve also provisions the root (mkdir + MEMORY.md), so it runs AFTER every
+    // other key's validation below — a call that fails hooks/plugin/agent
+    // validation must not leave a created directory behind. null clears the
+    // override back to the default root (re-resolved there).
+    const memoryEnabled = settings.autoMemoryEnabled
+    if (memoryEnabled !== undefined && memoryEnabled !== null && typeof memoryEnabled !== 'boolean') {
+      throw new Error(`native provider does not support autoMemoryEnabled: ${String(memoryEnabled)}`)
+    }
+    const dreamEnabled = settings.autoDreamEnabled
+    if (dreamEnabled !== undefined && dreamEnabled !== null && typeof dreamEnabled !== 'boolean') {
+      throw new Error(`native provider does not support autoDreamEnabled: ${String(dreamEnabled)}`)
+    }
+    const memoryDirectory = settings.autoMemoryDirectory
+    if (memoryDirectory !== undefined && memoryDirectory !== null && typeof memoryDirectory !== 'string') {
+      throw new Error(`native provider does not support autoMemoryDirectory: ${String(memoryDirectory)}`)
     }
 
     // Hooks: validate at the unknown boundary BEFORE any state change (the
@@ -3931,6 +4261,15 @@ export class NativeSession implements NativeSessionCore {
       }
     }
 
+    // All validation passed: NOW run the provisioning resolve (it creates the
+    // override dir + MEMORY.md). Placing it after the hooks/plugin/agent fences
+    // keeps a rejected call from leaving a created directory behind; placing it
+    // before the mutations below keeps the stored roots the ones just validated.
+    let nextMemoryRoots: { ownDir: string; claudeDir: string | null } | undefined
+    if (memoryDirectory !== undefined) {
+      nextMemoryRoots = await this.opts.ports.autoMemory.resolve(this.opts.cwd, memoryDirectory ?? undefined)
+    }
+
     const nextBase = this.agentBaseSnapshot()
     if (level !== undefined) {
       if (nextEffort === undefined) delete nextBase.effortLevel
@@ -3942,6 +4281,44 @@ export class NativeSession implements NativeSessionCore {
       await this.updateAgentBase({ effortLevel: nextEffort })
     }
     if (fastMode !== undefined) this.fastMode = fastMode === true
+    // Auto-memory: replace keys live (null clears). A directory change stores the
+    // roots the validation resolve already proved and replaces the spawn seed
+    // with a resolved promise — healing a failed seed so the next turn proceeds.
+    // The equality guard in seedAutoMemoryRoots discards any in-flight spawn seed
+    // whose directory this change superseded.
+    if (memoryEnabled !== undefined) {
+      if (memoryEnabled === null) delete this.memorySettings.autoMemoryEnabled
+      else this.memorySettings.autoMemoryEnabled = memoryEnabled
+    }
+    if (dreamEnabled !== undefined) {
+      if (dreamEnabled === null) delete this.memorySettings.autoDreamEnabled
+      else this.memorySettings.autoDreamEnabled = dreamEnabled
+    }
+    if (memoryDirectory !== undefined) {
+      if (memoryDirectory === null) delete this.memorySettings.autoMemoryDirectory
+      else this.memorySettings.autoMemoryDirectory = memoryDirectory
+      this.resolvedMemoryRoots = nextMemoryRoots!
+      this.memorySettingsSeed = Promise.resolve()
+    }
+    // Settings invalidation reloads the session-level index snapshot (spec §6):
+    // ANY memory-settings change re-reads MEMORY.md so the next turn renders
+    // fresh — a directory change (or re-set) picks up the new root's index, an
+    // enabled/dream toggle re-reads the current root. Directory CONTENT changes
+    // (model writes, dream) never reach here, so they stay visible only next
+    // session. A directory change stored the freshly resolved roots above; an
+    // enabled/dream-only change reuses the live roots (null until the spawn seed
+    // settles, which loads the snapshot itself). readIndex never throws (port
+    // contract); the reference guard discards a load a later settings change
+    // superseded mid-read (the seed's supersede model).
+    if (memoryEnabled !== undefined || dreamEnabled !== undefined || memoryDirectory !== undefined) {
+      const roots = this.resolvedMemoryRoots
+      if (roots) {
+        const index = await this.opts.ports.autoMemory.readIndex(roots.ownDir)
+        if (this.resolvedMemoryRoots === roots) {
+          this.autoMemorySnapshot = { ownDir: roots.ownDir, index }
+        }
+      }
+    }
     // Replace (never merge): the flag source re-collects per dispatch, so the
     // next hook event observes exactly this config (RS §12.3).
     if (nextHooks !== undefined) this.hooksConfig = nextHooks

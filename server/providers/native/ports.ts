@@ -2,9 +2,10 @@
 // native provider receives the host capabilities it does not own (config,
 // auxiliary LLM calls, MCP transports, verified attachment reads, skill
 // discovery, plugin contributions, transcript normalization, the CLAUDE.md
-// memory chain). The interfaces are neutral — only shared/* types and SDK types
-// cross this boundary; the real implementations live HOST-side
-// (../native-host-adapters.ts) and are injected via NativeProvider opts.ports.
+// memory chain, the auto-memory store). The interfaces are neutral — only
+// shared/* types and SDK types cross this boundary; the real implementations
+// live HOST-side (../native-host-adapters.ts) and are injected via
+// NativeProvider opts.ports.
 // Raw credential fields never cross into native: ConfigPort hands over
 // resolved profiles, not the config singleton.
 
@@ -30,6 +31,12 @@ export interface NativeConfigPort {
   /** Fallback context window for routes with no override and no successful
    *  discovery — see ConfigFile.nativeDefaultContextWindow. */
   readonly nativeDefaultContextWindow: number
+  /** Minimum ms since a cwd's last dream consolidation before another may
+   *  fire — see ConfigFile.nativeDreamAfterMs. */
+  readonly nativeDreamAfterMs: number
+  /** Minimum same-cwd native sessions touched since the last dream — see
+   *  ConfigFile.nativeDreamSessionCount. */
+  readonly nativeDreamSessionCount: number
   readonly modelList: readonly string[]
   readonly hasProfiles: boolean
   /** Small-fast model for the prompt/agent hook evaluators (the CLI's
@@ -170,6 +177,48 @@ export interface NativeMemoryPort {
   read(cwd: string): Promise<NativeMemoryReadResult>
 }
 
+/** One enumerable memory topic file. `dir` is the scanned root as given,
+ *  `filename` the root-relative path with POSIX separators, `path` the
+ *  absolute fs path. `description` / `memoryType` come from the file's YAML
+ *  frontmatter (`description`, `metadata.type`); absent or unrecognized
+ *  values are null — the read side tolerates format drift, never guesses. */
+export interface MemoryCandidate {
+  dir: string
+  filename: string
+  path: string
+  mtimeMs: number
+  description: string | null
+  memoryType: 'user' | 'feedback' | 'project' | 'reference' | null
+}
+
+/** Host-side auto-memory store access: directory resolution, candidate
+ *  enumeration and bounded reads. All fs stays host-side; the core receives
+ *  paths and text only. Writes are NOT port operations — the model writes
+ *  memory files through the ordinary Write/Edit tools, scoped to the
+ *  resolved own root.
+ *
+ *  Two roots per cwd: the CRW-managed own root (writable) and the claude
+ *  CLI's compat root (read-only). `resolve` reports the compat root only
+ *  when it exists; an override whose realpath lands inside the claude config
+ *  dir is rejected (the host impl throws HttpError 400, which propagates
+ *  through applyFlagSettings to the route's onError — the core never imports
+ *  HttpError itself).
+ *
+ *  The dream methods are the consolidation lease surface: `readDreamState`
+ *  is the per-cwdKey last-consolidation map, `claimDream` a per-cwdKey
+ *  single-flight lease (false when already claimed), `releaseDream` persists
+ *  the completion timestamp and frees the lease. */
+export interface NativeAutoMemoryPort {
+  resolve(cwd: string, override?: string): Promise<{ ownDir: string; claudeDir: string | null }>
+  listCandidates(dirs: readonly string[]): Promise<MemoryCandidate[]>
+  readIndex(dir: string): Promise<string | null>
+  readMemoryFile(path: string): Promise<{ content: string; truncated: boolean }>
+  listSessionsTouchedSince(cwd: string, sinceMs: number): Promise<Array<{ id: string; logPath: string }>>
+  readDreamState(): Promise<Record<string, { lastDreamAt: number }>>
+  claimDream(cwdKey: string): Promise<boolean>
+  releaseDream(cwdKey: string, lastDreamAt: number): Promise<void>
+}
+
 /** The grouped domain ports injected as one unit through NativeProvider opts
  *  and threaded into NativeSessionOptions. */
 export interface NativeHostPorts {
@@ -184,4 +233,5 @@ export interface NativeHostPorts {
   plugin?: NativePluginPort
   transcript: NativeTranscriptPort
   memory: NativeMemoryPort
+  autoMemory: NativeAutoMemoryPort
 }

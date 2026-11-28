@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { providerSupports, GATED_FEATURES } from './provider-capabilities.js'
 
 describe('providerSupports (pre-create capability source)', () => {
-  it('native locks memory/sandbox/account; both providers support plugins', () => {
+  it('native locks sandbox/account; both providers support plugins and memory', () => {
     for (const f of ['plugins', 'memory', 'sandbox', 'account'] as const) {
-      expect(providerSupports('native', f)).toBe(f === 'plugins')
+      expect(providerSupports('native', f)).toBe(f === 'plugins' || f === 'memory')
       expect(providerSupports('claude', f)).toBe(true)
     }
   })

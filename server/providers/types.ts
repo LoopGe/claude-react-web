@@ -323,6 +323,13 @@ export interface ProviderSessionHandle {
    *  token-count API calls — used by the fire-and-forget auto-compact probe.
    *  The REST breakdown endpoint calls it with no args (`'full'`). */
   getContextUsage?(opts?: { detail?: 'summary' | 'full' }): Promise<unknown>
+  /** The provider's realpath-validated auto-memory roots (native auto-memory;
+   *  null until the spawn/settings seed settles). The permission broker's
+   *  memory-root exemption engages ONLY when this is non-null, so a directory
+   *  override the core's write-isolation guard rejected (symlink/junction aliases
+   *  included) never grants a silent write allowance. Providers without a
+   *  host-managed memory store omit it (the exemption stays inert). */
+  getAutoMemoryRoots?(): { ownDir: string; claudeDir: string | null } | null
   /** Durable raw-user → skill-instruction pairs for compaction-only history
    *  projection. The manager anchors each canonical body to the original user
    *  UUID without exposing the instruction in UI history or search. */
@@ -441,8 +448,9 @@ export interface ProviderCapabilities {
    *  agent-frontmatter sources and the layer-2 events without a native trigger
    *  are called out in the panel, not gated out of it. */
   supportsHooks: boolean
-  /** Auto-memory settings (claude's flag-settings memory layer). Native
-   *  rejects the memory keys in applyFlagSettings, so the surface locks. */
+  /** Auto-memory settings (the flag-settings memory layer). Both providers
+   *  accept the memory keys in applyFlagSettings; native validates the directory
+   *  override through its auto-memory port's realpath resolve. */
   supportsMemory: boolean
   /** Background tasks survive a server restart (the claude CLI resumes its
    *  own). When false, the host reconciles non-terminal task records to
@@ -472,6 +480,12 @@ export interface ProviderCapabilities {
    *  other providers (native logs elsewhere) would pay a scan for a file that
    *  cannot exist. */
   ownsCliTranscriptJsonl: boolean
+  /** Learned memory lives in the host-managed stateDir store (native): the
+   *  manager resolves its containment roots (`Session.memoryRoots`) so the
+   *  permission broker can exempt memory writes/reads and the dream's
+   *  session-log reads. When false (claude), the CLI manages its own memory in
+   *  its config dir and the host resolves no roots (the exemption stays inert). */
+  hostAutoMemoryStore: boolean
 }
 
 export interface ListResumableOptions {

@@ -82,6 +82,13 @@ export interface LoopDeps {
   tasks: NativeTaskManager
   /** The session's working directory; every ToolContext is built from it. */
   cwd: string
+  /** Main-turn auto-memory containment roots for tool path validation
+   *  (Read/Write/Edit). A LIVE getter so a mid-turn memory-settings change
+   *  aligns with the permission broker's live exemption roots (both read the
+   *  same validated roots). Absent for nested runners — a subagent/dream run
+   *  owns its own ToolContext. Returns undefined when the session has no
+   *  validated roots (no memory access beyond cwd). */
+  memoryRoots?: () => { write: readonly string[]; read: readonly string[] } | undefined
   /** `questionResult` is the broker's internal marker for an AskUserQuestion
    *  denial that carries the user's ANSWER (answer / clarify / malformed).
    *  It is never set for aborts, session-close denials, missing handlers or
@@ -488,6 +495,7 @@ export async function runTurn(
             signal: taskSignal,
             toolUseId: call.id,
             historyKey: ctx.parentToolUseId ?? 'main',
+            memoryRoots: deps.memoryRoots?.(),
           })
         const backgroundable = tool.backgroundable
         let outcome: ToolOutcome

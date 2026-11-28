@@ -26,6 +26,23 @@ export function renderMemorySection(files: readonly NativeMemoryFile[]): string 
   return `# Memory Files\n\n${blocks.join('\n\n')}`
 }
 
+/** The `# Memory` auto-memory block: the writable store directory, the
+ *  frontmatter + index conventions and the save discipline, followed by the
+ *  session-level index snapshot. A null/empty index renders the "(empty index)"
+ *  placeholder — the port provisions an empty MEMORY.md, so the common
+ *  no-memories state is an empty string, not null. Distinct from
+ *  renderMemorySection's `# Memory Files` instruction chain. */
+export function renderAutoMemorySection(input: { ownDir: string; index: string | null }): string {
+  const { ownDir } = input
+  const index = input.index && input.index.trim() !== '' ? input.index : '(empty index)'
+  return '# Memory\n\n'
+    + `You have a persistent file-based memory at \`${ownDir}\`. This directory already exists — write to it directly with the Write tool.\n\n`
+    + 'Each memory is one file with frontmatter: name (short kebab-case slug), description (one-line summary), metadata.type (user | feedback | project | reference). The body is the fact.\n\n'
+    + `Maintain \`${ownDir}/MEMORY.md\` as an index: one line per memory, \`- [Title](file.md) — hook\`.\n\n`
+    + `Save when you learn something worth persisting across sessions: user preferences, feedback on how to work, project constraints not derivable from code, external references. Do not save what the repo already records (code structure, git history, CLAUDE.md). Check for an existing memory before creating a duplicate; update rather than duplicate; delete memories that turn out wrong. Save in the same reply where you learn the fact. Write only inside \`${ownDir}\`.\n\n`
+    + `Current index:\n${index}`
+}
+
 /** The `# Environment` block. The date is the LOCAL calendar day (local
  *  getters, not toISOString's UTC day) at day granularity — no time
  *  component — so the system prefix stays byte-stable across same-day

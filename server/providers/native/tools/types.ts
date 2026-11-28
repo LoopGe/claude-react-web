@@ -20,6 +20,12 @@ export interface ToolContext {
   /** The `tool_use` id of the call being executed. Lets a tool anchor nested
    *  (sidechain) frames to itself. */
   toolUseId?: string
+  /** Extra path-containment roots beyond the cwd, for the auto-memory store
+   *  (which lives outside the session working directory). `write` widens the
+   *  Write/Edit write-target allowance; `read` widens the Read allowance. They
+   *  only widen the allowed set — the Edit/Read realpath escape check still
+   *  applies to every root. Absent means cwd-only containment. */
+  memoryRoots?: { write: readonly string[]; read: readonly string[] }
 }
 
 /** A neutral file occurrence in a tool result: a vocabulary FileBlock whose

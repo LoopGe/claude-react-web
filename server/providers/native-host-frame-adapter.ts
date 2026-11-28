@@ -13,9 +13,9 @@
 //     the client reads byte-identical raw fields). Envelope identity comes from
 //     the caller's env.
 //   • projectNativeEventToSdk — LIVE operational output: the exact system/result
-//     subtypes native emits (init / api_retry / informational / hook_started /
-//     hook_progress / hook_response / task_started / task_notification / result)
-//     plus the top-level prompt_suggestion message.
+//     subtypes native emits (init / api_retry / informational / memory_recall /
+//     hook_started / hook_progress / hook_response / task_started /
+//     task_notification / result) plus the top-level prompt_suggestion message.
 //     These are live-only frames, NOT durable SessionEventMap keys (R6). Durable
 //     session events return null — their SDK-line projection is the history-read
 //     seam (T13).
@@ -39,14 +39,17 @@
 // handle-text form is re-exported here for the legacy text-only boundary.
 //
 // R6 scope: ONLY native's actual emissions are projected. The claude-only
-// subtypes (plugin_install, memory_recall, elicitation_complete, notification,
-// thinking_tokens, …) are NOT native emissions and have no projection here.
+// subtypes (plugin_install, elicitation_complete, notification, thinking_tokens,
+// …) are NOT native emissions and have no projection here.
 // prompt_suggestion IS a native emission: the neutral prompt/suggestion
 // OperationalFrame projects to the SDK prompt_suggestion message (live-only —
 // the pump bypasses the history ring on its type alone). Hook activity IS a
 // native emission too: the neutral hook/run OperationalFrame projects to the
 // SDK system/hook_started|hook_progress|hook_response frames the pump's
-// hookLifecycleMessage already parses (zero pump change).
+// hookLifecycleMessage already parses (zero pump change). memory_recall IS a
+// native emission as well: the neutral memory/recall OperationalFrame projects
+// to the SDK system/memory_recall frame, which the pump admits to the ring + seq
+// sidecar via BROADCAST_SYSTEM_SUBTYPES (live card + cold restart survival).
 
 import { randomUUID } from 'node:crypto'
 import {
@@ -159,7 +162,7 @@ function frameEnvelope(env: NativeFrameEnvelope, type: string): Record<string, u
 }
 
 /** Envelope shared by the enveloped operational events (init / api_retry /
- *  informational / result / hook/run). Task frames do not use it. */
+ *  informational / memory_recall / result / hook/run). Task frames do not use it. */
 function operationalEnvelope(event: { sessionId: string; uuid: string; parentToolUseId: string | null }, type: string, subtype: string): Record<string, unknown> {
   return {
     type,
@@ -313,6 +316,17 @@ export function projectNativeEventToSdk(event: NativeSessionEvent | OperationalF
         ...operationalEnvelope(event, 'system', 'informational'),
         content: event.text,
         level: 'warning',
+      } as AgentMessage
+    case 'memory/recall':
+      // The recall card: mode + memories pass through verbatim (file-backed
+      // entries carry no content — the renderer lazy-loads by path). The pump
+      // admits system/memory_recall to the ring + seq sidecar via
+      // BROADCAST_SYSTEM_SUBTYPES; the history-reader normalize passes mode/
+      // memories through at the top level, so disk replay renders the same card.
+      return {
+        ...operationalEnvelope(event, 'system', 'memory_recall'),
+        mode: event.mode,
+        memories: event.memories,
       } as AgentMessage
     case 'task/started':
       return {
@@ -696,6 +710,7 @@ function isOperationalFrame(frame: NativeCoreFrame): frame is OperationalFrame {
     case 'init':
     case 'api/retry':
     case 'informational':
+    case 'memory/recall':
     case 'task/started':
     case 'task/progress':
     case 'task/notification':
@@ -973,6 +988,7 @@ export function wrapNativeCore(
     )
   }
   if (core.getContextUsage) handle.getContextUsage = (opts) => core.getContextUsage!(opts)
+  if (core.autoMemoryRoots !== undefined) handle.getAutoMemoryRoots = () => core.autoMemoryRoots ?? null
   if (core.getEffectiveSettings) {
     handle.getEffectiveSettings = (): { model: string; permissionMode?: string; effortLevel?: string; agent: string | null } => {
       const settings: NativeEffectiveSettings = core.getEffectiveSettings!()

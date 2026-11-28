@@ -93,22 +93,32 @@ export function nativeMtimeFloor(identity: NativeFileIdentity): number {
   return Number(identity.mtimeNs / 1_000_000n)
 }
 
-export async function resolveNativeReadTarget(cwd: string, path: string): Promise<NativeReadTarget> {
+export async function resolveNativeReadTarget(cwd: string, path: string, extraRoots?: readonly string[]): Promise<NativeReadTarget> {
   if (typeof path !== 'string' || path === '') throw unavailable(String(path))
   const root = resolve(cwd)
   const absolutePath = isAbsolute(path) ? resolve(path) : resolve(root, path)
-  if (!inside(root, absolutePath)) {
+  const roots = [root, ...(extraRoots ?? []).map((extra) => resolve(extra))]
+  // Only the roots that LEXICALLY contain the target participate in the escape
+  // double-check below. An extra root that does not contain the target (and may
+  // not even exist on disk — a lexical-only resolve, or a memory dir removed
+  // externally) is irrelevant to this read and must never fail it.
+  const candidates = roots.filter((candidate) => inside(candidate, absolutePath))
+  if (candidates.length === 0) {
     throw new NativeFileUnavailableError(`path escapes the session working directory: ${path}`)
   }
 
-  let realRoot: string
+  // Double-check on the real paths: realpath BOTH each containing root and the
+  // target, so a symlinked root or a junction inside a root cannot turn the
+  // allowance into an escape. The extra roots widen the allowed set, never the
+  // check.
   let realPath: string
+  let realRoots: string[]
   try {
-    ;[realRoot, realPath] = await Promise.all([realpath(root), realpath(absolutePath)])
+    ;[realPath, ...realRoots] = await Promise.all([realpath(absolutePath), ...candidates.map((candidate) => realpath(candidate))])
   } catch (err) {
     mapUnavailable(err, path)
   }
-  if (!inside(realRoot, realPath)) throw unavailable(path)
+  if (!realRoots.some((candidate) => inside(candidate, realPath))) throw unavailable(path)
   const info = await statTarget(realPath)
   if (!info.isFile()) throw unavailable(path)
   return { requestedPath: path, absolutePath, realPath, identity: identityOf(info) }

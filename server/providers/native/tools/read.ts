@@ -16,12 +16,14 @@ const MAX_LINES = MODEL_READ_MAX_LINES
 
 /** Resolve a user-supplied path against the session cwd and refuse anything
  *  that escapes it. P1 keeps the sandbox closed; the sandbox setting plumbs
- *  through in P3. */
-export function resolveAgainstCwd(cwd: string, p: string): string {
+ *  through in P3. `extraRoots` (the auto-memory write roots) widen the lexical
+ *  allowance beyond the cwd; this chain stays lexical — the realpath escape
+ *  check lives in resolveNativeReadTarget on the Edit/Read chain. */
+export function resolveAgainstCwd(cwd: string, p: string, extraRoots?: readonly string[]): string {
   if (typeof p !== 'string' || p === '') throw new ToolInputError('path is required')
   const abs = isAbsolute(p) ? resolve(p) : resolve(join(cwd, p))
-  const root = resolve(cwd)
-  if (abs !== root && !abs.startsWith(root + sep)) {
+  const roots = [resolve(cwd), ...(extraRoots ?? []).map((root) => resolve(root))]
+  if (!roots.some((root) => abs === root || abs.startsWith(root + sep))) {
     throw new ToolInputError(`path escapes the session working directory: ${p}`)
   }
   return abs
@@ -51,7 +53,7 @@ export function createReadTool(state: NativeReadState): ToolDef<{
       const offset = Math.max(1, Math.floor(input.offset ?? 1))
       const limit = Math.min(MAX_LINES, Math.max(1, Math.floor(input.limit ?? MAX_LINES)))
       try {
-        const target = await resolveNativeReadTarget(ctx.cwd, input.file_path)
+        const target = await resolveNativeReadTarget(ctx.cwd, input.file_path, ctx.memoryRoots?.read)
         const continuation = offset > 1 ? state.continuation(target, offset) : undefined
         const window = await readNativeTextWindow(target, {
           offset,

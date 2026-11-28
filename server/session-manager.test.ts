@@ -370,6 +370,7 @@ import { ensureWorktreeForResume } from './session-worktree.js'
 import type { Session } from './session-types.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
+import { resolveMemoryRoots } from './providers/native-host-auto-memory.js'
 import { AgentDefinitionStore } from './agent-definition-store.js'
 import { __setConfigForTest, config as defaultConfig } from './config.js'
 import { McpConfigStore } from './mcp-config.js'
@@ -692,6 +693,7 @@ describe('SessionManager', () => {
       persistentAttachmentRefs: false,
       cliSidePlanSteering: false,
       ownsCliTranscriptJsonl: false,
+      hostAutoMemoryStore: false,
     }
 
     function structuredProvider(name: string) {
@@ -849,15 +851,17 @@ describe('SessionManager', () => {
     expect(sm.list().find((session) => session.id === native.id)?.taskControlSupported).toBe(true)
   })
 
-  it('projects locked-feature booleans for native (plugins supported) and claude (live and dormant)', async () => {
+  it('projects locked-feature booleans for native (plugins + memory supported) and claude (live and dormant)', async () => {
     const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
     const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
-    // Plugins and hooks are supported on native too; memory/sandbox/account
+    // Plugins, hooks and memory are supported on native too; sandbox/account
     // stay claude-only.
-    const lockedKeys = ['memorySupported', 'sandboxSupported', 'accountInfoSupported'] as const
+    const keys = ['sandboxSupported', 'accountInfoSupported'] as const
     expect(claude.pluginsSupported).toBe(true)
     expect(native.pluginsSupported).toBe(true)
-    for (const k of lockedKeys) {
+    expect(claude.memorySupported).toBe(true)
+    expect(native.memorySupported).toBe(true)
+    for (const k of keys) {
       expect(claude[k]).toBe(true)
       expect(native[k]).toBe(false)
     }
@@ -872,7 +876,9 @@ describe('SessionManager', () => {
     const dormantClaude = sm.list().find((session) => session.id === claude.id)
     expect(dormantNative?.pluginsSupported).toBe(true)
     expect(dormantClaude?.pluginsSupported).toBe(true)
-    for (const k of lockedKeys) {
+    expect(dormantNative?.memorySupported).toBe(true)
+    expect(dormantClaude?.memorySupported).toBe(true)
+    for (const k of keys) {
       expect(dormantNative?.[k]).toBe(false)
       expect(dormantClaude?.[k]).toBe(true)
     }
@@ -7778,6 +7784,104 @@ describe('SessionManager', () => {
     })
   })
 
+  describe('native auto-memory roots wiring (Session.memoryRoots)', () => {
+    // memoryRoots is internal broker state on the live Session, not a wire
+    // field — read the live session map, not the SessionInfo projection.
+    function liveRoots(id: string): Session['memoryRoots'] {
+      return (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)?.memoryRoots
+    }
+
+    it('native spawn resolves the default roots; claude leaves them undefined', async () => {
+      const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+      expect(liveRoots(native.id)).toEqual(resolveMemoryRoots(TEST_CWD, store.getDir()))
+      expect(liveRoots(claude.id)).toBeUndefined()
+    })
+
+    it('native spawn honors a create-body autoMemoryDirectory override', async () => {
+      const override = join(dir, 'custom-mem')
+      const native = await sm.create({
+        provider: 'native', cwd: TEST_CWD, model: 'test-model',
+        memory: { autoMemoryDirectory: override },
+      } as unknown as Parameters<typeof sm.create>[0])
+      expect(liveRoots(native.id)?.own).toBe(override)
+    })
+
+    it('native spawn fails closed on an override inside the claude config dir (no exemption roots)', async () => {
+      const roots = resolveMemoryRoots(TEST_CWD, store.getDir())
+      // roots.claude is inside the claude config dir — an override there is
+      // rejected by resolveMemoryRoots, so the spawn must not crash and must
+      // leave memoryRoots undefined (every memory tool call then prompts).
+      const badOverride = roots.claude!
+      const native = await sm.create({
+        provider: 'native', cwd: TEST_CWD, model: 'test-model',
+        memory: { autoMemoryDirectory: badOverride },
+      } as unknown as Parameters<typeof sm.create>[0])
+      expect(liveRoots(native.id)).toBeUndefined()
+    })
+
+    it('claude setMemorySettings leaves memoryRoots undefined (no behavior change)', async () => {
+      const info = await sm.create({})
+      await sm.setMemorySettings(info.id, { autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
+      expect(liveRoots(info.id)).toBeUndefined()
+    })
+
+    // The generic /settings route is a second door onto the same live memory
+    // state: it must run the SAME normalisation + mirror + roots refresh as
+    // the dedicated /memory route, or the live core and the persisted meta /
+    // broker roots diverge.
+    it('generic applySettings with memory keys mirrors s.memory and refreshes roots (setMemorySettings parity)', async () => {
+      const override = join(dir, 'custom-mem-generic')
+      const partial = { autoMemoryEnabled: true, autoMemoryDirectory: `  ${override}  `, autoDreamEnabled: false }
+      const generic = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      const viaGeneric = await sm.applySettings(generic.id, partial as never)
+      expect(viaGeneric.memory).toEqual({ autoMemoryEnabled: true, autoMemoryDirectory: override, autoDreamEnabled: false })
+      expect(liveRoots(generic.id)?.own).toBe(override)
+
+      const dedicated = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+      const viaDedicated = await sm.setMemorySettings(dedicated.id, partial)
+      // Identical host state (mirror + broker roots) AND core state: the flag
+      // layer saw the same normalised values (the trimmed directory), so the
+      // core's live memorySettings agree with the persisted record.
+      expect(viaGeneric.memory).toEqual(viaDedicated.memory)
+      expect(liveRoots(generic.id)).toEqual(liveRoots(dedicated.id))
+      const coreOfSession = (id: string): { memorySettings: Record<string, unknown> } => nativeCoreOf(
+        (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)!.handle,
+      ) as unknown as { memorySettings: Record<string, unknown> }
+      expect(coreOfSession(generic.id).memorySettings).toEqual(coreOfSession(dedicated.id).memorySettings)
+      expect(coreOfSession(generic.id).memorySettings.autoMemoryDirectory).toBe(override)
+      await store.flush()
+      expect(store.get(generic.id)?.memory).toEqual(viaDedicated.memory)
+    })
+
+    it('generic applySettings null-clears memory keys exactly like setMemorySettings', async () => {
+      const info = await sm.create({})
+      await sm.applySettings(info.id, { autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' } as never)
+      expect(sm.get(info.id).memory).toEqual({ autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
+      await sm.applySettings(info.id, { autoMemoryEnabled: null, autoMemoryDirectory: null } as never)
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({ autoMemoryEnabled: null, autoMemoryDirectory: null })
+      expect(sm.get(info.id).memory).toBeUndefined()
+    })
+
+    it('generic applySettings forwards memory keys alongside other settings in one call', async () => {
+      const info = await sm.create({})
+      await sm.applySettings(info.id, { autoMemoryEnabled: true, autoCompactEnabled: true } as never)
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({ autoMemoryEnabled: true, autoCompactEnabled: true })
+      expect(sm.get(info.id).memory).toEqual({ autoMemoryEnabled: true })
+    })
+
+    it('generic applySettings rejects bad memory key types with 400 before forwarding (the /memory route guard)', async () => {
+      const info = await sm.create({})
+      const callsBefore = mockHandles[0].applyFlagSettings.mock.calls.length
+      await expect(sm.applySettings(info.id, { autoMemoryEnabled: 'yes' } as never)).rejects.toMatchObject({ status: 400 })
+      await expect(sm.applySettings(info.id, { autoDreamEnabled: 1 } as never)).rejects.toMatchObject({ status: 400 })
+      await expect(sm.applySettings(info.id, { autoMemoryDirectory: 42 } as never)).rejects.toMatchObject({ status: 400 })
+      await expect(sm.applySettings(info.id, { autoMemoryDirectory: '/mem\n/../etc' } as never)).rejects.toMatchObject({ status: 400 })
+      expect(mockHandles[0].applyFlagSettings.mock.calls.length).toBe(callsBefore)
+      expect(sm.get(info.id).memory).toBeUndefined()
+    })
+  })
+
   it('applyHooks() forwards, records, and persists structured hooks', async () => {
     const info = await sm.create({})
     const hooks = {
@@ -8593,7 +8697,10 @@ describe('SessionManager', () => {
         expect((await resultPromise).behavior).toBe('allow')
         expect(sm.listPending(info.id)).toHaveLength(0)
       } else {
-        await tick()
+        // The memory-root exemption judges containment via an async realpath
+        // before the request parks, so a single setImmediate tick no longer
+        // spans the path — wait for the pending to land.
+        await waitFor(() => sm.listPending(info.id).length === 1)
         const pending = sm.listPending(info.id)
         expect(pending).toHaveLength(1)
         await sm.decide(info.id, pending[0].id, { behavior: 'deny', message: 'done' })

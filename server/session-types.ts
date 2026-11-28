@@ -16,6 +16,7 @@ import type {
   UserDialogResult,
 } from '@anthropic-ai/claude-agent-sdk'
 import type { Pushable } from './pushable.js'
+import type { MemoryRoots } from './memory-permission.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { MpStore } from './mp-store.js'
@@ -344,6 +345,15 @@ export interface Session {
    *  memory keys), persisted so it survives resume/restart, and re-applied
    *  on respawn. Undefined when no memory key has been pinned. */
   memory?: SessionMemorySettings
+  /** Resolved native auto-memory containment roots for the permission broker
+   *  (own = CRW-managed writable store, claude = CLI-managed read-only compat
+   *  dir). NATIVE-only: claude sessions keep their CLI-managed memory and leave
+   *  this undefined, so the broker's root-scoped exemption is inert for them.
+   *  Runtime-derived (never persisted) — recomputed at spawn and whenever the
+   *  memory directory setting changes (see SessionManager.refreshMemoryRoots).
+   *  Undefined when the roots cannot be resolved (no cwd, or an override that
+   *  fails validation), which fails the exemption closed. */
+  memoryRoots?: MemoryRoots
   /** Per-session sandbox intent (SDK Settings.sandbox). Set via setSandbox
    *  (forwarded to the SDK as applyFlagSettings({ sandbox })), persisted so it
    *  survives resume/restart, and re-applied on respawn. A present object =

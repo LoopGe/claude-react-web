@@ -93,6 +93,14 @@ interface ConfigFile {
    *  here, and per-model overrides stay the precise escape hatch. Positive
    *  safe integer. Default: 1000000. */
   nativeDefaultContextWindow?: number
+  /** Minimum milliseconds since a cwd's last dream consolidation before the
+   *  native provider's auto-dream may fire again (per-cwd, checked at turn
+   *  end). Finite and >= 0; 0 lets every qualifying turn-end dream. Default:
+   *  86400000 (24 h). */
+  nativeDreamAfterMs?: number
+  /** Minimum number of same-cwd native sessions touched since the last dream
+   *  before auto-dream fires. Positive safe integer. Default: 5. */
+  nativeDreamSessionCount?: number
   /** LEGACY alias for `maxGroupPanels` — still read so existing config.json
    *  files keep working; `maxGroupPanels` wins when both are present. */
   maxOpenPanels?: number
@@ -249,6 +257,12 @@ export interface ServerConfig {
   /** Native fallback context window — see
    *  ConfigFile.nativeDefaultContextWindow. Default: 1000000. */
   readonly nativeDefaultContextWindow: number
+  /** Native auto-dream elapsed-time threshold — see
+   *  ConfigFile.nativeDreamAfterMs. Default: 86400000. */
+  readonly nativeDreamAfterMs: number
+  /** Native auto-dream touched-session threshold — see
+   *  ConfigFile.nativeDreamSessionCount. Default: 5. */
+  readonly nativeDreamSessionCount: number
   readonly workingStuckMs: number
   readonly maxGroupPanels: number
   /** Undefined until config.json is loaded and `authToken` is populated.
@@ -363,6 +377,8 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   nativePdfDocuments: true,
   nativeAutoCompactRatio: 0.9,
   nativeDefaultContextWindow: 1_000_000,
+  nativeDreamAfterMs: 86400000,
+  nativeDreamSessionCount: 5,
   workingStuckMs: 60 * 60 * 1000,
   maxGroupPanels: 3,
   authToken: undefined,
@@ -671,6 +687,29 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { nativeDefaultContextWindow: number }).nativeDefaultContextWindow =
       file_.nativeDefaultContextWindow
     log.info(`nativeDefaultContextWindow: ${merged.nativeDefaultContextWindow}`)
+  }
+
+  // Dream elapsed-time threshold: finite non-negative milliseconds only —
+  // anything else keeps the default (same revert-to-default semantics as the
+  // ratio/window keys above). 0 is valid: dream on every qualifying turn-end.
+  if (
+    typeof file_.nativeDreamAfterMs === 'number'
+    && Number.isFinite(file_.nativeDreamAfterMs)
+    && file_.nativeDreamAfterMs >= 0
+  ) {
+    ;(merged as { nativeDreamAfterMs: number }).nativeDreamAfterMs = Math.round(file_.nativeDreamAfterMs)
+    log.info(`nativeDreamAfterMs: ${merged.nativeDreamAfterMs}`)
+  }
+
+  // Dream touched-session threshold: a positive safe integer only — anything
+  // else keeps the default.
+  if (
+    typeof file_.nativeDreamSessionCount === 'number'
+    && Number.isSafeInteger(file_.nativeDreamSessionCount)
+    && file_.nativeDreamSessionCount > 0
+  ) {
+    ;(merged as { nativeDreamSessionCount: number }).nativeDreamSessionCount = file_.nativeDreamSessionCount
+    log.info(`nativeDreamSessionCount: ${merged.nativeDreamSessionCount}`)
   }
 
   // maxGroupPanels (canonical) wins over the legacy `maxOpenPanels` alias.

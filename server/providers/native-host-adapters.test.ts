@@ -6,6 +6,8 @@
 // The remaining ports get a delegation smoke check.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,7 +21,10 @@ import { NativeProvider } from './native/native-provider.js'
 import type { ProviderSessionHandle } from './types.js'
 import { createNativeHostPorts, makeNativePorts } from './native-host-adapters.js'
 import { nativeCoreOf } from './native-host-frame-adapter.js'
-import type { NativeConfigPort, NativeHostPorts } from './native/ports.js'
+import { NativeSessionLog } from './native/session-log/log.js'
+import { nativeSessionLogPath } from './native/session-log/paths.js'
+import { createUserMessage } from './native/vocabulary/message.js'
+import type { NativeAutoMemoryPort, NativeConfigPort, NativeHostPorts } from './native/ports.js'
 
 const dirs: string[] = []
 const sessions: ProviderSessionHandle[] = []
@@ -132,6 +137,8 @@ describe('ConfigPort adapter mirrors the provider resolution', () => {
       nativePdfDocuments: false,
       nativeAutoCompactRatio: 0.5,
       nativeDefaultContextWindow: 1_000_000,
+      nativeDreamAfterMs: 86400000,
+      nativeDreamSessionCount: 5,
       modelList: ['injected-model'],
       hasProfiles,
       smallFastModel: '',
@@ -172,6 +179,8 @@ describe('ConfigPort adapter cache + live-view semantics', () => {
       nativePdfDocuments: false,
       nativeAutoCompactRatio: 0.5,
       nativeDefaultContextWindow: 256_000,
+      nativeDreamAfterMs: 3_600_000,
+      nativeDreamSessionCount: 2,
       modelList: ['reloaded-model'],
       profiles: [],
     })
@@ -179,6 +188,8 @@ describe('ConfigPort adapter cache + live-view semantics', () => {
     expect(ports.config.nativePdfDocuments).toBe(false)
     expect(ports.config.nativeAutoCompactRatio).toBe(0.5)
     expect(ports.config.nativeDefaultContextWindow).toBe(256_000)
+    expect(ports.config.nativeDreamAfterMs).toBe(3_600_000)
+    expect(ports.config.nativeDreamSessionCount).toBe(2)
     expect(ports.config.modelList).toEqual(['reloaded-model'])
     expect(ports.config.hasProfiles).toBe(false)
     __setConfigForTest({
@@ -186,6 +197,8 @@ describe('ConfigPort adapter cache + live-view semantics', () => {
       nativePdfDocuments: true,
       nativeAutoCompactRatio: 0.9,
       nativeDefaultContextWindow: 1_000_000,
+      nativeDreamAfterMs: 86400000,
+      nativeDreamSessionCount: 5,
       profiles: [profileOf('reloaded')],
       activeProfileId: 'reloaded',
     })
@@ -193,15 +206,17 @@ describe('ConfigPort adapter cache + live-view semantics', () => {
     expect(ports.config.nativePdfDocuments).toBe(true)
     expect(ports.config.nativeAutoCompactRatio).toBe(0.9)
     expect(ports.config.nativeDefaultContextWindow).toBe(1_000_000)
+    expect(ports.config.nativeDreamAfterMs).toBe(86400000)
+    expect(ports.config.nativeDreamSessionCount).toBe(5)
     expect(ports.config.hasProfiles).toBe(true)
     expect(ports.config.activeProfile().id).toBe('reloaded')
   })
 })
 
 describe('host adapters aggregate', () => {
-  it('exposes all seven ports and delegates the pure transforms to the host modules', () => {
+  it('exposes all eight ports and delegates the pure transforms to the host modules', () => {
     const ports = createNativeHostPorts()
-    expect(Object.keys(ports).sort()).toEqual(['attachment', 'auxLlm', 'config', 'mcpTransport', 'memory', 'skill', 'transcript'])
+    expect(Object.keys(ports).sort()).toEqual(['attachment', 'autoMemory', 'auxLlm', 'config', 'mcpTransport', 'memory', 'skill', 'transcript'])
     const line = { type: 'assistant', uuid: 'u1', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } }
     expect(ports.transcript.normalize(line, 's1', true)).toEqual(normalize(line, 's1', true))
     expect(ports.transcript.paginateRenderable([line], 's1', { limit: 10 }))
@@ -224,5 +239,47 @@ describe('host adapters aggregate', () => {
     const fixture = { files: [{ path: '/repo/CLAUDE.md', scope: 'project' as const, content: 'RULES' }], isGitRepo: true }
     const ports = makeNativePorts({ memory: { read: async () => fixture } })
     expect(await ports.memory.read('/repo')).toEqual(fixture)
+  })
+
+  it('makeNativePorts defaults autoMemory to a hermetic stub that creates nothing', async () => {
+    const dir = await tempDir()
+    const ports = makeNativePorts({ stateDir: dir })
+    expect(await ports.autoMemory.listCandidates([dir])).toEqual([])
+    expect(await ports.autoMemory.readIndex(dir)).toBeNull()
+    expect(await ports.autoMemory.readMemoryFile(join(dir, 'm.md'))).toEqual({ content: '', truncated: false })
+    expect(await ports.autoMemory.listSessionsTouchedSince(dir, 0)).toEqual([])
+    expect(await ports.autoMemory.readDreamState()).toEqual({})
+    expect(await ports.autoMemory.claimDream('key')).toBe(false)
+    await ports.autoMemory.releaseDream('key', 1)
+    // The stub's dream no-ops never touch the state file either.
+    expect(existsSync(join(dir, 'native-memory', 'dream-state.json'))).toBe(false)
+    const roots = await ports.autoMemory.resolve('D:\\codes\\repo')
+    expect(roots.ownDir).toBe(join(dir, 'native-memory', 'D--codes-repo'))
+    expect(roots.claudeDir).toBeNull()
+    expect(existsSync(roots.ownDir)).toBe(false)
+  })
+
+  it('makeNativePorts passes an injected autoMemory port through', async () => {
+    const injected: NativeAutoMemoryPort = { ...makeNativePorts().autoMemory, readIndex: async () => 'sentinel' }
+    const ports = makeNativePorts({ autoMemory: injected })
+    expect(ports.autoMemory).toBe(injected)
+    expect(await ports.autoMemory.readIndex('any')).toBe('sentinel')
+  })
+
+  it('makeNativePorts autoMemory stub keeps the real session scan over the test stateDir', async () => {
+    const dir = await tempDir()
+    const ports = makeNativePorts({ stateDir: dir })
+    const id = randomUUID()
+    const log = NativeSessionLog.open({ stateDir: dir, id, cwd: 'D:\\repo', resume: false })
+    log.append({
+      type: 'user/message',
+      time: Date.now(),
+      parentToolUseId: null,
+      data: createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } }),
+    })
+    await log.flush()
+    await log.close()
+    expect(await ports.autoMemory.listSessionsTouchedSince('D:\\repo', 0))
+      .toEqual([{ id, logPath: nativeSessionLogPath(dir, id) }])
   })
 })

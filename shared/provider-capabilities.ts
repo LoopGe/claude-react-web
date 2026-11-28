@@ -10,7 +10,7 @@
  *
  * The map MUST agree with the server's `ProviderCapabilities` flags
  * (`server/providers/types.ts`) — claude supports all six; native supports
- * plugins and pluginSkills and locks hooks/memory/sandbox/account. Agreement
+ * plugins, hooks, memory and pluginSkills and locks sandbox/account. Agreement
  * is guarded by a server-side pin
  * (`server/providers/provider-capabilities-pin.test.ts`) that compares this map
  * against the real provider capability literals, so the two cannot drift
@@ -18,11 +18,12 @@
  * existing sessions; this map is only for the pre-create draft.
  */
 
-/** The provider-gated features, in presentation order. memory/sandbox/account
+/** The provider-gated features, in presentation order. sandbox/account
  *  are locked on native (claude-only CLI features); plugins (agent extensions:
  *  commands/agents/hooks/MCP/skills), hooks (the session-scoped config its own
- *  engine executes, plus plugin hook sources), and pluginSkills (selective
- *  plugin-skill discovery via enabledPlugins) are functional on both providers. */
+ *  engine executes, plus plugin hook sources), memory (auto-memory store), and
+ *  pluginSkills (selective plugin-skill discovery via enabledPlugins) are
+ *  functional on both providers. */
 export const GATED_FEATURES = ['plugins', 'hooks', 'memory', 'sandbox', 'account', 'pluginSkills'] as const
 
 export type GatedFeature = (typeof GATED_FEATURES)[number]
@@ -35,7 +36,7 @@ export type GatedFeature = (typeof GATED_FEATURES)[number]
  */
 const PROVIDER_GATED_FEATURE_SUPPORT = new Map<string, Record<GatedFeature, boolean>>([
   ['claude', { plugins: true, hooks: true, memory: true, sandbox: true, account: true, pluginSkills: true }],
-  ['native', { plugins: true, hooks: true, memory: false, sandbox: false, account: false, pluginSkills: true }],
+  ['native', { plugins: true, hooks: true, memory: true, sandbox: false, account: false, pluginSkills: true }],
 ])
 
 /**

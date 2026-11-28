@@ -154,6 +154,12 @@ export interface NativeSessionCore {
    *  context snapshot from the summarizer input (it is not a human turn). */
   getCompactionBoundary?(): { text: string; context: string } | null
   getContextUsage?(opts?: { detail?: 'summary' | 'full' }): Promise<unknown>
+  /** The realpath-validated auto-memory roots — null until the spawn/settings
+   *  seed settles (a rejected override never settles). The host adapter exposes
+   *  this so the permission broker's memory exemption engages only against roots
+   *  the write-isolation guard actually validated, never a lexical alias the
+   *  core refused (a cwd-internal junction into the claude config dir included). */
+  readonly autoMemoryRoots?: { ownDir: string; claudeDir: string | null } | null
   getEffectiveSettings?(): NativeEffectiveSettings
   getResetBaseSettings?(): NativeResetBaseSettings
   getUsage?(): Promise<unknown>

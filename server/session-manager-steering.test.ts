@@ -102,6 +102,7 @@ const FAKE_CAPS: ProviderCapabilities = {
   persistentAttachmentRefs: false,
   cliSidePlanSteering: true,
   ownsCliTranscriptJsonl: false,
+  hostAutoMemoryStore: false,
 }
 
 class FakeProvider implements AgentProvider {

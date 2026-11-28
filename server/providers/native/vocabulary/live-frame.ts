@@ -40,9 +40,9 @@ export interface AssistantFrame {
 }
 
 /** Neutral envelope facts carried inline by the enveloped operational frames
- *  (init / api_retry / informational / result / prompt_suggestion / hook/run).
- *  Task frames are envelope-less — they carry no session_id/uuid/parent on the
- *  SDK frame either. */
+ *  (init / api_retry / informational / memory_recall / result / prompt_suggestion
+ *  / hook/run). Task frames are envelope-less — they carry no session_id/uuid/
+ *  parent on the SDK frame either. */
 interface OperationalEnvelope {
   sessionId: string
   uuid: string
@@ -71,6 +71,19 @@ export type OperationalFrame =
   | ({ type: 'init'; fastMode: boolean } & OperationalEnvelope)
   | ({ type: 'api/retry'; attempt: number; maxRetries: number; delayMs: number } & OperationalEnvelope)
   | ({ type: 'informational'; text: string } & OperationalEnvelope)
+  // Turn-start auto-memory recall (spec §7): the memories the supervisor
+  // surfaced into the turn. The adapter projects it to the SDK system/
+  // memory_recall frame the pump admits to the ring + seq sidecar
+  // (BROADCAST_SYSTEM_SUBTYPES). File-backed entries carry NO content — the
+  // renderer lazy-loads by path (the SDK memory_recall contract); `content` is
+  // optional for a non-file-backed entry. parentToolUseId always null — main
+  // turn only. The uuid is SHARED with the memory-kind supplement entry so the
+  // live card and the durable injection pair by identity.
+  | ({
+      type: 'memory/recall'
+      mode: 'select'
+      memories: Array<{ path: string; scope: 'personal'; content?: string }>
+    } & OperationalEnvelope)
   | {
       type: 'task/started'
       taskId: string

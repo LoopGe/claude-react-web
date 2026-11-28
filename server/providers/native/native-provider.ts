@@ -207,13 +207,14 @@ export class NativeProvider implements AgentProvider {
     // yet, and 14 layer-2 events have no trigger — the Hooks panel says both
     // instead of locking the surface.
     supportsHooks: true,
-    supportsMemory: false,
+    supportsMemory: true,
     tasksSurviveRestart: false,
     interleavedSubagentHistory: true,
     hostDrivenAutoCompact: true,
     persistentAttachmentRefs: true,
     cliSidePlanSteering: false,
     ownsCliTranscriptJsonl: false,
+    hostAutoMemoryStore: true,
   }
 
   readonly subagentTranscripts = {
@@ -407,6 +408,7 @@ export class NativeProvider implements AgentProvider {
         thinking: opts.thinking,
         effortLevel: opts.effortLevel,
         fastMode: opts.fastMode,
+        memory: opts.memory,
         profile,
         modelContext: this.modelContext,
         autoCompactWindow,

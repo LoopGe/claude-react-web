@@ -18,7 +18,7 @@ export const writeTool: ToolDef<{ file_path: string; content: string }> = {
     required: ['file_path', 'content'],
   },
   async run(input, ctx) {
-    const abs = resolveAgainstCwd(ctx.cwd, input.file_path)
+    const abs = resolveAgainstCwd(ctx.cwd, input.file_path, ctx.memoryRoots?.write)
     await mkdir(dirname(abs), { recursive: true })
     await writeFile(abs, input.content, 'utf-8')
     return { text: `wrote ${input.file_path} (${Buffer.byteLength(input.content, 'utf-8')} bytes)` }
