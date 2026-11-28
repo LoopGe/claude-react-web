@@ -852,21 +852,26 @@ describe('SessionManager', () => {
   it('projects locked-feature booleans false for native, true for claude (live and dormant)', async () => {
     const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
     const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
-    const keys = ['pluginsSupported', 'hooksSupported', 'memorySupported', 'sandboxSupported', 'accountInfoSupported'] as const
-    for (const k of keys) {
+    const lockedKeys = ['pluginsSupported', 'memorySupported', 'sandboxSupported', 'accountInfoSupported'] as const
+    for (const k of lockedKeys) {
       expect(claude[k]).toBe(true)
       expect(native[k]).toBe(false)
     }
+    // Hooks is NOT locked on native: its engine runs the session-scoped config.
+    expect(native.hooksSupported).toBe(true)
+    expect(claude.hooksSupported).toBe(true)
     // Dormant projection (infoFromMeta) re-derives the same booleans from the
     // provider registry — no live handle is involved.
     await sm.unload(native.id)
     await sm.unload(claude.id)
     const dormantNative = sm.list().find((session) => session.id === native.id)
     const dormantClaude = sm.list().find((session) => session.id === claude.id)
-    for (const k of keys) {
+    for (const k of lockedKeys) {
       expect(dormantNative?.[k]).toBe(false)
       expect(dormantClaude?.[k]).toBe(true)
     }
+    expect(dormantNative?.hooksSupported).toBe(true)
+    expect(dormantClaude?.hooksSupported).toBe(true)
   })
 
   it('projects pluginSkillsSupported true for both providers (live and dormant)', async () => {

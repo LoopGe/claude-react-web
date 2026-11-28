@@ -294,6 +294,11 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
           <span className="settings-group-desc">Hook matchers registered on this session's events.</span>
         </div>
         <div className="settings-group-body">
+          {session.provider === 'native' && (
+            <div className="settings-note hooks-native-source-note">
+              Native executes hooks from this session's config only. Hooks defined in settings files (claude settings.json / settings.local.json), plugins, or agent frontmatter are not run yet.
+            </div>
+          )}
           {noTriggerEvents.length > 0 && (
             <div className="settings-note hooks-no-trigger-note">
               Hooks on these events never fire on the native provider (no trigger mechanism): {noTriggerEvents.join(', ')}. The config stays valid on both providers.

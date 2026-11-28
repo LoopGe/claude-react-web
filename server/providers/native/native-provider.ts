@@ -22,6 +22,14 @@ import type { NativeHostPorts } from './ports.js'
 import { NativeMcpConnections } from './mcp/connections.js'
 import { SharedRegistry } from './mcp/shared-registry.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
+import {
+  readNativeEnvironment,
+  environmentSection,
+  agentsSection,
+  type NativeAvailableAgent,
+  type NativeEnvironmentFacts,
+} from './prompt/environment.js'
+import { unsupportedAgentFields } from './agent-profile.js'
 import { NativeSession, DEFAULT_MODEL } from './native-session.js'
 import { runStructuredOnce } from './structured-run.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../../shared/structured.js'
@@ -96,10 +104,28 @@ const WEB_SEARCH_SECTION: PromptSection = { name: 'tool:WebSearch', order: 170, 
 const TODO_WRITE_SECTION: PromptSection = { name: 'tool:TodoWrite', order: 180, text: TODO_WRITE_GUIDANCE }
 
 /** Build this session's system prompt (plus any per-session append). The
- *  subagent variant omits the Agent section — see createSession. */
-function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: string }, tools: readonly ToolDef[]): string {
+ *  subagent variant omits the Agent section and the `<available_agents>` roster
+ *  — a nested loop has no Agent tool to call (see createSession).
+ *
+ *  `<env>` rides BOTH prompts (a subagent works in the same working directory).
+ *  Both the facts and the roster are spawn-time snapshots: the section registry
+ *  is rebuilt per session, never per turn (P1 prompt-stability rule). */
+function renderSystem(
+  opts: {
+    withAgentSection: boolean
+    systemPromptAppend?: string
+    env: NativeEnvironmentFacts
+    agents: readonly NativeAvailableAgent[]
+  },
+  tools: readonly ToolDef[],
+): string {
   const registry = new PromptSectionRegistry()
   registry.register(IDENTITY_SECTION)
+  registry.register(environmentSection(opts.env))
+  if (opts.withAgentSection) {
+    const agents = agentsSection(opts.agents)
+    if (agents) registry.register(agents)
+  }
   for (const tool of tools) {
     registry.register({ name: `tool:${tool.name}`, order: tool.promptOrder, text: tool.guidance })
   }
@@ -148,7 +174,12 @@ export class NativeProvider implements AgentProvider {
     supportsSubagentTranscripts: true,
     supportsSteering: true,
     supportsSandbox: false,
-    supportsHooks: false,
+    // Session-scoped hooks run on the native engine (13 layer-1 events, the
+    // flag/session config source the Settings Hooks tab edits). File-based
+    // (settings.json), plugin and agent-frontmatter hook sources are NOT wired
+    // yet, and 14 layer-2 events have no trigger — the Hooks panel says both
+    // instead of locking the surface.
+    supportsHooks: true,
     supportsMemory: false,
     tasksSurviveRestart: false,
     interleavedSubagentHistory: true,
@@ -221,6 +252,28 @@ export class NativeProvider implements AgentProvider {
       ?? new NativeAttachmentReferenceIndex({ stateDir: this.stateDir })
   }
 
+  /** Enabled agent definitions the native provider can actually run, for the
+   *  `<available_agents>` roster. Definitions carrying fields the native
+   *  profile does not support are skipped: advertising one would invite a
+   *  `subagent_type` that fails at call time (profileFromDefinition throws).
+   *  Never throws — a broken store degrades to "no custom agents". */
+  private availableAgents(): NativeAvailableAgent[] {
+    try {
+      const store = this.agentStore
+      if (!store) return []
+      return store
+        .list()
+        .filter((def) => def.enabled && unsupportedAgentFields(def).length === 0)
+        .map((def) => ({
+          name: def.name,
+          description: def.description,
+          ...(def.tools && def.tools.length > 0 ? { tools: [...def.tools] } : {}),
+        }))
+    } catch {
+      return []
+    }
+  }
+
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
     // The native path has no sandbox implementation (no OS-level isolation
     // layer), so accepting the intent would silently drop it. The manager
@@ -230,9 +283,12 @@ export class NativeProvider implements AgentProvider {
       throw new HttpError(501, 'provider native does not support sandbox')
     }
     // Prompt sections are stable per conversation in P1 (no hot-plug). The parent
-    // prompt advertises Agent; the subagent prompt does not — nested tools drop
-    // Agent, and guidance for a tool the model cannot call is misleading.
+    // prompt advertises Agent (and the agent roster); the subagent prompt does
+    // not — nested tools drop Agent, and guidance for a tool the model cannot
+    // call (or an agent it cannot delegate to) is misleading.
     const systemPromptAppend = (opts as { systemPromptAppend?: string }).systemPromptAppend
+    const env = readNativeEnvironment(opts.cwd ?? process.cwd())
+    const agents = this.availableAgents()
     const pdfBudgets = new PdfBudgetLedger()
     const preparedPdfs = new PreparedPdfStore(pdfBudgets)
     const readState = new NativeReadState()
@@ -254,8 +310,8 @@ export class NativeProvider implements AgentProvider {
           pdfDocumentsEnabled: () => configPort.nativeAttachmentFidelity && configPort.nativePdfDocuments,
         })]
       : sessionTools
-    const system = renderSystem({ withAgentSection: true, systemPromptAppend }, tools)
-    const subagentSystem = renderSystem({ withAgentSection: false, systemPromptAppend }, tools)
+    const system = renderSystem({ withAgentSection: true, systemPromptAppend, env, agents }, tools)
+    const subagentSystem = renderSystem({ withAgentSection: false, systemPromptAppend, env, agents: [] }, tools)
     // The manager has already resolved globals + inline configs + first-party
     // `injectAll` results into `mcpServers`. Connections start here and are
     // awaited per turn, so spawn never blocks on a slow server.
