@@ -42,3 +42,11 @@ export function rememberPdfZoom(key: string, zoom: number | undefined): void {
 export function forgetPdfViewState(key: string): void {
   states.delete(key)
 }
+
+/** Retention key for one recorded upload: the upload id is the durable
+ *  identity (no session involved). Shared by `UploadPdfViewer` (the producer)
+ *  and the tab-store close observer, which maps an `upload` resource address
+ *  back to this key so the state leaves with the tab. */
+export function uploadViewStateKeyOf(id: string): string {
+  return `upload:${id}`
+}

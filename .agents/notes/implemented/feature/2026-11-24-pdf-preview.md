@@ -79,7 +79,7 @@ code 分支——claude provider 下乱码，native provider 下致命 `NativeFi
 - **并入 LibreOffice 转换。** 独立子系统；用户拆出。
 - **截断大 PDF。** 截断的 PDF 不可解码；超限拒绝（图片先例）。
 - **改服务端 Content-Type 为 application/pdf。** 会反转 octet-stream+nosniff 文档化姿态、把直链变浏览器查看器；应用内预览不需要——只加客户端 'pdf' 分类。
-- **上传预览走 `crw-resource://upload/<id>` provider。** ResourceModal 是 per-session host，上传字节 durable 无 session 身份；专用 `UploadPdfModal`（ref-keyed）更契合，否决新 provider。
+- **上传预览走 `crw-resource://upload/<id>` provider。** ResourceModal 是 per-session host，上传字节 durable 无 session 身份；专用 `UploadPdfModal`（ref-keyed）更契合，否决新 provider。（2026-11-28 部分推翻：Uploads Manager 行内 eye 改走 `upload` provider + focused-panel resource strip，见 [uploads-resource-preview](2026-11-28-uploads-resource-preview.md)；chip 侧维持本结论。）
 - **视图状态存 localStorage / session-store。** 瞬态阅读偏好，tab 关闭即忘；localStorage 会跨 tab 生命周期持久化需配额/清理，mirror 是 durable 会话状态——内存 store 是正确归属。
 
 ## Consequences

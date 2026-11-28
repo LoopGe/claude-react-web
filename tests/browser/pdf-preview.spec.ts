@@ -368,15 +368,27 @@ test('pdf: uploaded — manager eye, composer chip and sent chip preview in-app'
   })
   const managerRow = manager.locator('.uploads-row', { hasText: 'manager-report.pdf' })
   await expect(managerRow).toBeVisible({ timeout: 15_000 })
+  // The eye opens an `upload` tab in the focused panel's resource preview —
+  // a portalled surface stacking above the still-open manager card, with the
+  // PDF branch rendering the same ref-keyed viewer the chips use.
   await managerRow.getByRole('button', { name: 'View file' }).click()
-  const preview = page.locator('.uploads-preview-card')
-  await expect(preview.locator('.uploads-preview-body-pdf')).toBeVisible()
+  const preview = page.locator('.resource-modal')
+  await expect(preview.getByRole('tab', { name: 'manager-report.pdf' })).toBeVisible()
+  await expect(preview.locator('.upload-pdf-viewer')).toBeVisible()
   await waitPdfReady(preview, 2)
   await expect(preview).not.toContainText('No preview available')
-  const red = await canvasPixel(page, '.uploads-preview-card [data-pdf-page="1"] canvas', 0.5, 0.5)
+  const red = await canvasPixel(page, '.resource-modal [data-pdf-page="1"] canvas', 0.5, 0.5)
   expect(red.r - red.b).toBeGreaterThan(150)
-  await preview.getByRole('button', { name: 'Close preview' }).click()
+  // The upload tab's header Download anchor (the former preview modal's button).
+  await expect(preview.getByRole('link', { name: 'Download file' })).toHaveAttribute(
+    'href',
+    /\/api\/uploads\/[^/]+\/content\?download=1$/,
+  )
+  await preview.getByRole('button', { name: 'Close', exact: true }).click()
   await expect(preview).toHaveCount(0)
+  // Closing the preview leaves the manager open — the two surfaces are
+  // independent (the preview outlives the dialog by design).
+  await expect(manager).toBeVisible()
   await manager.getByRole('button', { name: 'Close', exact: true }).click()
   await expect(manager).toHaveCount(0)
 
@@ -476,7 +488,7 @@ test('pdf: over-cap — cwd read and upload both refuse, never a truncated rende
   const row = manager.locator('.uploads-row', { hasText: 'huge-upload.pdf' })
   await expect(row).toBeVisible({ timeout: 15_000 })
   await row.getByRole('button', { name: 'View file' }).click()
-  const preview = page.locator('.uploads-preview-card')
+  const preview = page.locator('.resource-modal')
   await expect(preview.locator('.pdf-status')).toContainText(
     'PDF is too large to preview (over 20 MB)',
   )

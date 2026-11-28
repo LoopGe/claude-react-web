@@ -5818,6 +5818,9 @@ export function App() {
           <UploadsManagerDialog
             open={uploadsDialogOpen}
             onClose={() => setUploadsDialogOpen(false)}
+            /* Same panel the header's resource-preview eye (beside this
+               dialog's opener) manages: the row eye opens upload tabs there. */
+            resourceSessionId={focusedId ?? openIds[0] ?? null}
           />
         </Suspense>
       )}
