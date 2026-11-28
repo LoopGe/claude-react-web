@@ -33,7 +33,12 @@ const log = createLogger('native-mcp-resources')
  *  are oversized HTML documents read by the host, not by the model. */
 const UI_RESOURCE_PREFIX = 'ui://'
 
-export const MCP_RESOURCES_DIR = join(tmpdir(), 'crw-mcp-resources')
+/** Resolved on use, not at module load: a test that partially mocks `node:os`
+ *  (open-path.test.ts does) would otherwise break importing any module that
+ *  reaches this file, since `tmpdir` would be undefined during evaluation. */
+export function mcpResourcesDir(): string {
+  return join(tmpdir(), 'crw-mcp-resources')
+}
 
 /** Hard ceiling on a resource blob this tool will write to disk. A server-
  *  supplied blob is unbounded by the protocol, and the temp directory has no
@@ -198,8 +203,8 @@ export function createReadMcpResourceTool(deps: McpResourceToolDeps): ToolDef<Re
               isError: true,
             }
           }
-          const path = join(MCP_RESOURCES_DIR, `mcp-resource-${Date.now()}-${index}-${randomUUID().slice(0, 8)}`)
-          await mkdir(MCP_RESOURCES_DIR, { recursive: true })
+          const path = join(mcpResourcesDir(), `mcp-resource-${Date.now()}-${index}-${randomUUID().slice(0, 8)}`)
+          await mkdir(mcpResourcesDir(), { recursive: true })
           await writeFile(path, buffer)
           normalized.push({
             uri: entryUri,
