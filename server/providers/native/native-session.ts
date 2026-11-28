@@ -2388,6 +2388,23 @@ export class NativeSession implements NativeSessionCore {
     return reload
   }
 
+  /** The `# MCP Server Instructions` section, exactly the CLI's wording: the
+   *  handshake advisory text of every connected server that supplied any.
+   *  Empty when nothing supplied instructions, so it never occupies a prompt
+   *  slot for a plain tools-only setup. Read per turn (like the skill section)
+   *  so a reconnect or a `setMcpServers` replace lands on the next round. */
+  private mcpInstructionsSection(): string {
+    if (!this.mcp || typeof this.mcp.instructions !== 'function') return ''
+    const entries = this.mcp.instructions()
+    if (entries.length === 0) return ''
+    const blocks = entries.map((entry) => `## ${entry.server}\n${entry.instructions}`)
+    return [
+      '# MCP Server Instructions',
+      'The following MCP servers have provided instructions for how to use their tools and resources:',
+      ...blocks,
+    ].join('\n')
+  }
+
   /** MCP prompt rows of the CURRENTLY connected servers. Read at catalog /
    *  turn time (not cached on the session): the connections own the prompt
    *  discovery, so a reconnect or a `setMcpServers` replace is reflected
@@ -3009,16 +3026,19 @@ export class NativeSession implements NativeSessionCore {
           )
           const memory = await this.opts.ports.memory.read(this.opts.cwd)
           this.memorySnapshot = memory
-          const turnSystem = withSkillsSection(
-            joinPromptParts(
-              turnProfile?.instruction
-                ? `${this.baseSystem}\n\n${turnProfile.instruction}`
-                : this.baseSystem,
-              renderMemorySection(memory.files),
-              this.autoMemorySection(),
-              this.environmentSection(),
+          const turnSystem = joinPromptParts(
+            withSkillsSection(
+              joinPromptParts(
+                turnProfile?.instruction
+                  ? `${this.baseSystem}\n\n${turnProfile.instruction}`
+                  : this.baseSystem,
+                renderMemorySection(memory.files),
+                this.autoMemorySection(),
+                this.environmentSection(),
+              ),
+              skillView.section(),
             ),
-            skillView.section(),
+            this.mcpInstructionsSection(),
           )
           const res = await runTurn(
             {

@@ -76,7 +76,7 @@ function echoServer(name = 'echo-server'): McpServer {
 
 /** A real in-memory MCP server with one prompt and no tools. */
 function promptServer(name = 'prompt-server'): McpServer {
-  const server = new McpServer({ name, version: '1.0.0' })
+  const server = new McpServer({ name, version: '1.0.0' }, { instructions: 'Use prompts for canned workflows.' })
   server.registerPrompt(
     'greet',
     { description: 'Greet someone', argsSchema: { who: z.string() } },
@@ -103,6 +103,10 @@ describe('NativeMcpConnections', () => {
         description: 'Greet someone',
         arguments: [{ name: 'who', required: true }],
       },
+    ])
+
+    expect(conns.instructions()).toEqual([
+      { server: 'talker', instructions: 'Use prompts for canned workflows.' },
     ])
 
     const result = await conns.getPrompt('talker', 'greet', { who: 'Ada' }, abortSignal())

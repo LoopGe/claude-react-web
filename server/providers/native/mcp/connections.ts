@@ -102,6 +102,12 @@ export interface NativeMcpToolInfo {
   meta?: Record<string, unknown>
 }
 
+/** One connected server's `instructions` (the handshake's advisory text). */
+export interface NativeMcpInstructions {
+  server: string
+  instructions: string
+}
+
 /** One `prompts/list` entry, projected as a slash-command row by the session
  *  (`/mcp__<server>__<prompt>`). `arguments` keeps the server's declared order:
  *  the CLI maps the typed positional arguments onto it. */
@@ -186,6 +192,8 @@ interface ServerRecord {
   tools: NativeMcpToolInfo[]
   /** Discovered prompts (`prompts/list`), stamped with this server's name. */
   prompts: NativeMcpPrompt[]
+  /** The handshake's advisory `instructions`, when the server supplied any. */
+  instructions?: string
 }
 
 /** A view over one host-global shared stdio record. `enabled` tracks whether
@@ -344,6 +352,7 @@ export class NativeMcpConnections {
         entry.serverInfo = undefined
         entry.tools = []
         entry.prompts = []
+        entry.instructions = undefined
         return
       }
       if (enabled) {
@@ -358,6 +367,23 @@ export class NativeMcpConnections {
       }
       await this.releaseShared(entry)
     })
+  }
+
+  /** Instructions of every connected server that supplied any, in status
+   *  (name) order. Shared records are re-projected under this view's
+   *  session-local server name. */
+  instructions(): NativeMcpInstructions[] {
+    const out: NativeMcpInstructions[] = []
+    for (const entry of [...this.records.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.kind === 'local') {
+        if (entry.status === 'connected' && entry.instructions !== undefined) {
+          out.push({ server: entry.name, instructions: entry.instructions })
+        }
+      } else if (entry.enabled && entry.record.status === 'connected' && entry.record.instructions !== undefined) {
+        out.push({ server: entry.name, instructions: entry.record.instructions })
+      }
+    }
+    return out
   }
 
   /** Discovered prompts of every connected server, in status (name) order.
@@ -385,19 +411,22 @@ export class NativeMcpConnections {
     await this.queue
     const entry = this.records.get(name)
     if (!entry) throw new Error(`unknown MCP server: ${name}`)
+    // Same signal shape as `call`: the caller's signal plus this view's
+    // teardown, so a toggle-off cancels its own in-flight prompt fetch.
+    const callSignal = AbortSignal.any([signal, entry.abort.signal])
     if (entry.kind === 'local') {
       if (entry.status !== 'connected' || !entry.client) {
         throw new Error(`MCP server "${name}" is not connected`)
       }
       return entry.client.getPrompt({ name: promptName, arguments: args }, {
         timeout: this.toolTimeoutMs,
-        signal: AbortSignal.any([signal, entry.abort.signal]),
+        signal: callSignal,
       })
     }
     if (!entry.enabled || entry.record.status !== 'connected') {
       throw new Error(`MCP server "${name}" is not connected`)
     }
-    return entry.record.getPrompt(promptName, args, signal)
+    return entry.record.getPrompt(promptName, args, callSignal)
   }
 
   /** Every configured server name, in status (name) order. */
@@ -730,7 +759,9 @@ export class NativeMcpConnections {
         : await this.discoverTools(rec, client)
       rec.prompts = client.getServerCapabilities()?.prompts === undefined
         ? []
-        : await this.discoverPrompts(rec, client)
+        : await this.discoverPromptsOrEmpty(rec, client)
+      const instructions = client.getInstructions()
+      if (instructions !== undefined && instructions.trim() !== '') rec.instructions = instructions
       const version = client.getServerVersion()
       if (version) rec.serverInfo = { name: version.name, version: version.version }
       rec.status = 'connected'
@@ -814,6 +845,18 @@ export class NativeMcpConnections {
       cursor = page.nextCursor
     } while (cursor !== undefined)
     return out
+  }
+
+  /** Prompt discovery must never cost the connection: a server that advertises
+   *  `prompts` but errors the list still keeps its tools (the CLI degrades the
+   *  same way). */
+  private async discoverPromptsOrEmpty(rec: ServerRecord, client: Client): Promise<NativeMcpPrompt[]> {
+    try {
+      return await this.discoverPrompts(rec, client)
+    } catch (err) {
+      log.warn(`[${rec.name}] prompts/list failed, prompts unavailable:`, err)
+      return []
+    }
   }
 
   /** `prompts/list` following `nextCursor` until exhausted. Bounded by the

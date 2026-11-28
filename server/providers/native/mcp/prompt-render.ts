@@ -40,7 +40,7 @@ function renderBlock(server: string, block: PromptContentBlock): string | undefi
       const text = str(resource.text)
       if (text !== undefined) return `[Resource from ${server} at ${uri}] ${text}`
       const mimeType = str(resource.mimeType) ?? 'unknown type'
-      const size = typeof resource.blob === 'string' ? resource.blob.length : 0
+      const size = typeof resource.blob === 'string' ? Buffer.from(resource.blob, 'base64').byteLength : 0
       return `[Resource from ${server} at ${uri}] Binary content (${mimeType}, ${size} bytes) is not inlined.`
     }
     case 'resource_link': {
@@ -55,7 +55,7 @@ function renderBlock(server: string, block: PromptContentBlock): string | undefi
     case 'audio': {
       const mimeType = str(block.mimeType) ?? 'unknown type'
       const payload = typeof block.data === 'string' ? block.data : typeof block.blob === 'string' ? block.blob : ''
-      const size = payload.length
+      const size = payload === '' ? 0 : Buffer.from(payload, 'base64').byteLength
       return `[${block.type === 'image' ? 'Image' : 'Audio'} from ${server}] Binary content (${mimeType}, ${size} bytes) is not inlined.`
     }
     default:

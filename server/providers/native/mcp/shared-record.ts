@@ -193,6 +193,8 @@ export class SharedRecord {
   cachedTools: NativeMcpToolInfo[] = []
   /** Discovered prompts (`prompts/list`), stamped with the sharing key. */
   prompts: NativeMcpPrompt[] = []
+  /** The handshake's advisory `instructions`, when the server supplied any. */
+  instructions?: string
   /** Bounds the connect task and all in-flight calls; replaced per attempt. */
   abort = new AbortController()
   /** Settles when the INITIAL connect attempt settles (success or failure). */
@@ -367,6 +369,17 @@ export class SharedRecord {
     }
   }
 
+  /** Prompt discovery must never cost the connection: a server that advertises
+   *  `prompts` but errors the list still keeps its tools. */
+  private async discoverPromptsOrEmpty(client: Client): Promise<NativeMcpPrompt[]> {
+    try {
+      return await this.discoverPrompts(client)
+    } catch (err) {
+      log.warn(`[${this.key}] prompts/list failed, prompts unavailable:`, err)
+      return []
+    }
+  }
+
   /** `prompts/list` following `nextCursor` until exhausted. */
   private async discoverPrompts(client: Client): Promise<NativeMcpPrompt[]> {
     const out: NativeMcpPrompt[] = []
@@ -537,7 +550,9 @@ export class SharedRecord {
       this.cachedTools = discovered
       this.prompts = client.getServerCapabilities()?.prompts === undefined
         ? []
-        : await this.discoverPrompts(client)
+        : await this.discoverPromptsOrEmpty(client)
+      const instructions = client.getInstructions()
+      this.instructions = instructions !== undefined && instructions.trim() !== '' ? instructions : undefined
       const version = client.getServerVersion()
       if (version) this.serverInfo = { name: version.name, version: version.version }
       this.status = 'connected'

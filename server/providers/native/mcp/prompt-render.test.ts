@@ -39,8 +39,8 @@ describe('renderMcpPromptMessages', () => {
       ],
     }
     const text = renderMcpPromptMessages('srv', result)
-    expect(text).toContain('[Image from srv] Binary content (image/png, 4 bytes) is not inlined.')
-    expect(text).toContain('[Resource from srv at res://bin] Binary content (application/pdf, 4 bytes) is not inlined.')
+    expect(text).toContain('[Image from srv] Binary content (image/png, 3 bytes) is not inlined.')
+    expect(text).toContain('[Resource from srv at res://bin] Binary content (application/pdf, 3 bytes) is not inlined.')
   })
 
   it('renders a resource link with its description', () => {

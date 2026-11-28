@@ -16,7 +16,9 @@ command hit "unknown command", and the `/` catalog never showed the prompt at al
 - **Discovery** (`mcp/connections.ts`, `mcp/shared-record.ts`): each connect
   pass fetches `prompts/list` (all pages) **only when the server declares the
   `prompts` capability** — the same fail-closed gate tools already use, because
-  an undeclared `-32601` used to fail the entire connection. Rows are stored per
+  an undeclared `-32601` used to fail the entire connection. A declared-but-
+  failing list is non-fatal (logged, empty rows): the server keeps its tools,
+  matching the CLI's degrade. Rows are stored per
   connection and exposed by `promptCommands()` (shared records are re-projected
   under the session-local server name, like their tools), plus `getPrompt()`
   routed through the same queue / signal rules as tool calls.

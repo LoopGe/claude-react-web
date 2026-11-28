@@ -89,7 +89,10 @@ function echoServer(name = 'echo-server'): McpServer {
 
 /** A real in-process MCP server with one required-argument prompt. */
 function promptServer(name = 'prompter'): McpServer {
-  const server = new McpServer({ name, version: '1.0.0' })
+  const server = new McpServer(
+    { name, version: '1.0.0' },
+    { instructions: 'Call greet before answering an introduction.' },
+  )
   server.registerPrompt(
     'greet',
     { description: 'Greet someone', argsSchema: { who: z.string() } },
@@ -105,6 +108,7 @@ type Frame = Record<string, any>
 interface StreamRequest {
   tools: Array<{ name: string }>
   messages: Array<{ role: string; content: unknown }>
+  system?: string
 }
 
 interface CapturedToolResult {
@@ -207,11 +211,12 @@ async function makeFixture(stateDir: string): Promise<Fixture> {
   ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: {
     tools: Array<{ name: string }>
     messages: Array<{ role: string; content: unknown }>
+    system?: string
   }) {
     // Snapshot the request: `req.messages` is the session's live history array,
     // mutated by later rounds, so a captured reference would show the FINAL
     // transcript instead of what this request actually sent.
-    requests.push({ tools: req.tools, messages: structuredClone(req.messages) })
+    requests.push({ tools: req.tools, messages: structuredClone(req.messages), system: req.system })
     for (const ev of scripts.shift() ?? []) yield ev
   }
   const registry = new ProviderRegistry()
@@ -693,5 +698,9 @@ describe('native MCP resource tools end to end', () => {
       .map((block) => (typeof block === 'string' ? block : (block as { text?: string }).text ?? ''))
       .join('\n')
     expect(sent).toContain('Hello Ada from the server prompt')
+    // The handshake advisory text rides the system prompt in the CLI's format.
+    expect(firstRequest.system).toContain('# MCP Server Instructions')
+    expect(firstRequest.system).toContain('## p')
+    expect(firstRequest.system).toContain('Call greet before answering an introduction.')
   })
 })
