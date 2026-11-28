@@ -65,6 +65,11 @@ export interface ToolDef<In = Record<string, unknown>> {
      *  immediately after launch (the tool_result is the TaskOutput launch
      *  acknowledgement, not the run's output). Absent = host-detach only. */
     shouldBackground?(input: In): boolean
+    /** The detach acknowledgement text, for a tool whose CLIENT surface parses
+     *  it (Monitor: MonitorBar reads the task id out of the CLI's
+     *  "Monitor started (task <id>, …)" sentence). Omitted = the manager's
+     *  generic TaskOutput pointer. Called after `validate`, before `run`. */
+    launchAcknowledgement?(input: In, taskId: string): string
   }
   /** Optional pre-execution input validation. The loop calls this BEFORE
    *  registering a backgroundable task or running the tool, so malformed input

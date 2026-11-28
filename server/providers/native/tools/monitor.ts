@@ -54,7 +54,7 @@ function capEvent(line: string, truncated: boolean): string {
 export const MONITOR_GUIDANCE =
   'Filter at the source (grep/awk in the command, a filtered WS feed) so only lines you would act on become events — every event batch wakes the model. ' +
   'Cover failure signatures, not just the happy path: a monitor matching only success markers stays silent through a crashloop, hang, or unexpected exit, and silence looks identical to still-running. ' +
-  'Stop the watch with TaskStop when it is no longer needed; it expires at timeout_ms.'
+  'Stop the watch with TaskStop when it is no longer needed; it expires at timeout_ms, or — with persistent — runs until TaskStop or session end.'
 
 export type MonitorInput = {
   description: string
@@ -96,6 +96,39 @@ export interface MonitorToolDeps {
  *  hook and `run` (direct calls). Throws ToolInputError on malformed input so a
  *  bad call never registers a background record (the loop validates before
  *  describe()/runForeground). */
+/** The bound deadline of a watch. A persistent watch has none — the CLI
+ *  reports its deadline as 0 — so the value is only used for the ack phrase
+ *  and the timer a non-persistent watch arms. */
+function monitorDeadline(input: MonitorInput): { persistent: boolean; timeoutMs: number } {
+  return {
+    persistent: input.persistent === true,
+    timeoutMs: Math.min(MAX_TIMEOUT_MS, Math.max(1, Math.floor(input.timeout_ms ?? DEFAULT_TIMEOUT_MS))),
+  }
+}
+
+/** A deadline as the CLI's `an(ms)` prints it ("5m", "30s", "250ms"). */
+function humanizeTimeout(ms: number): string {
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`
+  if (ms % 1_000 === 0) return `${ms / 1_000}s`
+  return `${ms}ms`
+}
+
+/** The detach acknowledgement. Its SHAPE is a client contract (MonitorBar
+ *  parses `task <id>` out of it); its wording is the CLI's
+ *  `mapToolResultToToolResultBlockParam` sentence — "Keep working — do not poll
+ *  or sleep" is operational guidance, not filler. */
+function monitorLaunchAcknowledgement(input: MonitorInput, taskId: string): string {
+  const { persistent, timeoutMs } = monitorDeadline(input)
+  const deadline = persistent
+    ? 'persistent — runs until TaskStop or session end'
+    : input.ws !== undefined
+      ? `expires in ${humanizeTimeout(timeoutMs)} unless the source ends first; you get one notice at expiry — re-arm if you still need the watch`
+      : `timeout ${timeoutMs}ms`
+  return `Monitor started (task ${taskId}, ${deadline}). You will be notified on each event. Keep working — do not poll or sleep. `
+    + 'Events may arrive while you are waiting for the user — an event is not their reply. '
+    + `Stop it early with TaskStop task_id="${taskId}".`
+}
+
 function validateMonitorInput(input: MonitorInput): void {
   if (typeof input.description !== 'string' || input.description.trim() === '') {
     throw new ToolInputError('description is required')
@@ -132,7 +165,7 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
     description:
       'Watch a shell command\'s stdout lines or a WebSocket\'s text frames and deliver each as a task-notification event. ' +
       'Runs as a background task: the call returns immediately with a task id, events arrive as notifications while you continue, ' +
-      'and the watch ends on process exit / socket close, timeout_ms expiry, or TaskStop. Provide exactly one of command or ws. ' +
+      'and the watch ends on process exit / socket close, timeout_ms expiry, or TaskStop (a persistent watch has no deadline). Provide exactly one of command or ws. ' +
       'Binary WS frames arrive as a [binary frame, N bytes] placeholder.',
     guidance: MONITOR_GUIDANCE,
     promptOrder: 84,
@@ -162,6 +195,7 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
       describe: (input) => input.description,
       // Every Monitor call backgrounds immediately: the watch outlives the call.
       shouldBackground: () => true,
+      launchAcknowledgement: monitorLaunchAcknowledgement,
     },
     validate: validateMonitorInput,
     async run(input, ctx) {
@@ -169,12 +203,9 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
       const target: MonitorTarget = input.command !== undefined
         ? { kind: 'command', command: input.command, cwd: ctx.cwd }
         : { kind: 'ws', url: input.ws!.url, ...(input.ws!.protocols !== undefined ? { protocols: input.ws!.protocols } : {}) }
-      const persistent = input.persistent === true
-      const timeoutMs = persistent
-        ? 0
-        : Math.min(MAX_TIMEOUT_MS, Math.max(1, Math.floor(input.timeout_ms ?? DEFAULT_TIMEOUT_MS)))
+      const { persistent, timeoutMs } = monitorDeadline(input)
       // The loop always anchors a backgroundable call to its tool_use id; the
-      // task record (and the event deliveries' task-id) key on it.
+      // task record keys on it.
       const taskId = ctx.toolUseId!
       const description = input.description
       if (ctx.signal.aborted) return { text: 'Monitor stopped.', isError: true }

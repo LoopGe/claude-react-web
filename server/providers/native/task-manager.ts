@@ -8,6 +8,9 @@ export interface NativeTaskMetadata {
   taskType: 'shell' | 'subagent' | 'monitor'
   description: string
   subagentType?: string
+  /** The tool's own detach acknowledgement (see `backgroundable`); omitted for
+   *  Bash / Agent, which get the generic TaskOutput pointer below. */
+  launchAcknowledgement?: string
   /** App-initiated runs (the auto-memory dream) set this: their settle still
    *  emits the operational task/notification frame (the TasksPanel roster +
    *  result), but does NOT inject a model-facing <task-notification> turn. The
@@ -309,14 +312,13 @@ export class NativeTaskManager {
       time: record.startedAt,
     })
     // A Monitor is the one background task whose launch the CLIENT also
-    // surfaces (MonitorBar parses this acknowledgement for the task id), so it
-    // speaks the CLI's wording: `Monitor started (task <id>, <description>)`.
-    // Bash / Agent keep the generic TaskOutput pointer.
+    // surfaces (MonitorBar parses the task id out of the CLI's
+    // "Monitor started (task <id>, …)" sentence), so the tool supplies that
+    // wording through `launchAcknowledgement`. Bash / Agent keep the generic
+    // TaskOutput pointer.
     record.resolveLoop({
-      text: record.metadata.taskType === 'monitor'
-        ? `Monitor started (task ${record.metadata.toolUseId}, ${record.metadata.description})\n`
-          + `Events arrive as task notifications while the watch runs. Stop it early with TaskStop task_id="${record.metadata.toolUseId}".`
-        : `Task ${record.metadata.toolUseId} is running in the background.\nUse TaskOutput with task_id="${record.metadata.toolUseId}" to retrieve its final output.`,
+      text: record.metadata.launchAcknowledgement
+        ?? `Task ${record.metadata.toolUseId} is running in the background.\nUse TaskOutput with task_id="${record.metadata.toolUseId}" to retrieve its final output.`,
       isError: false,
     })
     return true

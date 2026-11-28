@@ -226,6 +226,19 @@ describe('Monitor WebSocket event stream', () => {
   })
 })
 
+/** The metadata the loop hands `runForeground` for a Monitor call: the tool
+ *  owns the detach acknowledgement, so a direct manager test must ask the tool
+ *  for it exactly as the loop does (the loop wiring itself is pinned end to end
+ *  in e2e-monitor). */
+function monitorMetadata(tool: ReturnType<typeof createMonitorTool>, input: Parameters<typeof tool.run>[0], taskUseId: string) {
+  return {
+    toolUseId: taskUseId,
+    taskType: 'monitor' as const,
+    description: tool.backgroundable!.describe(input),
+    launchAcknowledgement: tool.backgroundable!.launchAcknowledgement?.(input, taskUseId),
+  }
+}
+
 describe('Monitor background-task lifecycle', () => {
   it('TaskStop stops a running monitor and settles it stopped', async () => {
     const { port, calls } = stubSpawn()
@@ -234,17 +247,22 @@ describe('Monitor background-task lifecycle', () => {
     const manager = new NativeTaskManager((f) => frames.push(f), (n) => injected.push(n))
     const tool = createMonitorTool({ inject: (n) => injected.push(n), spawn: port })
     const parent = new AbortController()
+    const input = { description: 'watch', command: 'tail -f log' }
 
     const loop = manager.runForeground(
-      { toolUseId: 'tu-stop', taskType: 'monitor', description: 'watch' },
-      (signal) => tool.run({ description: 'watch', command: 'tail -f log' }, ctx('tu-stop', signal)),
+      monitorMetadata(tool, input, 'tu-stop'),
+      (signal) => tool.run(input, ctx('tu-stop', signal)),
       parent.signal,
     )
     expect(manager.background('tu-stop')).toBe(true)
-    // The launch acknowledgement names the task in the CLIENT's grammar
-    // ("Monitor started (task <id>, <description>)"), so MonitorBar can
-    // correlate TaskStop and settle notifications with this row.
-    await expect(loop).resolves.toMatchObject({ text: expect.stringContaining('Monitor started (task tu-stop, watch)') })
+    // The launch acknowledgement is the CLI's sentence verbatim (deadline
+    // phrase included), so MonitorBar can correlate TaskStop and settle
+    // notifications with this row.
+    await expect(loop).resolves.toMatchObject({
+      text: 'Monitor started (task tu-stop, timeout 300000ms). You will be notified on each event. Keep working — do not poll or sleep. '
+        + 'Events may arrive while you are waiting for the user — an event is not their reply. '
+        + 'Stop it early with TaskStop task_id="tu-stop".',
+    })
     // The detach announced a local_monitor task.
     expect(frames.find((f) => f.type === 'task/started')).toMatchObject({ taskType: 'local_monitor', isBackgrounded: true })
 
@@ -284,13 +302,17 @@ describe('Monitor background-task lifecycle', () => {
     const tool = createMonitorTool({ inject: (n) => injected.push(n), spawn: port })
     const parent = new AbortController()
 
+    const input = { description: 'watch', command: 'sleep 999', timeout_ms: 5, persistent: true }
     const loop = manager.runForeground(
-      { toolUseId: 'tu-persist', taskType: 'monitor', description: 'watch' },
-      (signal) => tool.run({ description: 'watch', command: 'sleep 999', timeout_ms: 5, persistent: true }, ctx('tu-persist', signal)),
+      monitorMetadata(tool, input, 'tu-persist'),
+      (signal) => tool.run(input, ctx('tu-persist', signal)),
       parent.signal,
     )
     manager.background('tu-persist')
-    await expect(loop).resolves.toMatchObject({ text: expect.stringContaining('Monitor started (task tu-persist, watch)') })
+    // A persistent watch's ack says so — and names no deadline.
+    await expect(loop).resolves.toMatchObject({
+      text: expect.stringContaining('Monitor started (task tu-persist, persistent — runs until TaskStop or session end).'),
+    })
 
     // Past the requested deadline: a persistent watch is still alive.
     await new Promise((resolve) => setTimeout(resolve, 30))

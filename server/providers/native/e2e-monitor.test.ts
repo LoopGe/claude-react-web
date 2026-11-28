@@ -511,6 +511,10 @@ describe('native mid-turn Monitor/task-notification delivery', () => {
       await vi.waitFor(() => {
         expect(liveSession(fx.sm, id).tasks.get('mon-rearm-2')?.status).toBe('running')
         expect(toolResultBlocks(frames, 'mon-rearm-2')).toHaveLength(1)
+        // The loop hands the tool's own acknowledgement through to the
+        // tool_result — the shape MonitorBar parses for the task id.
+        expect(JSON.stringify(toolResultBlocks(frames, 'mon-rearm-2')[0].content))
+          .toContain('Monitor started (task mon-rearm-2,')
       }, { timeout: 5000 })
       expect(liveSession(fx.sm, id).tasks.get('mon-rearm-1')?.status).toBe('completed')
 

@@ -505,6 +505,7 @@ export async function runTurn(
             taskType: backgroundable.taskType,
             description: backgroundable.describe(toolInput),
             subagentType: backgroundable.subagentType?.(toolInput),
+            launchAcknowledgement: backgroundable.launchAcknowledgement?.(toolInput as never, call.id),
           }, execute, signal, ctx.parentToolUseId ?? undefined)
           // Model-initiated backgrounding: runForeground registers the record
           // synchronously, so detaching here — BEFORE awaiting the loop

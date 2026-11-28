@@ -51,13 +51,28 @@ describe('MonitorBar', () => {
   })
 
   it('correlates the native launch ack (tool_use ids) with TaskStop', () => {
-    // The native provider's launch ack is "Task <toolu_…> is running in the
-    // background." — the id is a tool_use id, so the parser's charset must
-    // keep `_`. TaskStop names the same id; the row must drop immediately
-    // instead of waiting out the (default five minute) timeout window.
+    // The native provider's launch ack is the CLI's sentence, whose id is a
+    // tool_use id — so the parser's charset must keep `_`. TaskStop names the
+    // same id; the row must drop immediately instead of waiting out the
+    // (default five minute) timeout window.
+    const ack = 'Monitor started (task toolu_01ABC, timeout 300000ms). You will be notified on each event. '
+      + 'Keep working — do not poll or sleep. Stop it early with TaskStop task_id="toolu_01ABC".'
     const msgs: SdkMessage[] = [
       monitorUseMsg('m1', 'Monitor', { description: 'Watch build', command: 'tail -f build.log' }),
-      resultMsg('m1', 'Task toolu_01ABC is running in the background.\nUse TaskOutput with task_id="toolu_01ABC" to retrieve its final output.'),
+      resultMsg('m1', ack),
+      monitorUseMsg('stop1', 'TaskStop', { task_id: 'toolu_01ABC' }),
+    ]
+    const { container } = render(<MonitorBar messages={msgs} />)
+    expect(container.querySelector('.monitor-bar')).toBeNull()
+  })
+
+  it('also correlates a generic "Task <id> …" acknowledgement', () => {
+    // Not a producer the native provider emits today, but the parser tolerates
+    // the generic detach wording (and a lowercase `task`), so a provider whose
+    // ack differs still gets a TaskStop-correlated row.
+    const msgs: SdkMessage[] = [
+      monitorUseMsg('m1', 'Monitor', { description: 'Watch build', command: 'tail -f build.log' }),
+      resultMsg('m1', 'task toolu_01ABC is running in the background.'),
       monitorUseMsg('stop1', 'TaskStop', { task_id: 'toolu_01ABC' }),
     ]
     const { container } = render(<MonitorBar messages={msgs} />)

@@ -30,12 +30,24 @@ and one of them was a live UI defect:
 
 ## Decision
 
-- **The ack wording is a client contract.** `NativeTaskManager.background()`'s
-  resolve loop now renders `Monitor started (task <id>, <description>)` for
-  `taskType: 'monitor'` — the CLI's exact shape — plus one guidance line
-  pointing at TaskStop. This is contract text, not prose: `MonitorBar`
-  parses it, and every other task type keeps the original
-  `Task <id> is running in the background…` ack.
+- **The acknowledgement is CLI-shaped, and the tool owns its text.**
+  `backgroundable` gains `launchAcknowledgement?(input, taskId)`; the loop
+  threads the result into the task metadata and
+  `NativeTaskManager.background()` renders it (falling back to the generic
+  `Task <id> is running in the background…` TaskOutput pointer for Bash /
+  Agent, which pass nothing). Monitor renders the CLI's own
+  `mapToolResultToToolResultBlockParam` sentence, verified against the CLI
+  binary rather than guessed: `Monitor started (task <id>, timeout 300000ms)`
+  for a command watch, `…, expires in <duration> unless the source ends
+  first; you get one notice at expiry — re-arm if you still need the watch`
+  for a socket, `…, persistent — runs until TaskStop or session end` when
+  persistent — then "You will be notified on each event. Keep working — do
+  not poll or sleep. Events may arrive while you are waiting for the user —
+  an event is not their reply." and a one-line TaskStop pointer. The second
+  clause is the DEADLINE, not the description (the CLI's output puts
+  `timeoutMs` there; a description-there version would be a plausible but
+  wrong imitation), and the client contract is only the `task <id>` clause:
+  `MonitorBar` parses the id and nothing else.
 - **`MonitorBar`'s parser is widened, not specialized.** The corrected regex
   `/task\s+([A-Za-z0-9_-]+)/i` accepts the CLI wording and any generic
   `Task <id> …` ack (a different provider, a future wording change),
@@ -84,10 +96,21 @@ invent a value for one producer.
 timeout can end the row); it is not a substitute for correlating TaskStop
 and settles, which needs the id.
 
+**Build the monitor sentence inside `NativeTaskManager.background()`, keyed
+by `taskType`.** The phrase depends on the deadline AND the target kind
+(`timeout 300000ms` vs the socket `expires in …` variant), neither of which
+the manager's metadata carries; special-casing one task type inside the
+generic detach path also makes the manager read tool input by inference.
+The hook keeps every tool's launch wording with the tool, and the manager
+only chooses "tool said so" vs "generic pointer".
+
 ## Consequences
 
-- The launch ack for a monitor is now CLI-shaped; a test pins it, and the
-  old `containing('background')` assertion was replaced rather than loosened.
+- The launch ack for a monitor is now CLI-shaped; a test pins the full
+  sentence for a command watch and the persistent clause for a persistent
+  one, and an e2e assertion pins that the LOOP carries the tool's text
+  through to the tool_result. The old `containing('background')` assertion
+  was replaced rather than loosened.
 - Event batches still render as the `MonitorEventView` card
   ([monitor event card](2026-11-28-monitor-event-card.md)) — that parser
   needed no change; only the tags around the events shrank.
@@ -97,3 +120,7 @@ and settles, which needs the id.
   round-trip pin covers both shapes.
 - A monitor launched by a provider that still emits a generic
   `Task <id> …` ack is correlated too, thanks to the widened regex.
+- One knowing deviation: `timeout_ms` clamps to [1, 1_800_000] where the CLI's
+  zod schema is [1000, 1_800_000]. Sub-second deadlines are what the unit and
+  e2e suites use to keep expiry tests fast, and a shorter-than-CLI watch hurts
+  nobody; the cap (the value that actually surprises a model) is identical.
