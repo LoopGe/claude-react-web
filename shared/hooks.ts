@@ -140,6 +140,13 @@ export interface HookDecision {
   retry?: boolean
   /** PreCompact exit-0 plain stdout (custom compact instructions, RS §13.3). */
   customInstructions?: string
+  /** WorktreeCreate: the worktree path a hook supplied (hso.worktreePath, or a
+   *  command hook's stdout). Absent means the caller creates it normally. */
+  worktreePath?: string
+  /** Any non-blocking execution failure in the batch (first stderr). The
+   *  WorktreeCreate seam treats a failed creator as "creation failed", which is
+   *  the CLI's any-non-zero rule for that event; every other seam ignores it. */
+  failure?: string
 }
 
 export type HookRunStatus = 'started' | 'progress' | 'success' | 'error' | 'cancelled'
@@ -450,4 +457,11 @@ export interface HookDecision {
   retry?: boolean
   /** PreCompact exit-0 plain stdout (custom compact instructions). */
   customInstructions?: string
+  /** WorktreeCreate: the worktree path a hook supplied (hso.worktreePath, or a
+   *  command hook's stdout). Absent means the caller creates it normally. */
+  worktreePath?: string
+  /** Any non-blocking execution failure in the batch (first stderr). The
+   *  WorktreeCreate seam treats a failed creator as "creation failed", which is
+   *  the CLI's any-non-zero rule for that event; every other seam ignores it. */
+  failure?: string
 }

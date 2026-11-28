@@ -6,7 +6,8 @@
 // malformed input throws ToolInputError like every other tool. Validation here
 // keeps the durable log well-formed — rebuild replays these inputs verbatim.
 import type { NativeTaskStore, TaskUpdatePatch } from '../task-store.js'
-import { ToolInputError, type ToolDef } from './types.js'
+import { ToolInputError, type ToolContext, type ToolDef } from './types.js'
+import type { ToolHookPort } from './hook-port.js'
 
 export const TASK_UPDATE_GUIDANCE = "Update a task by its #N id; status 'deleted' removes it."
 
@@ -26,7 +27,7 @@ function requireStringArray(value: unknown, field: string): void {
   }
 }
 
-export function createTaskUpdateTool(store: NativeTaskStore): ToolDef<TaskUpdateInput> {
+export function createTaskUpdateTool(store: NativeTaskStore, hooks?: ToolHookPort): ToolDef<TaskUpdateInput> {
   return {
     name: 'TaskUpdate',
     description:
@@ -53,7 +54,7 @@ export function createTaskUpdateTool(store: NativeTaskStore): ToolDef<TaskUpdate
       required: ['taskId'],
       additionalProperties: false,
     },
-    async run(input) {
+    async run(input, ctx: ToolContext) {
       requireNonEmptyString(input.taskId, 'taskId')
       if (input.subject !== undefined) requireNonEmptyString(input.subject, 'subject')
       if (input.description !== undefined) requireNonEmptyString(input.description, 'description')
@@ -66,6 +67,29 @@ export function createTaskUpdateTool(store: NativeTaskStore): ToolDef<TaskUpdate
       if (input.addBlockedBy !== undefined) requireStringArray(input.addBlockedBy, 'addBlockedBy')
       if (input.metadata !== undefined && (typeof input.metadata !== 'object' || input.metadata === null || Array.isArray(input.metadata))) {
         throw new ToolInputError('metadata must be an object')
+      }
+      // TaskCompleted fires on the transition INTO completed (the CLI's `DUt`
+      // call site), before the store mutates: exit-2 blocks the completion and
+      // its stderr is the tool error the model sees, leaving the task in its
+      // previous state.
+      const existing = store.get(input.taskId)
+      if (
+        hooks
+        && input.status === 'completed'
+        && existing !== null
+        && existing.status !== 'completed'
+      ) {
+        const decision = await hooks.dispatch('TaskCompleted', {
+          task_id: existing.id,
+          task_subject: input.subject ?? existing.subject,
+          task_description: input.description ?? existing.description,
+        }, ctx.signal)
+        if (decision.action === 'block') {
+          return {
+            text: `Task #${existing.id} was not completed: ${decision.block?.reason ?? 'blocked by hook'}`,
+            isError: true,
+          }
+        }
       }
       const result = store.update(input.taskId, input)
       return { text: JSON.stringify(result), ...(result.success ? {} : { isError: true }) }

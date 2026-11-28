@@ -7,7 +7,8 @@
 // only well-formed records reach the store and the durable log (which rebuild
 // replays verbatim).
 import type { NativeTaskStore, TaskCreateInput } from '../task-store.js'
-import { ToolInputError, type ToolDef } from './types.js'
+import { ToolInputError, type ToolContext, type ToolDef } from './types.js'
+import type { ToolHookPort } from './hook-port.js'
 
 export const TASK_CREATE_GUIDANCE = 'Create a structured task; the result carries its #N id.'
 
@@ -18,7 +19,7 @@ function requireNonEmptyString(value: unknown, field: string): string {
   return value
 }
 
-export function createTaskCreateTool(store: NativeTaskStore): ToolDef<TaskCreateInput> {
+export function createTaskCreateTool(store: NativeTaskStore, hooks?: ToolHookPort): ToolDef<TaskCreateInput> {
   return {
     name: 'TaskCreate',
     description:
@@ -44,7 +45,7 @@ export function createTaskCreateTool(store: NativeTaskStore): ToolDef<TaskCreate
       required: ['subject', 'description'],
       additionalProperties: false,
     },
-    async run(input) {
+    async run(input, ctx: ToolContext) {
       requireNonEmptyString(input.subject, 'subject')
       requireNonEmptyString(input.description, 'description')
       if (input.activeForm !== undefined) requireNonEmptyString(input.activeForm, 'activeForm')
@@ -52,6 +53,32 @@ export function createTaskCreateTool(store: NativeTaskStore): ToolDef<TaskCreate
         throw new ToolInputError('metadata must be an object')
       }
       const record = store.create(input)
+      // TaskCreated fires from inside the tool (the CLI's `zFr` call site), not
+      // from the generic tool lifecycle: exit-2 blocks the creation and its
+      // stderr is the tool error the model sees. The id was just assigned, so a
+      // block rolls the record back — the task never existed from the model's
+      // point of view.
+      if (hooks) {
+        let decision
+        try {
+          decision = await hooks.dispatch('TaskCreated', {
+            task_id: record.id,
+            task_subject: record.subject,
+            task_description: record.description,
+          }, ctx.signal)
+        } catch (err) {
+          // A dispatch that throws must not strand the just-created record.
+          store.update(record.id, { status: 'deleted' })
+          throw err
+        }
+        if (decision.action === 'block') {
+          store.update(record.id, { status: 'deleted' })
+          return {
+            text: `Task #${record.id} was not created: ${decision.block?.reason ?? 'blocked by hook'}`,
+            isError: true,
+          }
+        }
+      }
       return { text: `Task #${record.id} created successfully: ${record.subject}` }
     },
   }

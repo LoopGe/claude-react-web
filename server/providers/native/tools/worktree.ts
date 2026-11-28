@@ -16,7 +16,8 @@
 // and refuses when that would discard uncommitted files or unmerged commits
 // unless `discard_changes: true` says so explicitly.
 import { isAbsolute, resolve } from 'node:path'
-import { ToolInputError, type ToolDef, type ToolOutcome } from './types.js'
+import { ToolInputError, type ToolContext, type ToolDef, type ToolOutcome } from './types.js'
+import type { ToolHookPort } from './hook-port.js'
 import type { NativeWorktreePort } from '../ports.js'
 
 export interface WorktreeSession {
@@ -32,6 +33,10 @@ export interface WorktreeSession {
 export interface WorktreeToolDeps {
   port: NativeWorktreePort
   session: WorktreeSession
+  /** WorktreeCreate / WorktreeRemove hooks (the CLI fires them from INSIDE the
+   *  worktree tool). With a configured WorktreeCreate hook the hook IS the
+   *  creator: no `git worktree` fallback, and any failure fails the entry. */
+  hooks?: ToolHookPort
 }
 
 /** The CLI's per-segment grammar: letters, digits, dots, underscores, dashes,
@@ -91,7 +96,7 @@ export function createEnterWorktreeTool(deps: WorktreeToolDeps): ToolDef<EnterWo
       additionalProperties: false,
     },
     validate: validateEnter,
-    async run(input, _ctx): Promise<ToolOutcome> {
+    async run(input, ctx: ToolContext): Promise<ToolOutcome> {
       const session = deps.session
       const active = session.active()
       const path = typeof input.path === 'string' ? input.path.trim() : undefined
@@ -111,7 +116,32 @@ export function createEnterWorktreeTool(deps: WorktreeToolDeps): ToolDef<EnterWo
             text: `${active === null ? 'Entered the worktree at' : 'Switched into the worktree at'} ${quote(adopted.path)}${branchSuffix(adopted.branch)}. The session is now working in the worktree. Use ExitWorktree to leave mid-session, or exit the session to be prompted.`,
           }
         }
-        const created = await deps.port.create(session.cwd(), name ?? randomWorktreeName())
+        const resolvedName = name ?? randomWorktreeName()
+        if (deps.hooks?.configured('WorktreeCreate')) {
+          // The CLI's WorktreeCreate hook REPLACES creation: command hooks print
+          // the path on stdout, structured hooks return worktreePath. Any
+          // non-zero exit fails the entry (no fallback to `git worktree`).
+          const decision = await deps.hooks.dispatch('WorktreeCreate', { name: resolvedName }, ctx.signal)
+          if (decision.action === 'block' || decision.failure !== undefined) {
+            return {
+              text: `WorktreeCreate hook failed: ${decision.block?.reason ?? decision.failure ?? 'worktree was not created'}`,
+              isError: true,
+            }
+          }
+          const provided = decision.worktreePath
+          if (provided === undefined) {
+            return {
+              text: 'WorktreeCreate hook did not provide a worktree path (a command hook must print the absolute path on stdout, a structured hook must return worktreePath).',
+              isError: true,
+            }
+          }
+          const path = isAbsolute(provided) ? provided : resolve(session.cwd(), provided)
+          session.enter({ path, branch: null })
+          return {
+            text: `Created worktree at ${quote(path)} (provided by the WorktreeCreate hook). The session is now working in the worktree. Use ExitWorktree to leave mid-session, or exit the session to be prompted.`,
+          }
+        }
+        const created = await deps.port.create(session.cwd(), resolvedName)
         session.enter(created)
         return {
           text: `Created worktree at ${quote(created.path)} on branch ${quote(created.branch)}. The session is now working in the worktree. Use ExitWorktree to leave mid-session, or exit the session to be prompted.`,
@@ -164,7 +194,7 @@ export function createExitWorktreeTool(deps: WorktreeToolDeps): ToolDef<ExitWork
       additionalProperties: false,
     },
     validate: validateExit,
-    async run(input): Promise<ToolOutcome> {
+    async run(input, ctx: ToolContext): Promise<ToolOutcome> {
       const session = deps.session
       const active = session.active()
       if (active === null) {
@@ -190,6 +220,11 @@ export function createExitWorktreeTool(deps: WorktreeToolDeps): ToolDef<ExitWork
               + 'Commit or stash the changes (or push the commits) first, then exit with action "remove" — or pass discard_changes: true to delete them anyway.',
             isError: true,
           }
+        }
+        // WorktreeRemove is observational: any exit code's stderr is shown to
+        // the user, it cannot block the removal (RS §3).
+        if (deps.hooks) {
+          await deps.hooks.dispatch('WorktreeRemove', { worktree_path: active.path }, ctx.signal)
         }
         await deps.port.remove(session.mainCwd(), active.path, active.branch, input.discard_changes === true)
         session.leave()

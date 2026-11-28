@@ -38,7 +38,8 @@ function stringField(input: Record<string, unknown>, key: string): string | unde
 
 /** The event's matcher target (RS §3 `qZe` map): the five tool events match
  *  on tool_name, SessionStart on source, Pre/PostCompact on trigger,
- *  SubagentStart/Stop on agent_type, StopFailure on error. Every other event
+ *  SubagentStart/Stop on agent_type, StopFailure on error, Notification on
+ *  notification_type, InstructionsLoaded on load_reason. Every other event
  *  (Stop, UserPromptSubmit, …) has no target — undefined — and its hooks'
  *  matchers are ignored. */
 export function matcherTarget(event: HookEvent, input: Record<string, unknown>): string | undefined {
@@ -59,6 +60,10 @@ export function matcherTarget(event: HookEvent, input: Record<string, unknown>):
       return stringField(input, 'agent_type')
     case 'StopFailure':
       return stringField(input, 'error')
+    case 'Notification':
+      return stringField(input, 'notification_type')
+    case 'InstructionsLoaded':
+      return stringField(input, 'load_reason')
     default:
       return undefined
   }

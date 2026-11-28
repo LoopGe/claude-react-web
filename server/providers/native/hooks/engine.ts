@@ -131,15 +131,19 @@ const commandExecutor: HookExecutor = (hook, input, ctx) =>
  *  block message to the model; every other event surfaces it to the user only.
  *  Whether exit-2 actually BLOCKS a given event (SessionStart/PostCompact/
  *  PermissionRequest/PermissionDenied/StopFailure do not) is the seam's call.
- *  TaskCreated/TaskCompleted/TeammateIdle also feed stderr to the model in the
- *  CLI, but they are layer-2 (no native trigger seam, never dispatched here —
- *  RS §9.3), so their omission from this set is deliberate, not an oversight. */
+ *  TaskCreated/TaskCompleted also feed stderr to the model in the CLI and now
+ *  have a native seam (the Task tools). TeammateIdle stays out: native has no
+ *  teammate mechanism to fire it. */
 const MODEL_TARGET_EVENTS = new Set<HookEvent>([
   'PreToolUse',
   'PostToolUse',
   'PostToolUseFailure',
   'Stop',
   'SubagentStop',
+  // Task creation/completion can be refused by a hook; the CLI feeds that
+  // stderr to the model (RS §3), so the block reason is the tool error text.
+  'TaskCreated',
+  'TaskCompleted',
 ])
 
 /** Events that carry hookSpecificOutput.additionalContext (RS §3). Accumulated
@@ -153,6 +157,8 @@ const ADDITIONAL_CONTEXT_EVENTS = new Set<HookEvent>([
   'Stop',
   'SubagentStart',
   'SubagentStop',
+  // Notification carries additionalContext (SDK NotificationHookSpecificOutput).
+  'Notification',
 ])
 
 function blockTarget(event: HookEvent): 'model' | 'user' {
@@ -299,6 +305,12 @@ function foldEventFields(merged: HookDecision, hso: Record<string, unknown>, eve
     case 'PermissionDenied':
       if (hso.retry === true) merged.retry = true
       break
+    case 'WorktreeCreate':
+      // A hook can be the creator: its hso (or stdout, below) supplies the path.
+      if (typeof hso.worktreePath === 'string' && hso.worktreePath.trim() !== '') {
+        merged.worktreePath = hso.worktreePath.trim()
+      }
+      break
     default:
       break
   }
@@ -357,6 +369,13 @@ function mergeDecisions(event: HookEvent, results: readonly HookExecResult[]): H
       }
     }
 
+    // A non-blocking execution failure is carried for the one seam whose CLI
+    // contract treats ANY non-zero exit as failure (WorktreeCreate). Every
+    // other seam ignores it; a block already dominates.
+    if (event === 'WorktreeCreate' && merged.failure === undefined && result.outcome === 'error') {
+      merged.failure = result.stderr.trim() || 'hook failed'
+    }
+
     const candidate = actionCandidateOf(result, hso, event)
     if (candidate && ACTION_RANK[candidate.action] > actionRank) {
       actionRank = ACTION_RANK[candidate.action]
@@ -378,6 +397,9 @@ function mergeDecisions(event: HookEvent, results: readonly HookExecResult[]): H
         merged.customInstructions = merged.customInstructions ? `${merged.customInstructions}\n${result.stdout}` : result.stdout
       } else if (event === 'UserPromptSubmit' || event === 'SessionStart') {
         merged.additionalContext.push(result.stdout)
+      } else if (event === 'WorktreeCreate') {
+        // Command hooks print the worktree path on stdout (RS §3).
+        merged.worktreePath = result.stdout.trim()
       }
     }
   }

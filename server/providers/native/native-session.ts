@@ -94,6 +94,7 @@ import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
 import { NativeTaskStore } from './task-store.js'
 import { createTaskCreateTool } from './tools/task-create.js'
+import type { ToolHookPort } from './tools/hook-port.js'
 import { createTaskUpdateTool } from './tools/task-update.js'
 import { createTaskGetTool } from './tools/task-get.js'
 import { createTaskListTool } from './tools/task-list.js'
@@ -863,6 +864,14 @@ export class NativeSession implements NativeSessionCore {
    *  turn. Read together with the context per attempt and cleared at the
    *  turn's no-return point, so a durable retry re-reads the same facts. */
   private pendingSessionStartSeed: string | null = null
+  /** InstructionsLoaded bookkeeping: paths already reported to the hook.
+   *  Native re-reads the CLAUDE.md chain every turn but the CLI fires the
+   *  event when a file is LOADED — first sight (session_start) and the reload
+   *  after a compaction (compact). Observation-only, never blocking. */
+  private readonly loadedInstructionFiles = new Set<string>()
+  /** Set by compactInPlace so the next memory read re-reports already-seen
+   *  files with load_reason `compact` (the CLI's post-compact reload). */
+  private instructionReloadReason: 'compact' | null = null
   /** Synchronous pump guard: set before the async pumpLoop starts, so a
    *  second enqueueUserMessage while the first turn is still being scheduled
    *  cannot start a second concurrent pump. */
@@ -1079,8 +1088,21 @@ export class NativeSession implements NativeSessionCore {
       // The Task* family rides alongside TodoWrite (the CLI carries both). The
       // store is per-session; resume/fork rebuild it from the log below.
       this.taskStore = new NativeTaskStore()
-      this.taskCreateTool = createTaskCreateTool(this.taskStore)
-      this.taskUpdateTool = createTaskUpdateTool(this.taskStore)
+      // The CLI fires TaskCreated/TaskCompleted and WorktreeCreate/Remove from
+      // INSIDE the tool implementations, not from the generic tool loop. The
+      // port stamps the base input facts (session id / live cwd / event name)
+      // and reuses the one session dispatch seam.
+      const toolHooks: ToolHookPort = {
+        configured: (event) => this.hookEngine.hasConfiguredHooks(event),
+        dispatch: (event, fields, signal) => this.dispatchHook(event, {
+          session_id: this.opts.id,
+          cwd: this.workingCwd,
+          hook_event_name: event,
+          ...fields,
+        }, { signal, hasContext: true }),
+      }
+      this.taskCreateTool = createTaskCreateTool(this.taskStore, toolHooks)
+      this.taskUpdateTool = createTaskUpdateTool(this.taskStore, toolHooks)
       this.taskGetTool = createTaskGetTool(this.taskStore)
       this.taskListTool = createTaskListTool(this.taskStore)
       // Skills are discovered before the first turn can ask for them. The
@@ -1141,8 +1163,8 @@ export class NativeSession implements NativeSessionCore {
           enter: (entry) => { this.worktree = entry },
           leave: () => { this.worktree = null },
         }
-        this.enterWorktreeTool = createEnterWorktreeTool({ port: worktreePort, session: sessionState })
-        this.exitWorktreeTool = createExitWorktreeTool({ port: worktreePort, session: sessionState })
+        this.enterWorktreeTool = createEnterWorktreeTool({ port: worktreePort, session: sessionState, hooks: toolHooks })
+        this.exitWorktreeTool = createExitWorktreeTool({ port: worktreePort, session: sessionState, hooks: toolHooks })
       }
       // Every session can delegate, MCP or not: `tools` is a live getter and the
       // `emit` path is the session's own persist+push, so a nested run's frames
@@ -1846,6 +1868,13 @@ export class NativeSession implements NativeSessionCore {
       }
       // ask / defer / continue → the normal user prompt below.
     }
+    // Notification seam (RS §3): fires when a permission prompt is about to be
+    // shown — the CLI's `permission_prompt` type. The personOnly floor and
+    // bypass both already returned above, so this is the user-facing ask only.
+    // AskUserQuestion is a question dialog, not a tool-permission prompt.
+    if (toolName !== 'AskUserQuestion') {
+      this.dispatchPermissionNotification(toolName, signal)
+    }
     const result = (await this.opts.canUseTool(toolName, input, {
       signal,
       toolUseID: toolUseId,
@@ -1877,6 +1906,29 @@ export class NativeSession implements NativeSessionCore {
       }
     }
     return { allowed: false, input, message, questionResult }
+  }
+
+  /** The Notification dispatch for a permission prompt (RS §3): message +
+   *  notification_type `permission_prompt`, matcher target notification_type.
+   *  Detached on purpose: a notification is a side effect of the prompt, so a
+   *  slow hook must not keep the user from seeing (and answering) it. Exit-2
+   *  never blocks this event; additionalContext joins the next turn through the
+   *  same pending-context channel as SessionStart. A dispatch failure is logged
+   *  and never stops the prompt from reaching the user. */
+  private dispatchPermissionNotification(toolName: string, signal: AbortSignal): void {
+    void this.dispatchHook('Notification', {
+      session_id: this.opts.id,
+      cwd: this.workingCwd,
+      hook_event_name: 'Notification',
+      message: `Claude needs your permission to use ${toolName}`,
+      notification_type: 'permission_prompt',
+    }, { signal, hasContext: true })
+      .then((decision) => {
+        for (const context of decision.additionalContext) {
+          if (context.trim() !== '') this.pendingSessionStartContext.push(context)
+        }
+      })
+      .catch((err) => log.warn(`[${this.opts.id}] Notification hook dispatch failed:`, err))
   }
 
   /** The PermissionDenied dispatch (RS §3 / §5): fires at a deny resolution with
@@ -3029,6 +3081,7 @@ export class NativeSession implements NativeSessionCore {
           )
           const memory = await this.opts.ports.memory.read(this.opts.cwd)
           this.memorySnapshot = memory
+          this.maybeDispatchInstructionsLoaded(memory.files)
           const turnSystem = joinPromptParts(
             withSkillsSection(
               joinPromptParts(
@@ -3511,6 +3564,9 @@ export class NativeSession implements NativeSessionCore {
       createUserMessage({ content: [{ type: 'text', text: context }], source: { kind: 'user' } }),
       createUserMessage({ content: [{ type: 'text', text: summary }], source: { kind: 'user' } }),
     )
+    // The next turn's memory read is the post-compact reload; report the files
+    // it re-injects with load_reason `compact` (InstructionsLoaded, RS §3).
+    this.instructionReloadReason = 'compact'
     this.lastUsage = { input_tokens: 0, output_tokens: 0 }
     // PostCompact seam (RS §3, §13.3 m0o): fires after the history splice,
     // immediately BEFORE SessionStart(compact). Non-blocking — the compact is
@@ -4501,6 +4557,34 @@ export class NativeSession implements NativeSessionCore {
       // from the fire-and-forget call — startSkillReload logs the failure and
       // the next turn's await surfaces it (the construction-time contract).
       void this.reloadSkills().catch(() => {})
+    }
+  }
+
+  /** Fire InstructionsLoaded for the files this turn's memory read put in
+   *  context. Observation-only (the CLI ignores hook decisions for this event),
+   *  so it is detached: a slow hook must not delay the turn, and a failure only
+   *  warns. First sight is `session_start`; a file already reported is only
+   *  re-reported once after a compaction (`compact`). `memory_type` maps the
+   *  memory chain's scope onto the SDK's MemoryType. */
+  private maybeDispatchInstructionsLoaded(files: readonly { path: string; scope: 'user' | 'project' | 'local' }[]): void {
+    const reload = this.instructionReloadReason
+    this.instructionReloadReason = null
+    for (const file of files) {
+      const first = !this.loadedInstructionFiles.has(file.path)
+      // A compaction reload reports every re-injected file as `compact`, including
+      // one that only appeared after the compaction — the reason it is loaded now
+      // is the reload, not the session's start.
+      if (!first && reload === null) continue
+      this.loadedInstructionFiles.add(file.path)
+      void this.dispatchHook('InstructionsLoaded', {
+        session_id: this.opts.id,
+        cwd: this.workingCwd,
+        hook_event_name: 'InstructionsLoaded',
+        file_path: file.path,
+        memory_type: file.scope === 'user' ? 'User' : file.scope === 'project' ? 'Project' : 'Local',
+        load_reason: reload === null ? 'session_start' : 'compact',
+      }, { signal: this.sessionAbort.signal, hasContext: true })
+        .catch((err) => log.warn(`[${this.opts.id}] InstructionsLoaded hook dispatch failed:`, err))
     }
   }
 
