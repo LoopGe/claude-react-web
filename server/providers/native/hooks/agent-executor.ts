@@ -279,5 +279,6 @@ export async function runAgentHook(
     // Release the evaluator's PDF reservations (the nested-runner pattern);
     // its history key never collides with the main thread's.
     ctx.attachmentProjection.preparedPdfs?.clearHistory(hookAgentId)
+    ctx.attachmentProjection.preparedImages?.clearHistory(hookAgentId)
   }
 }

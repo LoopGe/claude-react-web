@@ -21,6 +21,10 @@ interface ModelCandidate {
 interface ReadStateEntry {
   pendingHost?: NativeReadObservation
   seeded?: NativeReadObservation
+  /** Whether the MODEL (not the host's file preview) was the one handed this
+   *  complete version. Only a model-facing proof may answer a repeat Read; a
+   *  host seed exists so Edit does not fail, not because the model saw bytes. */
+  seededByModel?: boolean
   candidate?: ModelCandidate
 }
 
@@ -74,25 +78,27 @@ export class NativeReadState {
       return
     }
     if (nativeMtimeFloor(observation.identity) !== mtimeMs) return
+    // A host seed refreshes the proof Edit uses, but it must not erase the
+    // fact that the MODEL already received these same bytes.
+    const modelAlreadySaw = entry.seededByModel === true
+      && entry.seeded !== undefined
+      && sameNativeFileIdentity(entry.seeded.identity, observation.identity)
     entry.seeded = observation
+    entry.seededByModel = modelAlreadySaw
     delete entry.pendingHost
     delete entry.candidate
     this.entry(target)
   }
 
   /** True when this session already returned the whole current file to the
-   *  model and the bytes on disk are still exactly those bytes. Read-only
-   *  question: it never consumes or changes the proof Edit relies on. */
+   *  MODEL and the bytes on disk are still exactly those bytes. Read-only
+   *  question: it never consumes or changes the proof Edit relies on, and a
+   *  host-seeded read (the UI's file preview) never counts — the model has not
+   *  seen those bytes. */
   unchangedSinceRead(target: NativeReadTarget): boolean {
     const entry = this.entries.get(target.realPath)
-    if (!entry?.seeded) return false
-    if (!sameNativeFileIdentity(entry.seeded.identity, target.identity)) {
-      delete entry.seeded
-      if (entry.candidate && !sameNativeFileIdentity(entry.candidate.observation.identity, target.identity)) {
-        delete entry.candidate
-      }
-      return false
-    }
+    if (!entry?.seeded || entry.seededByModel !== true) return false
+    if (!sameNativeFileIdentity(entry.seeded.identity, target.identity)) return false
     this.entry(target)
     return true
   }
@@ -132,6 +138,7 @@ export class NativeReadState {
       if (window.startLine === 1 || continued) {
         if (window.endByteOffset <= MAX_EDIT_BYTES) {
           entry.seeded = observation
+          entry.seededByModel = true
           delete entry.pendingHost
         }
       }
@@ -163,6 +170,7 @@ export class NativeReadState {
     const target = { ...observation.target, identity: observation.identity }
     const entry = this.entry(target, true)!
     entry.seeded = { target, identity: observation.identity }
+    entry.seededByModel = true
     delete entry.pendingHost
     delete entry.candidate
   }

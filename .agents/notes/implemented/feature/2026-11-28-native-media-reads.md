@@ -116,7 +116,10 @@ The second `Read` then returns a one-line "Wasted call — … is unchanged sinc
 your last Read" note instead of the content. Only an unparameterized full read
 qualifies (an explicit `offset`/`limit` alias, or a changed file, reads
 normally), and the check is read-only: it never consumes the `seeded` proof
-Edit depends on.
+Edit depends on. The proof is also MODEL-facing: the host's own file preview
+seeds read-state so a later Edit does not fail, and that seed must never
+answer a repeat `Read` (the model has not seen the bytes); a later host seed
+of identical bytes also leaves an existing model proof intact.
 
 ### Estimator
 
@@ -158,6 +161,9 @@ unknown) keep the structural price — a recorded, unchanged deviation.
 - No page ranges and no resizing stay open parity items. Notebooks are
   rendered, not edited contextually: Edit's "read completely first" proof does
   not accrue for a notebook, and a notebook read is always a fresh parse.
+- Prepared image handoffs are released at the same lifecycle points as
+  prepared PDFs (turn end plus subagent / dream / hook-agent completion), so a
+  failed projection cannot pin session bytes.
 - The wasted-call note is keyed on `stat` identity, so it cannot see a change
   that preserves size, mtime and ctime (same-second `touch`-style edits). The
   text path's continuation window remains the byte-level authority.

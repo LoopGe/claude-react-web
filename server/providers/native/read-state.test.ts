@@ -273,3 +273,32 @@ describe('NativeReadState.readPaths (recall exclusion keys)', () => {
     expect(target.absolutePath).not.toBe(target.realPath)
   })
 })
+
+describe('NativeReadState repeat-read proof', () => {
+  it('counts only a model-facing complete read, never a host seed', async () => {
+    const state = new NativeReadState()
+    const { dir, path } = await fixture()
+    await seedHost(state, dir, path)
+    const target = await resolveNativeReadTarget(dir, path)
+    expect(state.unchangedSinceRead(target)).toBe(false)
+
+    state.recordModelWindow(await modelWindow(path), false)
+    expect(state.unchangedSinceRead(await resolveNativeReadTarget(dir, path))).toBe(true)
+
+    // A later UI preview of the same bytes does not take that proof away.
+    await seedHost(state, dir, path)
+    expect(state.unchangedSinceRead(await resolveNativeReadTarget(dir, path))).toBe(true)
+
+    await writeFile(path, 'one changed\n')
+    expect(state.unchangedSinceRead(await resolveNativeReadTarget(dir, path))).toBe(false)
+  })
+
+  it('does not consume the proof Edit depends on', async () => {
+    const state = new NativeReadState()
+    const { dir, path } = await fixture()
+    state.recordModelWindow(await modelWindow(path), false)
+    expect(state.unchangedSinceRead(await resolveNativeReadTarget(dir, path))).toBe(true)
+    await expectEditable(state, dir, path)
+    expect(state.unchangedSinceRead(await resolveNativeReadTarget(dir, path))).toBe(true)
+  })
+})

@@ -2259,8 +2259,6 @@ export class NativeSession implements NativeSessionCore {
     )
   }
 
-  /** The single `# Environment` block for this turn. Structural facts are the
-   *  spawn-time snapshot; the date is re-read now (LOCAL day). */
   /** The one projection-options object every request build shares: registry /
    *  store-backed attachments and the one-shot prepared handoffs. */
   private get attachmentProjection(): NativeProjectionOptions {
@@ -2272,6 +2270,8 @@ export class NativeSession implements NativeSessionCore {
     }
   }
 
+  /** The single `# Environment` block for every prompt variant. Structural
+   *  facts are the spawn-time snapshot; the date is re-read now (LOCAL day). */
   private environmentSection(): string {
     const facts = this.envFacts ??= readNativeEnvironment(this.opts.cwd)
     // The CLAUDE.md chain reader owns repository-ness (the merged memory

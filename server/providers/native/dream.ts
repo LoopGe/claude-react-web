@@ -233,6 +233,7 @@ export async function startDreamRun(deps: DreamRunDeps, input: DreamRunInput): P
         return { text: err instanceof Error ? err.message : String(err), isError: true }
       } finally {
         deps.attachmentProjection.preparedPdfs?.clearHistory(toolUseId)
+        deps.attachmentProjection.preparedImages?.clearHistory(toolUseId)
       }
     })()
     return execution

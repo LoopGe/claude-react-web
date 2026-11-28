@@ -320,6 +320,7 @@ export class NativeProvider implements AgentProvider {
     const preparedPdfs = new PreparedPdfStore(pdfBudgets)
     const preparedImages = new PreparedImageStore(pdfBudgets)
     const readState = new NativeReadState()
+    const configPort = this.ports.config
     // One media deps object feeds BOTH read entry points, so a PDF read from
     // the working directory and one from the upload registry share the same
     // request-media ledger and prepared handoff.
@@ -338,7 +339,6 @@ export class NativeProvider implements AgentProvider {
       createEditTool(readState),
       ...STATIC_TOOLS,
     ]
-    const configPort = this.ports.config
     const tools = configPort.nativeAttachmentFidelity && this.uploadStore
       ? [...sessionTools, createAttachmentReadTool({
           ...mediaDeps,
