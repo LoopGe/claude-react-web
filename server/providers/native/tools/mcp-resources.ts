@@ -35,6 +35,12 @@ const UI_RESOURCE_PREFIX = 'ui://'
 
 export const MCP_RESOURCES_DIR = join(tmpdir(), 'crw-mcp-resources')
 
+/** Hard ceiling on a resource blob this tool will write to disk. A server-
+ *  supplied blob is unbounded by the protocol, and the temp directory has no
+ *  janitor, so an oversized payload is refused with a loud error instead of
+ *  filling the disk. */
+export const MAX_RESOURCE_BLOB_BYTES = 25 * 1024 * 1024
+
 export interface McpResourceToolDeps {
   /** Configured server names, in status (name) order. */
   serverNames(): string[]
@@ -46,6 +52,8 @@ export interface McpResourceToolDeps {
   /** Rebuild the session's tool list after a successful refresh, so the tools
    *  reported as added appear in the next turn's request. */
   onToolsRefreshed(): void
+  /** Blob ceiling override (tests); defaults to {@link MAX_RESOURCE_BLOB_BYTES}. */
+  maxBlobBytes?: number
 }
 
 export const LIST_MCP_RESOURCES_GUIDANCE =
@@ -183,6 +191,13 @@ export function createReadMcpResourceTool(deps: McpResourceToolDeps): ToolDef<Re
         }
         if (typeof c.blob === 'string') {
           const buffer = Buffer.from(c.blob, 'base64')
+          const ceiling = deps.maxBlobBytes ?? MAX_RESOURCE_BLOB_BYTES
+          if (buffer.byteLength > ceiling) {
+            return {
+              text: `[Resource from ${server} at ${entryUri}] Binary content (${buffer.byteLength} bytes) exceeds the ${ceiling}-byte limit and was not saved.`,
+              isError: true,
+            }
+          }
           const path = join(MCP_RESOURCES_DIR, `mcp-resource-${Date.now()}-${index}-${randomUUID().slice(0, 8)}`)
           await mkdir(MCP_RESOURCES_DIR, { recursive: true })
           await writeFile(path, buffer)

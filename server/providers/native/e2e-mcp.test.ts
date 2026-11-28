@@ -702,5 +702,8 @@ describe('native MCP resource tools end to end', () => {
     expect(firstRequest.system).toContain('# MCP Server Instructions')
     expect(firstRequest.system).toContain('## p')
     expect(firstRequest.system).toContain('Call greet before answering an introduction.')
+    // `/context` prices the section as its own row (CLI's category name).
+    const usage = (await fx.sm.contextUsage(id)) as { categories?: Array<{ name: string }> }
+    expect(usage.categories?.some((category) => category.name === 'MCP server instructions')).toBe(true)
   })
 })

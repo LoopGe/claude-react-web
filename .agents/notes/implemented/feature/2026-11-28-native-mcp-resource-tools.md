@@ -44,6 +44,9 @@ tool-less server as a zero-tool refresh instead of an error.
 
 ## Alternatives considered
 
+- **Write any blob a server returns** — rejected: the protocol puts no ceiling
+  on a payload and the temp directory has no janitor, so `ReadMcpResource`
+  refuses anything over 25 MiB and reports the size instead of filling the disk.
 - **Implement `ReadMcpResourceDir`** — rejected: `resources/directory/read` is
   a non-standard extension the MCP SDK client here does not expose, and the CLI
   gates the tool behind its own build flag. Registering a tool that always

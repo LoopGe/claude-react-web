@@ -102,6 +102,18 @@ describe('ReadMcpResource', () => {
     expect(readFileSync(blob.blobSavedTo!).toString()).toBe('PDF')
   })
 
+  it('refuses a blob over the size ceiling instead of writing it', async () => {
+    const d = deps({
+      maxBlobBytes: 2,
+      readResource: vi.fn(async () => ({
+        contents: [{ uri: 'res://big.bin', mimeType: 'application/octet-stream', blob: Buffer.from('PDF').toString('base64') }],
+      })),
+    })
+    const out = await createReadMcpResourceTool(d).run({ server: 'a', uri: 'res://big.bin' }, { cwd: '/tmp', signal })
+    expect(out.isError).toBe(true)
+    expect(out.text).toContain('exceeds the 2-byte limit and was not saved')
+  })
+
   it('maps method-not-found and resource-not-found onto the CLI sentences', async () => {
     const tool = () => createReadMcpResourceTool(deps({
       readResource: vi.fn(async () => {

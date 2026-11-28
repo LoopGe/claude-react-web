@@ -32,6 +32,9 @@ had to infer it from tool schemas.
   prompt byte-identical. Because it is read from the live connections at
   request time, a `setMcpServers` replace or reconnect lands on the next round;
   the turn already awaits MCP readiness before building the prompt.
+- The section rides BOTH prompt variants — the main turn and
+  `subagentSystem` — because nested agents receive the same MCP tool set and
+  need the server's usage guidance too.
 - The section is prompt text, not an attachment: no host UI surface, no
   transcript row.
 
@@ -54,7 +57,8 @@ had to infer it from tool schemas.
 - A server's usage guidance reaches the model with the CLI's heading, so prompts
   written against Claude's own instructions behave the same here.
 - Instructions cost prompt tokens on every turn while the server is connected,
-  counted in the prompt estimate like any other section.
+  and are priced as their own `/context` row (`MCP server instructions`), so
+  the breakdown still sums to the bar's total.
 - A server that disconnects mid-conversation silently drops out of the section
   next turn (no explicit retraction sentence — documented deviation).
 
@@ -64,6 +68,7 @@ had to infer it from tool schemas.
   the handshake text of a connected server and nothing for a server without it.
 - `server/providers/native/e2e-mcp.test.ts`: through `SessionManager`, the
   first request's captured `system` contains the heading, `## p`, and the
-  server's text.
+  server's text, and `contextUsage()` carries the `MCP server instructions`
+  category.
 - `npx vitest run` on those files; both `tsc` configs; `eslint` on the changed
   files.

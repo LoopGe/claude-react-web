@@ -69,6 +69,11 @@ command hit "unknown command", and the `/` catalog never showed the prompt at al
 - Because native keeps the raw typed turn for every slash command, the model
   sees `/mcp__… args` plus the rendered prompt body (same as custom commands and
   skills).
+- The `/` catalog reads prompt rows from the live connections. A catalog fetch
+  issued before the connect pass settles (e.g. immediately after spawn) can
+  miss them; the next command-changed broadcast / turn picks them up. Waiting
+  the catalog on `whenReady()` was rejected — the UI's command fetch must never
+  block on a slow or unreachable server.
 - Binary prompt content is never inlined; the model is told what it was missing.
 
 ## Verification

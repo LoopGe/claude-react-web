@@ -2474,13 +2474,16 @@ export class NativeSession implements NativeSessionCore {
    *  would name a dir the run cannot reach. */
   private subagentSystem(skillView: NativeSkillView): string {
     const memory = this.memorySnapshot
-    return withSkillsSection(
-      joinPromptParts(
-        this.opts.subagentSystem ?? this.baseSystem,
-        memory ? renderMemorySection(memory.files) : '',
-        this.environmentSection(),
+    return joinPromptParts(
+      withSkillsSection(
+        joinPromptParts(
+          this.opts.subagentSystem ?? this.baseSystem,
+          memory ? renderMemorySection(memory.files) : '',
+          this.environmentSection(),
+        ),
+        skillView.section(),
       ),
-      skillView.section(),
+      this.mcpInstructionsSection(),
     )
   }
 
@@ -3967,6 +3970,7 @@ export class NativeSession implements NativeSessionCore {
     systemTokens: number
     systemToolsTokens: number
     mcpToolsTokens: number
+    mcpInstructionsTokens: number
     skillTokens: number
     memoryTokens: number
     autoMemoryTokens: number
@@ -3985,6 +3989,11 @@ export class NativeSession implements NativeSessionCore {
     const envSection = this.environmentSection()
     const system = joinPromptParts(persona ? `${this.baseSystem}\n\n${persona}` : this.baseSystem, envSection)
     const systemTokens = estimateText(system) + ROLE_OVERHEAD
+    // The per-turn MCP instructions section is part of the request prompt but
+    // not of the spawn-time base, so it needs its own row (the CLI prices the
+    // same section as `MCP server instructions`).
+    const mcpInstructions = this.mcpInstructionsSection()
+    const mcpInstructionsTokens = mcpInstructions ? estimateText(mcpInstructions) + ROLE_OVERHEAD : 0
     const memoryTokens = memorySection ? estimateText(memorySection) + ROLE_OVERHEAD : 0
     const autoMemoryTokens = autoMemorySection ? estimateText(autoMemorySection) + ROLE_OVERHEAD : 0
     const skillTokens = skillSection ? estimateText(skillSection) + ROLE_OVERHEAD : 0
@@ -3995,11 +4004,19 @@ export class NativeSession implements NativeSessionCore {
     const mcpPrices = new Map(mcpTools.map((t) => [t.name, estimateToolSchema(t)]))
     const mcpToolsTokens = [...mcpPrices.values()].reduce((s, n) => s + n, 0)
     return {
-      fixedTokens: systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens + memoryTokens + autoMemoryTokens,
+      fixedTokens:
+        systemTokens +
+        mcpInstructionsTokens +
+        skillTokens +
+        systemToolsTokens +
+        mcpToolsTokens +
+        memoryTokens +
+        autoMemoryTokens,
       historyTokens: this.history.reduce((s, m) => s + estimateMessage(m), 0),
       systemTokens,
       systemToolsTokens,
       mcpToolsTokens,
+      mcpInstructionsTokens,
       skillTokens,
       memoryTokens,
       autoMemoryTokens,
@@ -4129,6 +4146,7 @@ export class NativeSession implements NativeSessionCore {
       systemTokens,
       systemToolsTokens,
       mcpToolsTokens,
+      mcpInstructionsTokens,
       skillTokens,
       memoryTokens,
       autoMemoryTokens,
@@ -4149,6 +4167,9 @@ export class NativeSession implements NativeSessionCore {
       { name: 'System prompt', tokens: systemTokens, kind: 'used' },
       { name: 'System tools', tokens: systemToolsTokens, kind: 'used' },
       ...(mcpToolsTokens > 0 ? [{ name: 'MCP tools', tokens: mcpToolsTokens, kind: 'used' as const }] : []),
+      ...(mcpInstructionsTokens > 0
+        ? [{ name: 'MCP server instructions', tokens: mcpInstructionsTokens, kind: 'used' as const }]
+        : []),
       ...(skillTokens > 0 ? [{ name: 'Skills', tokens: skillTokens, kind: 'used' as const }] : []),
       ...(memoryTokens > 0 ? [{ name: 'Memory Files', tokens: memoryTokens, kind: 'used' as const }] : []),
       ...(autoMemoryTokens > 0 ? [{ name: 'Memory', tokens: autoMemoryTokens, kind: 'used' as const }] : []),

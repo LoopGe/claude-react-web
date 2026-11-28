@@ -551,6 +551,8 @@ export class SharedRecord {
       this.prompts = client.getServerCapabilities()?.prompts === undefined
         ? []
         : await this.discoverPromptsOrEmpty(client)
+      // Replaced wholesale on every successful connect: a reconnect whose
+      // handshake carries no instructions must not resurrect the previous text.
       const instructions = client.getInstructions()
       this.instructions = instructions !== undefined && instructions.trim() !== '' ? instructions : undefined
       const version = client.getServerVersion()

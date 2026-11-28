@@ -760,8 +760,10 @@ export class NativeMcpConnections {
       rec.prompts = client.getServerCapabilities()?.prompts === undefined
         ? []
         : await this.discoverPromptsOrEmpty(rec, client)
+      // Replaced wholesale on every successful connect: a reconnect whose
+      // handshake carries no instructions must not resurrect the previous text.
       const instructions = client.getInstructions()
-      if (instructions !== undefined && instructions.trim() !== '') rec.instructions = instructions
+      rec.instructions = instructions !== undefined && instructions.trim() !== '' ? instructions : undefined
       const version = client.getServerVersion()
       if (version) rec.serverInfo = { name: version.name, version: version.version }
       rec.status = 'connected'
