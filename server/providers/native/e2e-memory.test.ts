@@ -433,8 +433,13 @@ describe('native auto-memory full chain', () => {
     const descriptors = neutralEventsOf(coreOf(fx.sm, b).log as Parameters<typeof neutralEventsOf>[0])
       .filter((e) => e.type === 'subagent/descriptor' && (e as { data: { toolUseId: string } }).data.toolUseId.startsWith('dream-'))
     expect(descriptors).toHaveLength(1)
-    const dreamState = JSON.parse(await readFile(join(fx.stateDir, 'native-memory', 'dream-state.json'), 'utf8'))
-    expect(dreamState[fx.project]?.lastDreamAt).toEqual(expect.any(Number))
+    // The per-cwd state is persisted when the dream FINISHES, one step after the
+    // consolidated write the wait above observes: poll it instead of racing the
+    // fire-and-forget trigger (failed ~1 in 3 runs before this wait).
+    await vi.waitFor(async () => {
+      const dreamState = JSON.parse(await readFile(join(fx.stateDir, 'native-memory', 'dream-state.json'), 'utf8'))
+      expect(dreamState[fx.project]?.lastDreamAt).toEqual(expect.any(Number))
+    }, { timeout: 8000 })
     // The dream's Read of the session log succeeded (read root wired).
     expect(toolResult(cb.frames, 'dream-read')?.is_error).not.toBe(true)
     cb.unsubscribe()
