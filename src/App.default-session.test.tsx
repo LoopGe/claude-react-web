@@ -235,7 +235,6 @@ describe('default session creation after setup', () => {
     expect(h.create).toHaveBeenCalledOnce()
     expect(h.fetchConfig.mock.calls.filter(([opts]) => (opts as { force?: boolean } | undefined)?.force)).toHaveLength(1)
     expect(h.create).toHaveBeenCalledWith({
-      provider: 'claude',
       cwd: '/fresh/default',
       model: 'fresh-model',
       permissionMode: 'default',
@@ -278,6 +277,29 @@ describe('default session creation after setup', () => {
   })
 })
 
+describe('effective default provider on non-dialog create paths', () => {
+  it('post-setup auto-create omits provider so the server default governs', async () => {
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Finish setup' }))
+
+    await waitFor(() => expect(h.create).toHaveBeenCalledOnce())
+    expect(h.create.mock.calls[0][0]).not.toHaveProperty('provider')
+  })
+
+  it('quick-create omits provider so the server default governs', async () => {
+    h.config = config(true)
+    h.refreshedConfig = h.config
+    renderApp()
+    emitSnapshot([])
+
+    fireEvent.click(await screen.findByRole('button', { name: '+ New' }))
+    fireEvent.click(await screen.findByText('New Session (Default)'))
+
+    await waitFor(() => expect(h.create).toHaveBeenCalledOnce())
+    expect(h.create.mock.calls[0][0]).not.toHaveProperty('provider')
+  })
+})
+
 describe('default session creation from the sidebar', () => {
   async function clickDefaultCreate() {
     fireEvent.click(await screen.findByRole('button', { name: '+ New' }))
@@ -306,7 +328,6 @@ describe('default session creation from the sidebar', () => {
     const panel = await screen.findByTestId('chat-panel')
     expect(panel.dataset.sessionId).toBe('created-default')
     expect(h.create).toHaveBeenCalledWith({
-      provider: 'claude',
       cwd: '/fresh/default',
       model: 'fresh-model',
       permissionMode: 'default',

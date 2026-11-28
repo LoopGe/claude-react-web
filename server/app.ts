@@ -25,7 +25,7 @@ import { metrics } from './metrics.js'
 import type { AgentDefinitionStore } from './agent-definition-store.js'
 import { buildUiStateRouter } from './routes/ui-state-routes.js'
 import { buildResetRouter } from './routes/reset.js'
-import { config as serverConfig, MAX_PASTED_IMAGE_BYTES } from './config.js'
+import { config as serverConfig, effectiveDefaultProvider, MAX_PASTED_IMAGE_BYTES } from './config.js'
 import { createLogger } from './log.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
@@ -254,6 +254,11 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   apiRouter.get('/config', (c) =>
     c.json({
       configured: !!serverConfig.authToken,
+      // The auth-aware effective default (native with a configured API token,
+      // else claude), read live — the same fact `configured` reports. The
+      // create dialog preselects it; provider-less creates resolve it
+      // server-side through SessionManager's own effective default.
+      defaultProvider: effectiveDefaultProvider(),
       defaults: {
         // One authority: resolved once by createServerContext. This route,
         // /config/full, /fs/home and session creation all read the same value.

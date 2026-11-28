@@ -440,6 +440,15 @@ export function __setConfigForTest(overrides: Partial<ServerConfig>): void {
   config = Object.freeze({ ...config, ...overrides })
 }
 
+/** Auth-aware effective default provider: `native` when an API token is
+ *  configured, else `claude`. Reads the LIVE config export (not a boot
+ *  snapshot), so setup/profile changes flip the default without a restart —
+ *  the same auth fact `GET /config` reports as `configured`. An explicit
+ *  SessionManager `defaultProvider` override still wins over this. */
+export function effectiveDefaultProvider(): 'native' | 'claude' {
+  return config.authToken ? 'native' : 'claude'
+}
+
 /** Explicit config.json path set by the CLI `--config` flag. Module-level so
  *  every reader/writer of the config file — loadConfig, readConfigFile, the
  *  write queue, clearCredentials — follows one path without threading it

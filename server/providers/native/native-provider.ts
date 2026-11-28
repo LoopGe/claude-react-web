@@ -128,6 +128,10 @@ export class NativeProvider implements AgentProvider {
     supportsResume: true,
     supportsFork: true,
     supportsPlugins: true,
+    // Plugin-SKILL discovery: enabledPlugins narrows the plugin-skill catalog
+    // (NativeSkillCatalog). Functional alongside full plugin agent-extension
+    // parity (supportsPlugins).
+    supportsPluginSkills: true,
     supportsFastMode: true,
     supportsEffortLevel: true,
     supportsThinkingControl: true,

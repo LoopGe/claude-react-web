@@ -2137,8 +2137,10 @@ export function App() {
         toast.error(`Couldn't load MCP servers: ${(err as Error).message}`)
         return
       }
+      // No `provider` field: the server's auth-aware effective default
+      // governs (native with a configured API token, else claude). The
+      // dialog path still sends its explicit selection.
       const opened = await handleCreate({
-        provider: 'claude',
         cwd: effectiveDefaults.cwd,
         model: effectiveDefaults.model,
         permissionMode: 'default',

@@ -76,7 +76,7 @@ import { terminalCapability } from './terminal-capability.js'
 import { createPushable, type Pushable } from './pushable.js'
 import type { TerminalSnapshot } from '../shared/terminal.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
-import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
+import { config as defaultConfig, DEFAULT_PROFILE, effectiveDefaultProvider, type ProviderProfile } from './config.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
 import { isSdkForwardedMode, isUserSelectablePermissionMode, permissionModeList } from './permission-modes.js'
 import { createAsyncSubscription } from './async-subscription.js'
@@ -1121,7 +1121,17 @@ export class SessionManager {
   private mpStore?: MpStore
   private agentStore?: AgentDefinitionStore
   private providers: ProviderRegistry
-  private defaultProvider: string
+  /** Explicit `opts.defaultProvider` override (tests / embedded hosts). When
+   *  absent, the effective default is auth-aware and read live. */
+  private readonly defaultProviderOverride?: string
+  /** Effective default provider: the explicit override when given, else the
+   *  auth-aware live default (native with a configured API token, else
+   *  claude). A getter over live config, not a boot snapshot — setup/config
+   *  changes reflect immediately. Every `meta.provider ?? …` fallback,
+   *  runStructured and the adoption rank read this one member. */
+  private get defaultProvider(): string {
+    return this.defaultProviderOverride ?? effectiveDefaultProvider()
+  }
   private globalSubscribers = new Map<string, GlobalSubscriber>()
   /** Replacement sessions whose provider seed is not durable yet. They stay
    * out of the store, visible lists and every global frame until published. */
@@ -1308,7 +1318,7 @@ export class SessionManager {
       stateDir: this.store.getDir(),
       uploadStore: this.uploadStore,
     })
-    this.defaultProvider = opts.defaultProvider ?? 'claude'
+    this.defaultProviderOverride = opts.defaultProvider
     // Stuck-session monitor — periodic GC tick with auto-interrupt.
     // `unload` is a class method so it's always available via `this`.
     // The deps arrow captures `this` so the callback stays bound.
@@ -11894,6 +11904,11 @@ export class SessionManager {
       memorySupported: caps.supportsMemory,
       sandboxSupported: caps.supportsSandbox,
       accountInfoSupported: caps.supportsAccountInfo,
+      // Plugin-skill discovery (the create-dialog picker) is distinct from
+      // plugin agent extensions (pluginsSupported): native consumes
+      // enabledPlugins to narrow its plugin-skill catalog, so both providers
+      // project true here while native's plugins tab stays locked.
+      pluginSkillsSupported: caps.supportsPluginSkills,
       // Host property (the cached node-pty probe), not a provider one — the
       // same value for every session, live or dormant.
       terminalSupported: terminalCapability().supported,

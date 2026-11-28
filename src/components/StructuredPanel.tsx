@@ -3,8 +3,9 @@
 // read back the parsed JSON. Unlike the per-session overlays this is
 // session-agnostic — no session id, no WS, no persistence.
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
+import { fetchConfig, peekConfig } from '../state/modelOptionsStore'
 import { formatJson } from '../utils/format'
 import { useCopy } from '../hooks/useCopy'
 import { useStructuredRun } from '../hooks/useStructuredRun'
@@ -58,6 +59,33 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
   const [maxBudgetUsd, setMaxBudgetUsd] = useState('')
   const [permissionMode, setPermissionMode] = useState<StructuredPermissionMode>('default')
   const { copied, copy } = useCopy()
+
+  // The server's effective default provider (GET /config `defaultProvider`:
+  // native when an API token is configured, else claude). The panel is
+  // session-agnostic — no provider picker — so it reads the effective default
+  // directly. native has no cost model (runStructured 501s on maxBudgetUsd), so
+  // the budget field is hidden and omitted from the request for native. A warm
+  // config cache (App fetches /config on mount) seeds synchronously; a cold cache
+  // resolves through the shared store fetch. Legacy/missing field → claude.
+  const [provider, setProvider] = useState(() => peekConfig()?.defaultProvider ?? 'claude')
+  const [providerResolved, setProviderResolved] = useState(() => peekConfig() != null)
+  useEffect(() => {
+    if (providerResolved) return
+    let cancelled = false
+    fetchConfig()
+      .then((r) => {
+        if (cancelled) return
+        setProvider(r.defaultProvider ?? 'claude')
+        setProviderResolved(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setProvider('claude')
+        setProviderResolved(true)
+      })
+    return () => { cancelled = true }
+  }, [providerResolved])
+  const isNative = provider === 'native'
 
   // The dialog's two scrollers change height as content mounts/unmounts: the
   // form body grows on "Show advanced" and on a schema-error row, and the result
@@ -130,7 +158,7 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
       const n = Number(maxTurns)
       if (Number.isFinite(n) && n > 0) req.maxTurns = n
     }
-    if (maxBudgetUsd.trim()) {
+    if (!isNative && maxBudgetUsd.trim()) {
       const n = Number(maxBudgetUsd)
       if (Number.isFinite(n) && n > 0) req.maxBudgetUsd = n
     }
@@ -206,10 +234,12 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
                 Max turns
                 <input className="input" value={maxTurns} onChange={(e) => setMaxTurns(e.target.value)} placeholder="(unset)" disabled={running} />
               </label>
-              <label className="field-label">
-                Budget (USD)
-                <input className="input" value={maxBudgetUsd} onChange={(e) => setMaxBudgetUsd(e.target.value)} placeholder="(unset)" disabled={running} />
-              </label>
+              {!isNative && (
+                <label className="field-label">
+                  Budget (USD)
+                  <input className="input" value={maxBudgetUsd} onChange={(e) => setMaxBudgetUsd(e.target.value)} placeholder="(unset)" disabled={running} />
+                </label>
+              )}
             </div>
             <label className="field-label">
               Permission mode

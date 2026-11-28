@@ -277,6 +277,15 @@ export interface SessionInfoBase<PM = string> {
   memorySupported?: boolean
   sandboxSupported?: boolean
   accountInfoSupported?: boolean
+  /** Whether this session's provider supports selective plugin-SKILL
+   *  discovery from enabledPlugins (the create-dialog plugin picker).
+   *  Distinct from pluginsSupported (plugins as agent extensions, locked on
+   *  native): native consumes enabledPlugins to narrow its plugin-skill
+   *  catalog, so both providers support this. Three-state like the
+   *  locked-feature booleans: undefined on legacy frames retains the
+   *  Claude-compatible UI (gate with `!== false`). Not persisted — re-derived
+   *  from the provider registry on every live and dormant projection. */
+  pluginSkillsSupported?: boolean
   /** Whether the embedded terminal is available on this server (the
    *  node-pty capability probe — a host property, not a provider one).
    *  Undefined on legacy frames retains the Claude-compatible UI; explicit
