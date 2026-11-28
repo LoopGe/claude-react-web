@@ -74,7 +74,44 @@ function echoServer(name = 'echo-server'): McpServer {
   return server
 }
 
+/** A real in-memory MCP server with one prompt and no tools. */
+function promptServer(name = 'prompt-server'): McpServer {
+  const server = new McpServer({ name, version: '1.0.0' })
+  server.registerPrompt(
+    'greet',
+    { description: 'Greet someone', argsSchema: { who: z.string() } },
+    async ({ who }) => ({ messages: [{ role: 'user', content: { type: 'text', text: `Hello ${who}` } }] }),
+  )
+  return server
+}
+
 describe('NativeMcpConnections', () => {
+  it('discovers prompts only when the server declares the capability, and gets them', async () => {
+    const conns = new NativeMcpConnections({ transportPort })
+    conns.load({
+      talker: { type: 'sdk', instance: promptServer() },
+      silent: { type: 'sdk', instance: echoServer() },
+    })
+    await conns.whenReady()
+
+    // `silent` declares tools only: prompts/list must not be sent to it, so it
+    // contributes no rows (a stray -32601 would fail the whole connection).
+    expect(conns.promptCommands()).toEqual([
+      {
+        server: 'talker',
+        name: 'greet',
+        description: 'Greet someone',
+        arguments: [{ name: 'who', required: true }],
+      },
+    ])
+
+    const result = await conns.getPrompt('talker', 'greet', { who: 'Ada' }, abortSignal())
+    expect(JSON.stringify(result)).toContain('Hello Ada')
+
+    await expect(conns.getPrompt('silent', 'greet', {}, abortSignal())).rejects.toThrow()
+    await conns.closeAll()
+  }, 15_000)
+
   it('connects an in-process server, discovers and calls its tools', async () => {
     const conns = new NativeMcpConnections({ transportPort })
     conns.load({ a: { type: 'sdk', instance: echoServer() } })

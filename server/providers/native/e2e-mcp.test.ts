@@ -87,6 +87,19 @@ function echoServer(name = 'echo-server'): McpServer {
   return server
 }
 
+/** A real in-process MCP server with one required-argument prompt. */
+function promptServer(name = 'prompter'): McpServer {
+  const server = new McpServer({ name, version: '1.0.0' })
+  server.registerPrompt(
+    'greet',
+    { description: 'Greet someone', argsSchema: { who: z.string() } },
+    async ({ who }) => ({
+      messages: [{ role: 'user', content: { type: 'text', text: `Hello ${who} from the server prompt` } }],
+    }),
+  )
+  return server
+}
+
 type Frame = Record<string, any>
 
 interface StreamRequest {
@@ -651,5 +664,34 @@ describe('native MCP resource tools end to end', () => {
     ])
     // The same-tool list survives the refresh: the echo tool is still there.
     expect(toolNames(fx.requests.at(-1)!)).toContain(ECHO_FQN)
+  })
+
+  it('lists MCP prompts as slash commands and injects prompts/get output', async () => {
+    const { cwd, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(textTurn('prompt ran'))
+    const id = await createSession(fx, cwd, {
+      mcpServers: { p: { type: 'sdk', name: 'p', instance: promptServer() } },
+      canUseTool: allowingCanUseTool([]),
+    })
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    const commands = (await fx.sm.supportedCommands(id)) as Array<Record<string, unknown>>
+    expect(commands).toContainEqual(
+      expect.objectContaining({ name: 'mcp__p__greet', description: 'Greet someone', argumentHint: 'who' }),
+    )
+
+    await sendAndWait(fx, id, frames, '/mcp__p__greet Ada', 1)
+    unsubscribe()
+
+    // The prompt body from prompts/get lands in the very first request
+    // alongside the raw typed turn (native keeps the raw text for every
+    // slash command).
+    const firstRequest = fx.requests[0]!
+    const sent = firstRequest.messages
+      .flatMap((message) => (Array.isArray(message.content) ? message.content : [message.content]))
+      .map((block) => (typeof block === 'string' ? block : (block as { text?: string }).text ?? ''))
+      .join('\n')
+    expect(sent).toContain('Hello Ada from the server prompt')
   })
 })

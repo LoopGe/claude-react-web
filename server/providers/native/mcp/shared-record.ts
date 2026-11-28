@@ -65,6 +65,7 @@ import type { NativeMcpTransportPort } from '../ports.js'
 import { createLogger } from '../../../log.js'
 import { captureBirthTime, processIdentity } from '../../../win32-job.js'
 import type {
+  NativeMcpPrompt,
   NativeMcpResourceEntry,
   NativeMcpServerConfig,
   NativeMcpStatus,
@@ -190,6 +191,8 @@ export class SharedRecord {
   tools: NativeMcpToolInfo[] = []
   /** Last-good discovery, served during an outage. */
   cachedTools: NativeMcpToolInfo[] = []
+  /** Discovered prompts (`prompts/list`), stamped with the sharing key. */
+  prompts: NativeMcpPrompt[] = []
   /** Bounds the connect task and all in-flight calls; replaced per attempt. */
   abort = new AbortController()
   /** Settles when the INITIAL connect attempt settles (success or failure). */
@@ -364,6 +367,42 @@ export class SharedRecord {
     }
   }
 
+  /** `prompts/list` following `nextCursor` until exhausted. */
+  private async discoverPrompts(client: Client): Promise<NativeMcpPrompt[]> {
+    const out: NativeMcpPrompt[] = []
+    let cursor: string | undefined
+    do {
+      const page = await client.listPrompts(cursor === undefined ? undefined : { cursor }, {
+        timeout: this.connectTimeoutMs,
+        signal: this.abort.signal,
+      })
+      for (const prompt of page.prompts) {
+        out.push({
+          server: this.key,
+          name: prompt.name,
+          ...(prompt.description !== undefined ? { description: prompt.description } : {}),
+          arguments: (prompt.arguments ?? []).map((argument) => ({
+            name: argument.name,
+            ...(argument.description !== undefined ? { description: argument.description } : {}),
+            ...(argument.required !== undefined ? { required: argument.required } : {}),
+          })),
+        })
+      }
+      cursor = page.nextCursor
+    } while (cursor !== undefined)
+    return out
+  }
+
+  /** `prompts/get` over the live connection. */
+  async getPrompt(promptName: string, args: Record<string, string>, signal: AbortSignal): Promise<unknown> {
+    const client = this.client
+    if (this.status !== 'connected' || !client) throw new Error('MCP server is not connected')
+    return client.getPrompt({ name: promptName, arguments: args }, {
+      timeout: this.toolTimeoutMs,
+      signal: AbortSignal.any([signal, this.abort.signal]),
+    })
+  }
+
   /** Forward a resource read to the connected server, result unchanged. */
   async readResource(uri: string): Promise<unknown> {
     const client = this.client
@@ -496,6 +535,9 @@ export class SharedRecord {
       const discovered = this.declaresTools() ? await this.discoverTools(client) : []
       this.tools = discovered
       this.cachedTools = discovered
+      this.prompts = client.getServerCapabilities()?.prompts === undefined
+        ? []
+        : await this.discoverPrompts(client)
       const version = client.getServerVersion()
       if (version) this.serverInfo = { name: version.name, version: version.version }
       this.status = 'connected'

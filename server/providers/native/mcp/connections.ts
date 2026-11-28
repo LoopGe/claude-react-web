@@ -102,6 +102,16 @@ export interface NativeMcpToolInfo {
   meta?: Record<string, unknown>
 }
 
+/** One `prompts/list` entry, projected as a slash-command row by the session
+ *  (`/mcp__<server>__<prompt>`). `arguments` keeps the server's declared order:
+ *  the CLI maps the typed positional arguments onto it. */
+export interface NativeMcpPrompt {
+  server: string
+  name: string
+  description?: string
+  arguments: Array<{ name: string; description?: string; required?: boolean }>
+}
+
 /** One `resources/list` entry, with the shape the CLI's resource tools expose. */
 export interface NativeMcpResourceEntry {
   uri: string
@@ -174,6 +184,8 @@ interface ServerRecord {
   serverInfo?: { name: string; version: string }
   error?: string
   tools: NativeMcpToolInfo[]
+  /** Discovered prompts (`prompts/list`), stamped with this server's name. */
+  prompts: NativeMcpPrompt[]
 }
 
 /** A view over one host-global shared stdio record. `enabled` tracks whether
@@ -331,6 +343,7 @@ export class NativeMcpConnections {
         entry.error = undefined
         entry.serverInfo = undefined
         entry.tools = []
+        entry.prompts = []
         return
       }
       if (enabled) {
@@ -345,6 +358,46 @@ export class NativeMcpConnections {
       }
       await this.releaseShared(entry)
     })
+  }
+
+  /** Discovered prompts of every connected server, in status (name) order.
+   *  Shared records are re-projected under this view's session-local server
+   *  name, exactly like their tools. */
+  promptCommands(): NativeMcpPrompt[] {
+    const out: NativeMcpPrompt[] = []
+    for (const entry of [...this.records.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.kind === 'local') {
+        if (entry.status === 'connected') out.push(...entry.prompts.map((prompt) => ({ ...prompt })))
+      } else if (entry.enabled && entry.record.status === 'connected') {
+        for (const prompt of entry.record.prompts) out.push({ ...prompt, server: entry.name })
+      }
+    }
+    return out
+  }
+
+  /** `prompts/get` for one connected server, result unchanged. */
+  async getPrompt(
+    name: string,
+    promptName: string,
+    args: Record<string, string>,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    await this.queue
+    const entry = this.records.get(name)
+    if (!entry) throw new Error(`unknown MCP server: ${name}`)
+    if (entry.kind === 'local') {
+      if (entry.status !== 'connected' || !entry.client) {
+        throw new Error(`MCP server "${name}" is not connected`)
+      }
+      return entry.client.getPrompt({ name: promptName, arguments: args }, {
+        timeout: this.toolTimeoutMs,
+        signal: AbortSignal.any([signal, entry.abort.signal]),
+      })
+    }
+    if (!entry.enabled || entry.record.status !== 'connected') {
+      throw new Error(`MCP server "${name}" is not connected`)
+    }
+    return entry.record.getPrompt(promptName, args, signal)
   }
 
   /** Every configured server name, in status (name) order. */
@@ -543,6 +596,7 @@ export class NativeMcpConnections {
         abort: new AbortController(),
         status: 'pending',
         tools: [],
+        prompts: [],
       }
       this.records.set(name, rec)
       result.added.push(name)
@@ -663,6 +717,7 @@ export class NativeMcpConnections {
     rec.error = undefined
     rec.serverInfo = undefined
     rec.tools = []
+    rec.prompts = []
     const client = new Client(CLIENT_INFO, { capabilities: {} })
     rec.client = client
     try {
@@ -673,6 +728,9 @@ export class NativeMcpConnections {
       rec.tools = client.getServerCapabilities()?.tools === undefined
         ? []
         : await this.discoverTools(rec, client)
+      rec.prompts = client.getServerCapabilities()?.prompts === undefined
+        ? []
+        : await this.discoverPrompts(rec, client)
       const version = client.getServerVersion()
       if (version) rec.serverInfo = { name: version.name, version: version.version }
       rec.status = 'connected'
@@ -753,6 +811,33 @@ export class NativeMcpConnections {
         signal: callSignal,
       })
       for (const tool of page.tools) out.push(toolInfo(rec.name, tool))
+      cursor = page.nextCursor
+    } while (cursor !== undefined)
+    return out
+  }
+
+  /** `prompts/list` following `nextCursor` until exhausted. Bounded by the
+   *  record's connect signal, like tool discovery. */
+  private async discoverPrompts(rec: ServerRecord, client: Client): Promise<NativeMcpPrompt[]> {
+    const out: NativeMcpPrompt[] = []
+    let cursor: string | undefined
+    do {
+      const page = await client.listPrompts(cursor === undefined ? undefined : { cursor }, {
+        timeout: this.connectTimeoutMs,
+        signal: rec.abort.signal,
+      })
+      for (const prompt of page.prompts) {
+        out.push({
+          server: rec.name,
+          name: prompt.name,
+          ...(prompt.description !== undefined ? { description: prompt.description } : {}),
+          arguments: (prompt.arguments ?? []).map((argument) => ({
+            name: argument.name,
+            ...(argument.description !== undefined ? { description: argument.description } : {}),
+            ...(argument.required !== undefined ? { required: argument.required } : {}),
+          })),
+        })
+      }
       cursor = page.nextCursor
     } while (cursor !== undefined)
     return out

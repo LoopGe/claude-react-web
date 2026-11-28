@@ -66,7 +66,16 @@ import { createAgentTool, type AgentToolDeps } from './subagent.js'
 import { EXPLORE_AGENT_DESCRIPTION, EXPLORE_AGENT_NAME } from './explore.js'
 import { NativeTaskManager, taskNotificationXml, type TaskNotificationFacts } from './task-manager.js'
 import { NativeSkillCatalog, LISTING_BUDGET_FRACTION, type NativeSkillCommand, type NativeSkillInvocationView, type NativeSkillView } from './skills.js'
-import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, pluginCommandRows, type NativeCommand } from './commands.js'
+import {
+  BUILTIN_COMMANDS,
+  discoverCommands,
+  expandCommandBody,
+  mcpPromptArguments,
+  mcpPromptCommandRows,
+  pluginCommandRows,
+  type NativeCommand,
+} from './commands.js'
+import { renderMcpPromptMessages } from './mcp/prompt-render.js'
 import { createSkillTool } from './tools/skill.js'
 import { createTaskOutputTool } from './tools/task-output.js'
 import { createTaskStopTool } from './tools/task-stop.js'
@@ -283,23 +292,35 @@ function invocationTextOf(content: unknown): string | undefined {
   return undefined
 }
 
+/** Whether the text block is a `/mcp__…` invocation — the only case where the
+ *  prompt catalog must wait for the MCP connect pass before it can resolve. */
+function isMcpPromptInvocation(content: unknown): boolean {
+  const text = invocationTextOf(content)
+  if (text === undefined) return false
+  const match = SKILL_COMMAND_RE.exec(text)
+  return match !== null && match[1].toLowerCase().startsWith('mcp__')
+}
+
 /** Resolve one text block against the command catalog (builtins first, then
  *  the discovered custom rows). Lookup is case-insensitive — `/Foo` and `/foo`
  *  both resolve — while the returned name stays the authored catalog name.
  *  A builtin wins a same-name custom collision because the list is searched
  *  in concatenation order. Anything else (not a command, an unknown name) has
  *  no instruction and falls through to skill matching / plain text. */
-function commandInvocationForTurn(
+async function commandInvocationForTurn(
   content: unknown,
   commands: readonly NativeCommand[],
-): { name: string; body: string } | null {
+  expandMcpPrompt: (cmd: NativeCommand, args: string) => Promise<string>,
+): Promise<{ name: string; body: string } | null> {
   const text = invocationTextOf(content)
   if (text === undefined) return null
   const match = SKILL_COMMAND_RE.exec(text)
   if (!match) return null
   const typed = match[1].toLowerCase()
   const cmd = commands.find((candidate) => candidate.name.toLowerCase() === typed)
-  return cmd ? { name: cmd.name, body: expandCommandBody(cmd, match[2] ?? '') } : null
+  if (!cmd) return null
+  const args = match[2] ?? ''
+  return { name: cmd.name, body: cmd.mcpPrompt ? await expandMcpPrompt(cmd, args) : expandCommandBody(cmd, args) }
 }
 
 /** Resolve one text block against the captured scoped view. A `/name args`
@@ -2367,6 +2388,31 @@ export class NativeSession implements NativeSessionCore {
     return reload
   }
 
+  /** MCP prompt rows of the CURRENTLY connected servers. Read at catalog /
+   *  turn time (not cached on the session): the connections own the prompt
+   *  discovery, so a reconnect or a `setMcpServers` replace is reflected
+   *  without a second source of truth. */
+  private mcpPromptCommands(): NativeCommand[] {
+    // The method guard keeps a partially-shaped connections stub (tests build
+    // one) from breaking the whole catalog fetch.
+    if (!this.mcp || typeof this.mcp.promptCommands !== 'function') return []
+    return mcpPromptCommandRows(this.mcp.promptCommands())
+  }
+
+  /** Resolve a `/mcp__<server>__<prompt> args` row: map the typed positional
+   *  arguments, call `prompts/get`, render the returned messages to text. */
+  private async renderMcpPromptCommand(
+    cmd: NativeCommand,
+    args: string,
+    signal: AbortSignal,
+  ): Promise<string> {
+    const spec = cmd.mcpPrompt
+    if (!spec || !this.mcp) throw new Error(`MCP prompt command is not available: ${cmd.name}`)
+    const promptArguments = mcpPromptArguments(cmd, args)
+    const result = await this.mcp.getPrompt(spec.server, spec.prompt, promptArguments, signal)
+    return renderMcpPromptMessages(spec.server, result)
+  }
+
   /** The full slash surface: builtin rows, then discovered custom rows, then
    *  qualified plugin rows, then the current skill view's rows — deduped by
    *  lowercased name so a command wins a same-name skill, a builtin wins a
@@ -2377,6 +2423,7 @@ export class NativeSession implements NativeSessionCore {
     custom: readonly NativeCommand[],
     plugin: readonly NativeCommand[],
     skillCommands: readonly NativeSkillCommand[],
+    mcpPrompts: readonly NativeCommand[] = [],
   ): NativeSkillCommand[] {
     const out: NativeSkillCommand[] = []
     const seen = new Set<string>()
@@ -2393,6 +2440,9 @@ export class NativeSession implements NativeSessionCore {
       push({ name: cmd.name, description: cmd.description, argumentHint: cmd.argumentHint })
     }
     for (const cmd of plugin) {
+      push({ name: cmd.name, description: cmd.description, argumentHint: cmd.argumentHint })
+    }
+    for (const cmd of mcpPrompts) {
       push({ name: cmd.name, description: cmd.description, argumentHint: cmd.argumentHint })
     }
     for (const row of skillCommands) push(row)
@@ -2702,9 +2752,20 @@ export class NativeSession implements NativeSessionCore {
             // captured once so a later reload cannot mix into this turn.
             compactControl = isCompactControlInvocation(next.content)
             if (!compactControl) {
-              const turnCommands = [...BUILTIN_COMMANDS, ...this.customCommands, ...this.pluginCommands]
-              invocation = commandInvocationForTurn(next.content, turnCommands)
-                ?? skillInvocationForTurn(next.content, turnSkillView)
+              // Prompt rows come from the connected servers: when the typed
+              // command could be one, settle the MCP connect pass before
+              // freezing the catalog so a `/mcp__…` typed on the very first
+              // turn resolves. Ordinary turns never wait on MCP here.
+              if (isMcpPromptInvocation(next.content)) await this.mcp?.whenReady()
+              const turnCommands = [
+                ...BUILTIN_COMMANDS,
+                ...this.customCommands,
+                ...this.pluginCommands,
+                ...this.mcpPromptCommands(),
+              ]
+              invocation = (await commandInvocationForTurn(next.content, turnCommands, (cmd, args) =>
+                this.renderMcpPromptCommand(cmd, args, turnAbort.signal),
+              )) ?? skillInvocationForTurn(next.content, turnSkillView)
             }
           } catch (err) {
             catalogError = err
@@ -4133,7 +4194,12 @@ export class NativeSession implements NativeSessionCore {
   async supportedCommands(): Promise<unknown> {
     await this.skillsReady
     await this.commandsReady
-    return this.commandCatalog(this.customCommands, this.pluginCommands, this.currentSkillView().commands())
+    return this.commandCatalog(
+      this.customCommands,
+      this.pluginCommands,
+      this.currentSkillView().commands(),
+      this.mcpPromptCommands(),
+    )
   }
 
   /** Auto-title through the injected auxiliary LLM port. The model is
@@ -4215,7 +4281,14 @@ export class NativeSession implements NativeSessionCore {
     this.commandsReady = this.startCommandReload()
     await this.skillsReady
     await this.commandsReady
-    return { skills: this.commandCatalog(this.customCommands, this.pluginCommands, this.currentSkillView().commands()) }
+    return {
+      skills: this.commandCatalog(
+        this.customCommands,
+        this.pluginCommands,
+        this.currentSkillView().commands(),
+        this.mcpPromptCommands(),
+      ),
+    }
   }
 
   /** Re-resolve the plugin port and refresh every contribution type. Native

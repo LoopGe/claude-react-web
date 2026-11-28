@@ -3,7 +3,14 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, pluginCommandRows } from './commands.js'
+import {
+  BUILTIN_COMMANDS,
+  discoverCommands,
+  expandCommandBody,
+  mcpPromptArguments,
+  mcpPromptCommandRows,
+  pluginCommandRows,
+} from './commands.js'
 import type { PluginCommand, PluginContributions } from './ports.js'
 import { disableLogRing, enableLogRing, readLogRing } from '../../log.js'
 
@@ -279,5 +286,56 @@ describe('expandCommandBody', () => {
   it('throws loudly when the command has no body', () => {
     const cmd = { name: 'x', description: '', argumentHint: '', builtin: false }
     expect(() => expandCommandBody(cmd, '')).toThrow()
+  })
+})
+describe('MCP prompt rows', () => {
+  it('composes /mcp__<server>__<prompt> and keeps the declared argument order', () => {
+    const rows = mcpPromptCommandRows([
+      {
+        server: 'notes',
+        name: 'summarize',
+        description: 'Summarize a note',
+        arguments: [{ name: 'uri', required: true }, { name: 'style' }],
+      },
+    ])
+    expect(rows).toEqual([
+      {
+        name: 'mcp__notes__summarize',
+        description: 'Summarize a note',
+        argumentHint: 'uri style',
+        builtin: false,
+        mcpPrompt: {
+          server: 'notes',
+          prompt: 'summarize',
+          arguments: [{ name: 'uri', required: true }, { name: 'style' }],
+        },
+      },
+    ])
+  })
+
+  it('refuses servers whose name cannot form an unambiguous command', () => {
+    const rows = mcpPromptCommandRows([
+      { server: 'with space', name: 'p', arguments: [] },
+      { server: 'a__b', name: 'p', arguments: [] },
+      { server: 'ok', name: 'bad name', arguments: [] },
+    ])
+    expect(rows.map((row) => row.name)).toEqual([])
+  })
+
+  it('maps typed words onto the declared names positionally', () => {
+    const [row] = mcpPromptCommandRows([
+      { server: 'notes', name: 'summarize', arguments: [{ name: 'uri', required: true }, { name: 'style' }] },
+    ])
+    expect(mcpPromptArguments(row!, '  res://a   terse ')).toEqual({ uri: 'res://a', style: 'terse' })
+    expect(mcpPromptArguments(row!, 'res://a')).toEqual({ uri: 'res://a' })
+  })
+
+  it('refuses a missing required argument with the CLI sentence', () => {
+    const [row] = mcpPromptCommandRows([
+      { server: 'notes', name: 'summarize', arguments: [{ name: 'uri', required: true }, { name: 'style' }] },
+    ])
+    expect(() => mcpPromptArguments(row!, '')).toThrow(
+      'Missing required argument: uri. Usage: /mcp__notes__summarize uri style',
+    )
   })
 })

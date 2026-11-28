@@ -14,7 +14,14 @@
 
 import { promises as fs } from 'node:fs'
 import { basename, isAbsolute, relative, resolve } from 'node:path'
-import { CANONICAL_SKILL_NAME, MAX_SKILL_BYTES, VALID_SKILL_NAME, parseSkillFrontmatter } from '../../../shared/skills.js'
+import {
+  CANONICAL_SKILL_NAME,
+  CANONICAL_SKILL_NAME_FLAGS,
+  CANONICAL_SKILL_NAME_SOURCE,
+  MAX_SKILL_BYTES,
+  VALID_SKILL_NAME,
+  parseSkillFrontmatter,
+} from '../../../shared/skills.js'
 import { createLogger } from '../../log.js'
 import type { PluginContributions } from './ports.js'
 import { substituteSkillArguments } from './skill-render.js'
@@ -29,6 +36,81 @@ export interface NativeCommand {
   argumentHint: string
   builtin: boolean
   body?: string
+  /** Set on an MCP prompt row (`/mcp__<server>__<prompt>`): the body is not
+   *  static — the session resolves it with `prompts/get` on invocation. */
+  mcpPrompt?: NativeMcpPromptSpec
+}
+
+/** One MCP prompt projected as a command row. */
+export interface NativeMcpPromptSpec {
+  server: string
+  prompt: string
+  /** Declared in the server's order: typed arguments map onto it positionally. */
+  arguments: Array<{ name: string; required?: boolean }>
+}
+
+/** Server names that can form an unambiguous `mcp__<server>__<prompt>` name.
+ *  The CLI refuses to list prompts for any other server (its notice tells the
+ *  user to rename the server) instead of escaping the name. `__` is the
+ *  delimiter, so a name containing it is refused too. */
+const MCP_PROMPT_SAFE_SEGMENT = /^[A-Za-z0-9_-]+$/
+
+const COMMAND_NAME_RE = new RegExp('^' + CANONICAL_SKILL_NAME_SOURCE + '$', CANONICAL_SKILL_NAME_FLAGS)
+
+/** Project discovered MCP prompts into command rows. Rows whose composed name
+ *  falls outside the canonical slash grammar are dropped — the CLI's own
+ *  eligibility gate (`AFt`). */
+export function mcpPromptCommandRows(
+  prompts: readonly {
+    server: string
+    name: string
+    description?: string
+    arguments: Array<{ name: string; required?: boolean }>
+  }[],
+): NativeCommand[] {
+  const rows: NativeCommand[] = []
+  for (const prompt of prompts) {
+    if (!MCP_PROMPT_SAFE_SEGMENT.test(prompt.server) || prompt.server.includes('__')) continue
+    const name = `mcp__${prompt.server}__${prompt.name}`
+    if (!COMMAND_NAME_RE.test(name)) continue
+    rows.push({
+      name,
+      description: prompt.description ?? '',
+      argumentHint: prompt.arguments.map((argument) => argument.name).join(' '),
+      builtin: false,
+      mcpPrompt: {
+        server: prompt.server,
+        prompt: prompt.name,
+        arguments: prompt.arguments.map((argument) => ({
+          name: argument.name,
+          ...(argument.required !== undefined ? { required: argument.required } : {}),
+        })),
+      },
+    })
+  }
+  return rows
+}
+
+/** Map the typed positional text onto the declared argument names and enforce
+ *  `required`, with the CLI's exact refusal sentence. */
+export function mcpPromptArguments(cmd: NativeCommand, rawArgs: string): Record<string, string> {
+  const spec = cmd.mcpPrompt
+  if (!spec) throw new Error(`not an MCP prompt command: ${cmd.name}`)
+  const trimmed = rawArgs.trim()
+  const values = trimmed ? trimmed.split(/\s+/) : []
+  const missing = spec.arguments.filter((_, index) => spec.arguments[index]!.required && values[index] === undefined)
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required argument${missing.length === 1 ? '' : 's'}: ${missing.map((argument) => argument.name).join(', ')}. ` +
+        `Usage: /${cmd.name} ${cmd.argumentHint}`,
+    )
+  }
+  const args: Record<string, string> = {}
+  for (const [index, argument] of spec.arguments.entries()) {
+    const value = values[index]
+    if (value !== undefined) args[argument.name] = value
+  }
+  return args
 }
 
 /** The builtin slash commands. `/init` and `/review` are prompt commands:
