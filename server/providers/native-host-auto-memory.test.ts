@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { HttpError } from '../errors.js'
 import { claudeProjectSlug, createAutoMemoryPort, resolveMemoryRoots } from './native-host-auto-memory.js'
@@ -103,7 +103,10 @@ describe('resolveMemoryRoots (lexical variant)', () => {
   })
 
   it('override replaces own only; the claude compat root is unchanged', () => {
-    const override = join('D:\\custom', 'memory')
+    // resolve() makes the override absolute on every platform — a bare Windows
+    // path like D:\custom\memory is RELATIVE on POSIX, where resolveMemoryRoots
+    // would absolutize it against cwd and the equality below would fail on CI.
+    const override = resolve('D:\\custom', 'memory')
     const roots = resolveMemoryRoots('D:\\codes\\repo', 'D:\\state', override)
     expect(roots.own).toBe(override)
     expect(roots.claude).toBe(join(configDir, 'projects', 'D--codes-repo', 'memory'))
