@@ -215,6 +215,21 @@ function webFetchTurn(toolUseId: string): CanonicalEvent[] {
   ]
 }
 
+/** An ExitPlanMode tool_use turn with a valid markdown plan. */
+function exitPlanTurn(toolUseId: string): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: 'ExitPlanMode' } },
+    {
+      kind: 'block_delta',
+      index: 0,
+      delta: { type: 'tool_input', json: JSON.stringify({ plan: '# Plan\n\n1. Do the thing' }) },
+    },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+  ]
+}
+
 /** One assistant round whose only call is AskUserQuestion. */
 function askUserQuestionTurn(toolUseId: string): CanonicalEvent[] {
   return [
@@ -3465,30 +3480,73 @@ describe('NativeSession', () => {
     }
   })
 
-  it('routes AskUserQuestion to the tool in bypassPermissions, where it fails loudly', async () => {
+  it('still asks the user for AskUserQuestion under bypassPermissions', async () => {
     const dir = await tempDir('native-ask-bypass-')
     const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
     const scripts: CanonicalEvent[][] = [askUserQuestionTurn('ask-1'), textTurn('DONE')]
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of scripts.shift() ?? []) yield ev
     }
-    // No canUseTool: requestPermission short-circuits bypass BEFORE the
-    // broker, so this is the one path that reaches the tool's own `run`.
-    const session = provider.createSession({ id: 'ask-bypass', cwd: dir, permissionMode: 'bypassPermissions' })
+    // Bypass never bypasses a dialog: the call must reach the broker (here the
+    // canUseTool spy) instead of short-circuiting into the tool's own `run`.
+    const asked: string[] = []
+    const session = provider.createSession({
+      id: 'ask-bypass',
+      cwd: dir,
+      permissionMode: 'bypassPermissions',
+      canUseTool: async (toolName: unknown) => {
+        asked.push(String(toolName))
+        return {
+          behavior: 'deny',
+          message: JSON.stringify({ answers: [{ question: 'q1', answer: 'bypass-answer' }] }),
+          [QUESTION_RESULT]: true,
+        }
+      },
+    })
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
     try {
       session.enqueueUserMessage(userMsg('ask') as never)
       await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
+      expect(asked).toEqual(['AskUserQuestion'])
       const toolResult = frames.find((f) => f.type === 'user'
         && f.parent_tool_use_id == null
         && (f.message.content[0] as { tool_use_id?: string }).tool_use_id === 'ask-1')
-      expect(toolResult?.message.content[0]).toEqual({
-        type: 'tool_result',
-        tool_use_id: 'ask-1',
-        content: [{ type: 'text', text: 'AskUserQuestion requires an interactive dialog; bypassPermissions has no dialog' }],
-        is_error: true,
+      expect(toolResult?.message.content[0]).toMatchObject({
+        content: [{ type: 'text', text: expect.stringContaining('bypass-answer') }],
+        is_error: false,
       })
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('still raises the plan review for ExitPlanMode under bypassPermissions', async () => {
+    const dir = await tempDir('native-plan-bypass-')
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+    const scripts: CanonicalEvent[][] = [
+      exitPlanTurn('plan-1'),
+      textTurn('DONE'),
+    ]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const asked: string[] = []
+    const session = provider.createSession({
+      id: 'plan-bypass',
+      cwd: dir,
+      permissionMode: 'bypassPermissions',
+      canUseTool: async (toolName: unknown, input: unknown) => {
+        asked.push(String(toolName))
+        return { behavior: 'allow', updatedInput: input as Record<string, unknown> }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('plan') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
+      expect(asked).toEqual(['ExitPlanMode'])
     } finally {
       await session.destroy()
     }

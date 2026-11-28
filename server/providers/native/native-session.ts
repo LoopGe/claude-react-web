@@ -107,6 +107,7 @@ import {
 } from './memory.js'
 import { startDreamRun as startDreamRunCore, runDreamTrigger, type DreamRunHandle } from './dream.js'
 import { isQuestionResult } from '../../../shared/question-result.js'
+import { isBypassImmuneInteractiveTool } from '../../../shared/interactive-tools.js'
 import { sanitizeGeneratedTitle } from '../../../shared/auto-title.js'
 import type { SessionMemorySettings, ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import type { UploadStore } from '../../upload-store.js'
@@ -1711,8 +1712,14 @@ export class NativeSession implements NativeSessionCore {
     // forever — and bypass mode would run the tool after the user stopped.
     if (signal.aborted) return { allowed: false, input, message: 'aborted' }
     // Live mode, not the spawn-time opts value: a bypass session downgraded
-    // to default must stop auto-allowing.
-    if (permissionMode === 'bypassPermissions') return { allowed: true, input }
+    // to default must stop auto-allowing. The interactive tools are exempt —
+    // bypassing them would silently drop a question or execute an unreviewed
+    // plan, so they fall through to the broker and reach the user whatever the
+    // mode says (mirror of the broker, whose interceptors sit before its own
+    // bypass auto-allow).
+    if (permissionMode === 'bypassPermissions' && !isBypassImmuneInteractiveTool(toolName)) {
+      return { allowed: true, input }
+    }
     // Fail closed: without a handler there is nothing to ask.
     if (!this.opts.canUseTool) {
       return { allowed: false, input, message: 'no permission handler registered for this session' }

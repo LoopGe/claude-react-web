@@ -694,6 +694,66 @@ describe('PermissionBroker', () => {
       expect(session.pending.size).toBe(0)
     })
 
+    // The two interceptors sit BEFORE the bypassPermissions auto-allow, so
+    // even a full-bypass session parks a pending dialog. The native provider
+    // mirrors this ordering via shared/interactive-tools.ts (pinned below).
+    it.each(['AskUserQuestion', 'ExitPlanMode'] as const)(
+      'still parks a dialog for %s under bypassPermissions',
+      async (toolName) => {
+        const session = makeFakeSession({ permissionMode: 'bypassPermissions' })
+        const canUseTool = broker.buildCanUseTool(session, vi.fn())
+        const ac = new AbortController()
+        const promise = canUseTool(
+          toolName,
+          toolName === 'AskUserQuestion'
+            ? { questions: [{ question: 'Color?', options: [{ label: 'Red' }] }] }
+            : { plan: '# Plan' },
+          {
+            toolUseID: `tu-${toolName}`,
+            requestId: `req-${toolName}`,
+            signal: ac.signal,
+            title: toolName,
+            displayName: toolName,
+            description: '',
+            suggestions: [],
+          },
+        )
+        expect(session.pending.size).toBe(1)
+        const pending = Array.from(session.pending.values())[0]
+        expect(pending.toolName).toBe(toolName)
+        if (toolName === 'AskUserQuestion') expect(pending.kind).toBe('question')
+        ac.abort()
+        expect((await promise).behavior).toBe('deny')
+      },
+    )
+
+    it('the shared bypass-immune set covers every broker-intercepted tool', async () => {
+      // Drift guard: native checks shared/interactive-tools.ts before its own
+      // bypass short-circuit. A tool the broker parks under bypass must be in
+      // that set, or native would silently auto-allow it past the dialog.
+      const { BYPASS_IMMUNE_INTERACTIVE_TOOLS } = await import('../shared/interactive-tools.js')
+      for (const toolName of BYPASS_IMMUNE_INTERACTIVE_TOOLS) {
+        const session = makeFakeSession({ permissionMode: 'bypassPermissions' })
+        const canUseTool = broker.buildCanUseTool(session, vi.fn())
+        void canUseTool(
+          toolName,
+          toolName === 'AskUserQuestion'
+            ? { questions: [{ question: 'q?', options: [{ label: 'a' }] }] }
+            : { plan: '# p' },
+          {
+            toolUseID: `tu-${toolName}`,
+            requestId: `req-${toolName}`,
+            signal: new AbortController().signal,
+            title: toolName,
+            displayName: toolName,
+            description: '',
+            suggestions: [],
+          },
+        )
+        expect(session.pending.size, `${toolName} must park a request under bypass`).toBe(1)
+      }
+    })
+
     // ─── AskUserQuestion answer marker ───────────────────────────────
     //
     // The native loop treats a denial as the ANSWER only when the broker

@@ -1,11 +1,12 @@
 // server/providers/native/tools/ask-user-question.ts
 //
-// AskUserQuestion is an interactive tool, not a file operation: in every
-// non-bypass mode the permission broker intercepts it before `run` and
-// resolves the call with the user's answers as a DENIAL payload (see
-// permission-broker.ts), which loop.ts emits as a normal tool result.
-// bypassPermissions has no dialog, so that is the only path reaching `run` —
-// and it fails loudly instead of pretending the user answered.
+// AskUserQuestion is an interactive tool, not a file operation: the permission
+// broker always intercepts it before `run` — including under
+// bypassPermissions, which never bypasses a dialog — and resolves the call with
+// the user's answers as a DENIAL payload (see permission-broker.ts), which
+// loop.ts emits as a normal tool result.
+// `run` is the fallback for a session with no answerer at all (no canUseTool
+// handler registered), where failing loudly beats pretending the user answered.
 import type { ToolDef } from './types.js'
 
 /** The AskUserQuestion prompt-section guidance (registered by the provider's
