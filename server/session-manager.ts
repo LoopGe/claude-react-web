@@ -7192,6 +7192,13 @@ export class SessionManager {
    *  Runtime-derived (never persisted) — called at spawn and whenever the memory
    *  directory setting changes.
    *
+   *  These are the LEXICAL roots: they carry the session-log read root and mark
+   *  the session native for the broker. The broker's write/read exemption does
+   *  NOT trust the lexical own/claude here — it additionally requires the core's
+   *  realpath-validated resolve to have settled (`handle.getAutoMemoryRoots`) and
+   *  exempts against THOSE roots, so a symlinked override the core's write-
+   *  isolation guard rejected never grants a silent allowance (see the broker).
+   *
    *  Fail-closed: a cwd-less session, a provider without the capability, or an
    *  override that fails lexical validation (inside the claude config dir, raw
    *  `..` segments) leaves the roots undefined → no exemption, every memory tool

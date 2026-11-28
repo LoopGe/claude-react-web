@@ -323,6 +323,13 @@ export interface ProviderSessionHandle {
    *  token-count API calls — used by the fire-and-forget auto-compact probe.
    *  The REST breakdown endpoint calls it with no args (`'full'`). */
   getContextUsage?(opts?: { detail?: 'summary' | 'full' }): Promise<unknown>
+  /** The provider's realpath-validated auto-memory roots (native auto-memory;
+   *  null until the spawn/settings seed settles). The permission broker's
+   *  memory-root exemption engages ONLY when this is non-null, so a directory
+   *  override the core's write-isolation guard rejected (symlink/junction aliases
+   *  included) never grants a silent write allowance. Providers without a
+   *  host-managed memory store omit it (the exemption stays inert). */
+  getAutoMemoryRoots?(): { ownDir: string; claudeDir: string | null } | null
   /** Durable raw-user → skill-instruction pairs for compaction-only history
    *  projection. The manager anchors each canonical body to the original user
    *  UUID without exposing the instruction in UI history or search. */

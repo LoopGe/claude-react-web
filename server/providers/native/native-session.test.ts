@@ -7870,6 +7870,23 @@ describe('NativeSession', () => {
       }
     })
 
+    it('a call that fails a LATER validation does not provision the override dir (validate-all-before-side-effect)', async () => {
+      const { root, provider } = await memoryFixture()
+      const session = provider.createSession({ id: 'mem-provision-order', cwd: root })
+      try {
+        const override = join(root, 'provision-me')
+        // The directory is valid, but the agent key fails validation. resolve()
+        // provisions the dir + MEMORY.md, so it must run AFTER the agent fence —
+        // a rejected call leaves nothing created.
+        await expect(session.applyFlagSettings?.({ autoMemoryDirectory: override, agent: 'ghost' }))
+          .rejects.toThrow(/not defined/)
+        expect(existsSync(override)).toBe(false)
+        expect(memoryCoreOf(session).memorySettings.autoMemoryDirectory).toBeUndefined()
+      } finally {
+        await session.destroy()
+      }
+    })
+
     it('type-checks the memory keys (boolean|null switches, string|null directory)', async () => {
       const { root, provider } = await memoryFixture()
       const session = provider.createSession({ id: 'mem-types', cwd: root })
@@ -10221,6 +10238,37 @@ describe('turn-start memory recall (Task 7)', () => {
       expect(state.surfacedBytes).toBeGreaterThan(0)
     } finally {
       await session.destroy()
+    }
+  })
+
+  it('recall selects on the resolved profile recapModel even without an explicit spawn profile', async () => {
+    // No opts.profile → this.profile falls back to config.activeProfile(). Recall
+    // must read THAT recapModel (the same source the dream run uses), not fall
+    // back to the session model just because the spawn profile was absent.
+    const origConfig = { ...config }
+    __setConfigForTest({
+      profiles: [{ id: 'active', name: 'Active', authToken: 'tok', baseUrl: 'https://api.example.test', modelList: [], recapModel: 'aux-model', commitMessageModel: '' }],
+      activeProfileId: 'active',
+      authToken: 'tok',
+      baseUrl: 'https://api.example.test',
+    })
+    const { port: auxLlm, requests: auxRequests } = stubAux(select('a.md'))
+    const { root, ownDir, provider } = await fixture(auxLlm)
+    await writeMemory(ownDir, 'a.md', 'BODY-A')
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'recall-active-profile', cwd: root, model: 'session-model', memory: { autoMemoryDirectory: ownDir } })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const recallReqs = auxRequests.filter((r) => r.caller === 'memory_recall_select')
+      expect(recallReqs).toHaveLength(1)
+      expect(recallReqs[0].model).toBe('aux-model')
+    } finally {
+      await session.destroy()
+      __setConfigForTest(origConfig)
     }
   })
 

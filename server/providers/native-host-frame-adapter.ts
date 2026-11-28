@@ -988,6 +988,7 @@ export function wrapNativeCore(
     )
   }
   if (core.getContextUsage) handle.getContextUsage = (opts) => core.getContextUsage!(opts)
+  if (core.autoMemoryRoots !== undefined) handle.getAutoMemoryRoots = () => core.autoMemoryRoots ?? null
   if (core.getEffectiveSettings) {
     handle.getEffectiveSettings = (): { model: string; permissionMode?: string; effortLevel?: string; agent: string | null } => {
       const settings: NativeEffectiveSettings = core.getEffectiveSettings!()

@@ -1,5 +1,5 @@
 // server/providers/native/read-state.test.ts
-import { mkdtemp, readFile, realpath, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -11,7 +11,7 @@ import {
   type NativeReadObservation,
   type NativeTextWindow,
 } from './file-read.js'
-import { NativeReadState } from './read-state.js'
+import { NativeReadState, memoryReadPathKey } from './read-state.js'
 
 const dirs: string[] = []
 const signal = () => new AbortController().signal
@@ -238,4 +238,38 @@ describe('NativeReadState LRU', () => {
     await expectEditable(state, dir, paths[0])
     await expectNotEditable(state, dir, paths[2])
   }, 20000)
+})
+
+// Recall exclusion consumes readPaths(): a memory file already read this session
+// must not be re-injected even when the candidate is enumerated under a different
+// alias (symlinked or case-variant root) than the path the model read.
+describe('NativeReadState.readPaths (recall exclusion keys)', () => {
+  it('emits both the realpath key and the lexical absolute path of each read', async () => {
+    const state = new NativeReadState()
+    const { dir, path } = await fixture()
+    const target = await resolveNativeReadTarget(dir, path)
+    state.observeHost(await hostObservation(path))
+    const keys = state.readPaths()
+    expect(keys.has(memoryReadPathKey(target.realPath))).toBe(true)
+    expect(keys.has(memoryReadPathKey(target.absolutePath))).toBe(true)
+  })
+
+  it('a read through a symlinked alias contributes both the alias and realpath keys', async () => {
+    const state = new NativeReadState()
+    const base = await mkdtemp(join(tmpdir(), 'native-read-state-alias-'))
+    dirs.push(base)
+    const realDir = join(base, 'real')
+    await mkdir(realDir)
+    await writeFile(join(realDir, 'a.txt'), 'one\ntwo\n')
+    const alias = join(base, 'alias')
+    await symlink(realDir, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    const aliasPath = join(alias, 'a.txt')
+    const target = await resolveNativeReadTarget(alias, aliasPath)
+    state.observeHost(await hostObservation(aliasPath))
+    const keys = state.readPaths()
+    // The lexical alias the read requested AND the resolved real path.
+    expect(keys.has(memoryReadPathKey(target.absolutePath))).toBe(true)
+    expect(keys.has(memoryReadPathKey(target.realPath))).toBe(true)
+    expect(target.absolutePath).not.toBe(target.realPath)
+  })
 })

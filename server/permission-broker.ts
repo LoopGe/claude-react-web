@@ -28,7 +28,7 @@ import { HttpError } from './errors.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { createLogger } from './log.js'
 import { isAutoApprovableEditBash, isInScopeEditTool, isSensitiveAutoEditPath, EDIT_TOOL_PATH_FIELD } from './accept-edits-bash.js'
-import { isMemoryRootWrite, isMemoryRootRead } from './memory-permission.js'
+import { isMemoryRootWrite, isMemoryRootRead, type MemoryRoots } from './memory-permission.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 
 /** First-party read-only tool FQNs (e.g. `mcp__git-tools__git_status`).
@@ -430,23 +430,42 @@ export class PermissionBroker {
       // session.memoryRoots is undefined (claude sessions). The session-log
       // read root grants the main session no new reach — its tool-layer
       // containment already refuses that tree — it only unblocks the dream.
-      if (session.memoryRoots && mode !== 'plan' && mode !== 'dontAsk') {
-        // session.cwd anchors relative path fields against the same base the
-        // tool executes against (the acceptEdits convention), so the exemption
-        // judges the path actually written, not one anchored at process.cwd().
-        if (await isMemoryRootWrite(toolName, toolInput, session.memoryRoots, session.cwd)) {
-          return {
-            behavior: 'allow',
-            updatedInput: toolInput,
-            toolUseID: ctx.toolUseID,
-          } satisfies PermissionResult
-        }
-        if (await isMemoryRootRead(toolName, toolInput, session.memoryRoots, session.cwd)) {
-          return {
-            behavior: 'allow',
-            updatedInput: toolInput,
-            toolUseID: ctx.toolUseID,
-          } satisfies PermissionResult
+      //
+      // The CORE's realpath-validated resolve is the write-isolation authority:
+      // the exemption engages only once that seed has settled (getAutoMemoryRoots
+      // non-null) AND the user has not disabled auto-memory (§5.4 — the exemption
+      // is justified by the explicit opt-in switch). A rejected override never
+      // settles the seed, so the broker never exempts against roots the core
+      // refused — a cwd-internal junction into the claude config dir passes the
+      // lexical root resolve and the tool's lexical cwd check, but the core's
+      // realpath guard rejects it and this gate keeps the write prompting.
+      if (session.memoryRoots && session.memory?.autoMemoryEnabled !== false && mode !== 'plan' && mode !== 'dontAsk') {
+        const validated = session.handle.getAutoMemoryRoots?.()
+        if (validated) {
+          const roots: MemoryRoots = {
+            own: validated.ownDir,
+            claude: validated.claudeDir,
+            sessionLogs: session.memoryRoots.sessionLogs,
+          }
+          // session.cwd anchors relative path fields against the same base the
+          // tool executes against (the acceptEdits convention), so the exemption
+          // judges the path actually written, not one anchored at process.cwd().
+          // Sensitive files under an override root still gate behind the global
+          // allowSensitivePathEdits opt-in (the acceptEdits/bypass convention).
+          if (await isMemoryRootWrite(toolName, toolInput, roots, session.cwd, serverConfig.allowSensitivePathEdits === true)) {
+            return {
+              behavior: 'allow',
+              updatedInput: toolInput,
+              toolUseID: ctx.toolUseID,
+            } satisfies PermissionResult
+          }
+          if (await isMemoryRootRead(toolName, toolInput, roots, session.cwd)) {
+            return {
+              behavior: 'allow',
+              updatedInput: toolInput,
+              toolUseID: ctx.toolUseID,
+            } satisfies PermissionResult
+          }
         }
       }
       // `acceptEdits` auto-approves pure file-editing tools so the user isn't

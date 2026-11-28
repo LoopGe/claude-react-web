@@ -94,6 +94,41 @@ describe('isMemoryRootWrite', () => {
     expect(await isMemoryRootWrite('Write', { file_path: join(own, 'escape', 'new.md') }, roots)).toBe(false)
   })
 
+  // A DANGLING symlink/junction realpaths ENOENT while lstat still sees the
+  // link. The old lexical-tail re-append judged the write under own, but the OS
+  // creates the file at the link's TARGET (POSIX O_CREAT follows the link) — an
+  // escape into the claude dir. The helper must fail closed, not guess.
+  it('rejects a Write through a DANGLING junction/symlink under own whose target is in the claude dir', async () => {
+    const { roots, own, claude } = await layout()
+    // Target absent (claude/sub does not exist). 'junction' is ignored as a type
+    // on posix → a dangling dir symlink; on win32 a junction (no privilege needed,
+    // and junction creation does not require the target to exist).
+    await symlink(join(claude, 'sub'), join(own, 'escape'), 'junction')
+    expect(await isMemoryRootWrite('Write', { file_path: join(own, 'escape', 'planted.md') }, roots)).toBe(false)
+  })
+
+  it('fails closed on a dangling link even when its target would stay inside own', async () => {
+    const { roots, own } = await layout()
+    // own/a → own/b (absent): a benign target, but the helper cannot prove the
+    // write lands inside own without resolving the link, so it declines.
+    await symlink(join(own, 'b'), join(own, 'a'), 'junction')
+    expect(await isMemoryRootWrite('Write', { file_path: join(own, 'a') }, roots)).toBe(false)
+  })
+
+  it('sensitive-path guard is root-relative: a sensitive ancestor ABOVE own does not disable the exemption', async () => {
+    const base = await tempDir()
+    // An override nested under a .claude dir (e.g. a worktree layout): the
+    // ancestor must not flag every memory write — only segments below own count.
+    const own = join(base, '.claude', 'mem')
+    await mkdir(own, { recursive: true })
+    const roots: MemoryRoots = { own, claude: null }
+    expect(await isMemoryRootWrite('Write', { file_path: join(own, 'fact.md') }, roots)).toBe(true)
+    // A sensitive area UNDER the root still prompts (default opt-out).
+    expect(await isMemoryRootWrite('Write', { file_path: join(own, '.git', 'config') }, roots)).toBe(false)
+    // …and is exempt once the user opts in.
+    expect(await isMemoryRootWrite('Write', { file_path: join(own, '.git', 'config') }, roots, undefined, true)).toBe(true)
+  })
+
   it('exempts Edit / MultiEdit / NotebookEdit through their path fields', async () => {
     const { roots, own } = await layout()
     expect(await isMemoryRootWrite('Edit', { file_path: join(own, 'existing.md') }, roots)).toBe(true)

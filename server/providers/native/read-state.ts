@@ -153,12 +153,32 @@ export class NativeReadState {
   /** The resolved paths this session has tracked reads for (host or model).
    *  Recall exclusion consumes this: a memory file already read this session is
    *  never re-injected (spec §7.1, CLI `lZe` precedent). A snapshot copy — the
-   *  caller must not mutate the LRU through it. */
+   *  caller must not mutate the LRU through it.
+   *
+   *  Each entry contributes BOTH its realpath key and the lexical absolute path
+   *  the read requested, each run through `memoryReadPathKey` (win32 case-fold):
+   *  recall candidates carry lexical paths under the (possibly symlinked or
+   *  case-variant) memory root, so matching only the realpath key would re-inject
+   *  a file the model already read through a different alias of the same root. */
   readPaths(): ReadonlySet<string> {
-    return new Set(this.entries.keys())
+    const out = new Set<string>()
+    for (const [realPath, entry] of this.entries) {
+      out.add(memoryReadPathKey(realPath))
+      const observation = entry.seeded ?? entry.pendingHost ?? entry.candidate?.observation
+      if (observation) out.add(memoryReadPathKey(observation.target.absolutePath))
+    }
+    return out
   }
 
   clear(): void {
     this.entries.clear()
   }
+}
+
+/** Canonical membership key for recall's read-state exclusion: win32 paths are
+ *  case-insensitive, so a case-variant alias of an already-read memory file must
+ *  still exclude it. Shared by `readPaths` (the set's keys) and `excludeCandidates`
+ *  (the candidate lookup) so both sides normalize identically. */
+export function memoryReadPathKey(p: string): string {
+  return process.platform === 'win32' ? p.toLowerCase() : p
 }

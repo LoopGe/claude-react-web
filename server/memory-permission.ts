@@ -14,9 +14,9 @@
 // (absent root, unresolvable path) returns false → the normal permission chain
 // runs and the tool layer surfaces the real error.
 
-import { realpath } from 'node:fs/promises'
+import { lstat, realpath } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
-import { EDIT_TOOL_PATH_FIELD } from './accept-edits-bash.js'
+import { EDIT_TOOL_PATH_FIELD, isSensitiveAutoEditPath } from './accept-edits-bash.js'
 import { createLogger } from './log.js'
 
 const log = createLogger('memory-permission')
@@ -63,7 +63,10 @@ function isAbsent(err: unknown): boolean {
  *  precedent). A NEW memory file under an existing root resolves through the
  *  root's real path, so the write exemption covers first-time saves; a
  *  symlinked ancestor still resolves through the link, so an escape is caught
- *  before the absent tail is appended. */
+ *  before the absent tail is appended. A DANGLING symlink/junction (realpath
+ *  ENOENT, lstat still sees the link) fails closed: re-appending it lexically
+ *  would judge the write against the link's location while the OS creates the
+ *  file at the link's target — an escape into another root. */
 async function realpathNearestExisting(p: string): Promise<string> {
   const tail: string[] = []
   let current = p
@@ -73,6 +76,13 @@ async function realpathNearestExisting(p: string): Promise<string> {
       return tail.length > 0 ? join(real, ...tail.reverse()) : real
     } catch (err) {
       if (!isAbsent(err)) throw err
+      let isLink = false
+      try {
+        isLink = (await lstat(current)).isSymbolicLink()
+      } catch (lerr) {
+        if (!isAbsent(lerr)) throw lerr
+      }
+      if (isLink) throw new Error(`memory path traverses a dangling symlink: ${current}`)
       const up = dirname(current)
       if (up === current) throw err
       tail.push(basename(current))
@@ -108,12 +118,16 @@ function errMessage(err: unknown): string {
  *  by construction. A new (absent) target under an existing root is exempt; an
  *  absent root or a symlink escape is not. `cwd` is the session working
  *  directory: relative path fields are anchored against it (the base the tool
- *  writes against), absolute fields are unchanged. */
+ *  writes against), absolute fields are unchanged. `allowSensitive` mirrors the
+ *  global allowSensitivePathEdits opt-in: a sensitive path (.git/, .claude/,
+ *  shell configs, …) under an override root still prompts unless the user opted
+ *  in — the exemption never silently widens the sensitive-path guard. */
 export async function isMemoryRootWrite(
   toolName: string,
   input: unknown,
   roots: MemoryRoots | undefined,
   cwd?: string,
+  allowSensitive = false,
 ): Promise<boolean> {
   if (!roots) return false
   const field = EDIT_TOOL_PATH_FIELD[toolName]
@@ -122,6 +136,12 @@ export async function isMemoryRootWrite(
   if (!raw) return false
   const target = targetPath(raw, cwd)
   if (!target) return false
+  // Sensitive-path guard, root-relative (the acceptEdits cwd-relative convention
+  // with the memory root as the base): only segments BELOW the own root count, so
+  // a sensitive ancestor ABOVE the root (an override under `.claude/worktrees/…`,
+  // a stateDir beneath a `.git` dir) does not disable the whole exemption, while a
+  // sensitive file/area UNDER the root (`.git/config`, `.bashrc`) still prompts.
+  if (!allowSensitive && isSensitiveAutoEditPath(target, roots.own)) return false
   try {
     const realRoot = await realpath(roots.own)
     const realTarget = await realpathNearestExisting(target)

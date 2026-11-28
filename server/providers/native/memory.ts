@@ -13,6 +13,7 @@
 // signal (AbortSignal.timeout(RECALL_DEADLINE_MS)); this module honours it by
 // forwarding it to the port and treating the resulting rejection as a skip.
 import { createLogger } from '../../log.js'
+import { memoryReadPathKey } from './read-state.js'
 import type { MemoryCandidate, NativeAuxLlmPort } from './ports.js'
 
 const log = createLogger('native-memory')
@@ -39,14 +40,17 @@ export function newRecallState(): RecallState {
 /** Drop candidates already surfaced this session or already read (read-state),
  *  and skip the whole turn once the session byte budget is exhausted. MEMORY.md
  *  is excluded by the port enumeration, so there is deliberately no name filter
- *  here — exclusion is purely path membership + budget. */
+ *  here — exclusion is purely path membership + budget. The read-state lookup
+ *  normalizes the candidate path with `memoryReadPathKey` (the same key format
+ *  `readPaths` emits — realpath + lexical aliases, win32 case-folded), so a file
+ *  read through a symlinked/case-variant root alias is still excluded. */
 export function excludeCandidates(
   cs: MemoryCandidate[],
   s: RecallState,
   readPaths: ReadonlySet<string>,
 ): MemoryCandidate[] {
   if (s.surfacedBytes >= RECALL_SESSION_BUDGET) return []
-  return cs.filter((c) => !s.surfacedPaths.has(c.path) && !readPaths.has(c.path))
+  return cs.filter((c) => !s.surfacedPaths.has(c.path) && !readPaths.has(memoryReadPathKey(c.path)))
 }
 
 /** The selector system prompt, verbatim from the design (CLI `jbr` precedent):

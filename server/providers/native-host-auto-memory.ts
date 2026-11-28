@@ -14,7 +14,7 @@
 // included) BEFORE anything is created; the default root is physically
 // separate under the CRW state dir.
 
-import { mkdir, open, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
@@ -128,7 +128,10 @@ export function resolveMemoryRoots(cwd: string, stateDir: string, override?: str
 /** realpath of the nearest existing ancestor, with the not-yet-existing tail
  *  re-appended lexically. A nonexistent override under a symlinked parent
  *  still resolves through the link, so the guard rejects it BEFORE mkdir
- *  could create anything inside the config dir. */
+ *  could create anything inside the config dir. A DANGLING symlink/junction
+ *  (realpath ENOENT, lstat still sees the link) fails closed: re-appending it
+ *  lexically would pass the guard while mkdir follows the link and creates the
+ *  directory at its target — an escape into the config dir. */
 async function realpathNearestExisting(p: string): Promise<string> {
   const tail: string[] = []
   let current = p
@@ -138,6 +141,13 @@ async function realpathNearestExisting(p: string): Promise<string> {
       return tail.length > 0 ? join(real, ...tail.reverse()) : real
     } catch (err) {
       if (!isAbsent(err)) throw err
+      let isLink = false
+      try {
+        isLink = (await lstat(current)).isSymbolicLink()
+      } catch (lerr) {
+        if (!isAbsent(lerr)) throw lerr
+      }
+      if (isLink) throw new Error(`memory path traverses a dangling symlink: ${current}`)
       const up = dirname(current)
       if (up === current) throw err
       tail.push(basename(current))
@@ -290,7 +300,22 @@ export function createAutoMemoryPort(deps: { stateDir: string; configDir?: strin
       log.warn(`dream state is not an object, treating as absent: ${dreamStateFile}`)
       return {}
     }
-    return parsed as Record<string, { lastDreamAt: number }>
+    // Per-entry shape validation: a corrupt entry (non-object, or a non-finite
+    // lastDreamAt) would make shouldDream's `now - lastDreamAt` NaN and wedge
+    // that cwd's dream loop forever. Drop invalid entries (treated as absent →
+    // the next trigger window dreams again); the next release rewrites them.
+    const out: Record<string, { lastDreamAt: number }> = {}
+    let dropped = 0
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const lastDreamAt = (value as { lastDreamAt?: unknown } | null)?.lastDreamAt
+      if (value !== null && typeof value === 'object' && typeof lastDreamAt === 'number' && Number.isFinite(lastDreamAt)) {
+        out[key] = { lastDreamAt }
+      } else {
+        dropped++
+      }
+    }
+    if (dropped > 0) log.warn(`dream state dropped ${dropped} invalid entr${dropped === 1 ? 'y' : 'ies'}: ${dreamStateFile}`)
+    return out
   }
 
   return {

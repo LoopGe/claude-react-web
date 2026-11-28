@@ -1529,8 +1529,13 @@ describe('memory-root exemption', () => {
     return { base, own, claude, outside }
   }
 
-  function nativeSession(roots: { own: string; claude: string | null }, mode: string, cwd: string): Session {
-    return makeFakeSession({ provider: 'native', permissionMode: mode as Session['permissionMode'], cwd, memoryRoots: roots })
+  function nativeSession(roots: { own: string; claude: string | null }, mode: string, cwd: string, memory?: Session['memory']): Session {
+    const session = makeFakeSession({ provider: 'native', permissionMode: mode as Session['permissionMode'], cwd, memoryRoots: roots, memory })
+    // The exemption requires the core's realpath-validated roots to have settled
+    // (handle.getAutoMemoryRoots). The fake handle reports the same roots the
+    // lexical fixture uses — a real native session's seed validates these.
+    session.handle.getAutoMemoryRoots = () => ({ ownDir: roots.own, claudeDir: roots.claude })
+    return session
   }
 
   function ctx(toolUseID: string) {
@@ -1694,5 +1699,61 @@ describe('memory-root exemption', () => {
     } finally {
       process.chdir(prevCwd)
     }
+  })
+
+  // §5.4 posture: the exemption is justified by the user's explicit opt-in via
+  // the auto-memory switch, and by the core's realpath-validated resolve. Either
+  // missing → the normal permission chain runs (no silent allowance).
+  it('disabled auto-memory: Write inside ownDir prompts (no exemption)', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside, { autoMemoryEnabled: false })
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    canUseTool('Write', { file_path: join(own, 'existing.md'), content: 'x' }, ctx('tu-disabled'))
+    await vi.waitFor(() => expect(session.pending.size).toBe(1))
+  })
+
+  it('disabled auto-memory: Read inside ownDir prompts too (whole exemption gated)', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside, { autoMemoryEnabled: false })
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    canUseTool('Read', { file_path: join(own, 'existing.md') }, ctx('tu-disabled-read'))
+    await vi.waitFor(() => expect(session.pending.size).toBe(1))
+  })
+
+  it('core roots not settled (getAutoMemoryRoots null): Write inside ownDir prompts', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside)
+    // A rejected override never settles the seed — the broker must not exempt
+    // against the lexical roots the core refused.
+    session.handle.getAutoMemoryRoots = () => null
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    canUseTool('Write', { file_path: join(own, 'existing.md'), content: 'x' }, ctx('tu-unsettled'))
+    await vi.waitFor(() => expect(session.pending.size).toBe(1))
+  })
+
+  it('sensitive file under the own root (.git/config) still prompts by default', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    canUseTool('Write', { file_path: join(own, '.git', 'config'), content: 'x' }, ctx('tu-sensitive'))
+    await vi.waitFor(() => expect(session.pending.size).toBe(1))
+  })
+
+  it('sensitive basename under the own root (.bashrc) still prompts by default', async () => {
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    canUseTool('Write', { file_path: join(own, '.bashrc'), content: 'x' }, ctx('tu-sensitive-basename'))
+    await vi.waitFor(() => expect(session.pending.size).toBe(1))
+  })
+
+  it('allowSensitivePathEdits opt-in: a sensitive file under the own root is exempt', async () => {
+    __setConfigForTest({ allowSensitivePathEdits: true })
+    const { own, claude, outside } = await memoryLayout()
+    const session = nativeSession({ own, claude }, 'default', outside)
+    const canUseTool = broker.buildCanUseTool(session, vi.fn())
+    const result = await canUseTool('Write', { file_path: join(own, '.git', 'config'), content: 'x' }, ctx('tu-sensitive-optin'))
+    expect(result.behavior).toBe('allow')
+    expect(session.pending.size).toBe(0)
   })
 })

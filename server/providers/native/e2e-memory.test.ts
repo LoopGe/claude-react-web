@@ -11,7 +11,7 @@
 // resolution and the port's realpath guard agree on the same compat root.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { __setConfigForTest, config } from '../../config.js'
@@ -561,5 +561,47 @@ describe('native auto-memory full chain', () => {
     const info = await fx.sm.setMemorySettings(id, { autoMemoryDirectory: validDir })
     expect(info.memory?.autoMemoryDirectory).toBe(validDir)
     expect(fx.sm.list().find((s) => s.id === id)?.memory?.autoMemoryDirectory).toBe(validDir)
+  }, 30000)
+
+  // Write-isolation boundary gap: a cwd-internal junction override into the
+  // claude config dir passes the LEXICAL root resolve and the Write tool's
+  // lexical cwd check, but the core's realpath guard rejects it. With memory
+  // DISABLED the spawn seed's rejection is never awaited (the turn runs), so the
+  // broker must not silently exempt the write against the lexical roots — the
+  // exemption is gated on the opt-in switch AND the core's validated roots.
+  it('junction override into the config dir + disabled memory: a cwd-internal Write prompts, claude dir untouched', async () => {
+    const fx = await makeFixture()
+    await mkdir(fx.claudeDir, { recursive: true })
+    await writeFile(join(fx.claudeDir, 'seed.md'), '---\ndescription: seed\n---\n\nSEED\n', 'utf8')
+    const before = await dirSnapshot(fx.configDir)
+    // <project>/link → configDir (junction on win32, dir symlink on posix).
+    const link = join(fx.project, 'link')
+    await symlink(fx.configDir, link, 'junction')
+
+    const id = await createSession(fx, {
+      memory: { autoMemoryEnabled: false, autoMemoryDirectory: link },
+    })
+    const ch = channel(fx.sm, id)
+    // The model writes through the junction into the config dir. The path is
+    // lexically inside cwd (the tool allows it), but the broker must prompt.
+    fx.scripts.push(
+      toolTurn('write-escape', 'Write', { file_path: join(link, 'planted.md'), content: 'should never land' }),
+      textTurn('done'),
+    )
+    const resultCount = ch.frames.filter((f) => f.type === 'result').length
+    await fx.sm.send(id, 'write through the junction')
+    // NOT silently exempted: a real permission prompt parks.
+    await vi.waitFor(() => expect(fx.sm.listPending(id)).toHaveLength(1))
+    const pending = fx.sm.listPending(id)[0]
+    expect(pending.toolName).toBe('Write')
+    await fx.sm.decide(id, pending.id, { behavior: 'deny' })
+    await vi.waitFor(() => {
+      expect(ch.frames.filter((f) => f.type === 'result')).toHaveLength(resultCount + 1)
+    }, { timeout: 8000 })
+    expect(toolResult(ch.frames, 'write-escape')?.is_error).toBe(true)
+    ch.unsubscribe()
+
+    // WRITE ISOLATION: nothing landed in the config dir through the junction.
+    expect(await dirSnapshot(fx.configDir)).toEqual(before)
   }, 30000)
 })

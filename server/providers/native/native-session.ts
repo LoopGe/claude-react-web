@@ -3407,7 +3407,11 @@ export class NativeSession implements NativeSessionCore {
       const selected = await selectMemories(
         {
           auxLlm: this.opts.ports.auxLlm,
-          model: this.opts.profile?.recapModel || this.model,
+          // Same aux-model source as the dream run (this.profile — the resolved
+          // profile, opts.profile ?? activeProfile()), so a spawn without an
+          // explicit profile still selects on the configured recap model rather
+          // than silently falling back to the session model.
+          model: this.profile.recapModel || this.model,
           credentials: this.opts.credentials,
         },
         queryText,
@@ -4180,9 +4184,11 @@ export class NativeSession implements NativeSessionCore {
     // directory. The directory is validated through the auto-memory port's
     // realpath resolve — the SAME write-isolation guard as the spawn seed — so an
     // override resolving inside the claude config dir (symlink aliases included)
-    // rejects with the port's HttpError(400), which propagates to the route. The
-    // resolve also provisions the root and yields the roots to store on mutation.
-    // null clears the override back to the default root (re-resolved here).
+    // rejects with the port's HttpError(400), which propagates to the route. That
+    // resolve also provisions the root (mkdir + MEMORY.md), so it runs AFTER every
+    // other key's validation below — a call that fails hooks/plugin/agent
+    // validation must not leave a created directory behind. null clears the
+    // override back to the default root (re-resolved there).
     const memoryEnabled = settings.autoMemoryEnabled
     if (memoryEnabled !== undefined && memoryEnabled !== null && typeof memoryEnabled !== 'boolean') {
       throw new Error(`native provider does not support autoMemoryEnabled: ${String(memoryEnabled)}`)
@@ -4194,10 +4200,6 @@ export class NativeSession implements NativeSessionCore {
     const memoryDirectory = settings.autoMemoryDirectory
     if (memoryDirectory !== undefined && memoryDirectory !== null && typeof memoryDirectory !== 'string') {
       throw new Error(`native provider does not support autoMemoryDirectory: ${String(memoryDirectory)}`)
-    }
-    let nextMemoryRoots: { ownDir: string; claudeDir: string | null } | undefined
-    if (memoryDirectory !== undefined) {
-      nextMemoryRoots = await this.opts.ports.autoMemory.resolve(this.opts.cwd, memoryDirectory ?? undefined)
     }
 
     // Hooks: validate at the unknown boundary BEFORE any state change (the
@@ -4257,6 +4259,15 @@ export class NativeSession implements NativeSessionCore {
         assertAgentProfileSupported(definition)
         agentIntent.definition = definition
       }
+    }
+
+    // All validation passed: NOW run the provisioning resolve (it creates the
+    // override dir + MEMORY.md). Placing it after the hooks/plugin/agent fences
+    // keeps a rejected call from leaving a created directory behind; placing it
+    // before the mutations below keeps the stored roots the ones just validated.
+    let nextMemoryRoots: { ownDir: string; claudeDir: string | null } | undefined
+    if (memoryDirectory !== undefined) {
+      nextMemoryRoots = await this.opts.ports.autoMemory.resolve(this.opts.cwd, memoryDirectory ?? undefined)
     }
 
     const nextBase = this.agentBaseSnapshot()

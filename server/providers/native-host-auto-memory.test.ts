@@ -194,6 +194,19 @@ describe('createAutoMemoryPort.resolve', () => {
     expect(existsSync(join(target, 'new-sub'))).toBe(false)
   })
 
+  it('rejects a DANGLING symlink/junction override and creates nothing at its target', async () => {
+    const { port, root, configDir } = await fixture()
+    // The override is itself a dangling link → configDir/planted (absent). The
+    // old lexical-tail re-append passed the guard, then mkdir followed the link
+    // and created the directory INSIDE the config dir. Fail closed instead.
+    // 'junction' is ignored as a type on posix (dangling dir symlink); on win32
+    // junction creation does not require the target to exist.
+    const alias = join(root, 'dangling')
+    await symlink(join(configDir, 'planted'), alias, 'junction')
+    await expect(port.resolve('D:\\codes\\repo', alias)).rejects.toThrow(/dangling symlink/)
+    expect(existsSync(join(configDir, 'planted'))).toBe(false)
+  })
+
   it('rejects an override with raw .. segments', async () => {
     const { port, root } = await fixture()
     await expectHttp400Async(() => port.resolve('D:\\codes\\repo', `${root}\\sub\\..\\escape`))
@@ -478,5 +491,33 @@ describe('createAutoMemoryPort dream state + lease', () => {
     await mkdir(join(stateDir, 'native-memory'), { recursive: true })
     await writeFile(dreamStateFile(stateDir), '[]')
     expect(await port.readDreamState()).toEqual({})
+  })
+
+  it('drops entries whose lastDreamAt is not a finite number (a corrupt entry must not wedge the cwd dream)', async () => {
+    const stateDir = await tempDir()
+    const port = createAutoMemoryPort({ stateDir })
+    await mkdir(join(stateDir, 'native-memory'), { recursive: true })
+    await writeFile(dreamStateFile(stateDir), JSON.stringify({
+      'D--good': { lastDreamAt: 42 },
+      'D--string': { lastDreamAt: 'oops' },
+      'D--null': { lastDreamAt: null },
+      'D--object': { lastDreamAt: {} },
+      'D--missing': {},
+      'D--array': [1, 2],
+      'D--scalar': 'x',
+    }))
+    expect(await port.readDreamState()).toEqual({ 'D--good': { lastDreamAt: 42 } })
+    // The next release repairs the dropped cwd: a valid entry replaces the corrupt one.
+    await port.claimDream('D--string')
+    await port.releaseDream('D--string', 7)
+    expect(await port.readDreamState()).toEqual({ 'D--good': { lastDreamAt: 42 }, 'D--string': { lastDreamAt: 7 } })
+  })
+
+  it('drops a non-finite lastDreamAt (JSON 1e999 parses to Infinity)', async () => {
+    const stateDir = await tempDir()
+    const port = createAutoMemoryPort({ stateDir })
+    await mkdir(join(stateDir, 'native-memory'), { recursive: true })
+    await writeFile(dreamStateFile(stateDir), '{"D--inf":{"lastDreamAt":1e999},"D--good":{"lastDreamAt":42}}')
+    expect(await port.readDreamState()).toEqual({ 'D--good': { lastDreamAt: 42 } })
   })
 })

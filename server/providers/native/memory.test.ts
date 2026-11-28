@@ -6,6 +6,7 @@
 // uses a real AbortSignal.timeout (the caller owns the deadline, Task 7).
 import { describe, expect, it, vi } from 'vitest'
 import type { MemoryCandidate, NativeAuxLlmPort } from './ports.js'
+import { memoryReadPathKey } from './read-state.js'
 import {
   RECALL_SESSION_BUDGET,
   RECALL_DEADLINE_MS,
@@ -142,6 +143,23 @@ describe('excludeCandidates', () => {
     const cs = [candidate('MEMORY.md'), candidate('a.md')]
     const out = excludeCandidates(cs, newRecallState(), new Set())
     expect(out.map((c) => c.filename)).toEqual(['MEMORY.md', 'a.md'])
+  })
+
+  it('excludes a candidate whose lexical path matches a read-state alias key (symlinked root)', () => {
+    // readPaths carries BOTH the realpath key and the lexical alias the read
+    // requested; a candidate enumerated under the alias root must still exclude.
+    const cs = [candidate('a.md', { path: '/alias/a.md' })]
+    const readPaths = new Set([memoryReadPathKey('/real/a.md'), memoryReadPathKey('/alias/a.md')])
+    expect(excludeCandidates(cs, newRecallState(), readPaths)).toEqual([])
+  })
+
+  it('excludes a candidate read through a case-variant alias on win32 (case-fold)', () => {
+    const cs = [candidate('a.md')] // path /mem/a.md
+    // The model read /mem/A.md — the same file on a case-insensitive filesystem.
+    const readPaths = new Set([memoryReadPathKey('/mem/A.md')])
+    const out = excludeCandidates(cs, newRecallState(), readPaths)
+    if (process.platform === 'win32') expect(out).toEqual([])
+    else expect(out.map((c) => c.filename)).toEqual(['a.md'])
   })
 })
 
