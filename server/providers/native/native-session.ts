@@ -710,6 +710,13 @@ export class NativeSession implements NativeSessionCore {
    *  `mcpServer` field. Built from discovery metadata, never by parsing the
    *  FQN (it may be truncated and hashed). */
   private mcpToolServers: ReadonlyMap<string, { name: string; source: 'sdk' | 'dynamic' }> = new Map()
+  /** Per-server permission-mode pins (the CLI's `mcpPermissionModeOverrides`).
+   *  Tighten-only BY CONSTRUCTION: read only while the session already sits in
+   *  a loose mode (`bypassPermissions` / `auto`), so pinning `auto` can never
+   *  loosen a default-mode session — exactly the CLI's control-channel rule.
+   *  Process-scoped and never persisted (the SDK does not report the pinned
+   *  value back, so a resume starts clean). */
+  private readonly mcpPermissionModeOverrides = new Map<string, 'default' | 'auto'>()
   private readonly mcp: NativeMcpConnections | undefined
   /** The two halves of the MCP composition. `userMcpServers` is the LAST
    *  user-supplied map (spawn `mcpServers` opts, then every live
@@ -1698,6 +1705,23 @@ export class NativeSession implements NativeSessionCore {
     return this.decidePermission(toolName, input, toolUseId, signal, permissionMode, readOnlyHint)
   }
 
+  /** The mode a tool call is actually judged under. An MCP call whose server
+   *  carries a pin is judged by THAT pin while the session is loose
+   *  (`bypassPermissions` / `auto`); every other call keeps the session mode
+   *  untouched. Mirrors the CLI's `effectiveMode` (`fu()`), minus its
+   *  plan-with-bypass-available branch — native plan mode keeps its own
+   *  person-only asks, so it is never silently loosened here. */
+  private effectivePermissionMode(
+    permissionMode: string,
+    server: { name: string } | undefined,
+  ): string {
+    if (server === undefined) return permissionMode
+    const override = this.mcpPermissionModeOverrides.get(server.name)
+    if (override === undefined) return permissionMode
+    if (permissionMode !== 'bypassPermissions' && permissionMode !== 'auto') return permissionMode
+    return override
+  }
+
   private async decidePermission(
     toolName: string,
     input: Record<string, unknown>,
@@ -1711,20 +1735,24 @@ export class NativeSession implements NativeSessionCore {
     // never fires for an already-aborted signal, so the permission would park
     // forever — and bypass mode would run the tool after the user stopped.
     if (signal.aborted) return { allowed: false, input, message: 'aborted' }
+    const mcpServer = this.mcpToolServers.get(toolName)
     // Live mode, not the spawn-time opts value: a bypass session downgraded
-    // to default must stop auto-allowing. The interactive tools are exempt —
-    // bypassing them would silently drop a question or execute an unreviewed
-    // plan, so they fall through to the broker and reach the user whatever the
-    // mode says (mirror of the broker, whose interceptors sit before its own
-    // bypass auto-allow).
-    if (permissionMode === 'bypassPermissions' && !isBypassImmuneInteractiveTool(toolName)) {
+    // to default must stop auto-allowing. This server's pin (when present)
+    // replaces the session mode for an MCP call — a `default` pin forces the
+    // normal prompt even in bypass, and an `auto` pin hands the call to the
+    // classifier instead of the silent bypass. The interactive tools are
+    // exempt — bypassing them would silently drop a question or execute an
+    // unreviewed plan, so they fall through to the broker and reach the user
+    // whatever the mode says (mirror of the broker, whose interceptors sit
+    // before its own bypass auto-allow).
+    const effectiveMode = this.effectivePermissionMode(permissionMode, mcpServer)
+    if (effectiveMode === 'bypassPermissions' && !isBypassImmuneInteractiveTool(toolName)) {
       return { allowed: true, input }
     }
     // Fail closed: without a handler there is nothing to ask.
     if (!this.opts.canUseTool) {
       return { allowed: false, input, message: 'no permission handler registered for this session' }
     }
-    const mcpServer = this.mcpToolServers.get(toolName)
     // PermissionRequest hook (RS §13.1 main path `qMt`): runs INSIDE the
     // permission flow, before the user prompt, and CAN auto-allow a normal ask
     // (no `hooksMayAllow` gate — that field is a narrow plugin-ask wrapper,
@@ -1734,7 +1762,7 @@ export class NativeSession implements NativeSessionCore {
     // reaches the user prompt. AskUserQuestion is an interactive question, not a
     // tool permission ask, so it skips the hook too. The pre-tool durability
     // barrier already ran in requestPermission (assistantFlush awaited).
-    if (!isPersonOnlyAsk(toolName, permissionMode) && toolName !== 'AskUserQuestion') {
+    if (!isPersonOnlyAsk(toolName, effectiveMode) && toolName !== 'AskUserQuestion') {
       const hookDecision = await this.dispatchHook('PermissionRequest', {
         session_id: this.opts.id,
         cwd: this.opts.cwd,
@@ -1771,7 +1799,7 @@ export class NativeSession implements NativeSessionCore {
     const result = (await this.opts.canUseTool(toolName, input, {
       signal,
       toolUseID: toolUseId,
-      permissionMode,
+      permissionMode: effectiveMode,
       ...(mcpServer ? { mcpServer } : {}),
       // The resolved ToolDef's read-only metadata (MCP tools: the server's
       // declared annotation). Only present when proven true — the host plan
@@ -4584,6 +4612,28 @@ export class NativeSession implements NativeSessionCore {
 
   async mcpServerStatus(): Promise<unknown> {
     return this.mcp?.statuses() ?? []
+  }
+
+  /** Pin (or clear, `mode: null`) one MCP server's permission mode. Only
+   *  `'default' | 'auto' | null` are accepted (the CLI rejects everything else
+   *  over the control channel: "tighten-only"). The pin is remembered even for
+   *  a server that is not connected YET; the returned warning is pure typo
+   *  detection and never blocks the pin. */
+  async setMcpPermissionModeOverride(
+    serverName: string,
+    mode: 'default' | 'auto' | null,
+  ): Promise<{ warning?: string }> {
+    if (mode !== null && mode !== 'default' && mode !== 'auto') {
+      throw new Error(`permission mode override is tighten-only ('default' | 'auto' | null); rejected ${JSON.stringify(mode)}`)
+    }
+    if (mode === null) this.mcpPermissionModeOverrides.delete(serverName)
+    else this.mcpPermissionModeOverrides.set(serverName, mode)
+    const known = new Set(Object.keys(this.composeMcpServers()))
+    for (const entry of this.mcpToolServers.values()) known.add(entry.name)
+    if (known.has(serverName)) return {}
+    return {
+      warning: `no MCP server named ${JSON.stringify(serverName)} is configured or connected; the override applies if it connects later`,
+    }
   }
 
   /** Replace the USER MCP map (Task 3 semantics: unchanged entries are kept,

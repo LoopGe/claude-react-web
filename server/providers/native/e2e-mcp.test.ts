@@ -204,13 +204,18 @@ function registryOf(provider: NativeProvider): SharedRegistry {
 async function createSession(
   fx: Fixture,
   cwd: string,
-  opts: { mcpServers?: Record<string, unknown>; canUseTool: ToolPermission },
+  opts: {
+    mcpServers?: Record<string, unknown>
+    canUseTool: ToolPermission
+    permissionMode?: CreateOptions['permissionMode']
+  },
 ): Promise<string> {
   const info = await fx.sm.create({
     cwd,
     model: 'test-model',
     provider: 'native',
     title: 'mcp-e2e',
+    ...(opts.permissionMode ? { permissionMode: opts.permissionMode } : {}),
     ...(opts.mcpServers
       ? { mcpServers: opts.mcpServers as unknown as CreateOptions['mcpServers'] }
       : {}),
@@ -456,4 +461,120 @@ describe('native MCP end to end through SessionManager', () => {
     c1.unsubscribe()
     c2.unsubscribe()
   }, 15_000)
+})
+
+// ── Per-server permission-mode override (CLI `setMcpPermissionModeOverride`) ─
+//
+// The pin replaces the SESSION mode for one server's tool calls, and only while
+// the session is loose (bypass / auto). That is what makes the control channel
+// tighten-only: a dead-default session can never be loosened by pinning
+// "auto". Non-MCP tools keep the session mode untouched.
+describe('native per-server MCP permission-mode override', () => {
+  const ECHO_INPUT = JSON.stringify({ text: 'pinned echo' })
+
+  function echoSession(): Record<string, unknown> {
+    return { a: { type: 'sdk', name: 'a', instance: echoServer() } }
+  }
+
+  it('a "default" pin forces the permission prompt inside a bypass session', async () => {
+    const { cwd, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(
+      toolUseTurn('b1', 'Bash', JSON.stringify({ command: 'echo plain-bypass' })),
+      toolUseTurn('e1', ECHO_FQN, ECHO_INPUT),
+      textTurn('done'),
+    )
+    const seen: SeenPermission[] = []
+    const id = await createSession(fx, cwd, {
+      permissionMode: 'bypassPermissions',
+      mcpServers: echoSession(),
+      canUseTool: allowingCanUseTool(seen),
+    })
+    await fx.sm.setMcpPermissionModeOverride(id, 'a', 'default')
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    await sendAndWait(fx, id, frames, 'respect the pin', 1)
+    unsubscribe()
+
+    const echoPermission = seen.find((s) => s.name === ECHO_FQN)
+    expect(echoPermission?.options).toMatchObject({
+      permissionMode: 'default',
+      mcpServer: { name: 'a' },
+    })
+    // The pin is scoped to that SERVER: a Bash call is still bypassed silently.
+    expect(seen.filter((s) => s.name === 'Bash')).toHaveLength(0)
+    const echoResult = fx.requests.flatMap(toolResultsOf).find((r) => r.tool_use_id === 'e1')
+    expect(echoResult).toMatchObject({ text: 'pinned echo', is_error: false })
+  })
+
+  it('an "auto" pin hands the call to the classifier instead of the bypass', async () => {
+    const { cwd, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(toolUseTurn('e1', ECHO_FQN, ECHO_INPUT), textTurn('done'))
+    const seen: SeenPermission[] = []
+    const id = await createSession(fx, cwd, {
+      permissionMode: 'bypassPermissions',
+      mcpServers: echoSession(),
+      canUseTool: allowingCanUseTool(seen),
+    })
+    await fx.sm.setMcpPermissionModeOverride(id, 'a', 'auto')
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    await sendAndWait(fx, id, frames, 'classify it', 1)
+    unsubscribe()
+
+    expect(seen.find((s) => s.name === ECHO_FQN)?.options).toMatchObject({ permissionMode: 'auto' })
+  })
+
+  it('clearing the pin restores the bypass fast path', async () => {
+    const { cwd, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(toolUseTurn('e1', ECHO_FQN, ECHO_INPUT), textTurn('done'))
+    const seen: SeenPermission[] = []
+    const id = await createSession(fx, cwd, {
+      permissionMode: 'bypassPermissions',
+      mcpServers: echoSession(),
+      canUseTool: allowingCanUseTool(seen),
+    })
+    await fx.sm.setMcpPermissionModeOverride(id, 'a', 'default')
+    await fx.sm.setMcpPermissionModeOverride(id, 'a', null)
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    await sendAndWait(fx, id, frames, 'unpinned again', 1)
+    unsubscribe()
+
+    // No pin → the per-call handler is never consulted and the call just runs.
+    expect(seen).toHaveLength(0)
+    expect(toolResultsOf(fx.requests[1]).find((r) => r.tool_use_id === 'e1'))
+      .toMatchObject({ text: 'pinned echo', is_error: false })
+  })
+
+  it('never loosens a default-mode session', async () => {
+    const { cwd, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(toolUseTurn('e1', ECHO_FQN, ECHO_INPUT), textTurn('done'))
+    const seen: SeenPermission[] = []
+    const id = await createSession(fx, cwd, {
+      mcpServers: echoSession(),
+      canUseTool: allowingCanUseTool(seen),
+    })
+    await fx.sm.setMcpPermissionModeOverride(id, 'a', 'auto')
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    await sendAndWait(fx, id, frames, 'try to loosen', 1)
+    unsubscribe()
+
+    expect(seen.find((s) => s.name === ECHO_FQN)?.options).toMatchObject({ permissionMode: 'default' })
+  })
+
+  it('warns on an unknown server name but keeps the pin for a later connect', async () => {
+    const { cwd, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    const id = await createSession(fx, cwd, { canUseTool: allowingCanUseTool([]) })
+
+    await expect(fx.sm.setMcpPermissionModeOverride(id, 'not-configured', 'default'))
+      .resolves.toEqual({ warning: expect.stringContaining('no MCP server named "not-configured"') })
+    // First-party + user-configured names are known without a connection pass.
+    await expect(fx.sm.setMcpPermissionModeOverride(id, 'git-tools', 'default')).resolves.toEqual({})
+  })
 })
