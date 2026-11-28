@@ -18,7 +18,7 @@ import {
 export function useOverlayScrollbar(
   opts: OverlayScrollbarOptions = {},
 ): (el: HTMLElement | null) => void {
-  const { orientation, autoHide, autoHideDelay, minThumbSize } = opts
+  const { orientation, autoHide, autoHideDelay, minThumbSize, respectHiddenOverflow } = opts
   const [el, setEl] = useState<HTMLElement | null>(null)
 
   const refCallback = useCallback((node: HTMLElement | null) => {
@@ -32,9 +32,10 @@ export function useOverlayScrollbar(
       autoHide,
       autoHideDelay,
       minThumbSize,
+      respectHiddenOverflow,
     })
     return () => controller.destroy()
-  }, [el, orientation, autoHide, autoHideDelay, minThumbSize])
+  }, [el, orientation, autoHide, autoHideDelay, minThumbSize, respectHiddenOverflow])
 
   return refCallback
 }

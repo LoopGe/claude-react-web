@@ -30,6 +30,11 @@
   bottom: 0;
   width: var(--size-6px);
 }
+/* right:0 is only the pre-sync default: syncTrackBox pins left to the
+   scroller's own padding-box right edge (right:auto) so a scroller inset by
+   its parent's padding or sharing the parent with a right-side sibling (the
+   composer editor, the side-chat input row) doesn't float the thumb off
+   itself — see overlay-scrollbar.ts. */
 /* bottom:0 is only the pre-sync default: syncTrackBox pins top to the
    scroller's own bottom edge (bottom:auto) so a scroller with trailing
    siblings doesn't float the thumb below itself — see overlay-scrollbar.ts. */

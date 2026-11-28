@@ -3,6 +3,8 @@ import { isLineTerminator, joinTokens, tokenize, type PasteInsertionContext } fr
 import { formatQuoteText } from '../utils/quote-text'
 import { renderTokens, serializeTokens, domRepresentsValue, mentionChipFacts, MENTION_CHIP_ATTR, QUOTE_CHIP_ATTR, QUOTE_REMOVE_ATTR } from '../utils/richPromptDom'
 import { syncEditorHeight } from '../utils/editor-height'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../utils/mergedRef'
 import { offsetOf, valueOffsetOf, slashWordBefore, atWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
 import { isSupportedImageMediaType } from '../../shared/image-media'
 import { selectionOffsets, placeCaretIn, selectAll } from './richPromptApi'
@@ -138,6 +140,18 @@ export function RichPromptInput({
 }: Props) {
   const localRef = useRef<HTMLDivElement>(null)
   const ref = editorRef ?? localRef
+  // A draft past max-height scrolls like every other scroll surface in the
+  // app, so the editor carries the unified overlay scrollbar. Attaching HERE,
+  // inside the editor component, keeps every host (Composer, SideChatDrawer)
+  // on the same control with no per-host wiring to forget. respectHiddenOverflow
+  // opts into native-faithful gating: syncEditorHeight keeps overflow:hidden
+  // while the height tween grows the box, and the thumb must not flash
+  // mid-tween (dialog bodies' height-tween clipping keeps the default).
+  const setOsRef = useOverlayScrollbar({ autoHide: 'leave', respectHiddenOverflow: true })
+  // useMergedRef freezes the first-render refs (its stability contract); `ref`
+  // qualifies because the component's [ref]-keyed effects already require a
+  // stable editorRef — every host passes a useRef object.
+  const setEditorNode = useMergedRef(ref, setOsRef)
   // Set while an IME composition is in flight. Re-rendering the DOM from
   // `value` mid-composition moves the caret and can drop the candidate.
   const composingRef = useRef(false)
@@ -548,7 +562,7 @@ export function RichPromptInput({
 
   return (
     <div
-      ref={ref}
+      ref={setEditorNode}
       role="textbox"
       aria-multiline="true"
       aria-label={ariaLabel}

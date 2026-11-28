@@ -18,6 +18,59 @@ describe('RichPromptInput', () => {
     expect(editor(container).textContent).toBe('hello')
   })
 
+  // The editor scrolls its capped draft like every other scroll surface in the
+  // app, so it carries the unified overlay scrollbar (self-built thumb, native
+  // bar hidden) — not the legacy native fallback. Attaching here, inside the
+  // editor component, is what keeps every host (Composer, SideChatDrawer) on
+  // the unified control without per-host wiring to forget.
+  it('attaches the unified overlay scrollbar to the editor', () => {
+    const { container } = render(
+      <RichPromptInput value="hello" onChange={vi.fn()} ariaLabel="Message" />,
+    )
+    const el = editor(container)
+    expect(el.hasAttribute('data-os-native-hidden')).toBe(true)
+    expect(el.parentElement!.querySelector('.os-track-vertical')).not.toBeNull()
+  })
+
+  it('removes the overlay scrollbar when the editor unmounts', () => {
+    const { container, unmount } = render(
+      <RichPromptInput value="hello" onChange={vi.fn()} ariaLabel="Message" />,
+    )
+    const el = editor(container)
+    unmount()
+    expect(el.hasAttribute('data-os-native-hidden')).toBe(false)
+    expect(container.querySelector('.os-track')).toBeNull()
+  })
+
+  // The hidden-overflow gate must reach the controller THROUGH the hook —
+  // useOverlayScrollbar forwards a fixed option list, so a new option the
+  // hook does not know about is silently dropped and the editor attaches
+  // with the default (thumb flashes mid-tween). This drives the real seam:
+  // render → hook → attach → scroll-driven update.
+  it('keeps the thumb hidden while the box is overflow:hidden, reveals it on the flip to auto', async () => {
+    const { container } = render(
+      <RichPromptInput value="hello" onChange={vi.fn()} ariaLabel="Message" />,
+    )
+    const el = editor(container)
+    const track = el.parentElement!.querySelector<HTMLElement>('.os-track-vertical')!
+    // happy-dom does no layout: stub a box whose content overflows while the
+    // inline overflow-y stays hidden (the growing-tween state syncEditorHeight
+    // writes), then drive the controller's scroll path.
+    Object.defineProperty(el, 'scrollHeight', { value: 400, configurable: true })
+    Object.defineProperty(el, 'clientHeight', { value: 150, configurable: true })
+    const flushFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()))
+
+    el.style.overflowY = 'hidden'
+    el.dispatchEvent(new Event('scroll'))
+    await flushFrame()
+    expect(track.classList.contains('os-track-hidden')).toBe(true)
+
+    el.style.overflowY = 'auto'
+    el.dispatchEvent(new Event('scroll'))
+    await flushFrame()
+    expect(track.classList.contains('os-track-hidden')).toBe(false)
+  })
+
   it('renders a reference as a non-editable chip', () => {
     const { container } = render(
       <RichPromptInput
