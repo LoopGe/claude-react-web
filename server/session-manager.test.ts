@@ -7682,6 +7682,31 @@ describe('SessionManager', () => {
     expect(handle.generateSessionTitle).not.toHaveBeenCalled()
   })
 
+  it('autoGenerateTitle rejects a not-title-shaped response and leaves the session untitled', async () => {
+    // The native qwen title call returned a freshly-authored AskUserQuestion
+    // payload instead of a title (the model followed the user message's
+    // 「你调用我试下」 instruction). Such a response must never persist — and
+    // a rejection must not burn the untitled session's one title slot.
+    const info = await sm.create({ cwd: TEST_CWD })
+    const handle = mockHandles[mockHandles.length - 1]
+    for (const bad of [
+      '[{"questions": [{"header": "弹窗测试", "multiSelect": false}]}]', // single-line JSON array
+      '{"a": 1}', // single-line JSON object
+      'Native tools e2e\nwith a second line', // multi-line
+      'a'.repeat(200), // over the length cap
+    ]) {
+      handle.generateSessionTitle.mockImplementationOnce(async () => bad)
+      const res = await sm.autoGenerateTitle(info.id, 'describe')
+      expect(res.title).toBeUndefined()
+      expect(sm.get(info.id).title).toBeUndefined()
+    }
+    // A valid response afterwards still lands (the guard lives on the title,
+    // not on a tried-flag).
+    const ok = await sm.autoGenerateTitle(info.id, 'Refactor the checkout flow')
+    expect(ok.title).toBe('Mock auto title')
+    expect(handle.generateSessionTitle).toHaveBeenCalledTimes(5)
+  })
+
   it('autoGenerateTitle does not clobber a rename that landed while the LLM call was in flight', async () => {
     const info = await sm.create({ cwd: TEST_CWD })
     const handle = mockHandles[mockHandles.length - 1]

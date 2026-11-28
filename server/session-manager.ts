@@ -25,6 +25,7 @@ import { reapRetiredJobs, type ProcessExitInfo } from './process-monitor.js'
 import type { AuxLlmTarget } from './anthropic-api.js'
 import { sameCwd, canonicalCwd } from './cwd-equality.js'
 import { isEmptyResultFrame } from '../shared/results.js'
+import { sanitizeGeneratedTitle } from '../shared/auto-title.js'
 import { COMPACT_SUMMARY_TIMEOUT_MS } from '../shared/compact-deadline.js'
 import type { FileAttachmentRef } from '../shared/attachments.js'
 import { fileHandleText } from '../shared/upload-handle.js'
@@ -8075,9 +8076,14 @@ export class SessionManager {
     // Parsing `raw.title` against a plain string always yielded '' — so
     // auto-title silently produced no title for every session. The whole
     // resolved value IS the title.
-    const generated = String(raw ?? '').trim()
+    // Shape-checked, not just trimmed: a strong-instruction-following model
+    // can answer the description instead of titling it (a native title call
+    // returned an AskUserQuestion JSON payload as its "title"). A rejected
+    // response leaves the session untitled like an empty one — the title slot
+    // stays open for a later valid call.
+    const generated = sanitizeGeneratedTitle(raw)
     if (!generated) {
-      log.warn(`[session ${id}] auto-title generated an empty title; leaving untitled`)
+      log.warn(`[session ${id}] auto-title returned an empty or not-title-shaped response; leaving untitled`)
       return this.info(s)
     }
     s.title = generated
