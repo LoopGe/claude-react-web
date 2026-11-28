@@ -56,6 +56,19 @@ export function estimateBlocks(blocks: readonly ContentBlock[]): number {
           + estimateText(block.arguments)
           + BLOCK_OVERHEAD
         break
+      case 'image': {
+        // Store-backed occurrences have known dimensions: price them at the
+        // API's own vision density (one token per 750 px) instead of the
+        // reference JSON framing. A legacy inline base64 block has no
+        // declared dimensions and keeps the structural price.
+        const attachment = 'attachment' in block ? block.attachment : undefined
+        tokens += (attachment
+          && Number.isFinite(attachment.width) && Number.isFinite(attachment.height)
+          ? Math.max(1, Math.ceil((attachment.width * attachment.height) / 750))
+          : Math.ceil(JSON.stringify(block).length / CHARS_PER_TOKEN))
+          + BLOCK_OVERHEAD
+        break
+      }
       default:
         tokens += Math.ceil(JSON.stringify(block).length / CHARS_PER_TOKEN) + BLOCK_OVERHEAD
     }

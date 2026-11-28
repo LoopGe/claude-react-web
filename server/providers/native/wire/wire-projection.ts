@@ -51,9 +51,9 @@ function wireAssistantBlock(block: ContentBlock): Record<string, unknown> {
 /** Project one neutral user-input / tool-result content block to its API shape.
  *  Text passes through; a file occurrence keeps its resolved attachment for
  *  attachment-projection to turn into handle text / a PDF document; a legacy
- *  base64 image is already API-shaped. A store-backed image ref needs byte
- *  projection that is not yet wired into the request path — surfaced loudly
- *  rather than sent as a non-API shape. */
+ *  base64 image is already API-shaped; a store-backed image ref keeps its
+ *  neutral shape here and attachment-projection turns it into the verified
+ *  base64 block for this round. */
 function wireInputBlock(block: ContentBlock): unknown {
   switch (block.type) {
     case 'text':
@@ -61,9 +61,11 @@ function wireInputBlock(block: ContentBlock): unknown {
     case 'file':
       return { type: 'file', attachment: block.attachment }
     case 'image':
-      if ('attachment' in block) {
-        throw new Error('native wire adapter: store-backed image ref projection is not yet wired into the request path')
-      }
+      // The neutral ref rides through untouched: the attachment projection
+      // (which runs on this same request copy) verifies the store object and
+      // emits the base64 block. A legacy inline base64 block is already
+      // API-shaped.
+      if ('attachment' in block) return { type: 'image', attachment: block.attachment }
       return { type: 'image', source: block.source }
     default:
       throw new Error(`native wire adapter: block kind "${(block as { type: string }).type}" is not user/tool input`)

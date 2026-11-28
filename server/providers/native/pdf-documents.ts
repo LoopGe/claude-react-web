@@ -3,7 +3,7 @@ import { AttachmentStoreError } from '../../../shared/attachment-store-error.js'
 import type { NativeFileAttachment, ResolvedFileAttachment } from '../../../shared/attachment-types.js'
 import type { NativeAttachmentPort } from './ports.js'
 import type { NativeSessionEvent } from './vocabulary/session-event.js'
-import { neutralFileOccurrences } from './session-log/neutral-read.js'
+import { neutralFileOccurrences, neutralImageOccurrences } from './session-log/neutral-read.js'
 
 export const PDF_MAX_BYTES = 20 * 1024 * 1024
 export const PDF_MAX_BASE64_CHARS = 28_000_000
@@ -45,8 +45,12 @@ export type PdfBudgetAttempt =
   | { ok: false; reason: 'duplicate' | 'exhausted' }
 
 interface PdfPartition {
+  /** The shared per-history request-media ceiling: PDF document base64 and
+   *  inline image base64 both draw from this one counter, because one API
+   *  request carries both. */
   usedBase64Chars: number
   documentDigests: Set<string>
+  imageDigests: Set<string>
 }
 
 function isNativeFileBlock(value: unknown): value is { type: 'file'; attachment: NativeFileAttachment } {
@@ -61,11 +65,20 @@ function isNativeFileBlock(value: unknown): value is { type: 'file'; attachment:
 export class PdfBudgetLedger {
   private readonly partitions = new Map<string, PdfPartition>()
 
-  reservePdfBudget(historyKey: string, size: number, digest: string): PdfBudgetAttempt {
-    const partition = this.partitions.get(historyKey) ?? {
+  private partitionOf(historyKey: string): PdfPartition {
+    const existing = this.partitions.get(historyKey)
+    if (existing) return existing
+    const created: PdfPartition = {
       usedBase64Chars: 0,
       documentDigests: new Set<string>(),
+      imageDigests: new Set<string>(),
     }
+    this.partitions.set(historyKey, created)
+    return created
+  }
+
+  reservePdfBudget(historyKey: string, size: number, digest: string): PdfBudgetAttempt {
+    const partition = this.partitionOf(historyKey)
     if (partition.documentDigests.has(digest)) return { ok: false, reason: 'duplicate' }
     const base64Chars = pdfBase64Length(size)
     if (partition.usedBase64Chars + base64Chars > PDF_MAX_BASE64_CHARS) {
@@ -73,7 +86,20 @@ export class PdfBudgetLedger {
     }
     partition.usedBase64Chars += base64Chars
     partition.documentDigests.add(digest)
-    this.partitions.set(historyKey, partition)
+    return { ok: true, reservation: new PdfBudgetReservation(historyKey, size, digest, base64Chars) }
+  }
+
+  /** Inline-image allocation over the same per-history request ceiling: one
+   *  API request carries PDF documents and images together. */
+  reserveImageBudget(historyKey: string, size: number, digest: string): PdfBudgetAttempt {
+    const partition = this.partitionOf(historyKey)
+    if (partition.imageDigests.has(digest)) return { ok: false, reason: 'duplicate' }
+    const base64Chars = pdfBase64Length(size)
+    if (partition.usedBase64Chars + base64Chars > PDF_MAX_BASE64_CHARS) {
+      return { ok: false, reason: 'exhausted' }
+    }
+    partition.usedBase64Chars += base64Chars
+    partition.imageDigests.add(digest)
     return { ok: true, reservation: new PdfBudgetReservation(historyKey, size, digest, base64Chars) }
   }
 
@@ -88,9 +114,10 @@ export class PdfBudgetLedger {
   release(reservation: PdfBudgetReservation): void {
     if (reservation._state !== 'pending') return
     const partition = this.partitions.get(reservation.historyKey)
-    if (!partition) throw new Error('PDF budget reservation partition is no longer active')
+    if (!partition) throw new Error('budget reservation partition is no longer active')
     partition.usedBase64Chars -= reservation.base64Chars
     partition.documentDigests.delete(reservation.digest)
+    partition.imageDigests.delete(reservation.digest)
     reservation._state = 'released'
   }
 
@@ -113,18 +140,27 @@ export class PdfBudgetLedger {
       if (occurrence.messageUuid === '') continue
       this.recordAttachment(occurrence.parentToolUseId ?? 'main', occurrence.attachment)
     }
+    for (const occurrence of neutralImageOccurrences(events.slice(floor))) {
+      if (occurrence.messageUuid === '') continue
+      this.recordImage(occurrence.parentToolUseId ?? 'main', occurrence.attachment)
+    }
   }
 
   private recordAttachment(historyKey: string, attachment: NativeFileAttachment): void {
     if (attachment.modelForm !== 'pdf-document') return
-    const partition = this.partitions.get(historyKey) ?? {
-      usedBase64Chars: 0,
-      documentDigests: new Set<string>(),
-    }
+    const partition = this.partitionOf(historyKey)
     if (partition.documentDigests.has(attachment.digest)) return
     partition.usedBase64Chars += pdfBase64Length(attachment.size)
     partition.documentDigests.add(attachment.digest)
-    this.partitions.set(historyKey, partition)
+  }
+
+  /** Rebuild-side accounting for a persisted inline image occurrence. */
+  private recordImage(historyKey: string, image: { bytes: number; id: string }): void {
+    const partition = this.partitionOf(historyKey)
+    const digest = image.id.startsWith('sha256:') ? image.id.slice('sha256:'.length) : image.id
+    if (partition.imageDigests.has(digest)) return
+    partition.usedBase64Chars += pdfBase64Length(image.bytes)
+    partition.imageDigests.add(digest)
   }
 }
 
@@ -277,7 +313,14 @@ export class PdfReadError extends Error {
   }
 }
 
-function documentBlock(attachment: ResolvedFileAttachment, bytes: Buffer): PdfDocumentBlock {
+/** Build the API document block for already-verified bytes. `context` is the
+ *  provenance line the model sees: the upload id for registry occurrences,
+ *  the file name for working-directory ones. */
+export function pdfDocumentBlockOf(
+  attachment: ResolvedFileAttachment,
+  bytes: Buffer,
+  context = `Upload id: ${attachment.id}`,
+): PdfDocumentBlock {
   return {
     type: 'document',
     source: {
@@ -286,7 +329,7 @@ function documentBlock(attachment: ResolvedFileAttachment, bytes: Buffer): PdfDo
       data: bytes.toString('base64'),
     },
     title: attachment.name,
-    context: `Upload id: ${attachment.id}`,
+    context,
   }
 }
 
@@ -319,7 +362,7 @@ export async function readAuthorizedPdfDocument(
   if (bytes.length < PDF_MAGIC.length || !bytes.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)) {
     throw new PdfReadError('magic', 'attachment bytes do not have PDF magic')
   }
-  return documentBlock(attachment, bytes)
+  return pdfDocumentBlockOf(attachment, bytes)
 }
 
 export async function loadPdfDocument(

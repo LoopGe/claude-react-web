@@ -1,8 +1,10 @@
 // server/providers/native/prompt/environment.ts
-/** Spawn-time environment + agent-roster sections for the native system
- *  prompt. Reads are synchronous (the provider's `createSession` is sync); the
- *  facts are a snapshot taken at spawn, exactly like the CLI's `<env>` block —
- *  a branch checked out later in the session is not re-read until respawn.
+/** Spawn-time environment facts + the agent-roster section for the native
+ *  system prompt. Reads are synchronous (the provider's `createSession` is
+ *  sync); the facts are a snapshot taken at spawn — a branch checked out later
+ *  in the session is not re-read until respawn. The facts are rendered into the
+ *  single `# Environment` block by prompt/overlay's renderEnvironment; this
+ *  module owns the FACTS and the `<available_agents>` section only.
  *
  *  Host-free: Node builtins only. Git state comes from `.git/HEAD`, never a
  *  spawned `git` process, so prompt assembly cannot block on a slow binary or
@@ -80,8 +82,9 @@ function pad2(value: number): string {
   return value < 10 ? `0${value}` : String(value)
 }
 
-/** Snapshot the facts the `<env>` section reports. Local date (not UTC) so a
- *  session opened late in the evening is not told "tomorrow". */
+/** Snapshot the environment facts. Local date (not UTC) so a session opened
+ *  late in the evening is not told "tomorrow"; the renderer only keeps the
+ *  structural fields and re-reads the date per turn. */
 export function readNativeEnvironment(cwd: string, now: Date = new Date()): NativeEnvironmentFacts {
   const workspace = resolve(cwd)
   return {
@@ -91,28 +94,6 @@ export function readNativeEnvironment(cwd: string, now: Date = new Date()): Nati
     osRelease: osRelease(),
     date: `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`,
     git: readGitState(workspace),
-  }
-}
-
-export function environmentSection(facts: NativeEnvironmentFacts): PromptSection {
-  const git =
-    facts.git === null
-      ? 'no'
-      : facts.git.kind === 'branch'
-        ? `yes (branch "${facts.git.name}")`
-        : `yes (detached HEAD at ${facts.git.sha})`
-  return {
-    name: 'harness:environment',
-    order: 5,
-    text: [
-      '<env>',
-      `Working directory: ${facts.cwd}`,
-      `Is a git repository: ${git}`,
-      `Platform: ${facts.platform} (${facts.arch})`,
-      `OS release: ${facts.osRelease}`,
-      `Today's date: ${facts.date}`,
-      '</env>',
-    ].join('\n'),
   }
 }
 

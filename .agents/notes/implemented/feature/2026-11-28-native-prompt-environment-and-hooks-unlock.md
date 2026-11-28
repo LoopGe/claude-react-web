@@ -34,7 +34,7 @@ users to native:
 
 ## Decision
 
-### `<env>` is a spawn-time snapshot built without a git subprocess
+### The `# Environment` block is a spawn-time snapshot built without a git subprocess
 
 `prompt/environment.ts` (host-free, Node builtins only) reads the facts once at
 `createSession`:
@@ -49,20 +49,29 @@ users to native:
 - **date** from local calendar fields (not UTC) so a session opened at 23:59
   is not told it is tomorrow.
 
-The section (`harness:environment`, order 5) renders a CLI-shaped block:
+It renders a CLI-shaped block through `prompt/overlay.ts`'s
+`renderEnvironment` — the **single** environment section, not a
+`harness:environment` registry section (the merge below removed the second
+copy that the memory/behavior branch had added):
 
 ```
-<env>
+# Environment
 Working directory: /Users/…
-Is a git repository: yes (branch "main")
+Is a git repository: true
+Current branch: main
 Platform: darwin (arm64)
 OS release: 24.6.0
 Today's date: 2026-11-28
-</env>
 ```
 
-It rides **both** prompts — a subagent runs in the same working directory, and
-the same facts are just as true there.
+The `Current branch` line exists only inside a repository (a detached
+checkout names the SHA instead), and repository-ness is
+`git probe !== null || CLAUDE.md-chain isGitRepo` — the chain can report a
+repo the `.git` walk missed, never subtract one.
+
+It rides **every** prompt variant — turn, subagent, dream and the context
+usage snapshot — because all four compose the same overlay. A subagent runs in
+the same working directory, and the same facts are just as true there.
 
 ### `<available_agents>` lists only agents that can actually run
 
@@ -138,11 +147,13 @@ The shared map and the server literal are kept in agreement by the existing
 ## Testing
 
 - `prompt/environment.test.ts`: branch / detached / linked-worktree /
-  subdirectory / no-repo detection, local-date formatting, env block text,
-  empty-roster null, sorted rows with tool allowlists.
+  subdirectory / no-repo detection, empty-roster null, sorted rows with tool
+  allowlists.
+- `prompt/overlay.test.ts`: the exact `# Environment` block (branch / detached /
+  no-repo), the chain-authority override, and the local (not UTC) calendar day.
 - `native-session.test.ts` (`native system prompt: environment + agent roster`):
   one real turn + one nested run through the scripted streamer; main prompt has
-  `<env>` and the roster, nested keeps `<env>` and drops the roster.
+  `# Environment` and the roster, nested keeps the block and drops the roster.
 - `HooksPanel.test.tsx`: native session shows the source-coverage note, claude
   does not.
 - `SettingsPanel.test.tsx`: native Hooks tab mounts the live panel (no notice)

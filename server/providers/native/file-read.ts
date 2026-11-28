@@ -254,6 +254,57 @@ export async function readNativeTarget(
   }
 }
 
+/** Read a small head of the file under full identity protection, so media
+ *  sniffing costs one short open instead of a full read. */
+export async function readNativePrefix(
+  target: NativeReadTarget,
+  byteCount: number,
+  signal: AbortSignal,
+): Promise<Buffer> {
+  validateMaxBytes(byteCount)
+  const { value } = await withNativeFile(target, signal, async (handle) => {
+    const buf = Buffer.alloc(byteCount)
+    const result = await handle.read(buf, 0, byteCount, 0)
+    return buf.subarray(0, result.bytesRead)
+  })
+  return value
+}
+
+/** Read the whole file as raw bytes (bounded, identity-protected). Used by
+ *  media reads that must hand the exact bytes to the host (images, PDFs). */
+export async function readNativeBytes(
+  target: NativeReadTarget,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<Buffer> {
+  validateMaxBytes(maxBytes)
+  const { value } = await withNativeFile(target, signal, async (handle) => {
+    const chunks: Buffer[] = []
+    let byteCount = 0
+    const stream = handle.createReadStream({ autoClose: false })
+    let reachedEof = false
+    let succeeded = false
+    try {
+      for await (const chunk of stream) {
+        throwIfAborted(signal)
+        const bytes = chunk as Buffer
+        if (byteCount + bytes.length > maxBytes) {
+          throw new NativeReadWindowTooLargeError('file exceeds the media read byte limit')
+        }
+        chunks.push(bytes)
+        byteCount += bytes.length
+      }
+      reachedEof = true
+      throwIfAborted(signal)
+      succeeded = true
+      return Buffer.concat(chunks, byteCount)
+    } finally {
+      if (!reachedEof || !succeeded) stream.destroy()
+    }
+  })
+  return value
+}
+
 export async function readNativeTextWindow(
   target: NativeReadTarget,
   opts: { offset?: number; limit?: number; startByteOffset?: number; signal: AbortSignal },

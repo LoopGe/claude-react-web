@@ -17,6 +17,7 @@ import type { NativeSessionEvent } from '../vocabulary/session-event.js'
 import type { NativeLogEvent } from './format.js'
 import { migrateEventToV3 } from './migration.js'
 import type { NativeFileAttachment } from '../../../../shared/attachment-types.js'
+import type { ImageAttachmentRef } from '../../../../shared/image-attachment.js'
 
 /** The canonical NEUTRAL events of a session-log snapshot: the v3 baseline
  *  when present, otherwise the lossless in-memory migration of the legacy read
@@ -82,6 +83,48 @@ export function neutralFileOccurrences(events: readonly NativeSessionEvent[]): N
         if (block.type !== 'file') continue
         occurrences.push({
           attachment: block.attachment as NativeFileAttachment,
+          messageUuid: event.data.message.id,
+          parentToolUseId,
+          blockPath: [0, inner],
+        })
+      }
+    }
+  }
+  return occurrences
+}
+
+/** One store-backed image occurrence in the neutral log, in log order. Only
+ *  ref blocks count (a legacy inline base64 block carries its own bytes and
+ *  holds no budget slot). Coordinates match NeutralFileOccurrence. */
+export interface NeutralImageOccurrence {
+  attachment: ImageAttachmentRef
+  messageUuid: string
+  parentToolUseId: string | null
+  blockPath: readonly number[]
+}
+
+export function neutralImageOccurrences(events: readonly NativeSessionEvent[]): NeutralImageOccurrence[] {
+  const occurrences: NeutralImageOccurrence[] = []
+  const isImageRef = (block: unknown): block is { type: 'image'; attachment: ImageAttachmentRef } =>
+    typeof block === 'object' && block !== null
+      && (block as { type?: unknown }).type === 'image'
+      && typeof (block as { attachment?: unknown }).attachment === 'object'
+      && (block as { attachment?: unknown }).attachment !== null
+  for (const event of events) {
+    if (event.type === 'user/message') {
+      const parentToolUseId = event.parentToolUseId ?? null
+      for (const [i, block] of event.data.content.entries()) {
+        if (!isImageRef(block)) continue
+        occurrences.push({ attachment: block.attachment, messageUuid: event.data.id, parentToolUseId, blockPath: [i] })
+      }
+      continue
+    }
+    if (event.type === 'tool/result') {
+      const parentToolUseId = event.parentToolUseId ?? null
+      for (const [inner, block] of event.data.message.content.entries()) {
+        if (!isImageRef(block)) continue
+        occurrences.push({
+          attachment: block.attachment,
           messageUuid: event.data.message.id,
           parentToolUseId,
           blockPath: [0, inner],

@@ -78,6 +78,7 @@ function neutralToolResult(seq: number, uuid: string, callId: string, parent: st
 interface PdfPartitionView {
   usedBase64Chars: number
   documentDigests: Set<string>
+  imageDigests: Set<string>
 }
 
 /** The ledger's private partition map, for the deep-equal behavior pin. */
@@ -97,7 +98,11 @@ function legacyPdfPartitions(events: readonly NativeLogEvent[]): Map<string, Pdf
   const partitions = new Map<string, PdfPartitionView>()
   const record = (historyKey: string, block: unknown): void => {
     if (!isFileBlock(block) || block.attachment.modelForm !== 'pdf-document') return
-    const partition = partitions.get(historyKey) ?? { usedBase64Chars: 0, documentDigests: new Set<string>() }
+    const partition = partitions.get(historyKey) ?? {
+      usedBase64Chars: 0,
+      documentDigests: new Set<string>(),
+      imageDigests: new Set<string>(),
+    }
     if (partition.documentDigests.has(block.attachment.digest)) return
     partition.usedBase64Chars += pdfBase64Length(block.attachment.size)
     partition.documentDigests.add(block.attachment.digest)

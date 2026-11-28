@@ -7,6 +7,13 @@ import {
   safePdfReadReason,
   type PreparedPdfStore,
 } from './pdf-documents.js'
+import {
+  imageModelBlockOf,
+  safeImageReadReason,
+  type PreparedImageStore,
+} from './image-documents.js'
+import { isImageRefBlock } from '../../../shared/image-attachment.js'
+import type { NativeImagePort } from './ports.js'
 
 const log = createLogger('attachment-projection')
 
@@ -17,6 +24,12 @@ export interface NativeProjectionOptions {
   /** One verified AttachmentRead result may be consumed by the immediately
    * following projection. Later rounds always re-read and re-verify. */
   preparedPdfs?: PreparedPdfStore
+  /** Verified image bytes over the content-addressed store. Required only by
+   * histories that carry an image occurrence. */
+  imagePort?: NativeImagePort
+  /** The immediate-projection handoff for one just-read image; same one-shot
+   * contract as preparedPdfs. */
+  preparedImages?: PreparedImageStore
 }
 
 /** The native handle is deliberately fixed text: changing the active tool
@@ -49,12 +62,41 @@ function isNativeFileBlock(block: unknown): block is ContentBlockLike & { type: 
     && (block as ContentBlockLike).attachment !== null
 }
 
+/** Project one store-backed image occurrence to the API's base64 image block.
+ *  The prepared handoff wins when a Read produced the block in this same
+ *  round; every later round re-verifies from the store (never from history). */
+async function imageModelBlock(
+  block: { type: 'image'; attachment: Parameters<NativeImagePort['readImage']>[0] },
+  opts: NativeProjectionOptions,
+  signal: AbortSignal,
+  toolUseId?: string,
+): Promise<unknown> {
+  const attachment = block.attachment
+  if (signal.aborted) throw signal.reason
+  if (toolUseId && opts.preparedImages) {
+    const prepared = opts.preparedImages.consume(toolUseId, attachment)
+    if (prepared) return prepared
+  }
+  if (!opts.imagePort) {
+    throw new Error(`image store is unavailable for attachment: ${attachment.id}`)
+  }
+  try {
+    const read = await opts.imagePort.readImage(attachment, signal)
+    return imageModelBlockOf(read.mediaType, read.base64)
+  } catch (err) {
+    if (signal.aborted) throw signal.reason
+    log.warn(`image projection failed for attachment ${attachment.id}: ${err instanceof Error ? err.message : String(err)}`)
+    throw new Error(`image projection failed for attachment ${attachment.id}: ${safeImageReadReason(err)}`)
+  }
+}
+
 async function modelBlock(
   block: unknown,
   opts: NativeProjectionOptions,
   signal: AbortSignal,
   toolUseId?: string,
 ): Promise<unknown> {
+  if (isImageRefBlock(block)) return imageModelBlock(block, opts, signal, toolUseId)
   if (!isNativeFileBlock(block)) return block
   const attachment = block.attachment
   if (attachment.modelForm === 'handle') {

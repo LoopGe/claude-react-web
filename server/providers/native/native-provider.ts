@@ -24,11 +24,8 @@ import { SharedRegistry } from './mcp/shared-registry.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
 import { BEHAVIOR_SECTIONS } from './prompt/behavior.js'
 import {
-  readNativeEnvironment,
-  environmentSection,
   agentsSection,
   type NativeAvailableAgent,
-  type NativeEnvironmentFacts,
 } from './prompt/environment.js'
 import { unsupportedAgentFields } from './agent-profile.js'
 import { NativeSession, DEFAULT_MODEL } from './native-session.js'
@@ -67,6 +64,7 @@ import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import type { UploadStore } from '../../upload-store.js'
 import { NativeAttachmentReferenceIndex } from './attachment-reference-index.js'
 import { PdfBudgetLedger, PreparedPdfStore } from './pdf-documents.js'
+import { PreparedImageStore } from './image-documents.js'
 import { createAttachmentReadTool } from './tools/index.js'
 import { extractToolProfile } from '../../../shared/tool-profile.js'
 import { formatHooksValidationErrors, validateSessionHooksConfig, type SessionHooksConfig } from '../../../shared/hooks.js'
@@ -127,14 +125,16 @@ const TASK_LIST_SECTION: PromptSection = { name: 'tool:TaskList', order: 180, te
  *  subagent variant omits the Agent section and the `<available_agents>` roster
  *  — a nested loop has no Agent tool to call (see createSession).
  *
- *  `<env>` rides BOTH prompts (a subagent works in the same working directory).
- *  Both the facts and the roster are spawn-time snapshots: the section registry
- *  is rebuilt per session, never per turn (P1 prompt-stability rule). */
+ *  The environment block is NOT registered here: the per-turn overlay in
+ *  native-session renders the single `# Environment` section from the
+ *  spawn-time facts (prompt/overlay renderEnvironment), so a conversation
+ *  never carries two environment descriptions. The roster stays a spawn-time
+ *  snapshot: the section registry is rebuilt per session, never per turn
+ *  (P1 prompt-stability rule). */
 function renderSystem(
   opts: {
     withAgentSection: boolean
     systemPromptAppend?: string
-    env: NativeEnvironmentFacts
     agents: readonly NativeAvailableAgent[]
   },
   tools: readonly ToolDef[],
@@ -143,7 +143,6 @@ function renderSystem(
   registry.register(IDENTITY_SECTION)
   // Behavior/tone guidance rides both prompt variants (parent and subagent).
   for (const section of BEHAVIOR_SECTIONS) registry.register(section)
-  registry.register(environmentSection(opts.env))
   if (opts.withAgentSection) {
     const agents = agentsSection(opts.agents)
     if (agents) registry.register(agents)
@@ -316,14 +315,25 @@ export class NativeProvider implements AgentProvider {
     // not — nested tools drop Agent, and guidance for a tool the model cannot
     // call (or an agent it cannot delegate to) is misleading.
     const systemPromptAppend = (opts as { systemPromptAppend?: string }).systemPromptAppend
-    const env = readNativeEnvironment(opts.cwd ?? process.cwd())
     const agents = this.availableAgents()
     const pdfBudgets = new PdfBudgetLedger()
     const preparedPdfs = new PreparedPdfStore(pdfBudgets)
+    const preparedImages = new PreparedImageStore(pdfBudgets)
     const readState = new NativeReadState()
+    // One media deps object feeds BOTH read entry points, so a PDF read from
+    // the working directory and one from the upload registry share the same
+    // request-media ledger and prepared handoff.
+    const mediaDeps = {
+      attachmentPort: this.ports.attachment,
+      imagePort: this.ports.image,
+      pdfBudgets,
+      preparedPdfs,
+      preparedImages,
+      pdfDocumentsEnabled: () => configPort.nativeAttachmentFidelity && configPort.nativePdfDocuments,
+    }
     const sessionTools: ToolDef[] = [
       bashTool,
-      createReadTool(readState),
+      createReadTool(readState, mediaDeps),
       writeTool,
       createEditTool(readState),
       ...STATIC_TOOLS,
@@ -331,16 +341,13 @@ export class NativeProvider implements AgentProvider {
     const configPort = this.ports.config
     const tools = configPort.nativeAttachmentFidelity && this.uploadStore
       ? [...sessionTools, createAttachmentReadTool({
-          attachmentPort: this.ports.attachment,
+          ...mediaDeps,
           referenceIndex: this.attachmentReferences,
           sessionId: opts.id,
-          pdfBudgets,
-          preparedPdfs,
-          pdfDocumentsEnabled: () => configPort.nativeAttachmentFidelity && configPort.nativePdfDocuments,
         })]
       : sessionTools
-    const system = renderSystem({ withAgentSection: true, systemPromptAppend, env, agents }, tools)
-    const subagentSystem = renderSystem({ withAgentSection: false, systemPromptAppend, env, agents: [] }, tools)
+    const system = renderSystem({ withAgentSection: true, systemPromptAppend, agents }, tools)
+    const subagentSystem = renderSystem({ withAgentSection: false, systemPromptAppend, agents: [] }, tools)
     // The manager has already resolved globals + inline configs + first-party
     // `injectAll` results into `mcpServers`. The session owns that map as the
     // user half of its two-map MCP composition (user ∪ plugin, user-wins) and
@@ -399,6 +406,7 @@ export class NativeProvider implements AgentProvider {
         attachmentReferences: this.attachmentReferences,
         pdfBudgets,
         preparedPdfs,
+        preparedImages,
         resume: opts.resume,
         forkSession: opts.forkSession,
         resumeSessionAt: opts.resumeSessionAt,

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readNativeEnvironment, environmentSection, agentsSection } from './environment.js'
+import { readNativeEnvironment, agentsSection } from './environment.js'
 
 const dirs: string[] = []
 
@@ -69,29 +69,6 @@ describe('readNativeEnvironment', () => {
     const dir = await tempDir('native-env-date-')
     const facts = readNativeEnvironment(dir, new Date(2026, 10, 28, 23, 59))
     expect(facts.date).toBe('2026-11-28')
-  })
-})
-
-describe('environmentSection', () => {
-  it('renders the CLI-shaped env block', async () => {
-    const dir = await tempDir('native-env-section-')
-    const facts = readNativeEnvironment(dir, new Date(2026, 10, 28))
-    expect(environmentSection(facts)).toMatchObject({ name: 'harness:environment', order: 5 })
-    const text = environmentSection(facts).text
-    expect(text).toContain('<env>')
-    expect(text).toContain(`Working directory: ${dir}`)
-    expect(text).toContain('Is a git repository: no')
-    expect(text).toContain(`Platform: ${process.platform} (${process.arch})`)
-    expect(text).toContain("Today's date: 2026-11-28")
-    expect(text.trimEnd().endsWith('</env>')).toBe(true)
-  })
-
-  it('names the branch or detached sha in the git line', async () => {
-    const dir = await tempDir('native-env-section-git-')
-    await writeHead(dir, 'ref: refs/heads/main\n')
-    expect(environmentSection(readNativeEnvironment(dir)).text).toContain(
-      'Is a git repository: yes (branch "main")',
-    )
   })
 })
 

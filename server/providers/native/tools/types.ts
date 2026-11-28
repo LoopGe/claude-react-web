@@ -1,6 +1,6 @@
 // server/providers/native/tools/types.ts
 import type { NativeFileAttachment } from '../../../../shared/attachment-types.js'
-import type { FileBlock, TextBlock } from '../vocabulary/types.js'
+import type { FileBlock, ImageRefBlock, TextBlock } from '../vocabulary/types.js'
 
 export class ToolInputError extends Error {}
 
@@ -41,10 +41,10 @@ export interface ToolOutcome {
   /** Text-only UI summary. Structured content, when present, is the canonical
    * model/log result and normally starts with the same summary TextBlock. */
   text: string
-  /** Neutral vocabulary content — text blocks plus file occurrences. The loop
-   * wraps it into createToolResultMessage unchanged; no SDK tool_result shape
-   * is built here. */
-  content?: Array<TextBlock | ToolFileBlock>
+  /** Neutral vocabulary content — text blocks plus file / image occurrences.
+   *  The loop wraps it into createToolResultMessage unchanged; no SDK
+   *  tool_result shape is built here. */
+  content?: Array<TextBlock | ToolFileBlock | ImageRefBlock>
   isError?: boolean
 }
 

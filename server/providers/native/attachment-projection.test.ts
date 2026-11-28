@@ -5,8 +5,11 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { nativeFileHandleText, projectNativeMessages, publicNativeHistoryLine } from './attachment-projection.js'
+import { PdfBudgetLedger } from './pdf-documents.js'
+import { PreparedImageStore, imageRefBlockOf } from './image-documents.js'
 import type { NativeFileAttachment } from './session-log/format.js'
 import type { RawLine } from '../../history-reader.js'
+import type { NativeImagePort } from './ports.js'
 import { makeNativePorts } from '../native-host-adapters.js'
 import { aliasPathOf, attachmentRoot } from '../../attachment-paths.js'
 import { UploadStore } from '../../upload-store.js'
@@ -139,5 +142,85 @@ describe('native attachment projection', () => {
     expect((failure as Error).message).toMatch(/integrity|read/i)
     expect((failure as Error).message).not.toContain(path)
     expect(history).toEqual(before)
+  })
+})
+
+describe('native store-backed image projection', () => {
+  const digest = 'c'.repeat(64)
+  const meta = { mediaType: 'image/png' as const, width: 320, height: 200 }
+  const ref = imageRefBlockOf(digest, { ...meta, bytes: 6 })
+
+  function historyWithRef() {
+    return [{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'look' },
+        { type: 'tool_result', tool_use_id: 'read-1', content: [{ type: 'text', text: 'Image: shot.png' }, ref] },
+      ],
+    }]
+  }
+
+  it('verifies a ref occurrence through the image port on every round, never mutating history', async () => {
+    const reads: string[] = []
+    const imagePort: NativeImagePort = {
+      publishImage: async () => ({ digest, bytes: 6 }),
+      readImage: async (attachment) => {
+        reads.push(attachment.id)
+        return { mediaType: meta.mediaType, base64: 'AAAAAA==' }
+      },
+    }
+    const history = historyWithRef()
+    const before = structuredClone(history)
+    const first = await projectNativeMessages(history, { imagePort }, new AbortController().signal) as Array<{ content: Array<{ content?: Array<{ type: string; source?: { data?: string } }> }> }>
+    const second = await projectNativeMessages(history, { imagePort }, new AbortController().signal) as typeof first
+    expect(first).toEqual(second)
+    expect(history).toEqual(before)
+    const block = first[0].content[1].content?.[1]
+    expect(block).toEqual({ type: 'image', source: { type: 'base64', data: 'AAAAAA==', media_type: 'image/png' } })
+    expect(reads).toEqual([`sha256:${digest}`, `sha256:${digest}`])
+  })
+
+  it('consumes the prepared handoff exactly once, then falls back to the port', async () => {
+    const ledger = new PdfBudgetLedger()
+    const preparedImages = new PreparedImageStore(ledger)
+    let portReads = 0
+    const imagePort: NativeImagePort = {
+      publishImage: async () => ({ digest, bytes: 6 }),
+      readImage: async () => {
+        portReads += 1
+        return { mediaType: meta.mediaType, base64: 'PORT====' }
+      },
+    }
+    const attempt = ledger.reserveImageBudget('main', 6, digest)
+    if (!attempt.ok) throw new Error('expected reservation')
+    const reservation = preparedImages.reserve('read-1', ref.attachment, attempt.reservation)
+    preparedImages.complete(reservation, { type: 'image', source: { type: 'base64', data: 'PREP====', media_type: 'image/png' } })
+    preparedImages.confirmPersisted('read-1')
+
+    const first = await projectNativeMessages(historyWithRef(), { imagePort, preparedImages }, new AbortController().signal) as Array<{ content: Array<{ content?: Array<{ source?: { data?: string } }> }> }>
+    expect(first[0].content[1].content?.[1].source?.data).toBe('PREP====')
+    expect(portReads).toBe(0)
+
+    const second = await projectNativeMessages(historyWithRef(), { imagePort, preparedImages }, new AbortController().signal) as typeof first
+    expect(second[0].content[1].content?.[1].source?.data).toBe('PORT====')
+    expect(portReads).toBe(1)
+  })
+
+  it('fails loudly when an image occurrence is projected without a store port', async () => {
+    await expect(projectNativeMessages(historyWithRef(), {}, new AbortController().signal))
+      .rejects.toThrow(/image store is unavailable/)
+  })
+
+  it('keeps the neutral ref in the public projection (no bytes reach the browser)', () => {
+    const line = publicNativeHistoryLine({
+      type: 'user',
+      uuid: 'u1',
+      message: { role: 'user', content: [{ type: 'image', attachment: ref.attachment }] },
+      timestamp: '2026-11-28T00:00:00.000Z',
+      session_id: 's',
+      parent_tool_use_id: null,
+    } as unknown as RawLine)
+    expect(line.message?.content).toEqual([{ type: 'image', attachment: ref.attachment }])
+    expect(JSON.stringify(line)).not.toContain('AAAA')
   })
 })

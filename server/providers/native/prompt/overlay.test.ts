@@ -77,28 +77,49 @@ describe('renderAutoMemorySection', () => {
 })
 
 describe('renderEnvironment', () => {
+  const facts = {
+    cwd: '/repo',
+    platform: 'win32',
+    arch: 'x64',
+    osRelease: '10.0.26100',
+    git: { kind: 'branch', name: 'main' } as const,
+  }
+
   // Local-time constructors: the expected day is the LOCAL day by
   // construction, so the assertions hold in any timezone.
   it('exact format with day-granularity date', () => {
-    expect(renderEnvironment({
-      cwd: '/repo',
-      isGitRepo: true,
-      platform: 'win32',
-      date: new Date(2026, 10, 27, 15, 0, 0),
-    })).toBe(
-      "# Environment\nWorking directory: /repo\nIs a git repository: true\nPlatform: win32\nToday's date: 2026-11-27",
+    expect(renderEnvironment({ facts, date: new Date(2026, 10, 27, 15, 0, 0) })).toBe(
+      '# Environment\n'
+      + 'Working directory: /repo\n'
+      + 'Is a git repository: true\n'
+      + 'Current branch: main\n'
+      + 'Platform: win32 (x64)\n'
+      + 'OS release: 10.0.26100\n'
+      + "Today's date: 2026-11-27",
     )
   })
 
   it('renders a non-repo cwd', () => {
     expect(renderEnvironment({
-      cwd: '/tmp/scratch',
-      isGitRepo: false,
-      platform: 'linux',
+      facts: { cwd: '/tmp/scratch', platform: 'linux', arch: 'arm64', osRelease: '6.8.0', git: null },
       date: new Date(2026, 0, 2, 23, 59, 59),
     })).toBe(
-      "# Environment\nWorking directory: /tmp/scratch\nIs a git repository: false\nPlatform: linux\nToday's date: 2026-01-02",
+      '# Environment\n'
+      + 'Working directory: /tmp/scratch\n'
+      + 'Is a git repository: false\n'
+      + 'Platform: linux (arm64)\n'
+      + 'OS release: 6.8.0\n'
+      + "Today's date: 2026-01-02",
     )
+  })
+
+  it('names a detached HEAD short sha', () => {
+    const text = renderEnvironment({
+      facts: { ...facts, git: { kind: 'detached', sha: 'abc1234' } },
+      date: new Date(2026, 10, 27),
+    })
+    expect(text).toContain('Is a git repository: true')
+    expect(text).toContain('Current branch: detached HEAD at abc1234')
   })
 
   it('renders the LOCAL calendar day, not the UTC day', () => {
@@ -106,19 +127,9 @@ describe('renderEnvironment', () => {
     // west of UTC is already the NEXT UTC day. Each construct pins its
     // local day by construction, so a UTC renderer fails at least one of
     // them in every non-UTC timezone.
-    const early = renderEnvironment({
-      cwd: '/repo',
-      isGitRepo: true,
-      platform: 'win32',
-      date: new Date(2026, 10, 27, 0, 30, 0),
-    })
+    const early = renderEnvironment({ facts, date: new Date(2026, 10, 27, 0, 30, 0) })
     expect(early).toContain("Today's date: 2026-11-27")
-    const late = renderEnvironment({
-      cwd: '/repo',
-      isGitRepo: true,
-      platform: 'win32',
-      date: new Date(2026, 0, 2, 23, 30, 0),
-    })
+    const late = renderEnvironment({ facts, date: new Date(2026, 0, 2, 23, 30, 0) })
     expect(late).toContain("Today's date: 2026-01-02")
   })
 })

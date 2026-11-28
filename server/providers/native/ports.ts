@@ -14,6 +14,8 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { ProviderProfile } from '../../../shared/profile.js'
 import type { McpTransportTarget } from '../../../shared/mcp-transport.js'
 import type { ResolvedFileAttachment } from '../../../shared/attachment-types.js'
+import type { ImageAttachmentRef } from '../../../shared/image-attachment.js'
+import type { SupportedImageMediaType } from '../../../shared/image-media.js'
 import type { SkillRecord, SkillRootInfo } from '../../../shared/skills.js'
 import type { StoredAgentDefinition } from '../../../shared/agent-definitions.js'
 import type { SessionHooksConfig } from '../../../shared/hooks.js'
@@ -78,6 +80,33 @@ export interface NativeMcpTransportPort {
 export interface NativeAttachmentPort {
   readVerified(input: { path: string; digest: string; size: number; signal?: AbortSignal }): AsyncIterable<Uint8Array>
   resolveAuthorized(occurrence: ResolvedFileAttachment): Promise<ResolvedFileAttachment>
+  /** Publish bytes that did not arrive through the upload pipeline (a
+   *  working-directory PDF Read) into the same content-addressed store, so
+   *  later rounds replay from the store instead of re-opening the file. */
+  publish?(input: {
+    chunks: AsyncIterable<Uint8Array>
+    name?: string
+    maxBytes: number
+    signal?: AbortSignal
+  }): Promise<{ digest: string; objectPath: string; size: number }>
+}
+
+/** Caller-declared image facts. The stored byte length is measured by the
+ *  host from the bytes, never trusted from this input. */
+export interface ImageMeta {
+  mediaType: SupportedImageMediaType
+  width: number
+  height: number
+}
+
+/** Verified image bytes over the host's content-addressed store. Native never
+ *  touches the store: `publishImage` lands a new occurrence (Read of a file /
+ *  AttachmentRead of an uploaded image), `readImage` verifies one occurrence
+ *  against its digest and returns the API-ready base64 payload. Errors surface
+ *  as the neutral AttachmentStoreError. */
+export interface NativeImagePort {
+  publishImage(bytes: Uint8Array, meta: ImageMeta, signal?: AbortSignal): Promise<{ digest: string; bytes: number }>
+  readImage(attachment: ImageAttachmentRef, signal?: AbortSignal): Promise<{ mediaType: SupportedImageMediaType; base64: string }>
 }
 
 /** Skill discovery over the host's user/project skill roots, plus the
@@ -226,6 +255,9 @@ export interface NativeHostPorts {
   auxLlm: NativeAuxLlmPort
   mcpTransport: NativeMcpTransportPort
   attachment: NativeAttachmentPort
+  /** Absent only on hosts without a content-addressed store; a session that
+   *  needs image projection then fails loudly instead of silently dropping. */
+  image?: NativeImagePort
   skill: NativeSkillPort
   /** Absent when the host has no marketplace store (handle-only unit
    *  sessions): plugin contributions are then simply unavailable, exactly as

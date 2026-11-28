@@ -80,6 +80,23 @@ export class NativeReadState {
     this.entry(target)
   }
 
+  /** True when this session already returned the whole current file to the
+   *  model and the bytes on disk are still exactly those bytes. Read-only
+   *  question: it never consumes or changes the proof Edit relies on. */
+  unchangedSinceRead(target: NativeReadTarget): boolean {
+    const entry = this.entries.get(target.realPath)
+    if (!entry?.seeded) return false
+    if (!sameNativeFileIdentity(entry.seeded.identity, target.identity)) {
+      delete entry.seeded
+      if (entry.candidate && !sameNativeFileIdentity(entry.candidate.observation.identity, target.identity)) {
+        delete entry.candidate
+      }
+      return false
+    }
+    this.entry(target)
+    return true
+  }
+
   continuation(target: NativeReadTarget, startLine: number): { byteOffset: number } | undefined {
     const entry = this.entries.get(target.realPath)
     const candidate = entry?.candidate

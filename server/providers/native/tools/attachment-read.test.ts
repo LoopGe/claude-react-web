@@ -8,6 +8,7 @@ import { Readable } from 'node:stream'
 import { createAttachmentReadTool } from './attachment-read.js'
 import { projectNativeMessages } from '../attachment-projection.js'
 import { PDF_MAX_BYTES, PdfBudgetLedger, PreparedPdfStore } from '../pdf-documents.js'
+import { PreparedImageStore } from '../image-documents.js'
 import { NativeAttachmentReferenceIndex } from '../attachment-reference-index.js'
 import { makeNativePorts } from '../../native-host-adapters.js'
 import { aliasPathOf, attachmentRoot } from '../../../attachment-paths.js'
@@ -91,8 +92,12 @@ async function fixture(options: {
   }
   const pdfBudgets = options.shared?.pdfBudgets ?? new PdfBudgetLedger()
   const preparedPdfs = options.shared?.preparedPdfs ?? new PreparedPdfStore(pdfBudgets)
+  const preparedImages = new PreparedImageStore(pdfBudgets)
+  const ports = makeNativePorts({ stateDir, uploadStore: store })
   const tool = createAttachmentReadTool({
-    attachmentPort: makeNativePorts({ stateDir, uploadStore: store }).attachment,
+    attachmentPort: ports.attachment,
+    imagePort: ports.image,
+    preparedImages,
     referenceIndex: index,
     sessionId: 'session-1',
     pdfBudgets,
@@ -425,5 +430,37 @@ describe('AttachmentRead', () => {
       completed = await pending
     }
     expect(completed.isError).not.toBe(true)
+  })
+})
+
+describe('AttachmentRead images', () => {
+  /** Header-only PNG: the inspector reads the container + dimensions only. */
+  function png(width: number, height: number): Buffer {
+    const bytes = Buffer.alloc(24)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes, 0)
+    bytes.writeUInt32BE(13, 8)
+    bytes.write('IHDR', 12, 'latin1')
+    bytes.writeUInt32BE(width, 16)
+    bytes.writeUInt32BE(height, 20)
+    return bytes
+  }
+
+  it('reads an uploaded image as a verified store-backed occurrence', async () => {
+    const bytes = png(800, 600)
+    const fx = await fixture({ bytes, name: 'shot.png', mediaType: 'image/png' })
+    const res = await run(fx, { id: fx.occurrence.id })
+    expect(res.text).toContain('Image: shot.png')
+    expect(res.text).toContain('Dimensions: 800x600')
+    const ref = res.content?.find((block) => block.type === 'image') as { attachment: { id: string; width: number; mediaType: string } }
+    expect(ref.attachment.id).toMatch(/^sha256:/)
+    expect(ref.attachment.width).toBe(800)
+    expect(ref.attachment.mediaType).toBe('image/png')
+  })
+
+  it('rejects pagination on images', async () => {
+    const fx = await fixture({ bytes: png(4, 4), name: 'shot.png', mediaType: 'image/png' })
+    const res = await run(fx, { id: fx.occurrence.id, offset: 2 })
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain('do not accept offset or limit')
   })
 })

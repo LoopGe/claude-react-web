@@ -9005,7 +9005,7 @@ describe('auto-memory prompt section (Task 5)', () => {
 })
 
 describe('native system prompt: environment + agent roster', () => {
-  it('main prompt carries <env> and <available_agents>; nested keeps env, drops the roster', async () => {
+  it('main prompt carries the environment block and <available_agents>; nested keeps env, drops the roster', async () => {
     const dir = await tempDir('native-env-prompt-')
     await mkdir(join(dir, '.git'), { recursive: true })
     await writeFile(join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8')
@@ -9031,9 +9031,10 @@ describe('native system prompt: environment + agent roster', () => {
       await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
 
       const main = requests[0].system
-      expect(main).toContain('<env>')
+      expect(main).toContain('# Environment')
       expect(main).toContain(`Working directory: ${dir}`)
-      expect(main).toContain('Is a git repository: yes (branch "main")')
+      expect(main).toContain('Is a git repository: true')
+      expect(main).toContain('Current branch: main')
       expect(main).toContain('<available_agents>')
       expect(main).toContain('- reviewer (tools: Read, Grep): Reviews code')
 
@@ -9041,7 +9042,7 @@ describe('native system prompt: environment + agent roster', () => {
       await vi.waitFor(() => expect(requests.length).toBeGreaterThan(1))
       const nested = requests[1].system
       // A subagent works in the same directory, but cannot delegate further.
-      expect(nested).toContain('<env>')
+      expect(nested).toContain('# Environment')
       expect(nested).not.toContain('<available_agents>')
       expect(nested).not.toContain('- reviewer')
     } finally {

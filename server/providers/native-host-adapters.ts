@@ -26,6 +26,14 @@ import { createAutoMemoryPort, resolveMemoryRoots } from './native-host-auto-mem
 import type { UploadStore } from '../upload-store.js'
 import { resolveNativeStateDir } from './native/session-log/paths.js'
 import type { NativeAutoMemoryPort, NativeConfigPort, NativeHostPorts, NativeMemoryPort } from './native/ports.js'
+import { digestOfImageRef } from '../../shared/image-attachment.js'
+import { AttachmentStoreError } from '../../shared/attachment-store-error.js'
+import { promises as fs } from 'node:fs'
+import { attachmentRoot, objectPathOf } from '../attachment-paths.js'
+import { HttpError } from '../errors.js'
+
+/** Bare lowercase sha256 — the shape a store-backed attachment id must carry. */
+const DIGEST_PATTERN = /^[a-f0-9]{64}$/
 
 export interface NativeHostPortsDeps {
   /** App state dir; resolved exactly like NativeProvider's own stateDir so
@@ -101,9 +109,46 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
       createTransport: (target, opts) => createMcpTransport(target, opts),
       isAuthError: (err) => isMcpAuthError(err),
     },
+    image: {
+      publishImage: async (bytes, meta) => {
+        const published = await objects.publishImage(bytes, meta)
+        return { digest: published.digest, bytes: published.bytes }
+      },
+      readImage: async (attachment) => {
+        const digest = digestOfImageRef(attachment.id)
+        if (digest === null) throw new AttachmentStoreError('corrupt', `malformed image reference: ${attachment.id}`)
+        const stored = await objects.readVerifiedImage(digest)
+        // The declared facts are the durable occurrence; a mismatch means the
+        // occurrence was tampered with or the store lost the object's identity.
+        if (stored.meta.bytes !== attachment.bytes
+          || stored.meta.mediaType !== attachment.mediaType
+          || stored.meta.width !== attachment.width
+          || stored.meta.height !== attachment.height) {
+          throw new AttachmentStoreError('corrupt', `image reference does not match the stored image: ${attachment.id}`)
+        }
+        return { mediaType: stored.meta.mediaType, base64: Buffer.from(stored.bytes).toString('base64') }
+      },
+    },
     attachment: {
       readVerified: (input) => objects.readVerified(input),
-      resolveAuthorized: (occurrence) => {
+      publish: (input) => objects.publishStream(input),
+      resolveAuthorized: async (occurrence) => {
+        // A `sha256:` id is a store-backed occurrence (a working-directory PDF
+        // Read). Its bytes live in the object tree, not the upload registry;
+        // resolve to the object path and let readVerified prove the digest.
+        const digest = occurrence.id.startsWith('sha256:') ? occurrence.id.slice('sha256:'.length) : null
+        if (digest !== null) {
+          if (!DIGEST_PATTERN.test(digest) || digest !== occurrence.digest) {
+            throw new HttpError(400, `attachment does not match its store identity: ${occurrence.id}`)
+          }
+          const objectPath = objectPathOf(attachmentRoot(stateDir), digest)
+          const info = await fs.stat(objectPath).catch(() => undefined)
+          if (!info || !info.isFile()) throw new HttpError(400, `attachment object is missing: ${occurrence.id}`)
+          if (info.size !== occurrence.size) {
+            throw new HttpError(400, `attachment does not match its object: ${occurrence.id}`)
+          }
+          return { ...occurrence, path: objectPath }
+        }
         if (!deps.uploadStore) {
           throw new Error('native attachment port: resolveAuthorized requires an injected uploadStore')
         }

@@ -47,6 +47,7 @@ import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabu
 import type { RawStreamEvent } from './vocabulary/stream.js'
 import type { MemoryCandidate, NativeHostPorts, NativeMemoryReadResult, PluginContributions } from './ports.js'
 import { joinPromptParts, renderMemorySection, renderAutoMemorySection, renderEnvironment } from './prompt/overlay.js'
+import { readNativeEnvironment, type NativeEnvironmentFacts } from './prompt/environment.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel, type RequestOutputFormat, type StreamRequest } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, type FrameContext } from './vocabulary/frame-context.js'
@@ -113,6 +114,8 @@ import {
   PreparedPdfStore,
   type PdfBudgetReservation,
 } from './pdf-documents.js'
+import { PreparedImageStore } from './image-documents.js'
+import type { NativeProjectionOptions } from './attachment-projection.js'
 import { type NativeModelContextResolver } from './model-context.js'
 import {
   SUGGESTION_MAX_TOKENS,
@@ -413,6 +416,9 @@ export interface NativeSessionOptions {
   /** Shared with AttachmentRead. Optional for direct handle-only unit sessions. */
   pdfBudgets?: PdfBudgetLedger
   preparedPdfs?: PreparedPdfStore
+  /** Shared with Read / AttachmentRead for the image handoff. Optional for
+   * direct unit sessions; projection then re-reads from the store every round. */
+  preparedImages?: PreparedImageStore
   /** Resume this session's own log (non-fork), or the source log id for a fork. */
   resume?: string
   /** Fork from `resume`'s log into `id` instead of resuming it. */
@@ -592,6 +598,11 @@ export class NativeSession implements NativeSessionCore {
   private readonly history: RequestMessage[] = []
   private readonly pdfBudgets: PdfBudgetLedger
   private readonly preparedPdfs: PreparedPdfStore
+  private readonly preparedImages: PreparedImageStore
+  /** Spawn-time environment facts for the single `# Environment` section (the
+   *  overlay re-reads only the date per turn). Lazy: a session destroyed before
+   *  its first prompt never pays the git/OS probe. */
+  private envFacts: NativeEnvironmentFacts | null = null
   /** Builtins plus the MCP tools discovered as of the last rebuild. Replaced
    *  (never mutated) so a mid-turn `setServers`/toggle only affects the NEXT
    *  turn: the running turn holds the snapshot its `runTurn` started with. */
@@ -888,6 +899,7 @@ export class NativeSession implements NativeSessionCore {
     void this.memorySettingsSeed.catch(() => {})
     this.pdfBudgets = opts.pdfBudgets ?? new PdfBudgetLedger()
     this.preparedPdfs = opts.preparedPdfs ?? new PreparedPdfStore(this.pdfBudgets)
+    this.preparedImages = opts.preparedImages ?? new PreparedImageStore(this.pdfBudgets)
     this.hooksConfig = opts.hooks ?? {}
     // The flag source reads the LIVE config field per collection, and the
     // engine re-invokes sources() on every dispatch, so a live
@@ -942,10 +954,7 @@ export class NativeSession implements NativeSessionCore {
           stream: ctx.stream!,
           tools: ctx.tools ?? [],
           tasks: this.tasks,
-          attachmentProjection: {
-            attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
-            preparedPdfs: this.preparedPdfs,
-          },
+          attachmentProjection: this.attachmentProjection,
           frameCtx: this.ctx,
         }),
         // http (T15): POST the event JSON, parse the response as hook output.
@@ -1070,10 +1079,7 @@ export class NativeSession implements NativeSessionCore {
           this.emitFrame(frame, parentToolUseId)
         },
         persistToolResult: (result, parentToolUseId) => this.persistToolResult(result, parentToolUseId),
-        attachmentProjection: {
-          attachmentPort: opts.uploadStore ? opts.ports.attachment : undefined,
-          preparedPdfs: this.preparedPdfs,
-        },
+        attachmentProjection: this.attachmentProjection,
         appendDescriptor: async (input) => {
           // The runner builds the neutral v3 descriptor (identity in `data`, time
           // paired with data.timestamp); the log assigns seq. Return the neutral
@@ -1924,14 +1930,7 @@ export class NativeSession implements NativeSessionCore {
         log.debug(`[${this.opts.id}] prompt suggestion skipped: last history message is not an assistant`)
         return
       }
-      const finalWire = await projectNativeHistoryToWire(
-        [last],
-        {
-          attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
-          preparedPdfs: this.preparedPdfs,
-        },
-        signal,
-      )
+      const finalWire = await projectNativeHistoryToWire([last], this.attachmentProjection, signal)
       if (signal.aborted) return
       // Credentials are resolved by runSuggestionFork's production branch only
       // (the test seam bypasses them, exactly as streamFor bypasses defaultStream).
@@ -2133,6 +2132,7 @@ export class NativeSession implements NativeSessionCore {
       data: { message },
     })
     this.preparedPdfs.confirmPersisted(message.toolCallId)
+    this.preparedImages.confirmPersisted(message.toolCallId)
     this.syncAttachmentReferences()
     flushInBackground(this.log, this.opts.id, 'tool result')
   }
@@ -2253,12 +2253,31 @@ export class NativeSession implements NativeSessionCore {
       joinPromptParts(
         this.opts.subagentSystem ?? this.baseSystem,
         memory ? renderMemorySection(memory.files) : '',
-        memory
-          ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
-          : '',
+        this.environmentSection(),
       ),
       skillView.section(),
     )
+  }
+
+  /** The single `# Environment` block for this turn. Structural facts are the
+   *  spawn-time snapshot; the date is re-read now (LOCAL day). */
+  /** The one projection-options object every request build shares: registry /
+   *  store-backed attachments and the one-shot prepared handoffs. */
+  private get attachmentProjection(): NativeProjectionOptions {
+    return {
+      attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
+      preparedPdfs: this.preparedPdfs,
+      imagePort: this.opts.ports.image,
+      preparedImages: this.preparedImages,
+    }
+  }
+
+  private environmentSection(): string {
+    const facts = this.envFacts ??= readNativeEnvironment(this.opts.cwd)
+    // The CLAUDE.md chain reader owns repository-ness (the merged memory
+    // section and this block must agree about what this directory is); the git
+    // probe only supplies the branch line.
+    return renderEnvironment({ facts, date: new Date(), gitRepository: this.memorySnapshot?.isGitRepo })
   }
 
   /** Construct the complete builtin + current MCP discovery snapshot and its
@@ -2771,7 +2790,7 @@ export class NativeSession implements NativeSessionCore {
                 : this.baseSystem,
               renderMemorySection(memory.files),
               this.autoMemorySection(),
-              renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() }),
+              this.environmentSection(),
             ),
             skillView.section(),
           )
@@ -2830,10 +2849,7 @@ export class NativeSession implements NativeSessionCore {
                 this.emitFrame(frame, parent)
               },
               persistToolResult: (result) => this.persistToolResult(result, null),
-              attachmentProjection: {
-                attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
-                preparedPdfs: this.preparedPdfs,
-              },
+              attachmentProjection: this.attachmentProjection,
               system: turnSystem,
               fastModeState: () => (this.fastMode ? 'on' : 'off'),
               drainSupplement: () => this.injectSupplements(),
@@ -2964,6 +2980,7 @@ export class NativeSession implements NativeSessionCore {
         }
       } finally {
         this.preparedPdfs.clearHistory('main')
+        this.preparedImages.clearHistory('main')
         this.turnAbort = null
         this.turnStats = null
         this.activeTurnMode = null
@@ -3501,13 +3518,10 @@ export class NativeSession implements NativeSessionCore {
    *  and the current index snapshot. Returns once the task is registered (not
    *  once the run finishes); await the handle's `settled` for the outcome. */
   private startDreamRun(input: { ownDir: string; logPaths: string[]; index: string | null }): Promise<DreamRunHandle> {
-    const memory = this.memorySnapshot
     const system = joinPromptParts(
       this.opts.subagentSystem ?? this.baseSystem,
       this.autoMemorySection(),
-      memory
-        ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
-        : '',
+      this.environmentSection(),
     )
     return startDreamRunCore({
       cwd: this.opts.cwd,
@@ -3523,10 +3537,7 @@ export class NativeSession implements NativeSessionCore {
         this.emitFrame(frame, parentToolUseId)
       },
       persistToolResult: (result, parentToolUseId) => this.persistToolResult(result, parentToolUseId),
-      attachmentProjection: {
-        attachmentPort: this.opts.uploadStore ? this.opts.ports.attachment : undefined,
-        preparedPdfs: this.preparedPdfs,
-      },
+      attachmentProjection: this.attachmentProjection,
       appendDescriptor: async (descriptor) => {
         const appended = await this.log.appendDurable(descriptor)
         return { ...descriptor, seq: appended.seq } as SessionEvent<'subagent/descriptor'>
@@ -3779,9 +3790,7 @@ export class NativeSession implements NativeSessionCore {
     // The auto-memory section prices the same session-level snapshot the per-turn
     // overlay renders (its own category, distinct from the instruction chain).
     const autoMemorySection = this.autoMemorySection()
-    const envSection = memory
-      ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
-      : ''
+    const envSection = this.environmentSection()
     const system = joinPromptParts(persona ? `${this.baseSystem}\n\n${persona}` : this.baseSystem, envSection)
     const systemTokens = estimateText(system) + ROLE_OVERHEAD
     const memoryTokens = memorySection ? estimateText(memorySection) + ROLE_OVERHEAD : 0

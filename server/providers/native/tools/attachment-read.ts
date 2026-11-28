@@ -7,8 +7,11 @@ import { HttpError } from '../../../errors.js'
 import { createLogger } from '../../../log.js'
 import { AttachmentStoreError } from '../../../../shared/attachment-store-error.js'
 import type { NativeFileAttachment, ResolvedFileAttachment } from '../../../../shared/attachment-types.js'
+import { isSupportedImageMediaType } from '../../../../shared/image-media.js'
 import type { NativeAttachmentReferenceIndex } from '../attachment-reference-index.js'
-import type { NativeAttachmentPort } from '../ports.js'
+import { IMAGE_MAX_BYTES, type PreparedImageStore } from '../image-documents.js'
+import type { NativeAttachmentPort, NativeImagePort } from '../ports.js'
+import { imageOutcomeFromBytes, safeMediaReadReason } from './media-read.js'
 import {
   PDF_MAX_BASE64_CHARS,
   PDF_MAX_BYTES,
@@ -41,7 +44,12 @@ interface PdfReadDeps {
   pdfDocumentsEnabled: () => boolean
 }
 
-export interface AttachmentReadDeps extends AttachmentReadBaseDeps, PdfReadDeps {}
+export interface AttachmentReadDeps extends AttachmentReadBaseDeps, PdfReadDeps {
+  /** Image occurrences need the store port and the immediate-projection
+   * handoff; absent = uploaded images return a clear error. */
+  imagePort?: NativeImagePort
+  preparedImages?: PreparedImageStore
+}
 
 interface ReadTextInput extends Record<string, unknown> {
   id: string
@@ -284,6 +292,35 @@ export function createAttachmentReadTool(deps: AttachmentReadDeps): ToolDef<Read
         if (!occurrence) {
           return errorOutcome(input.id, undefined, 'upload is not referenced by this session\'s native log')
         }
+        if (occurrence.mediaType !== undefined && isSupportedImageMediaType(occurrence.mediaType)) {
+          // Image occurrences return model-visible content instead of text.
+          // Pagination is text-only: an image has no lines to page through.
+          if (input.offset !== undefined || input.limit !== undefined) {
+            return errorOutcome(input.id, occurrence.name, 'image attachments do not accept offset or limit pagination')
+          }
+          const authorized = await deps.attachmentPort.resolveAuthorized(occurrence)
+          if (authorized.size > IMAGE_MAX_BYTES) {
+            return errorOutcome(input.id, occurrence.name, 'image exceeds the 5 MiB per-image limit')
+          }
+          const chunks: Buffer[] = []
+          let retained = 0
+          for await (const chunk of deps.attachmentPort.readVerified({
+            path: authorized.path,
+            digest: authorized.digest,
+            size: authorized.size,
+            signal: ctx.signal,
+          })) {
+            retained += chunk.byteLength
+            if (retained > IMAGE_MAX_BYTES) {
+              return errorOutcome(input.id, occurrence.name, 'image exceeds the 5 MiB per-image limit')
+            }
+            chunks.push(Buffer.from(chunk))
+          }
+          return await imageOutcomeFromBytes(deps, ctx, {
+            bytes: Buffer.concat(chunks, retained),
+            name: authorized.name,
+          })
+        }
         if (occurrence.mediaType === 'application/pdf') {
           // Authorization precedes every PDF-specific result, including input
           // rejection. Pagination still rejects before opening file bytes.
@@ -309,7 +346,7 @@ export function createAttachmentReadTool(deps: AttachmentReadDeps): ToolDef<Read
           return errorOutcome(input.id, occurrence?.name, 'attachment read was interrupted')
         }
         log.warn(`AttachmentRead failed for upload ${input.id}: ${err instanceof Error ? err.message : String(err)}`)
-        return errorOutcome(input.id, occurrence?.name, safeReason(err))
+        return errorOutcome(input.id, occurrence?.name, safeMediaReadReason(err) ?? safeReason(err))
       }
     },
   }
