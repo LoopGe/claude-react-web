@@ -322,7 +322,15 @@
               /* Sleep → dormant: dim smoothly (and brighten back on resume)
                  instead of snapping. Same transition serves the terminated /
                  resuming opacity states, so every state flip reads as motion. */
-              opacity var(--motion-duration-moderate) var(--motion-ease-standard);
+              opacity var(--motion-duration-moderate) var(--motion-ease-standard),
+              /* The base rule owns the RELEASE side of the drag lift: `.dragging`
+                 carries its own (faster) transition for pickup, but the drop
+                 removes the class, so the 0.97 → 1 scale-back must be declared
+                 here or it snaps while the opacity fades. border-radius is
+                 deliberately NOT here: the hole's radius may snap on drop (it
+                 is hidden under the drop-animation fade), and the landing ghost
+                 reads `--run-radius` — not the animated radius — anyway. */
+              transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .session-item-shell {
   display: grid;
@@ -356,8 +364,13 @@
 /* Rounding and the run's top hairline live only at the ends of a
    contiguous run of cards. No negative margins: the seam divider is a
    box-shadow, so flush cards already collapse to one 1px line each. */
+/* `--run-radius` names the card's final run-position rounding so the drop's
+   landing ghost can read it (motion.ts) without depending on when CSS settles:
+   custom properties are substituted, not transitioned, so the value is exact
+   even while the radius is mid-animation. `border-radius` consumes it. */
 .session-item-shell.list-first > .session-item {
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  --run-radius: var(--radius-md) var(--radius-md) 0 0;
+  border-radius: var(--run-radius);
   --row-hairline:
     inset 1px 0 0 0 var(--border),
     inset -1px 0 0 0 var(--border),
@@ -365,11 +378,13 @@
     inset 0 -1px 0 0 var(--border);
 }
 .session-item-shell.list-last > .session-item {
-  border-radius: var(--radius-md);
-  border-top-left-radius: 0;
-  border-top-right-radius: 0;
+  --run-radius: 0 0 var(--radius-md) var(--radius-md);
+  border-radius: var(--run-radius);
 }
-.session-item-shell.list-first.list-last > .session-item { border-radius: var(--radius-md); }
+.session-item-shell.list-first.list-last > .session-item {
+  --run-radius: var(--radius-md);
+  border-radius: var(--run-radius);
+}
 .session-item-shell.deleting {
   grid-template-rows: 0fr;
   opacity: 0;
@@ -382,8 +397,11 @@
 }
 .session-item.deleting { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
+  /* `.session-item.dragging` is deliberately NOT listed here: its own rule
+     further down declares `transition` at equal specificity and would beat
+     this entry — the suppression lives in the reduced-motion block placed
+     directly after that rule (single owner, no dead entries). */
   .session-item,
-  .session-item.dragging,
   .session-item-shell { transition: none; }
   .session-item-shell.deleting { transform: none; }
   .session-group-header.dragging { transition: none; }
@@ -1026,15 +1044,37 @@
   opacity: 0.3;
   transform: scale(0.97);
   box-shadow: 0 4px 12px color-mix(in srgb, var(--fg) 12%, transparent);
+  /* While lifted, the hole takes the same full rounding as the floating
+     clone (dnd.css gives the ghost `var(--radius-md)` on all four corners),
+     so the card reads as ONE shape that rounds up as it lifts instead of a
+     rounded ghost appearing over a square slot. The `.session-item-shell.list-*`
+     rules below re-assert it because those selectors outrank this one. */
+  border-radius: var(--radius-md);
   transition: opacity var(--motion-duration-fast) var(--motion-ease-standard),
               transform var(--motion-duration-fast) var(--motion-ease-standard),
-              box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
+              box-shadow var(--motion-duration-fast) var(--motion-ease-standard),
+              border-radius var(--motion-duration-fast) var(--motion-ease-standard);
   cursor: grabbing;
   z-index: 1;
+}
+/* Run ends (first / last / only card) carry partial rounding from their shell
+   classes; the lift overrides all of them to the floating card's full radius. */
+.session-item-shell.list-first > .session-item.dragging,
+.session-item-shell.list-last > .session-item.dragging,
+.session-item-shell.list-first.list-last > .session-item.dragging {
+  border-radius: var(--radius-md);
 }
 /* Suppress hover flicker on the dragged card itself — it's at 0.3
    opacity and shouldn't flash a background on cursor jitter. */
 .session-item.dragging:hover { background: transparent; }
+/* Placed AFTER the `.dragging` declarations (equal specificity — source order
+   decides), so the drag fade/scale/radius actually snaps under reduced motion.
+   This is the single owner of that suppression; the reduced block near the
+   base `.session-item` rule deliberately omits `.dragging` (it would be dead
+   there — this later rule would win the cascade). */
+@media (prefers-reduced-motion: reduce) {
+  .session-item.dragging { transition: none; }
+}
 
 .session-item.open {
   background: var(--bg-elev-2);

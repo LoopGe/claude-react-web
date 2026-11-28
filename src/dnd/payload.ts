@@ -109,6 +109,43 @@ export function pointerOnlyListeners(
   return Object.fromEntries(Object.entries(listeners).filter(([k]) => k !== 'onKeyDown'))
 }
 
+/** The in-flight drag plus the one ambient fact a drop target needs to name
+ *  its outcome: whether the dragged session already owns an open panel
+ *  (decides swap-vs-replace). Provided by App through ActiveDragContext. */
+export interface ActiveDragInfo {
+  payload: DragPayload
+  isOpen: boolean
+}
+
+/** What releasing the active drag over a chat panel would do — the panel's
+ *  drop-affordance decision (ChatPanel renders the ring + hint pill from it).
+ *  The outcome must match what handleDndEnd actually runs, per branch:
+ *  `swap` = the two sessions exchange panel slots (an already-open sidebar
+ *  card via openAtSlot's swap branch, or another panel's header drag via
+ *  swapPanels); `replace` = a NOT-open sidebar card takes this panel's slot
+ *  and the occupant's panel closes (openAtSlot's replace branch). Null for
+ *  incompatible drags (group cards, profiles, the grid), foreign payloads,
+ *  and self-targets (all resolve to no-ops) — the affordance must never
+ *  promise an outcome the drop handlers won't produce. The promise names the
+ *  BRANCH the drop takes, not runtime success: a dormant card's resume can
+ *  still fail on release, which surfaces as the existing error toast (no
+ *  affordance can preview that, and hiding the pill for dormant cards would
+ *  misname the common success path). Pure so the contract is unit-testable
+ *  next to the payload union it dispatches on. */
+export function panelDropHint(
+  active: ActiveDragInfo | null,
+  ownSessionId: string,
+): 'replace' | 'swap' | null {
+  if (!active) return null
+  const { payload, isOpen } = active
+  if (payload.kind === 'sidebar-card') {
+    if (payload.id === ownSessionId) return null
+    return isOpen ? 'swap' : 'replace'
+  }
+  if (payload.kind === 'main-panel') return payload.id === ownSessionId ? null : 'swap'
+  return null
+}
+
 /** Maximum tilt (degrees) the drag ghost can reach at any speed. */
 export const MAX_TILT_DEG = 4
 

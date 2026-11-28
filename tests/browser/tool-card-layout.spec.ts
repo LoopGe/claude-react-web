@@ -123,7 +123,13 @@ test('long shell command shrinks instead of wrapping the header into separate ro
 })
 
 test('running actions stay together when a narrow header wraps', async ({ page }) => {
-  await page.setViewportSize({ width: 280, height: 400 })
+  // The 479px dense tier (utilities.css) collapses the action labels to
+  // icons, so the actions cluster only outgrows one header line below
+  // ~145px of card (line-1 minimum ≈ icon + gaps + actions ≈ 125px inside
+  // card − 20px) — the historical 280px viewport now lays out on a single
+  // line by design, and the wrap this test pins lives narrower. 140px of
+  // viewport (≈124px card) sits ~20px under that threshold.
+  await page.setViewportSize({ width: 140, height: 400 })
   await openFixture(page)
 
   const actions = page.locator('.tool-card-actions')

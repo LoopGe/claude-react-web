@@ -6262,17 +6262,11 @@ describe('in-place draft rows (store-backed)', () => {
     expect(after.querySelector('details')?.getAttribute('data-state')).toBe('closed')
   })
 
-  it('interrupt during thinking freezes the row in place: same DOM node, folded, partial text kept', () => {
+  it('interrupt during thinking drops the live thinking row (thinking is never frozen)', () => {
     thinkingDelta('partial thought')
     flush()
     const { container, rerender } = renderList()
-    const before = container.querySelector('[data-message-id="thinking:1"]') as HTMLElement
-    expect(before).toBeTruthy()
-    expect(before.querySelector('details')?.getAttribute('data-state')).toBe('open')
-    // The frozen row keeps the SAME key (thinking:1) — the mounted ThinkingBody
-    // instance crosses live→frozen (frozenText appears), so its controlled
-    // `open` flips true→false and the row folds closed. This test pins that
-    // invariant end-to-end.
+    expect(container.querySelector('[data-message-id="thinking:1"]')).toBeTruthy()
     act(() => {
       dispatch({
         type: 'MESSAGE',
@@ -6280,10 +6274,64 @@ describe('in-place draft rows (store-backed)', () => {
       })
       rerender(list())
     })
-    const after = container.querySelector('[data-message-id="thinking:1"]') as HTMLElement
-    expect(after).toBe(before)
-    expect(after.querySelector('details')?.getAttribute('data-state')).toBe('closed')
-    expect(after.querySelector('.thinking-body')?.textContent).toBe('partial thought')
+    // The live thinking row is the only copy: it is dropped at turn end, not
+    // frozen into a client-side half-card (model/backend never see that text).
+    expect(container.querySelector('[data-message-id="thinking:1"]')).toBeNull()
+    expect(getSessionStore(SID).getSnapshot().frozenDrafts).toEqual([])
+  })
+
+  it('anchors a frozen text half-card before the result footer, not at the transcript tail', () => {
+    // A prior settled turn gives the transcript real rows.
+    act(() => {
+      dispatch({
+        type: 'MESSAGE',
+        message: {
+          type: 'user', uuid: 'u1', parent_tool_use_id: null,
+          receivedAt: Date.now(), message: { role: 'user', content: 'first' },
+        } as unknown as SdkMessage,
+      })
+      dispatch({
+        type: 'MESSAGE',
+        message: {
+          type: 'assistant', uuid: 'a1', parent_tool_use_id: null,
+          receivedAt: Date.now(), message: { role: 'assistant', content: [{ type: 'text', text: 'first answer' }] },
+        } as unknown as SdkMessage,
+      })
+    })
+    streamDelta('half text')
+    flush()
+    act(() => {
+      dispatch({
+        type: 'MESSAGE',
+        message: { type: 'result', uuid: 'r-int', subtype: 'aborted_streaming', is_error: true } as unknown as SdkMessage,
+      })
+      // The next turn lands after the interruption.
+      dispatch({
+        type: 'MESSAGE',
+        message: {
+          type: 'user', uuid: 'u2', parent_tool_use_id: null,
+          receivedAt: Date.now(), message: { role: 'user', content: 'next' },
+        } as unknown as SdkMessage,
+      })
+      dispatch({
+        type: 'MESSAGE',
+        message: {
+          type: 'assistant', uuid: 'a2', parent_tool_use_id: null,
+          receivedAt: Date.now(), message: { role: 'assistant', content: [{ type: 'text', text: 'next answer' }] },
+        } as unknown as SdkMessage,
+      })
+    })
+    const { container } = renderList()
+    const frozen = container.querySelector('[data-message-id="draft:1"]') as HTMLElement
+    const resultRow = container.querySelector('[data-message-id="r-int"]') as HTMLElement
+    const nextUser = container.querySelector('[data-message-id="u2"]') as HTMLElement
+    expect(frozen).toBeTruthy()
+    expect(resultRow).toBeTruthy()
+    expect(nextUser).toBeTruthy()
+    // Half-card belongs to the interrupted turn: before its result footer...
+    expect(frozen.compareDocumentPosition(resultRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // ...and never after the next turn's rows.
+    expect(resultRow.compareDocumentPosition(nextUser) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('static does not append root draft rows', () => {

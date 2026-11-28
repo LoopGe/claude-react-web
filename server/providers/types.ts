@@ -403,6 +403,12 @@ export interface ProviderCapabilities {
   supportsResume: boolean
   supportsFork: boolean
   supportsPlugins: boolean
+  /** Selective plugin-SKILL discovery from `enabledPlugins` (the create-dialog
+   *  plugin picker). Distinct from supportsPlugins (plugins as agent
+   *  extensions): native has no plugin agent-extension runtime but consumes
+   *  enabledPlugins to narrow its plugin-skill catalog, so both providers
+   *  support this. */
+  supportsPluginSkills: boolean
   supportsFastMode: boolean
   supportsEffortLevel: boolean
   supportsThinkingControl: boolean
@@ -430,8 +436,10 @@ export interface ProviderCapabilities {
   /** Sandboxed execution (claude's flag-settings sandbox layer). Providers
    *  without it reject a sandbox-enabled create with 501. */
   supportsSandbox: boolean
-  /** Hook engine (claude's settings hooks). Native has none — a hooks config
-   *  edited there would never execute, so the surface locks. */
+  /** Hook engine. Native runs the session-scoped hook config its own engine
+   *  executes (flag source = the Settings Hooks tab); file-based / plugin /
+   *  agent-frontmatter sources and the layer-2 events without a native trigger
+   *  are called out in the panel, not gated out of it. */
   supportsHooks: boolean
   /** Auto-memory settings (claude's flag-settings memory layer). Native
    *  rejects the memory keys in applyFlagSettings, so the surface locks. */

@@ -76,6 +76,7 @@ const FAKE_CAPS: ProviderCapabilities = {
   supportsResume: false,
   supportsFork: false,
   supportsPlugins: false,
+  supportsPluginSkills: false,
   supportsFastMode: false,
   supportsEffortLevel: false,
   supportsThinkingControl: false,

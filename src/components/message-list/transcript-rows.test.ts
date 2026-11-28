@@ -12,6 +12,7 @@ import {
   buildDraftRows,
   buildTranscriptRows,
   initialRowAnchor,
+  mergeFrozenDraftRows,
   shouldLoadOlder,
   type TranscriptRow,
 } from './transcript-rows'
@@ -1165,12 +1166,12 @@ describe('buildTranscriptRows: unroutable completion hiding', () => {
 })
 
 describe('buildDraftRows', () => {
-  it('emits frozen rows first and the live draft last, each keyed by its draft key and marked isDraft', () => {
+  it('emits the live thinking row then the live text draft, each keyed by its draft key and marked isDraft', () => {
     const rows = buildDraftRows(
       { key: 'draft:5', text: 'live' },
-      [{ kind: 'text', key: 'draft:3', text: 'frozen-1' }, { kind: 'text', key: 'draft:4', text: 'frozen-2' }],
+      { key: 'thinking:1', text: '', done: false },
     )
-    expect(rows.map((r) => r.id)).toEqual(['draft:3', 'draft:4', 'draft:5'])
+    expect(rows.map((r) => r.id)).toEqual(['thinking:1', 'draft:5'])
     for (const r of rows) {
       expect(r.msg.type).toBe('assistant')
       expect((r.msg as unknown as { isDraft?: boolean }).isDraft).toBe(true)
@@ -1182,32 +1183,8 @@ describe('buildDraftRows', () => {
     expect((rows[0]!.msg as unknown as { timestamp?: unknown }).timestamp).toBeUndefined()
   })
 
-  it('frozen thinking entry builds an isThinkingDraft row carrying its text in a thinking placeholder', () => {
-    const rows = buildDraftRows(null, [
-      { kind: 'thinking', key: 'thinking:1', text: 'partial', done: false },
-    ])
-    expect(rows).toHaveLength(1)
-    const msg = rows[0]!.msg as unknown as { isDraft?: boolean; isThinkingDraft?: boolean; message?: { content?: Array<{ type?: string; thinking?: string }> } }
-    expect(msg.isDraft).toBe(true)
-    expect(msg.isThinkingDraft).toBe(true)
-    expect(msg.message?.content).toEqual([{ type: 'thinking', thinking: 'partial' }])
-  })
-
-  it('returns [] when there is no draft and no frozen rows', () => {
-    expect(buildDraftRows(null, [])).toEqual([])
-  })
-
-  it('orders frozen, live thinking, live text draft', () => {
-    const rows = buildDraftRows(
-      { key: 'draft:1', text: '' },
-      [{ kind: 'text', key: 'draft:0', text: 'f' }, { kind: 'thinking', key: 'thinking:0', text: 'ft', done: true }],
-      { key: 'thinking:1', text: '', done: false },
-    )
-    expect(rows.map((r) => r.id)).toEqual(['draft:0', 'thinking:0', 'thinking:1', 'draft:1'])
-  })
-
   it('live thinking row placeholder thinking text is empty (body reads store)', () => {
-    const rows = buildDraftRows(null, [], { key: 'thinking:1', text: '', done: false })
+    const rows = buildDraftRows(null, { key: 'thinking:1', text: '', done: false })
     expect(rows).toHaveLength(1)
     const msg = rows[0]!.msg as unknown as { isDraft?: boolean; isThinkingDraft?: boolean; message?: { content?: Array<{ type?: string; thinking?: string }> } }
     expect(msg.isDraft).toBe(true)
@@ -1216,8 +1193,97 @@ describe('buildDraftRows', () => {
     expect(rows[0]!.plainText).toBe('')
   })
 
-  it('no thinkingDraft leaves the row list unchanged from today', () => {
-    expect(buildDraftRows({ key: 'draft:1', text: '' }, [], null).map((r) => r.id)).toEqual(['draft:1'])
+  it('returns [] when there is no live draft', () => {
+    expect(buildDraftRows(null, null)).toEqual([])
+  })
+
+  it('no thinkingDraft leaves only the text row', () => {
+    expect(buildDraftRows({ key: 'draft:1', text: '' }, null).map((r) => r.id)).toEqual(['draft:1'])
+  })
+})
+
+describe('mergeFrozenDraftRows', () => {
+  function resultItem(id: string): TranscriptItem {
+    return {
+      id,
+      msg: { type: 'result', subtype: 'success', uuid: id, num_turns: 1 } as unknown as SdkMessage,
+      plainText: '',
+      isCompactSummary: false,
+      hiddenByDefault: false,
+    } as TranscriptItem
+  }
+  const rowsFor = (items: TranscriptItem[]) => buildTranscriptRows({ items, isResultConsumed: never }).rows
+
+  it('inserts a text half-card immediately before the result footer it was anchored to', () => {
+    const items = [
+      user('u1', 'prompt'),
+      assistant('a1', 'work'),
+      resultItem('r1'),
+      user('u2', 'next'),
+      assistant('a2', 'next answer'),
+    ]
+    const rows = rowsFor(items)
+    const merged = mergeFrozenDraftRows(
+      rows,
+      [{ kind: 'text', key: 'draft:1', text: 'half', anchorUuid: 'r1' }],
+      items,
+    )
+    expect(merged.map((r) => r.id)).toEqual(['u1', 'a1', 'draft:1', 'r1', 'u2', 'a2'])
+    const frozen = merged.find((r) => r.id === 'draft:1')!
+    expect(frozen.itemIndex).toBe(-1)
+    expect(frozen.renderableIndex).toBe(-1)
+    expect((frozen.msg as unknown as { isDraft?: boolean }).isDraft).toBe(true)
+    expect(frozen.msg.uuid).toBe('draft:1')
+  })
+
+  it('keeps multiple anchored half-cards in frozen order at their own turns', () => {
+    const items = [
+      user('u1', 'p1'),
+      assistant('a1', 'a1'),
+      resultItem('r1'),
+      user('u2', 'p2'),
+      assistant('a2', 'a2'),
+      resultItem('r2'),
+      user('u3', 'p3'),
+    ]
+    const merged = mergeFrozenDraftRows(
+      rowsFor(items),
+      [
+        { kind: 'text', key: 'draft:1', text: 'h1', anchorUuid: 'r1' },
+        { kind: 'text', key: 'draft:2', text: 'h2', anchorUuid: 'r2' },
+      ],
+      items,
+    )
+    expect(merged.map((r) => r.id)).toEqual(['u1', 'a1', 'draft:1', 'r1', 'u2', 'a2', 'draft:2', 'r2', 'u3'])
+  })
+
+  it('drops unanchored legacy entries and thinking half-cards', () => {
+    const items = [user('u1', 'p'), assistant('a1', 'a'), resultItem('r1')]
+    const merged = mergeFrozenDraftRows(
+      rowsFor(items),
+      [
+        { kind: 'text', key: 'draft:legacy', text: 'old' },
+        { kind: 'thinking', key: 'thinking:1', text: 't', done: false, anchorUuid: 'r1' },
+      ],
+      items,
+    )
+    expect(merged.map((r) => r.id)).toEqual(['u1', 'a1', 'r1'])
+  })
+
+  it('drops an entry whose anchor item is outside the loaded window', () => {
+    const items = [user('u2', 'p2'), assistant('a2', 'a2')]
+    const merged = mergeFrozenDraftRows(
+      rowsFor(items),
+      [{ kind: 'text', key: 'draft:1', text: 'h', anchorUuid: 'r-old' }],
+      items,
+    )
+    expect(merged.map((r) => r.id)).toEqual(['u2', 'a2'])
+  })
+
+  it('returns the settled rows untouched when nothing has an anchor', () => {
+    const items = [user('u1', 'p'), assistant('a1', 'a')]
+    const rows = rowsFor(items)
+    expect(mergeFrozenDraftRows(rows, [], items)).toBe(rows)
   })
 })
 

@@ -76,7 +76,7 @@ import { terminalCapability } from './terminal-capability.js'
 import { createPushable, type Pushable } from './pushable.js'
 import type { TerminalSnapshot } from '../shared/terminal.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
-import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
+import { config as defaultConfig, DEFAULT_PROFILE, effectiveDefaultProvider, type ProviderProfile } from './config.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
 import { isSdkForwardedMode, isUserSelectablePermissionMode, permissionModeList } from './permission-modes.js'
 import { createAsyncSubscription } from './async-subscription.js'
@@ -1121,7 +1121,17 @@ export class SessionManager {
   private mpStore?: MpStore
   private agentStore?: AgentDefinitionStore
   private providers: ProviderRegistry
-  private defaultProvider: string
+  /** Explicit `opts.defaultProvider` override (tests / embedded hosts). When
+   *  absent, the effective default is auth-aware and read live. */
+  private readonly defaultProviderOverride?: string
+  /** Effective default provider: the explicit override when given, else the
+   *  auth-aware live default (native with a configured API token, else
+   *  claude). A getter over live config, not a boot snapshot — setup/config
+   *  changes reflect immediately. Every `meta.provider ?? …` fallback,
+   *  runStructured and the adoption rank read this one member. */
+  private get defaultProvider(): string {
+    return this.defaultProviderOverride ?? effectiveDefaultProvider()
+  }
   private globalSubscribers = new Map<string, GlobalSubscriber>()
   /** Replacement sessions whose provider seed is not durable yet. They stay
    * out of the store, visible lists and every global frame until published. */
@@ -1308,7 +1318,7 @@ export class SessionManager {
       stateDir: this.store.getDir(),
       uploadStore: this.uploadStore,
     })
-    this.defaultProvider = opts.defaultProvider ?? 'claude'
+    this.defaultProviderOverride = opts.defaultProvider
     // Stuck-session monitor — periodic GC tick with auto-interrupt.
     // `unload` is a class method so it's always available via `this`.
     // The deps arrow captures `this` so the callback stays bound.
@@ -6496,29 +6506,48 @@ export class SessionManager {
       s.model = model
       this.syncEffectiveSettings(s)
       s.lastActivityAt = Date.now()
-      // The model changed — recompute its effort capability (keyword-based,
-      // so a switch between model classes changes what's available), then
-      // carry the new effortLevels.
-      s.effortLevels = effortLevelsForModel(s.model)
-      // Thinking capability tracks the model family too — recompute on switch.
-      s.thinkingSupported = supportsThinkingForModel(s.model)
-      // Fast mode eligibility tracks the model family too — recompute on switch.
-      s.fastModeSupported = supportsFastModeForModel(s.model)
-      // The CLI's cached auto-compact threshold was computed for the OLD model's
-      // window. resolveAutoCompactThreshold gates on the model name so a stale
-      // entry can't leak into the bar, but drop it eagerly so the next turn
-      // doesn't carry a dead object around.
-      s.lastSdkAutoCompact = undefined
+      this.applyModelDerivedState(s)
       this.persist(s)
       return this.info(s)
     })
   }
 
-  /** Pin a session to a provider profile. Live-applies the profile's default
-   *  model, persists the pin, and (when apply==='now' and the session is
-   *  idle) restarts the Query so the new credentials take effect immediately.
-   *  `deferred` only persists — credentials apply on the next respawn. The
-   *  nested setModel / restart calls re-enter the op lock. */
+  /** Refresh the state derived from `s.model` after it changes — the single
+   *  writer shared by setModel (live switch) and setProfile (spawn-boundary
+   *  pin) so the two refresh sets can't drift. Callers set `s.model` first;
+   *  setModel additionally runs syncEffectiveSettings BEFORE this, which may
+   *  resolve the model the CLI actually landed on. */
+  private applyModelDerivedState(s: Session): void {
+    // The model changed — recompute its effort capability (keyword-based,
+    // so a switch between model classes changes what's available), then
+    // carry the new effortLevels.
+    s.effortLevels = effortLevelsForModel(s.model)
+    // Thinking capability tracks the model family too — recompute on switch.
+    s.thinkingSupported = supportsThinkingForModel(s.model)
+    // Fast mode eligibility tracks the model family too — recompute on switch.
+    s.fastModeSupported = supportsFastModeForModel(s.model)
+    // The CLI's cached auto-compact threshold was computed for the OLD model's
+    // window. resolveAutoCompactThreshold gates on the model name so a stale
+    // entry can't leak into the bar, but drop it eagerly so the next turn
+    // doesn't carry a dead object around.
+    s.lastSdkAutoCompact = undefined
+  }
+
+  /** Pin a session to a provider profile. The pin and the profile's default
+   *  model are SPAWN-BOUNDARY state: both land on session state and persist
+   *  immediately, and (when apply==='now' and the session is idle) restart()
+   *  respawns the Query under the new profile's env + model so the new
+   *  credentials take effect immediately. `deferred` only persists — both
+   *  apply on the next respawn. The nested restart re-enters the op lock.
+   *
+   *  Deliberately NO live setModel control request: the running CLI still
+   *  holds the OLD profile's credentials, so a live switch would be validated
+   *  against the old endpoint — a quota-exhausted (429) or cross-provider
+   *  ("Model not found") refusal aborted the whole call BEFORE the restart
+   *  that swaps credentials could run, blocking the very escape path this
+   *  feature exists for (field-observed). respawnInPlace feeds
+   *  `profile: effectiveProfileFor(s.profileId)` + `model: s.model` to
+   *  createSession, so the respawn applies both without the old process. */
   async setProfile(id: string, profileId: string, apply: 'now' | 'deferred' = 'now'): Promise<SessionInfo> {
     return this.opLock.run(id, async () => {
       const s = this.requireLive(id)
@@ -6526,9 +6555,14 @@ export class SessionManager {
       const profile = findProfile(defaultConfig.profiles, profileId)
       if (!profile) throw new HttpError(400, `profile ${profileId} not found`)
       s.profileId = profileId
+      // The pin carries the profile's default model: model ids are
+      // provider-specific, so the old model is unservable under the new
+      // endpoint. Same derived-field refresh setModel does after a successful
+      // switch — minus syncEffectiveSettings, which would read the OLD
+      // handle's effective settings back over the new model.
+      s.model = profileDefaultModel(profile)
+      this.applyModelDerivedState(s)
       s.lastActivityAt = Date.now()
-      // Live-apply the profile's default model.
-      await this.setModel(id, profileDefaultModel(profile))
       this.persist(s)
       if (apply === 'now') {
         await this.restart(id)
@@ -11888,6 +11922,11 @@ export class SessionManager {
       memorySupported: caps.supportsMemory,
       sandboxSupported: caps.supportsSandbox,
       accountInfoSupported: caps.supportsAccountInfo,
+      // Plugin-skill discovery (the create-dialog picker) is distinct from
+      // plugin agent extensions (pluginsSupported): native consumes
+      // enabledPlugins to narrow its plugin-skill catalog, so both providers
+      // project true here while native's plugins tab stays locked.
+      pluginSkillsSupported: caps.supportsPluginSkills,
       // Host property (the cached node-pty probe), not a provider one — the
       // same value for every session, live or dormant.
       terminalSupported: terminalCapability().supported,
@@ -12351,7 +12390,7 @@ export class SessionManager {
    *    delete            — queueing bounded by deleteLockMaxWaitMs, then runs
    *                        anyway (escape hatch vs a setter wedged on an SDK
    *                        control request that never answers)
-   *    setProfile        — nests setModel / restart (re-entrant)
+   *    setProfile        — nests restart (re-entrant)
    *    send, sendContent — attachment resolution + dispatch hold the same lock
    *                        from admission through the lifecycle recheck.
    *    setModel, setPermissionMode, setThinking, setPrefs,
@@ -12710,10 +12749,13 @@ export class SessionManager {
       session.toolProfile,
     ) as Options & { enabledMcpServers?: unknown }
     delete sdkOptions.enabledMcpServers
+    // The profile this respawn actually spawns under — stamped onto
+    // spawnProfileId below so auxTargetFor mirrors the NEW subprocess.
+    const spawnProfile = effectiveProfileFor(session.profileId)
     try { session.handle = provider.createSession({
       id: session.id,
       provider: session.provider,
-      profile: effectiveProfileFor(session.profileId),
+      profile: spawnProfile,
       cwd: session.cwd,
       model: session.model,
       // Carry the start-as agent forward only while its def still exists and
@@ -12778,6 +12820,11 @@ export class SessionManager {
     }
     // Re-enqueue recovered turns onto the fresh handle, oldest first.
     for (const msg of pendingInput) session.handle.enqueueUserMessage(msg)
+    // The respawn IS a spawn: re-stamp the profile the subprocess actually
+    // runs with (the createSession `profile` argument above). auxTargetFor
+    // mirrors THIS field, so without the re-stamp a setProfile('now') restart
+    // would keep routing recap / commit-message to the OLD profile's endpoint.
+    session.spawnProfileId = spawnProfile.id
     session.running = true
     session.exiting = false
     session.recovering = false

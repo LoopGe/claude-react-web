@@ -22,6 +22,11 @@ const pending = (id: string, fireAt: number) => ({
   createdAt: 1,
 })
 
+const deferred = (id: string, fireAt: number) => ({
+  ...pending(id, fireAt),
+  status: 'deferred' as const,
+})
+
 beforeEach(() => {
   vi.useFakeTimers()
   // Anchor "now" at a small known epoch so fireAt values below are genuinely
@@ -123,6 +128,21 @@ describe('useScheduledSends', () => {
     })
     expect(result.current.schedules).toHaveLength(0)
     expect(mockGet).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps polling while a deferred schedule waits for the rebuild retry', async () => {
+    // A deferred record is due but parked; the manager retries it on its own
+    // clock. With only deferred rows left, the poll must stay armed so their
+    // eventual sent/failed flip reaches the client.
+    mockGet
+      .mockResolvedValueOnce({ schedules: [deferred('a', 999_000)] }) // mount: already due
+      .mockResolvedValueOnce({ schedules: [] })                        // retry settled → sent
+    const { result } = renderHook(() => useScheduledSends('s1'))
+    await settle()
+    expect(result.current.schedules).toHaveLength(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(mockGet).toHaveBeenCalledTimes(2)
+    expect(result.current.schedules).toHaveLength(0)
   })
 
   it('schedule POSTs a ref-block body verbatim (transparent pipe, no base64 expansion)', async () => {

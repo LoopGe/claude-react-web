@@ -1,9 +1,13 @@
 // Uploads Manager dialog — app-level inventory of composer file uploads.
 //
 // Lists every recorded upload (id-keyed registry on the server) with
-// provenance (cwd tail + session title snapshot), per-row Copy path /
-// Delete, a "Clean missing entries" batch action, and client-derived
-// usage stats. Fetch-on-open via useUploads — no WS subscription.
+// provenance (cwd tail + session title snapshot), per-row View file /
+// Copy path / Delete, a "Clean missing entries" batch action, and
+// client-derived usage stats. Fetch-on-open via useUploads — no WS
+// subscription. The row eye opens the upload in the focused panel's resource
+// preview (an `upload`-protocol tab — see ResourceUploadBody), not a dialog-
+// scoped modal; the portalled 'modal' surface stacks above this card and
+// outlives it.
 //
 // Shell reuses the Overlay 'perm' variant (.perm-overlay/.perm-card) and
 // the modal-header/modal-section family, so dark/light theming comes from
@@ -14,7 +18,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
 import { ConfirmDialog } from './ConfirmDialog'
 import { HoverHint } from './HoverHint'
-import { UploadPreview } from './UploadPreview'
 import { useToast } from '../hooks/useToast'
 import { writeClipboard } from '../hooks/useCopy'
 import { useUploads } from '../hooks/useUploads'
@@ -23,6 +26,8 @@ import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { measureCappedContentHeight } from '../utils/capped-height-measure'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
+import { useOpenResource } from '../resources/context'
+import { uploadResource } from '../../shared/resource-address'
 import { formatBytes, formatRelativeTime } from '../utils/format'
 import type { UploadListItem } from '../../shared/uploads'
 import {
@@ -44,16 +49,22 @@ function cwdTail(cwd: string): string {
 interface Props {
   open?: boolean
   onClose: () => void
+  /** Session whose resource strip receives the eye's preview tab — the app
+   *  passes `focusedId ?? openIds[0]`, the same selection rule as the header
+   *  ResourcePreviewButton beside this dialog's opener. Null (no open panel)
+   *  disables the eyes: the resource host is per-panel, so with no panel there
+   *  is nowhere for the tab to live. */
+  resourceSessionId?: string | null
 }
 
-export function UploadsManagerDialog({ open = true, onClose }: Props) {
+export function UploadsManagerDialog({ open = true, onClose, resourceSessionId = null }: Props) {
   const { uploads, error, refresh, remove, removeMany } = useUploads(open)
   const toast = useToast()
+  const openResource = useOpenResource()
   const { items, lastCompletion } = useUploadQueue()
 
   const [filter, setFilter] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<UploadListItem | null>(null)
-  const [previewTarget, setPreviewTarget] = useState<UploadListItem | null>(null)
   const [cleanMissingOpen, setCleanMissingOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -157,18 +168,20 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
   // only mounts after the fetch). The measure caps at the .perm-card ceiling
   // (pin-independent); the observer watches the content-sized wrapper.
   //
-  // The nested ConfirmDialog / UploadPreview render as CHILDREN of this card
-  // (their absolute .perm-overlay backdrop is card-scoped). While one is mounted
-  // it enters the cap's chrome sum and collapses the ceiling, so the measure
-  // refuses (returns null) until it closes — the height change behind a nested
-  // modal rebases cleanly on close rather than tweening to a poisoned target.
+  // The nested ConfirmDialog renders as a CHILD of this card (its absolute
+  // .perm-overlay backdrop is card-scoped). While it is mounted it enters the
+  // cap's chrome sum and collapses the ceiling, so the measure refuses
+  // (returns null) until it closes — the height change behind a nested modal
+  // rebases cleanly on close rather than tweening to a poisoned target. (The
+  // resource preview the eye opens is a portalled surface OUTSIDE the card —
+  // it never touches this measurement.)
   const bodyRef = useRef<HTMLDivElement>(null)
   const bodyContentRef = useRef<HTMLDivElement>(null)
   // Same overlay scrollbar every other dialog uses; without it a long upload
   // list shows the native 10px scrollbar instead of the project's floating thumb.
   const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
   const bodyRefMerged = useMergedRef(bodyRef, setBodyOs)
-  const nestedOverlayOpen = deleteTarget !== null || cleanMissingOpen || previewTarget !== null
+  const nestedOverlayOpen = deleteTarget !== null || cleanMissingOpen
   const measureBodyHeight = useCallback(() => {
     if (nestedOverlayOpen) return null
     const body = bodyRef.current
@@ -182,6 +195,12 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
     measureTargetHeight: measureBodyHeight,
     observe: bodyContentRef,
   })
+
+  const viewFile = (u: UploadListItem) => {
+    // The button is disabled without a session; the narrowing is for types.
+    if (resourceSessionId === null) return
+    openResource(resourceSessionId, uploadResource({ id: u.id, name: u.name, size: u.size }))
+  }
 
   const copyPath = async (u: UploadListItem) => {
     // Plain `writeClipboard`: this row reports BOTH outcomes itself, with
@@ -371,13 +390,20 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
                   </HoverHint>
                 </div>
                 <div className="uploads-row-actions">
-                  <HoverHint label="View file" side="left">
+                  <HoverHint
+                    label={
+                      resourceSessionId === null
+                        ? 'Preview opens in a chat panel — open one first'
+                        : 'View file'
+                    }
+                    side="left"
+                  >
                     <button
                       type="button"
                       className="btn btn-icon"
                       aria-label="View file"
-                      disabled={!u.exists}
-                      onClick={() => setPreviewTarget(u)}
+                      disabled={!u.exists || resourceSessionId === null}
+                      onClick={() => viewFile(u)}
                     >
                       <IconEye size={14} />
                     </button>
@@ -411,10 +437,6 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
       )}
       </div>
       </div>
-
-      {previewTarget && (
-        <UploadPreview key={previewTarget.id} target={previewTarget} onClose={() => setPreviewTarget(null)} />
-      )}
 
       {deleteTarget && (
         <ConfirmDialog

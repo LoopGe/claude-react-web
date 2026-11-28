@@ -3,7 +3,9 @@
 // message stream, so this hook only needs to (a) show what is still
 // pending/counting down and (b) reconcile to the server's authoritative
 // sent/failed state shortly after a fire time passes. Cross-tab changes
-// are absorbed by a light poll while anything is pending.
+// are absorbed by a light poll while any pending OR deferred row exists
+// (deferred rows are due but parked by a transcript rebuild; the manager
+// retries them, so their later transition must still reach the client).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './useApi'
@@ -75,14 +77,28 @@ export function useScheduledSends(sessionId: string): ScheduledSendsApi {
   }, [sessionId, refresh])
 
   const pending = useMemo(() => schedules.filter((s) => s.status === 'pending'), [schedules])
+  /** Rows that still need an authoritative server transition: pending rows
+   *  plus deferred ones (due but parked by a transcript rebuild, which the
+   *  manager retries in order). Deferred rows have no countdown, but the poll
+   *  must stay armed for their eventual sent/failed flip. */
+  const awaiting = useMemo(
+    () => schedules.filter((s) => s.status === 'pending' || s.status === 'deferred'),
+    [schedules],
+  )
 
-  // Countdown clock + poll while anything is pending.
+  // Countdown clock — only pending rows have a future fire time to render.
   useEffect(() => {
     if (pending.length === 0) return
     const t = setInterval(() => setNow(Date.now()), 1_000)
+    return () => clearInterval(t)
+  }, [pending.length])
+
+  // Authoritative-state poll — armed while any row awaits a transition.
+  useEffect(() => {
+    if (awaiting.length === 0) return
     const poll = setInterval(() => { void refresh() }, POLL_MS)
-    return () => { clearInterval(t); clearInterval(poll) }
-  }, [pending.length, refresh])
+    return () => clearInterval(poll)
+  }, [awaiting.length, refresh])
 
   // The moment the earliest pending fire time passes, reconcile immediately
   // so a sent/failed transition removes/red-flags the chip without waiting

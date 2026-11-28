@@ -14,7 +14,9 @@ import { rmRf } from './__test-utils__/index.js'
 import { SUBSCRIBER_QUEUE_CAP } from './async-subscription.js'
 import { encodeCwd, subagentTranscriptPath } from './subagent-watcher.js'
 import type { ProcessExitInfo } from './process-monitor.js'
-import type { AgentProvider, ProviderSessionHandle } from './providers/types.js'
+import type { AgentProvider, ProviderCapabilities, ProviderSessionHandle } from './providers/types.js'
+import { ProviderRegistry } from './providers/registry.js'
+import type { StructuredRunRequest, StructuredRunResult } from '../shared/structured.js'
 
 // Wrap node:fs/promises so `stat` is a controllable mock that defaults to the
 // real implementation (preexisting stat users keep working) but individual
@@ -648,6 +650,195 @@ describe('SessionManager', () => {
     expect(mockHandles[0].options.sessionId).toBe(info.id)
   })
 
+  describe('auth-aware effective default provider', () => {
+    // The manager's effective default is private; read it through the same
+    // cast precedent as subagentProviderForTest. Every create / resume /
+    // runStructured fallback reads this one member.
+    function smDefaultProvider(manager: SessionManager): string {
+      return (manager as unknown as { defaultProvider: string }).defaultProvider
+    }
+
+    // Only the structured-output flag matters on these paths (runStructured
+    // checks the method's presence, not caps); everything else stays off.
+    const EFFECTIVE_DEFAULT_CAPS: ProviderCapabilities = {
+      supportsFineGrainedPermissions: false,
+      supportsMcp: false,
+      supportsModelSwitch: false,
+      supportsInterrupt: false,
+      supportsResume: false,
+      supportsFork: false,
+      supportsPlugins: false,
+      supportsPluginSkills: false,
+      supportsFastMode: false,
+      supportsEffortLevel: false,
+      supportsThinkingControl: false,
+      supportsCommands: false,
+      supportsAgents: false,
+      supportsContextUsage: false,
+      supportsUsage: false,
+      supportsAccountInfo: false,
+      supportsSessionTitle: false,
+      supportsTaskControl: false,
+      supportsStructuredOutput: true,
+      supportsReadFile: false,
+      supportsSubagentTranscripts: false,
+      supportsSteering: false,
+      supportsSandbox: false,
+      supportsHooks: false,
+      supportsMemory: false,
+      tasksSurviveRestart: false,
+      interleavedSubagentHistory: false,
+      hostDrivenAutoCompact: false,
+      persistentAttachmentRefs: false,
+      cliSidePlanSteering: false,
+      ownsCliTranscriptJsonl: false,
+    }
+
+    function structuredProvider(name: string) {
+      const runStructured = vi.fn(async (): Promise<StructuredRunResult> => ({ ok: true, structuredOutput: { via: name } }))
+      const provider: AgentProvider = {
+        name,
+        capabilities: EFFECTIVE_DEFAULT_CAPS,
+        createSession(): ProviderSessionHandle {
+          throw new Error('createSession is not part of the effective-default contract')
+        },
+        runStructured,
+      }
+      return { provider, runStructured }
+    }
+
+    it('effective default is native when a token is configured, claude when not', () => {
+      const before = defaultConfig.authToken
+      try {
+        __setConfigForTest({ authToken: 'tok' })
+        expect(smDefaultProvider(sm)).toBe('native')
+        __setConfigForTest({ authToken: '' })
+        expect(smDefaultProvider(sm)).toBe('claude')
+        // Boot state (config.json never loaded): undefined is also "no token".
+        __setConfigForTest({ authToken: undefined })
+        expect(smDefaultProvider(sm)).toBe('claude')
+      } finally {
+        __setConfigForTest({ authToken: before })
+      }
+    })
+
+    it('effective default is dynamic (reflects config change without restart)', async () => {
+      const before = defaultConfig.authToken
+      __setConfigForTest({ authToken: '' })
+      const live = new SessionManager({ store, modelSwitchRetryDelayMs: 5 })
+      try {
+        expect(smDefaultProvider(live)).toBe('claude')
+        __setConfigForTest({ authToken: 'tok' })
+        expect(smDefaultProvider(live)).toBe('native')
+        __setConfigForTest({ authToken: '' })
+        expect(smDefaultProvider(live)).toBe('claude')
+      } finally {
+        await live.shutdown()
+        __setConfigForTest({ authToken: before })
+      }
+    })
+
+    it('zero migration: an existing claude session stays claude after the token flips the default to native', async () => {
+      const before = defaultConfig.authToken
+      __setConfigForTest({ authToken: '' })
+      try {
+        // No token: a provider-less create resolves (and stamps) claude.
+        const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+        expect(sm.list().find((s) => s.id === claude.id)?.provider).toBe('claude')
+        expect(store.get(claude.id)?.provider).toBe('claude')
+
+        // The SAME live manager's effective default flips to native...
+        __setConfigForTest({ authToken: 'tok' })
+        expect(smDefaultProvider(sm)).toBe('native')
+
+        // ...but the existing session never reaches the getter: its stamped
+        // meta.provider keeps it claude, live and dormant (zero migration).
+        expect(sm.list().find((s) => s.id === claude.id)?.provider).toBe('claude')
+        expect(store.get(claude.id)?.provider).toBe('claude')
+        await sm.unload(claude.id)
+        expect(sm.list().find((s) => s.id === claude.id)?.provider).toBe('claude')
+      } finally {
+        __setConfigForTest({ authToken: before })
+      }
+    })
+
+    it('explicit opts.defaultProvider override wins over the auth-aware default', async () => {
+      const before = defaultConfig.authToken
+      try {
+        __setConfigForTest({ authToken: 'tok' })
+        const pinnedClaude = new SessionManager({ store, defaultProvider: 'claude', modelSwitchRetryDelayMs: 5 })
+        try {
+          expect(smDefaultProvider(pinnedClaude)).toBe('claude')
+        } finally {
+          await pinnedClaude.shutdown()
+        }
+        __setConfigForTest({ authToken: '' })
+        const pinnedNative = new SessionManager({ store, defaultProvider: 'native', modelSwitchRetryDelayMs: 5 })
+        try {
+          expect(smDefaultProvider(pinnedNative)).toBe('native')
+        } finally {
+          await pinnedNative.shutdown()
+        }
+      } finally {
+        __setConfigForTest({ authToken: before })
+      }
+    })
+
+    it('runStructured follows the effective default', async () => {
+      const before = defaultConfig.authToken
+      const claude = structuredProvider('claude')
+      const native = structuredProvider('native')
+      const registry = new ProviderRegistry()
+      registry.register(claude.provider)
+      registry.register(native.provider)
+      const runner = new SessionManager({ store, providers: registry, modelSwitchRetryDelayMs: 5 })
+      const req: StructuredRunRequest = { prompt: 'p', schema: { type: 'object' } }
+      try {
+        __setConfigForTest({ authToken: 'tok' })
+        await runner.runStructured(req)
+        expect(native.runStructured).toHaveBeenCalledTimes(1)
+        expect(claude.runStructured).not.toHaveBeenCalled()
+        // Removing the token flips the same live manager back to claude.
+        __setConfigForTest({ authToken: '' })
+        await runner.runStructured(req)
+        expect(claude.runStructured).toHaveBeenCalledTimes(1)
+        expect(native.runStructured).toHaveBeenCalledTimes(1)
+      } finally {
+        await runner.shutdown()
+        __setConfigForTest({ authToken: before })
+      }
+    })
+
+    it('resume-picker adoption rank follows the effective default', async () => {
+      const before = defaultConfig.authToken
+      // Both providers claim the same disk id; claude is registered FIRST so
+      // only the default-first rank can make native win under a token.
+      const claimant = (name: string): AgentProvider => ({
+        name,
+        capabilities: EFFECTIVE_DEFAULT_CAPS,
+        createSession(): ProviderSessionHandle {
+          throw new Error('createSession is not part of the effective-default contract')
+        },
+        getSessionInfo: async (id) => ({ sessionId: id, cwd: TEST_CWD, lastModified: 1234, createdAt: 1000, known: false, running: false, terminated: false }),
+      })
+      const registry = new ProviderRegistry()
+      registry.register(claimant('claude'))
+      registry.register(claimant('native'))
+      const adopter = new SessionManager({ store, providers: registry, modelSwitchRetryDelayMs: 5 })
+      const adopt = (id: string) =>
+        (adopter as unknown as { adoptDiskSession(id: string): Promise<{ provider?: string } | undefined> }).adoptDiskSession(id)
+      try {
+        __setConfigForTest({ authToken: 'tok' })
+        expect((await adopt('disk-1'))?.provider).toBe('native')
+        __setConfigForTest({ authToken: '' })
+        expect((await adopt('disk-2'))?.provider).toBe('claude')
+      } finally {
+        await adopter.shutdown()
+        __setConfigForTest({ authToken: before })
+      }
+    })
+  })
+
   it('projects provider task-control capability for live and dormant sessions', async () => {
     const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
     expect(claude.taskControlSupported).toBe(true)
@@ -661,21 +852,44 @@ describe('SessionManager', () => {
   it('projects locked-feature booleans false for native, true for claude (live and dormant)', async () => {
     const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
     const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
-    const keys = ['pluginsSupported', 'hooksSupported', 'memorySupported', 'sandboxSupported', 'accountInfoSupported'] as const
-    for (const k of keys) {
+    const lockedKeys = ['pluginsSupported', 'memorySupported', 'sandboxSupported', 'accountInfoSupported'] as const
+    for (const k of lockedKeys) {
       expect(claude[k]).toBe(true)
       expect(native[k]).toBe(false)
     }
+    // Hooks is NOT locked on native: its engine runs the session-scoped config.
+    expect(native.hooksSupported).toBe(true)
+    expect(claude.hooksSupported).toBe(true)
     // Dormant projection (infoFromMeta) re-derives the same booleans from the
     // provider registry — no live handle is involved.
     await sm.unload(native.id)
     await sm.unload(claude.id)
     const dormantNative = sm.list().find((session) => session.id === native.id)
     const dormantClaude = sm.list().find((session) => session.id === claude.id)
-    for (const k of keys) {
+    for (const k of lockedKeys) {
       expect(dormantNative?.[k]).toBe(false)
       expect(dormantClaude?.[k]).toBe(true)
     }
+    expect(dormantNative?.hooksSupported).toBe(true)
+    expect(dormantClaude?.hooksSupported).toBe(true)
+  })
+
+  it('projects pluginSkillsSupported true for both providers (live and dormant)', async () => {
+    const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+    expect(claude.pluginSkillsSupported).toBe(true)
+    expect(native.pluginSkillsSupported).toBe(true)
+    // Distinct from pluginsSupported (plugins as agent extensions): native
+    // consumes enabledPlugins for plugin-SKILL discovery, but its plugins tab
+    // stays locked.
+    expect(claude.pluginsSupported).toBe(true)
+    expect(native.pluginsSupported).toBe(false)
+    // Dormant projection (infoFromMeta) re-derives the same boolean from the
+    // provider registry — no live handle is involved.
+    await sm.unload(native.id)
+    await sm.unload(claude.id)
+    expect(sm.list().find((session) => session.id === native.id)?.pluginSkillsSupported).toBe(true)
+    expect(sm.list().find((session) => session.id === claude.id)?.pluginSkillsSupported).toBe(true)
   })
 
   it('create() defaults betas to the 1M-context flag when none is supplied', async () => {
@@ -13549,7 +13763,7 @@ describe('SessionManager', () => {
       const compacted = await within(sm.compact(a))
       expect(compacted.id).not.toBe(a)
 
-      // setProfile → setModel + restart
+      // setProfile → restart
       const before = { profiles: defaultConfig.profiles, activeProfileId: defaultConfig.activeProfileId }
       const profile = (id: string): import('./config.js').ProviderProfile => ({
         id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
@@ -16019,6 +16233,109 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       const s = sm.get(info.id)
       expect(s.terminated).toBe(false)
       expect(s.running).toBe(true)
+    })
+
+    // setProfile('now') regression (observed in the field): the old endpoint
+    // refuses the new profile's model — quota-exhausted (429) or a model id it
+    // doesn't serve — and the whole "Restart now" call 502s, so the restart
+    // that swaps credentials can never happen. The feature blocked its own
+    // escape path. The pin + its default model are spawn-boundary state: they
+    // persist, and the respawn applies them under the NEW profile's env. No
+    // live setModel control request may touch the old endpoint.
+    describe('setProfile restart semantics', () => {
+      const profile = (id: string): import('./config.js').ProviderProfile => ({
+        id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
+        modelList: ['vendor/model-' + id], recapModel: '', commitMessageModel: '',
+      })
+
+      /** A live session pinned to profile A with one completed turn. */
+      async function livePinnedToA(): Promise<string> {
+        const info = await sm.create({
+          cwd: TEST_CWD, profileId: 'A', model: 'vendor/model-A',
+        } as Parameters<SessionManager['create']>[0])
+        await sm.send(info.id, 'hi')
+        mockHandles[0].emit({
+          type: 'result', subtype: 'success', session_id: info.id,
+          is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {},
+        })
+        await tick()
+        return info.id
+      }
+
+      it("restarts under the new profile WITHOUT a live setModel on the old endpoint", async () => {
+        const before = { profiles: defaultConfig.profiles, activeProfileId: defaultConfig.activeProfileId }
+        try {
+          __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A' })
+          const id = await livePinnedToA()
+          // The running CLI cannot switch to B's model: its env still points
+          // at A's endpoint, which is quota-exhausted. Pre-fix this rejection
+          // aborted setProfile with a 502 before persist and before restart.
+          mockHandles[0].setModel.mockRejectedValue(
+            new Error('API error: 429 You have exceeded the 5-hour usage quota'),
+          )
+
+          const updated = await sm.setProfile(id, 'B', 'now')
+
+          expect(updated.profileId).toBe('B')
+          expect(updated.model).toBe('vendor/model-B')
+          expect(mockHandles[0].setModel).not.toHaveBeenCalled()
+          // Pin + model persisted, so the next respawn (even a crash before
+          // this one) can never leave the store half-switched.
+          expect(store.get(id)?.profileId).toBe('B')
+          expect(store.get(id)?.model).toBe('vendor/model-B')
+          // The restart respawned under B's credentials and default model.
+          expect(mockHandles).toHaveLength(2)
+          const env = mockHandles[1].options.env as Record<string, string>
+          expect(env.ANTHROPIC_BASE_URL).toBe('https://gw-B')
+          expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-B')
+          expect(mockHandles[1].options.model).toBe('vendor/model-B')
+        } finally {
+          __setConfigForTest({ ...before })
+        }
+      })
+
+      it('re-stamps spawnProfileId so aux calls follow the respawned profile', async () => {
+        const before = { profiles: defaultConfig.profiles, activeProfileId: defaultConfig.activeProfileId }
+        try {
+          __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A' })
+          const id = await livePinnedToA()
+          await sm.setProfile(id, 'B', 'now')
+          await tick()
+          // auxTargetFor resolves a LIVE session's endpoint from the profile
+          // its subprocess was actually spawned with (spawnProfileId). After
+          // the restart that is B — pre-fix the stale A stamp kept routing
+          // recap / commit-message to the OLD endpoint.
+          expect(sm.auxTargetFor(id, 'recap')).toMatchObject({
+            model: 'vendor/model-B', baseUrl: 'https://gw-B', authToken: 'sk-B',
+          })
+        } finally {
+          __setConfigForTest({ ...before })
+        }
+      })
+
+      it("deferred pins profile + model without touching the live process", async () => {
+        const before = { profiles: defaultConfig.profiles, activeProfileId: defaultConfig.activeProfileId }
+        try {
+          __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A' })
+          const id = await livePinnedToA()
+          mockHandles[0].setModel.mockRejectedValue(new Error('Model not found'))
+
+          const updated = await sm.setProfile(id, 'B', 'deferred')
+
+          expect(updated.profileId).toBe('B')
+          expect(updated.model).toBe('vendor/model-B')
+          expect(mockHandles[0].setModel).not.toHaveBeenCalled()
+          // No restart: the same handle keeps running until the next respawn.
+          expect(mockHandles).toHaveLength(1)
+          expect(store.get(id)?.profileId).toBe('B')
+          expect(store.get(id)?.model).toBe('vendor/model-B')
+          // The live subprocess still runs A's credentials, and aux routing
+          // must mirror the PROCESS, not the pin.
+          expect(sm.auxTargetFor(id, 'recap')).toMatchObject({ baseUrl: 'https://gw-A' })
+        } finally {
+          __setConfigForTest({ ...before })
+        }
+      })
     })
   })
 

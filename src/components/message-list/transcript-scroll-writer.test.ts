@@ -609,6 +609,120 @@ describe('work scheduling', () => {
 
     expect(element.scrollTop).toBe(1000)
   })
+
+  it('does not join an expired verification pass whose completion tick never ran', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1000)
+    try {
+      const scheduler = new FakeScheduler()
+      const { element } = makeScroller()
+      const onWorkConsumed = vi.fn()
+      const writer = createTranscriptScrollWriter({ scheduler, onWorkConsumed })
+      writer.attach(element)
+      element.scrollTop = 700
+      writer.execute([
+        { type: 'SCHEDULE_WORK', epoch: 1, work: work('verify') },
+        { type: 'WRITE_ABSOLUTE_BOTTOM', epoch: 1, workId: 9, kind: 'verify' },
+      ])
+
+      // The first pass sat owner-blocked for its whole lifetime: its deadline
+      // (2500) has passed but its tick has not run since. A landing request
+      // must NOT inherit that corpse — it takes a fresh window and writes.
+      now.mockReturnValue(2600)
+      writer.execute([
+        { type: 'SCHEDULE_WORK', epoch: 1, work: work('verify', 10) },
+        { type: 'WRITE_ABSOLUTE_BOTTOM', epoch: 1, workId: 10, kind: 'verify' },
+      ])
+      scheduler.flushFrames()
+      expect(element.scrollTop).toBe(1000)
+
+      scheduler.flushFrames()
+      scheduler.flushFrames()
+      scheduler.flushFrames()
+      expect(scheduler.pendingFrames).toBe(0)
+      expect(onWorkConsumed).toHaveBeenCalledExactlyOnceWith(10)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('completes the landing verification without a write after an exact follow land', () => {
+    const scheduler = new FakeScheduler()
+    const { element, scrollTo } = makeScroller(1000, 200)
+    let state: ScrollState = createInitialScrollState(1)
+    function dispatch(event: ScrollEvent): void {
+      const transition = reduceScroll(state, event)
+      state = transition.state
+      writer.execute(transition.commands)
+    }
+    const writer = createTranscriptScrollWriter({
+      scheduler,
+      onOwnerLanded: (token) => dispatch({ type: 'OWNER_LANDED', token }),
+    })
+    writer.attach(element)
+    dispatch({ type: 'ELEMENT_ATTACHED', element })
+
+    // Already within epsilon of the bottom: the first step exact-lands.
+    element.scrollTop = 799
+    dispatch({ type: 'FOLLOW_ANIMATION_REQUESTED' })
+    scheduler.flushFrames()
+    expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 800, behavior: 'auto' })
+
+    // The landing armed verification; the geometry is already at the bottom,
+    // so the pass must observe three stable frames and complete WITHOUT any
+    // absolute write (which would show up as scrollTop = scrollHeight).
+    scheduler.flushFrames()
+    scheduler.flushFrames()
+    scheduler.flushFrames()
+    expect(element.scrollTop).toBe(800)
+    expect(scrollTo).toHaveBeenCalledTimes(1)
+    expect(scheduler.pendingFrames).toBe(0)
+  })
+
+  it('re-pins the residual left by a mid-ease pull-back abort', () => {
+    // Live repro (2026-11-27, crw:debug:scroll + geometry sampler): a tool-card
+    // append starts the follow ease; mid-convergence a Virtuoso anchoring
+    // adjustment over its padding rewrites pulls scrollTop >2px below the ease's
+    // last requested position; the ease aborts WITHOUT its exact landing write,
+    // and the quiet post-abort geometry fires no observer — the few-px residue
+    // froze for seconds until the next append. The landing's verification pass
+    // must re-pin it.
+    const scheduler = new FakeScheduler()
+    const { element } = makeScroller(1000, 200)
+    let state: ScrollState = createInitialScrollState(1)
+    function dispatch(event: ScrollEvent): void {
+      const transition = reduceScroll(state, event)
+      state = transition.state
+      writer.execute(transition.commands)
+    }
+    const writer = createTranscriptScrollWriter({
+      scheduler,
+      onOwnerLanded: (token) => dispatch({ type: 'OWNER_LANDED', token }),
+    })
+    writer.attach(element)
+    dispatch({ type: 'ELEMENT_ATTACHED', element })
+
+    element.scrollTop = 500
+    dispatch({ type: 'FOLLOW_ANIMATION_REQUESTED' })
+    scheduler.flushFrames()
+    // Ease step: 500 + (800 - 500) * 0.25 = 575.
+    expect(element.scrollTop).toBe(575)
+
+    // Mechanical pull-back below lastSetTop - epsilon: the ease aborts.
+    element.scrollTop = 570
+    scheduler.flushFrames()
+    expect(state.intent).toBe('follow')
+    expect(state.owner).toEqual({ kind: 'none' })
+
+    // The landing armed settle verification; its first tick re-pins exactly.
+    scheduler.flushFrames()
+    expect(element.scrollTop).toBe(1000)
+
+    // The pass is bounded: three stable frames and no frame stays scheduled.
+    scheduler.flushFrames()
+    scheduler.flushFrames()
+    scheduler.flushFrames()
+    expect(scheduler.pendingFrames).toBe(0)
+  })
 })
 
 describe('adapter callback scheduling', () => {

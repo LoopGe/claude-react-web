@@ -26,6 +26,7 @@ import {
 } from 'react'
 import {
   parseFileResource,
+  parseUploadResource,
   resourceDescription,
   resourcePathSegments,
   resourceTitle,
@@ -33,7 +34,7 @@ import {
 import type { FileReadResult } from '../../shared/read-file'
 import { isHtmlFilePath } from '../../shared/open-path'
 import { FilePreviewBody } from '../components/file-preview/FilePreviewBody'
-import { IconExternalLink, IconX } from '../components/icons/ToolIcons'
+import { IconDownload, IconExternalLink, IconX } from '../components/icons/ToolIcons'
 import { Overlay } from '../components/Overlay'
 import { api } from '../hooks/useApi'
 import { useOpenPathCapability } from '../hooks/useOpenPathCapability'
@@ -47,6 +48,7 @@ import { ResourceDiffBody } from './ResourceDiffBody'
 import { ResourceSnapshotDiffBody } from './ResourceSnapshotDiffBody'
 import { ResourceTaskBody } from './ResourceTaskBody'
 import { ResourceSubagentBody } from './ResourceSubagentBody'
+import { ResourceUploadBody } from './ResourceUploadBody'
 import { ResourceLinkProvider } from './ResourceLinkContext'
 import { measureResourceModalBodyHeight } from './resource-modal-measure'
 import type { ResourcePaneStore } from './tab-store'
@@ -103,6 +105,10 @@ export function ResourceModal({
   const active = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0]
   const activeFilePath = active.kind === 'file' ? parseFileResource(active.address)?.path : undefined
   const browserPath = activeFilePath && isHtmlFilePath(activeFilePath) ? activeFilePath : null
+  // Upload tabs read bytes from the durable content route; the preview modal has
+  // no other download affordance, so the header carries it (the former
+  // UploadPreview's Download button, same `?download=1`).
+  const activeUpload = active.kind === 'upload' ? parseUploadResource(active.address) : null
   const navigation = store.getNavigation(active.id)
 
   // Duplicate basenames would produce indistinguishable chips; those widen to
@@ -145,6 +151,7 @@ export function ResourceModal({
           cwd={cwd}
           browserPath={browserPath}
           browserPending={browserPath != null && browserPendingPaths.includes(browserPath)}
+          upload={activeUpload}
           onOpenInBrowser={openInBrowser}
           onClose={close}
         />
@@ -171,6 +178,7 @@ function ResourceModalSurface({
   cwd,
   browserPath,
   browserPending,
+  upload,
   onOpenInBrowser,
   onClose,
 }: {
@@ -184,6 +192,9 @@ function ResourceModalSurface({
   cwd?: string
   browserPath: string | null
   browserPending: boolean
+  /** Parsed active-tab upload (null = not an upload tab): drives the header's
+   *  Download anchor on the durable content route. */
+  upload: { id: string; name: string; size: number } | null
   onOpenInBrowser: (path: string) => void
   onClose: () => void
 }) {
@@ -308,6 +319,17 @@ function ResourceModalSurface({
             onOpen={onOpenInBrowser}
           />
         )}
+        {upload && (
+          <a
+            className="btn btn-icon-sm"
+            href={`/api/uploads/${encodeURIComponent(upload.id)}/content?download=1`}
+            download={upload.name}
+            aria-label="Download file"
+            title="Download file"
+          >
+            <IconDownload />
+          </a>
+        )}
         <button type="button" className="btn btn-icon-sm" aria-label="Close" onClick={onClose}>
           <IconX />
         </button>
@@ -375,6 +397,10 @@ function ResourceBody({
       return <ResourceTaskBody address={tab.address} cwd={cwd} />
     case 'subagent':
       return <ResourceSubagentBody address={tab.address} cwd={cwd} />
+    // Keyed per address: switching between two upload tabs must reset the
+    // body's internal state (image error hint, markdown source toggle).
+    case 'upload':
+      return <ResourceUploadBody key={tab.address} address={tab.address} />
     default:
       return <div className="hint">Nothing can open this address.</div>
   }

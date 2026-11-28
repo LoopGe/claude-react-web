@@ -19,8 +19,25 @@ export type ThinkingDraftState = { key: string; text: string; done: boolean }
  *  list (not per-kind arrays) so a thinking interrupt and a text interrupt
  *  keep their chronological row order above the next response. */
 export type FrozenDraft =
-  | { kind: 'text'; key: string; text: string }
-  | { kind: 'thinking'; key: string; text: string; done: boolean }
+  | {
+    kind: 'text'
+    key: string
+    text: string
+    /** The `result` frame that closed the interrupted turn. The row builder
+     *  resolves it against the loaded transcript window and re-inserts the
+     *  half-card at that turn instead of appending it to the live tail.
+     *  Optional for legacy entries frozen before this anchor existed. */
+    anchorUuid?: string
+  }
+  | {
+    kind: 'thinking'
+    key: string
+    text: string
+    done: boolean
+    /** Legacy-only: thinking is no longer frozen (internal, never model-visible
+     *  or persisted). Kept so old in-memory entries stay type-valid. */
+    anchorUuid?: string
+  }
 
 /** Append main-thread draft text. Starts a draft with key `draft:<seq>` when
  *  none is live; extends only the text otherwise. */

@@ -56,11 +56,13 @@ renders the fixed text "This feature requires the Claude CLI." — TEXT only;
 the install button awaits the packaging block, and there is deliberately no
 placeholder button. Its color tokens are defined in both themes.
 
-- **Plugins and hooks tabs** are selectable but locked: the locked tab body
-  renders the notice instead of the live content — no fetches, no dead
-  controls. The `SESSION_TAB_GROUPS_NO_PLUGINS` hiding and the plugins
-  deep-link redirect are gone; the plugins auto-reload stays gated, so no
-  501-bound POST fires.
+- **Plugins tab** is selectable but locked: the locked tab body renders the
+  notice instead of the live content — no fetches, no dead controls. The
+  `SESSION_TAB_GROUPS_NO_PLUGINS` hiding and the plugins deep-link redirect
+  are gone; the plugins auto-reload stays gated, so no 501-bound POST fires.
+  (The hooks tab was locked the same way at the time; the engine landing later
+  that day unlocked it — see
+  [native prompt environment and hooks unlock](2026-11-28-native-prompt-environment-and-hooks-unlock.md).)
 - **Memory and sandbox sections** (General tab) stay rendered with their
   controls disabled and the notice; each folds its own boolean into its own
   disabled flag (the two are independent). The "resume the session" hint is
@@ -75,17 +77,18 @@ placeholder button. Its color tokens are defined in both themes.
 
 A session being created has no `SessionInfo` — only a draft provider name.
 `shared/provider-capabilities.ts` exports `providerSupports(provider,
-feature)` over a provider-name → locked-feature map (`LOCKED_FEATURES`:
-plugins, hooks, memory, sandbox, account). This is the SAME capability
-mechanism sourced before create, not a fourth gating system; the post-create
-`SessionInfo` booleans remain the source for existing sessions. The module
-is browser-safe (zero imports) and total over all string inputs (a `Map`, so
-prototype-key names like `constructor` cannot resolve); unknown/undefined
-providers default claude-compatible.
+feature)` over a provider-name → feature-support map (`GATED_FEATURES`:
+plugins, hooks, memory, sandbox, account, pluginSkills). This is the SAME
+capability mechanism sourced before create, not a fourth gating system; the
+post-create `SessionInfo` booleans remain the source for existing sessions.
+The module is browser-safe (zero imports) and total over all string inputs (a
+`Map`, so prototype-key names like `constructor` cannot resolve);
+unknown/undefined providers default claude-compatible.
 
-The map mirrors the server literals (native all false, claude all true) and
-cannot drift unnoticed: `server/providers/provider-capabilities-pin.test.ts`
-constructs the real providers and asserts `providerSupports` agrees with each
+The map mirrors the server literals (the five CLI features: native false,
+claude true; pluginSkills: true for both) and cannot drift unnoticed:
+`server/providers/provider-capabilities-pin.test.ts` constructs the real
+providers and asserts `providerSupports` agrees with each
 `ProviderCapabilities` flag, through an exhaustively typed feature→flag
 roster. The create-dialog picker gates on this source; its submit payload is
 unchanged — but `enabledPlugins` is NOT inert on native: native consumes it
@@ -189,5 +192,16 @@ legacy/prototype-key default; `server/providers/provider-capabilities-pin.test.t
 pins agreement with the real provider literals (verified non-vacuous by a
 drift mutation). `SettingsPanel.test.tsx` / `UsagePanel.test.tsx` pin
 show-but-locked panels with zero fetches, per-boolean independence, and
-claude/legacy no-regression; `NewSessionDialog.test.tsx` pins the locked
-picker and live unlock in both provider-switch directions.
+claude/legacy no-regression; `NewSessionDialog.test.tsx` pinned the locked
+picker and live unlock in both provider-switch directions (superseded by
+the functional picker — see Related).
+
+## Related
+
+[Auth-aware native default flip](2026-11-27-native-default-flip.md) (Block 3)
+supersedes the create-dialog picker lock above: the picker gates on
+`pluginSkills` (functional on both providers), and native's `enabledPlugins`
+narrowing is an intentional, payload-pinned selection — resolving the open
+submit-path follow-up under Deferred. The settings plugins tab lock
+(`pluginsSupported`) and every other gate in this note stand. The picker tests
+now pin the functional behavior.

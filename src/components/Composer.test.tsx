@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { render as rtlRender, cleanup, act, fireEvent, waitFor } from '@testing-library/react'
+import { render as rtlRender, cleanup, act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { Composer } from './Composer'
 import { ToastProvider } from './ToastProvider'
 import type { PastedImage, SlashCommand } from '../types'
+import type { ScheduledSend } from '../../shared/scheduled-send'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
 
@@ -759,36 +760,176 @@ describe('Composer', () => {
     })
   })
 
-  describe('scheduled send (UI hidden — SCHEDULE_SEND_ENABLED is false pending a UI redesign)', () => {
-    const stubScheduled = {
-      schedules: [
-        { id: 'sch1', sessionId: 's1', fireAt: Date.now() + 60_000, body: { text: 'later' }, status: 'pending' as const, createdAt: Date.now() },
-      ],
-      now: Date.now(),
-      cancel: noopAsync,
-      dismiss: noopAsync,
-    }
-
-    it('does not render the schedule button, even with content and props wired', () => {
-      const { container } = render(<Composer {...defaultProps} input="hello" scheduled={stubScheduled} onSendScheduled={noop} />)
-      expect(container.querySelector('[aria-label="Schedule send"]')).toBeNull()
+  describe('scheduled send', () => {
+    const NOW = 1_700_000_000_000
+    const makeSchedule = (overrides: Partial<ScheduledSend>): ScheduledSend => ({
+      id: 'sch1',
+      sessionId: 's1',
+      fireAt: NOW,
+      body: { text: 'later' },
+      status: 'pending',
+      createdAt: NOW,
+      ...overrides,
+    })
+    const scheduledApi = (schedules: ScheduledSend[], cancel = noop, dismiss = noop) => ({
+      schedules,
+      now: NOW,
+      cancel,
+      dismiss,
     })
 
-    it('does not render pending or failed chips when schedules are provided', () => {
+    it('renders a pending chip with a countdown and cancel action', () => {
+      const cancel = vi.fn()
       const { container } = render(
         <Composer
           {...defaultProps}
-          scheduled={{
-            ...stubScheduled,
-            schedules: [
-              ...stubScheduled.schedules,
-              { id: 'sch2', sessionId: 's1', fireAt: 0, body: { text: 'x' }, status: 'failed' as const, createdAt: 0, error: 'session s1 is terminated' },
-            ],
-          }}
+          scheduled={scheduledApi([makeSchedule({ id: 'sch1', fireAt: NOW + 10 * 60_000 })], cancel)}
         />,
       )
-      expect(container.querySelector('.scheduled-chip')).toBeNull()
-      expect(container.querySelector('.scheduled-chip-failed')).toBeNull()
+      expect(container.querySelector('.scheduled-chip')).not.toBeNull()
+      expect(container.textContent).toContain('in 10m')
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel scheduled message sch1' }))
+      expect(cancel).toHaveBeenCalledWith('sch1')
+    })
+
+    it('renders a failed chip with its reason and dismiss action', () => {
+      const dismiss = vi.fn()
+      const { container } = render(
+        <Composer
+          {...defaultProps}
+          scheduled={scheduledApi(
+            [makeSchedule({ id: 'sch2', status: 'failed', error: 'session s1 is terminated' })],
+            noop,
+            dismiss,
+          )}
+        />,
+      )
+      expect(container.querySelector('.scheduled-chip-failed')).not.toBeNull()
+      expect(container.textContent).toContain('session s1 is terminated')
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss failed schedule sch2' }))
+      expect(dismiss).toHaveBeenCalledWith('sch2')
+    })
+
+    it('renders a deferred chip as waiting for the transcript rebuild', () => {
+      const cancel = vi.fn()
+      const { container } = render(
+        <Composer
+          {...defaultProps}
+          scheduled={scheduledApi(
+            [makeSchedule({ id: 'sch3', status: 'deferred', fireAt: NOW - 5_000 })],
+            cancel,
+          )}
+        />,
+      )
+      const chip = container.querySelector('.scheduled-chip-deferred')
+      expect(chip).not.toBeNull()
+      expect(chip!.textContent).toContain('Waiting for transcript rebuild')
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel scheduled message sch3' }))
+      expect(cancel).toHaveBeenCalledWith('sch3')
+    })
+
+    it('no longer renders the old clock button', () => {
+      const { container } = render(
+        <Composer {...defaultProps} input="hello" scheduled={scheduledApi([])} onSendScheduled={noop} />,
+      )
+      expect(container.querySelector('button[aria-label="Schedule send"]')).toBeNull()
+    })
+
+    it('opens the schedule picker on a right-click of the send button without sending', () => {
+      const onSend = vi.fn()
+      const onSendScheduled = vi.fn()
+      const { container } = render(
+        <Composer
+          {...defaultProps}
+          input="hello"
+          onSend={onSend}
+          scheduled={scheduledApi([])}
+          onSendScheduled={onSendScheduled}
+        />,
+      )
+      const send = container.querySelector('.composer-send')!
+      // The handler always suppresses the native menu on the send control.
+      expect(fireEvent.contextMenu(send, { clientX: 40, clientY: 40 })).toBe(false)
+      expect(screen.getByRole('dialog', { name: 'Schedule send' })).not.toBeNull()
+      expect(onSend).not.toHaveBeenCalled()
+      expect(onSendScheduled).not.toHaveBeenCalled()
+    })
+
+    it('passes the picked time from the right-click picker up to the host', () => {
+      const onSendScheduled = vi.fn()
+      const { container } = render(
+        <Composer
+          {...defaultProps}
+          input="hello"
+          scheduled={scheduledApi([])}
+          onSendScheduled={onSendScheduled}
+        />,
+      )
+      const before = Date.now()
+      fireEvent.contextMenu(container.querySelector('.composer-send')!, { clientX: 40, clientY: 40 })
+      fireEvent.click(screen.getByRole('button', { name: /10 minutes/i }))
+      expect(onSendScheduled).toHaveBeenCalledOnce()
+      const [at] = onSendScheduled.mock.calls[0] as [number]
+      expect(at).toBeGreaterThan(before + 9.5 * 60_000)
+    })
+
+    const expectNoPicker = (container: HTMLElement) => {
+      fireEvent.contextMenu(container.querySelector('.composer-send')!, { clientX: 40, clientY: 40 })
+      expect(screen.queryByRole('dialog', { name: 'Schedule send' })).toBeNull()
+    }
+
+    it('does not open the picker for an empty draft', () => {
+      const { container } = render(
+        <Composer {...defaultProps} input="" scheduled={scheduledApi([])} onSendScheduled={noop} />,
+      )
+      expectNoPicker(container)
+    })
+
+    it('does not open the picker while attachments are processing', () => {
+      const { container } = render(
+        <Composer {...defaultProps} input="hello" imagesPending scheduled={scheduledApi([])} onSendScheduled={noop} />,
+      )
+      expectNoPicker(container)
+    })
+
+    it('does not open the picker when a file attachment is present', () => {
+      const { container } = render(
+        <Composer
+          {...defaultProps}
+          input="hello"
+          files={[{ key: 'f1', status: 'ready', loaded: 1, total: 1 }]}
+          scheduled={scheduledApi([])}
+          onSendScheduled={noop}
+        />,
+      )
+      expectNoPicker(container)
+    })
+
+    it('opens the picker while a turn is running when the draft is schedulable', () => {
+      const onInterrupt = vi.fn()
+      const onSendScheduled = vi.fn()
+      const { container } = render(
+        <Composer
+          {...defaultProps}
+          input="hello"
+          canInterrupt
+          onInterrupt={onInterrupt}
+          scheduled={scheduledApi([])}
+          onSendScheduled={onSendScheduled}
+        />,
+      )
+      fireEvent.contextMenu(container.querySelector('.composer-send')!, { clientX: 40, clientY: 40 })
+      expect(screen.getByRole('dialog', { name: 'Schedule send' })).not.toBeNull()
+      // Right-click never fires the stop action nor schedules anything itself.
+      expect(onInterrupt).not.toHaveBeenCalled()
+      expect(onSendScheduled).not.toHaveBeenCalled()
+    })
+
+    it('does not open the picker while a turn is running with an empty draft', () => {
+      const { container } = render(
+        <Composer {...defaultProps} input="" canInterrupt scheduled={scheduledApi([])} onSendScheduled={noop} />,
+      )
+      expectNoPicker(container)
     })
   })
 })

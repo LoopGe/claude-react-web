@@ -23,38 +23,62 @@ vi.mock('../utils/capped-height-measure', () => ({ measureCappedContentHeight: m
 
 // Import AFTER the mocks.
 import { UploadsManagerDialog } from './UploadsManagerDialog'
+import { ResourcePaneProvider } from '../resources/ResourcePaneProvider'
+import { uploadResource } from '../../shared/resource-address'
+import type { ResourceProvider } from '../resources/registry'
 
 const ROWS = [
   { id: 'a', path: '/p/claude-web-uploads/1-a.txt', cwd: '/p', name: 'a.txt', size: 1024, uploadedAt: Date.now(), sessionTitle: 'Alpha', exists: true },
   { id: 'b', path: '/p/claude-web-uploads/2-b.txt', cwd: '/p', name: 'b.txt', size: 2048, uploadedAt: Date.now(), sessionTitle: 'Beta', exists: false },
 ]
 
+// The dialog's eye opens a resource tab, so every render needs the pane
+// provider. A stub upload provider satisfies the store's canOpen gate; the
+// byte fetch is the provider's own test surface, not the dialog's.
+function stubUploadProvider(): ResourceProvider {
+  return {
+    protocol: 'upload',
+    async *open() {
+      yield { ok: true, value: { kind: 'other', name: 'stub', size: 0 } }
+    },
+  }
+}
+
+function renderDialog(props: { resourceSessionId?: string | null } = {}) {
+  return render(
+    <ResourcePaneProvider providers={[stubUploadProvider()]}>
+      <UploadsManagerDialog open onClose={() => {}} resourceSessionId="s1" {...props} />
+    </ResourcePaneProvider>,
+  )
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockGet.mockResolvedValue({ uploads: ROWS })
   mockDelete.mockResolvedValue({ ok: true })
+  window.localStorage.clear() // the pane store persists per-session tab layouts
   Object.defineProperty(navigator, 'clipboard', {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
     configurable: true,
   })
 })
 afterEach(cleanup)
-// UploadPreview stubs global fetch inside one test — always tear it down,
-// assertion failure or not, so the stub can't poison later tests.
+// Several suites stub globals (matchMedia for the height tween) — always tear
+// them down, assertion failure or not, so a stub can't poison later tests.
 afterEach(() => {
   vi.unstubAllGlobals()
 })
 
 describe('UploadsManagerDialog', () => {
   it('renders rows, stats, and the missing badge', async () => {
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+    renderDialog()
     await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
     expect(screen.getByText(/2 files/)).toBeTruthy()
     expect(screen.getByText(/missing/i, { selector: '.uploads-missing-badge' })).toBeTruthy()
   })
 
   it('filter narrows rows by name / cwd / session title', async () => {
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+    renderDialog()
     await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
     fireEvent.change(screen.getByPlaceholderText(/filter/i), { target: { value: 'Beta' } })
     expect(screen.queryByText('a.txt')).toBeNull()
@@ -63,13 +87,13 @@ describe('UploadsManagerDialog', () => {
 
   it('empty state when there are no uploads', async () => {
     mockGet.mockResolvedValue({ uploads: [] })
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+    renderDialog()
     await waitFor(() => expect(screen.getByText(/no files uploaded yet/i)).toBeTruthy())
   })
 
   it('error state with retry', async () => {
     mockGet.mockRejectedValueOnce(new Error('boom'))
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+    renderDialog()
     await waitFor(() => expect(screen.getByText(/boom/)).toBeTruthy())
     mockGet.mockResolvedValue({ uploads: ROWS })
     fireEvent.click(screen.getByRole('button', { name: /retry/i }))
@@ -77,7 +101,7 @@ describe('UploadsManagerDialog', () => {
   })
 
   it('copy path writes the absolute path to the clipboard', async () => {
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+    renderDialog()
     await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
     fireEvent.click(screen.getAllByRole('button', { name: /copy path/i })[0])
     await waitFor(() =>
@@ -87,7 +111,7 @@ describe('UploadsManagerDialog', () => {
   })
 
   it('delete flow: row Delete opens ConfirmDialog, confirming deletes + refetches', async () => {
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+    renderDialog()
     await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
 
     // Row buttons say "Delete file"; the ConfirmDialog's confirm button is the
@@ -103,7 +127,7 @@ describe('UploadsManagerDialog', () => {
   })
 
   it('clean missing entries: button only when missing rows exist; batch deletes each', async () => {
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+    renderDialog()
     await waitFor(() => expect(screen.getByText(/clean missing entries/i)).toBeTruthy())
 
     fireEvent.click(screen.getByRole('button', { name: /clean missing entries/i }))
@@ -111,22 +135,8 @@ describe('UploadsManagerDialog', () => {
     await waitFor(() => expect(mockDelete).toHaveBeenCalledWith('/uploads/b'))
   })
 
-  it('view opens the preview; missing rows have the view button disabled', async () => {
-    // UploadPreview streams text content via global fetch — stub it with a
-    // Response-like carrying a body reader.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        body: {
-          getReader: () => ({
-            read: () => Promise.resolve({ done: true, value: undefined }),
-          }),
-          cancel: () => {},
-        },
-      }),
-    )
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+  it('view opens an upload tab in the focused panel strip; missing rows stay disabled', async () => {
+    renderDialog()
     await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
 
     const viewButtons = screen.getAllByRole('button', { name: /view file/i })
@@ -134,13 +144,37 @@ describe('UploadsManagerDialog', () => {
     expect((viewButtons[1] as HTMLButtonElement).disabled).toBe(true) // b.txt missing
 
     fireEvent.click(viewButtons[0])
-    const preview = await screen.findByRole('dialog', { name: /file preview/i })
-    expect(preview).toBeTruthy()
-    expect(screen.getByRole('link', { name: /download file/i }).getAttribute('href')).toBe(
-      '/api/uploads/a/content?download=1',
-    )
-    fireEvent.click(screen.getByRole('button', { name: /close preview/i }))
+    // The eye routes through openResource: the tab lands in session s1's
+    // persisted layout (kind + exact address), no dialog-scoped preview modal.
+    await waitFor(() => {
+      const state = JSON.parse(window.localStorage.getItem('crw.resource-pane.v1.s1') ?? 'null')
+      expect(state?.tabs).toEqual([
+        {
+          id: expect.any(String),
+          kind: 'upload',
+          address: uploadResource({ id: 'a', name: 'a.txt', size: 1024 }),
+        },
+      ])
+    })
     expect(screen.queryByRole('dialog', { name: /file preview/i })).toBeNull()
+  })
+
+  it('re-clicking the eye focuses the existing tab instead of opening a second', async () => {
+    renderDialog()
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
+    fireEvent.click(screen.getAllByRole('button', { name: /view file/i })[0])
+    await waitFor(() =>
+      expect(JSON.parse(window.localStorage.getItem('crw.resource-pane.v1.s1')!).tabs).toHaveLength(1),
+    )
+    fireEvent.click(screen.getAllByRole('button', { name: /view file/i })[0])
+    expect(JSON.parse(window.localStorage.getItem('crw.resource-pane.v1.s1')!).tabs).toHaveLength(1)
+  })
+
+  it('eyes are disabled with no open panel to host the resource strip', async () => {
+    renderDialog({ resourceSessionId: null })
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
+    const viewButtons = screen.getAllByRole('button', { name: /view file/i })
+    expect(viewButtons.every((b) => (b as HTMLButtonElement).disabled)).toBe(true)
   })
 })
 
@@ -163,7 +197,7 @@ describe('UploadsManagerDialog height animation', () => {
   it('tweens the body height on a content-driven resize', async () => {
     let height = 200
     measureMock.mockImplementation(() => height)
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+    renderDialog()
     await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
     height = 400
     fireResize(content())
@@ -175,7 +209,7 @@ describe('UploadsManagerDialog height animation', () => {
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
     let height = 200
     measureMock.mockImplementation(() => height)
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+    renderDialog()
     await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
     height = 400
     fireResize(content())
@@ -191,7 +225,7 @@ describe('UploadsManagerDialog height animation', () => {
 
   it('refuses to measure while a nested confirm dialog is open (card-child chrome)', async () => {
     measureMock.mockImplementation(() => 300)
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+    renderDialog()
     await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
     fireEvent.click(screen.getAllByRole('button', { name: /^delete file$/i })[0])
     // The ConfirmDialog backdrop is a child of the card; measuring now would
@@ -205,7 +239,7 @@ describe('UploadsManagerDialog height animation', () => {
 
 describe('UploadsManagerDialog overlay scrollbar', () => {
   it('attaches the project overlay scrollbar to the uploads-body scroller', () => {
-    render(<UploadsManagerDialog open onClose={() => {}} />)
+    renderDialog()
     const body = document.querySelector<HTMLElement>('.uploads-body')!
     expect(body.hasAttribute('data-os-native-hidden')).toBe(true)
     expect(document.querySelector('.uploads-manager-card .os-track')).toBeTruthy()

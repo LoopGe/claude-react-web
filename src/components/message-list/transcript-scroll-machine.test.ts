@@ -419,6 +419,47 @@ describe('pending work terminal paths', () => {
     )
   })
 
+  it('OWNER_LANDED on a follow owner arms a settle verification', () => {
+    // A follow ease can abort mid-convergence on a mechanical pull-back
+    // (Virtuoso anchoring over its padding rewrites reads as a user scroll-up);
+    // the abort skips the exact landing write, and the quiet post-abort
+    // geometry fires no observer. The landing therefore arms the same bounded
+    // verification pass pinToBottom requests, so the residue cannot freeze.
+    const armedVerify: WorkRequest = { id: 20, kind: 'verify', delivery: 'after-owner' }
+    expectTransition(
+      makeState({ owner: { kind: 'follow', token: 4 } }),
+      { type: 'OWNER_LANDED', token: 4 },
+      makeState({ nextWorkId: 21 }),
+      [
+        { type: 'SCHEDULE_WORK', epoch: 7, work: armedVerify },
+        { type: 'WRITE_ABSOLUTE_BOTTOM', epoch: 7, workId: 20, kind: 'verify' },
+      ],
+    )
+  })
+
+  it('OWNER_LANDED on a follow owner releases queued work alongside the armed verification', () => {
+    const armedVerify: WorkRequest = { id: 20, kind: 'verify', delivery: 'after-owner' }
+    expectTransition(
+      makeState({ owner: { kind: 'follow', token: 4 }, work: [verifyAfterOwner] }),
+      { type: 'OWNER_LANDED', token: 4 },
+      makeState({ nextWorkId: 21 }),
+      [
+        { type: 'SCHEDULE_WORK', epoch: 7, work: armedVerify },
+        { type: 'WRITE_ABSOLUTE_BOTTOM', epoch: 7, workId: 3, kind: 'verify' },
+        { type: 'WRITE_ABSOLUTE_BOTTOM', epoch: 7, workId: 20, kind: 'verify' },
+      ],
+    )
+  })
+
+  it('OWNER_LANDED on a non-follow owner does not arm a settle verification', () => {
+    expectTransition(
+      makeState({ owner: { kind: 'fold', token: 4 } }),
+      { type: 'OWNER_LANDED', token: 4 },
+      makeState(),
+      [],
+    )
+  })
+
   it.each(pendingWorkRequests)('WORK_FIRED consumes $kind $delivery work when no owner blocks it', (request) => {
     expectTransition(
       makeState({ work: [request] }),

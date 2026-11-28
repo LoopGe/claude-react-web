@@ -9,7 +9,7 @@ import { ResourceModal } from './ResourceModal'
 import { ResourcePreviewButton } from './ResourcePreviewButton'
 import { useOpenResource } from './context'
 import type { ResourceProvider } from './registry'
-import { fileResource, diffResource, snapshotDiffResource, taskResource } from '../../shared/resource-address'
+import { fileResource, diffResource, snapshotDiffResource, taskResource, uploadResource } from '../../shared/resource-address'
 import { clearResizeObserverStub, stubResizeObserver } from '../test/resize-observer-stub'
 
 const { apiPostMock, capabilityMock, toastErrorMock, measureMock } = vi.hoisted(() => ({
@@ -26,6 +26,16 @@ vi.mock('../hooks/useToast', () => ({
   apiErrorToastOpts: () => undefined,
 }))
 vi.mock('./resource-modal-measure', () => ({ measureResourceModalBodyHeight: measureMock }))
+// The upload body routes pdf tabs to the ref-keyed viewer, which fetches raw
+// bytes on mount — a stub keeps the routing assertion hermetic.
+vi.mock('../components/UploadPdfModal', () => ({
+  UploadPdfViewer: ({ id, name, size }: { id: string; name: string; size: number }) => (
+    <div data-testid="upload-pdf-viewer" data-id={id} data-size={String(size)}>
+      pdf:{name}
+    </div>
+  ),
+  UploadPdfModal: () => null,
+}))
 
 const HTML = fileResource('s1', '/repo/page.html')
 
@@ -650,5 +660,82 @@ describe('ResourceModal height animation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close a.ts' }))
     expect(bodyEl().style.height).toBe('')
     expect(bodyEl().classList.contains('auto-height-animating')).toBe(false)
+  })
+})
+
+describe('upload tabs', () => {
+  const UPLOAD_TXT = uploadResource({ id: 'u-9', name: 'notes.txt', size: 11 })
+  const UPLOAD_IMG = uploadResource({ id: 'u-9', name: 'pic.png', size: 10 })
+  const UPLOAD_PDF = uploadResource({ id: 'u-9', name: 'doc.pdf', size: 20 })
+  const UPLOAD_BIN = uploadResource({ id: 'u-9', name: 'blob.zip', size: 30 })
+
+  function uploadProvider(value: Record<string, unknown>): ResourceProvider {
+    return {
+      protocol: 'upload',
+      async *open() {
+        yield { ok: true, value }
+      },
+    }
+  }
+
+  it('renders text content through the shared preview tree with a download link', async () => {
+    renderHarness(
+      [
+        uploadProvider({
+          kind: 'text',
+          name: 'notes.txt',
+          size: 11,
+          text: { available: true, encoding: 'utf-8', contents: 'uploaded body' },
+        }),
+      ],
+      UPLOAD_TXT,
+    )
+    fireEvent.click(screen.getByText('open-file'))
+    expect(await screen.findByRole('tab', { name: 'notes.txt' })).toBeTruthy()
+    expect(await screen.findByText(/uploaded body/)).toBeTruthy()
+    const download = screen.getByRole('link', { name: 'Download file' })
+    expect(download.getAttribute('href')).toBe('/api/uploads/u-9/content?download=1')
+  })
+
+  it('routes the image kind to the direct content URL', async () => {
+    renderHarness([uploadProvider({ kind: 'image', name: 'pic.png', size: 10 })], UPLOAD_IMG)
+    fireEvent.click(screen.getByText('open-file'))
+    // Queried from the DOM, not by role: MsgImage's Lightbox trigger puts
+    // role="button" on the img, so it no longer answers an `img` role query.
+    await waitFor(() => {
+      const img = document.querySelector('img.msg-image')
+      expect(img?.getAttribute('src')).toBe('/api/uploads/u-9/content')
+      expect(img?.getAttribute('alt')).toBe('pic.png')
+    })
+  })
+
+  it('routes the pdf kind to the ref-keyed viewer with the recorded size', async () => {
+    renderHarness([uploadProvider({ kind: 'pdf', name: 'doc.pdf', size: 20 })], UPLOAD_PDF)
+    fireEvent.click(screen.getByText('open-file'))
+    const viewer = await screen.findByTestId('upload-pdf-viewer')
+    expect(viewer.getAttribute('data-id')).toBe('u-9')
+    expect(viewer.getAttribute('data-size')).toBe('20')
+  })
+
+  it('shows the no-preview notice for other kinds', async () => {
+    renderHarness([uploadProvider({ kind: 'other', name: 'blob.zip', size: 30 })], UPLOAD_BIN)
+    fireEvent.click(screen.getByText('open-file'))
+    expect(await screen.findByText(/No preview available/)).toBeTruthy()
+  })
+
+  it('surfaces a provider failure for a vanished upload', async () => {
+    renderHarness(
+      [
+        {
+          protocol: 'upload',
+          async *open() {
+            yield { ok: false, failure: { code: 'upload/read-failed', message: 'HTTP 404' } }
+          },
+        },
+      ],
+      UPLOAD_TXT,
+    )
+    fireEvent.click(screen.getByText('open-file'))
+    expect(await screen.findByText('HTTP 404')).toBeTruthy()
   })
 })
