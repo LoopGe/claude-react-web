@@ -58,9 +58,18 @@ export interface ToolDef<In = Record<string, unknown>> {
   /** Explicit tool-level read-only metadata; absent is always false. */
   readOnlyHint?: boolean
   backgroundable?: {
-    taskType: 'shell' | 'subagent'
+    taskType: 'shell' | 'subagent' | 'monitor'
     describe(input: In): string
     subagentType?(input: In): string | undefined
+    /** Model-initiated backgrounding: when true, the loop detaches the call
+     *  immediately after launch (the tool_result is the TaskOutput launch
+     *  acknowledgement, not the run's output). Absent = host-detach only. */
+    shouldBackground?(input: In): boolean
   }
+  /** Optional pre-execution input validation. The loop calls this BEFORE
+   *  registering a backgroundable task or running the tool, so malformed input
+   *  throws ToolInputError as a clean error tool result — never a backgrounded
+   *  record whose describe()/completion would read undefined fields. */
+  validate?(input: In): void
   run(input: In, ctx: ToolContext): Promise<ToolOutcome>
 }

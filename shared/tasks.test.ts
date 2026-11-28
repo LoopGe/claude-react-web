@@ -10,10 +10,12 @@ describe('MAX_TERMINAL_TASKS', () => {
 
 describe('normalizeTaskType', () => {
   it('folds the frame discriminants onto the friendly labels the UI matches on', () => {
-    // TasksPanel's TypeIcon matches 'shell' / 'subagent' / 'workflow'; the
-    // task_* frames spell those local_bash / local_agent / local_workflow.
+    // TasksPanel's TypeIcon matches 'shell' / 'subagent' / 'monitor' / 'workflow';
+    // the task_* frames spell those local_bash / local_agent / local_monitor /
+    // local_workflow.
     expect(normalizeTaskType('local_bash')).toBe('shell')
     expect(normalizeTaskType('local_agent')).toBe('subagent')
+    expect(normalizeTaskType('local_monitor')).toBe('monitor')
     expect(normalizeTaskType('local_workflow')).toBe('workflow')
   })
 

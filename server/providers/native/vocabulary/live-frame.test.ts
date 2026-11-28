@@ -7,9 +7,10 @@
 //     agent-message / host-domain, value OR type). T18 formalizes the whole-core
 //     pin; this guards the vocabulary incrementally from T7 on.
 //   • shape — NativeCoreFrame is exactly StreamChunk | RawStreamEvent |
-//     AssistantFrame | OperationalFrame | ToolResultMessage |
+//     AssistantFrame | OperationalFrame | ToolResultMessage | UserMessage |
 //     EnvelopedConversationFrame (T10 folds tool results + the sidechain
-//     envelope into the emission union), and AssistantFrame carries stopReason
+//     envelope into the emission union; the task-notification injection folds
+//     the core-originated user turn), and AssistantFrame carries stopReason
 //     / model as FIRST-CLASS fields (F2: stop reason comes from the finish
 //     reason, not the replay envelope).
 
@@ -17,7 +18,7 @@ import { describe, expect, it, expectTypeOf } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createAssistantMessage, type ToolResultMessage } from './message.js'
+import { createAssistantMessage, type ToolResultMessage, type UserMessage } from './message.js'
 import type { StreamChunk, RawStreamEvent } from './stream.js'
 import type { ReplayEnvelope } from './source.js'
 import type { TokenUsage } from './types.js'
@@ -95,9 +96,9 @@ describe('vocabulary purity (F1: neutral, SDK-free)', () => {
 })
 
 describe('NativeCoreFrame union (core emission contract)', () => {
-  it('is exactly StreamChunk | RawStreamEvent | AssistantFrame | OperationalFrame | ToolResultMessage | EnvelopedConversationFrame', () => {
+  it('is exactly StreamChunk | RawStreamEvent | AssistantFrame | OperationalFrame | ToolResultMessage | UserMessage | EnvelopedConversationFrame', () => {
     expectTypeOf<NativeCoreFrame>().toEqualTypeOf<
-      StreamChunk | RawStreamEvent | AssistantFrame | OperationalFrame | ToolResultMessage | EnvelopedConversationFrame
+      StreamChunk | RawStreamEvent | AssistantFrame | OperationalFrame | ToolResultMessage | UserMessage | EnvelopedConversationFrame
     >()
   })
 
@@ -105,7 +106,7 @@ describe('NativeCoreFrame union (core emission contract)', () => {
     expectTypeOf<EnvelopedConversationFrame['type']>().toEqualTypeOf<'enveloped-conversation'>()
     expectTypeOf<EnvelopedConversationFrame['parentToolUseId']>().toEqualTypeOf<string | null>()
     expectTypeOf<EnvelopedConversationFrame['frame']>().toEqualTypeOf<
-      AssistantFrame | RawStreamEvent | ToolResultMessage
+      AssistantFrame | RawStreamEvent | ToolResultMessage | UserMessage
     >()
   })
 
@@ -156,5 +157,18 @@ describe('live-frame shapes (runtime)', () => {
     // The recall card is main-thread only; file-backed entries carry no content.
     expect(recall.parentToolUseId).toBeNull()
     expect(recall.memories).toEqual([{ path: '/mem/a.md', scope: 'personal' }])
+  })
+
+  it('task/started taskType accepts the monitor discriminant (Phase C type plumbing)', () => {
+    // The neutral union carries the internal discriminant; the host fold
+    // (normalizeTaskType) maps local_monitor → the friendly 'monitor' label.
+    expectTypeOf<Extract<OperationalFrame, { type: 'task/started' }>['taskType']>().toEqualTypeOf<
+      'local_bash' | 'local_agent' | 'local_monitor'
+    >()
+    const monitor: Extract<OperationalFrame, { type: 'task/started' }> = {
+      type: 'task/started', taskId: 't', toolUseId: 'tu', taskType: 'local_monitor',
+      description: 'watch the deploy log', isBackgrounded: true, time: 1,
+    }
+    expect(monitor.taskType).toBe('local_monitor')
   })
 })

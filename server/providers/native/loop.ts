@@ -26,7 +26,7 @@ import type { CanonicalEvent, CanonicalUsagePartial } from './canonical.js'
 import { projectNativeHistoryToWire } from './wire/wire-projection.js'
 import type { FrameContext } from './vocabulary/frame-context.js'
 import type { NativeTaskManager } from './task-manager.js'
-import type { ToolDef } from './tools/types.js'
+import type { ToolDef, ToolOutcome } from './tools/types.js'
 import type { NativeProjectionOptions } from './attachment-projection.js'
 import type { HookDecision, HookEvent } from './hooks/types.js'
 import type { ThinkingSetting } from '../../../shared/session-info.js'
@@ -124,6 +124,15 @@ export interface LoopDeps {
    *  — the loop neither wraps nor reports. Absent for the nested Agent runner
    *  (a subagent never consumes main-thread steering). */
   drainSupplement?: () => Promise<Array<{ uuid: string; text: string }>>
+  /** Mid-turn task-notification delivery: drain background-task / Monitor
+   *  injections queued since the previous round. Called at the TOP of every
+   *  iteration (before the API request), sibling to drainSupplement. Each
+   *  entry's `text` is the durable `<task-notification>` XML body, appended to
+   *  history verbatim. The session's drain owns persistence and the conversation
+   *  frame emission — the loop neither wraps nor reports. Hook-rewake wakes are
+   *  NEVER drained here (the session filters them out); they stay idle-only via
+   *  the pump's wake branch. Absent for the nested Agent runner. */
+  drainInjection?: () => Promise<Array<{ uuid: string; text: string }>>
   /** Called synchronously after the initial user message(s) join history.
    *  The session uses this to distinguish pre-run failures (where its catch
    *  must restore them) from failures after the loop took ownership. */
@@ -245,6 +254,18 @@ export async function runTurn(
     if (deps.drainSupplement) {
       const entries = await deps.drainSupplement()
       for (const entry of entries) {
+        history.push({ role: 'user', content: [{ type: 'text', text: entry.text }] })
+      }
+    }
+    // Mid-turn task-notification / Monitor delivery: anything queued since the
+    // previous round joins the conversation as a user message BEFORE this
+    // round's request is built (the same pre-request boundary as steering, so a
+    // long turn sees a Monitor event at its next round rather than waiting for
+    // the turn to settle). `entry.text` is the durable XML body — never re-wrap
+    // it. The session's drain filters out hook-rewake wakes (idle-only).
+    if (deps.drainInjection) {
+      const injections = await deps.drainInjection()
+      for (const entry of injections) {
         history.push({ role: 'user', content: [{ type: 'text', text: entry.text }] })
       }
     }
@@ -461,6 +482,13 @@ export async function runTurn(
       // return — only a genuine throw sets this.
       let toolThrew = false
       try {
+        // Pre-execution input validation. A backgroundable tool's describe()
+        // reads the input BEFORE run() validates, so malformed input must be
+        // rejected here — before runForeground registers/detaches a record —
+        // to surface as a clean error tool result, not a backgrounded record
+        // that injects undefined completion fields. A throw lands in the catch
+        // below (error tool result + PostToolUseFailure), registering nothing.
+        tool.validate?.(toolInput as never)
         const execute = (taskSignal: AbortSignal) =>
           tool.run(toolInput as never, {
             cwd: deps.cwd,
@@ -470,14 +498,23 @@ export async function runTurn(
             memoryRoots: deps.memoryRoots?.(),
           })
         const backgroundable = tool.backgroundable
-        const outcome = backgroundable
-          ? await deps.tasks.runForeground({
-              toolUseId: call.id,
-              taskType: backgroundable.taskType,
-              description: backgroundable.describe(toolInput),
-              subagentType: backgroundable.subagentType?.(toolInput),
-            }, execute, signal, ctx.parentToolUseId ?? undefined)
-          : await execute(signal)
+        let outcome: ToolOutcome
+        if (backgroundable) {
+          const running = deps.tasks.runForeground({
+            toolUseId: call.id,
+            taskType: backgroundable.taskType,
+            description: backgroundable.describe(toolInput),
+            subagentType: backgroundable.subagentType?.(toolInput),
+          }, execute, signal, ctx.parentToolUseId ?? undefined)
+          // Model-initiated backgrounding: runForeground registers the record
+          // synchronously, so detaching here — BEFORE awaiting the loop
+          // promise — resolves it with the TaskOutput launch acknowledgement
+          // while the run continues on the task's own controller.
+          if (backgroundable.shouldBackground?.(toolInput)) deps.tasks.background(call.id)
+          outcome = await running
+        } else {
+          outcome = await execute(signal)
+        }
         text = outcome.text
         // Tools already emit neutral vocabulary content (text blocks + file
         // occurrences keeping their full resolved attachment), so it travels

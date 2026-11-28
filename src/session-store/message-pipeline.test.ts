@@ -702,8 +702,8 @@ describe('applyMessage: thinking-bearing frame supersedes the thinking row', () 
   })
 })
 
-describe('applyMessage: result freezes thinking and text drafts in interrupt order', () => {
-  it('freezes thinkingDraft BEFORE draft when both are live', () => {
+describe('applyMessage: result freezes only the text draft, anchored to the result', () => {
+  it('freezes the text draft with the result uuid anchor and drops the thinking draft', () => {
     let state = freshState()
     state = applyMessage(state, thinkingStreamMsg('se-1', 'ponder'))
     state = applyMessage(state, streamEventMsg('se-2', 'half'))
@@ -711,16 +711,18 @@ describe('applyMessage: result freezes thinking and text drafts in interrupt ord
     state = applyMessage(state, resultMsg('r-end'))
     expect(state.mirror.thinkingDraft).toBeNull()
     expect(state.mirror.draft).toBeNull()
-    expect(state.mirror.frozenDrafts.map((f) => f.kind)).toEqual(['thinking', 'text'])
+    expect(state.mirror.frozenDrafts).toEqual([
+      { kind: 'text', key: 'draft:1', text: 'half', anchorUuid: 'r-end' },
+    ])
   })
 
-  it('freezes thinking-only (no text draft ever created)', () => {
+  it('thinking-only result freezes nothing (thinking is never a half-card)', () => {
     let state = freshState()
     state = applyMessage(state, thinkingStreamMsg('se-1', 'ponder'))
     state = { ...state, mirror: flushLiveTurn(state.mirror) }
     state = applyMessage(state, resultMsg('r-end'))
-    expect(state.mirror.frozenDrafts).toHaveLength(1)
-    expect(state.mirror.frozenDrafts[0]).toEqual({ kind: 'thinking', key: 'thinking:1', text: 'ponder', done: false })
+    expect(state.mirror.thinkingDraft).toBeNull()
+    expect(state.mirror.frozenDrafts).toEqual([])
   })
 
   it('SESSION_TERMINATED does not freeze thinkingDraft (draft symmetry — sweep only)', () => {

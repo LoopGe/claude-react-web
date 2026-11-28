@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { collisionPayloadOf, dndData, dndExtraOf, dndPayloadOf, tiltFromVelocity, type DragPayload } from './payload'
+import { collisionPayloadOf, dndData, dndExtraOf, dndPayloadOf, panelDropHint, tiltFromVelocity, type DragPayload } from './payload'
 
 describe('dndData / dndPayloadOf', () => {
   it('round-trips a payload through the data channel', () => {
@@ -102,5 +102,44 @@ describe('collisionPayloadOf', () => {
     // wrapper has no `crw` key at the top level.
     expect(collisionPayloadOf({ data: { droppableContainer: undefined, value: 1 } })).toBeNull()
     expect(collisionPayloadOf({ data: { crw: { kind: 'group-card', id: 'g' } } })).toBeNull()
+  })
+})
+
+describe('panelDropHint', () => {
+  it('promises swap for an already-open foreign sidebar card', () => {
+    // The dragged session owns a panel → openAtSlot swaps the two slots.
+    expect(
+      panelDropHint({ payload: { kind: 'sidebar-card', id: 's1' }, isOpen: true }, 's2'),
+    ).toBe('swap')
+  })
+
+  it('promises replace for a not-open foreign sidebar card', () => {
+    // The occupant's panel closes (session stays alive) → must not read as
+    // a plain "open".
+    expect(
+      panelDropHint({ payload: { kind: 'sidebar-card', id: 's1' }, isOpen: false }, 's2'),
+    ).toBe('replace')
+  })
+
+  it('promises swap for a foreign panel drag', () => {
+    expect(
+      panelDropHint({ payload: { kind: 'main-panel', id: 's1' }, isOpen: true }, 's2'),
+    ).toBe('swap')
+  })
+
+  it('stays dark for self-targets (both resolve to no-ops)', () => {
+    expect(
+      panelDropHint({ payload: { kind: 'sidebar-card', id: 's1' }, isOpen: true }, 's1'),
+    ).toBeNull()
+    expect(
+      panelDropHint({ payload: { kind: 'main-panel', id: 's1' }, isOpen: true }, 's1'),
+    ).toBeNull()
+  })
+
+  it('stays dark for incompatible kinds and idle', () => {
+    expect(panelDropHint({ payload: { kind: 'group-card', id: 'g1' }, isOpen: false }, 's1')).toBeNull()
+    expect(panelDropHint({ payload: { kind: 'profile-model', id: 'm1' }, isOpen: false }, 's1')).toBeNull()
+    expect(panelDropHint({ payload: { kind: 'main-grid' }, isOpen: false }, 's1')).toBeNull()
+    expect(panelDropHint(null, 's1')).toBeNull()
   })
 })

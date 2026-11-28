@@ -360,6 +360,7 @@ export class ClaudeProvider implements AgentProvider {
     supportsResume: true,
     supportsFork: true,
     supportsPlugins: true,
+    supportsPluginSkills: true,
     supportsFastMode: true,
     supportsEffortLevel: true,
     supportsThinkingControl: true,

@@ -34,7 +34,7 @@ import { createPushable } from './pushable.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
 import { getGitSnapshot, type GitSnapshotPayload } from './git.js'
-import { deriveTaskListForSession } from './tasklist-state.js'
+import { deriveTaskListForSession, type TasklistSource } from './tasklist-state.js'
 
 const log = createLogger('git-snapshot')
 const tlog = createLogger('tasklist')
@@ -94,6 +94,11 @@ export class SessionEventBroadcaster {
      *  to a fresh msgstat subscriber so a tab reconnecting/reloading during the
      *  queue window recovers the pending bubble (the live frame is fired once). */
     private queuedFramesOf?: (id: string) => WsMessageQueued[],
+    /** Provider transcript source for the tasklist derive (manager-resolved
+     *  via AgentProvider.tasklistSource, live or dormant meta) — undefined
+     *  for CLI sessions, whose derive reads the JSONL. Keeps the live WS
+     *  snapshot on the same provider-aware path as the HTTP tasklist read. */
+    private tasklistSourceOf?: (id: string) => TasklistSource | undefined,
   ) {}
 
   /** AsyncIterable of context-usage snapshots for one session.
@@ -456,7 +461,7 @@ export class SessionEventBroadcaster {
     // prune below so no stale seed outlives its session. The lookup is
     // re-done after the await so a session replaced under the same id
     // (respawn) gets the frame pushed to its own subscribers.
-    const payload = await deriveTaskListForSession(id)
+    const payload = await deriveTaskListForSession(id, this.tasklistSourceOf?.(id))
     metrics.count('tasklist_broadcast_total')
     const frame: WsTasklistSnapshot = { kind: 'tasklist-snapshot', sessionId: id, rev: payload.rev, tasks: payload.tasks }
     const s = this.sessions.get(id)

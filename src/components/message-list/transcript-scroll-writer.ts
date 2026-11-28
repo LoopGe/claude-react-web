@@ -634,8 +634,18 @@ export function createTranscriptScrollWriter({
     let stableFrames = 0
     for (const other of [...scheduledWork.values()]) {
       if (other.id !== work.id && other.firedKind === 'verify') {
-        deadline = other.deadline
-        stableFrames = other.stableFrames
+        // Only a LIVE pass may be joined. A pass owner-blocked for its whole
+        // lifetime (a follow ease or fold in flight) keeps ticking its deadline
+        // down without writing; if it expired one frame before this request
+        // landed, inheriting that stale deadline would complete this pass on
+        // its first tick WITHOUT a write — stranding exactly the landing
+        // residue it was armed to fix. Retire the stale pass silently (its own
+        // next tick would have completed it the same way) and take a fresh
+        // bounded window.
+        if (other.deadline > Date.now()) {
+          deadline = other.deadline
+          stableFrames = other.stableFrames
+        }
         cancelWork(other.id)
         mostRecentConsumedWorkId = Math.max(mostRecentConsumedWorkId, other.id)
       }

@@ -13,10 +13,14 @@ import {
   parseSnapshotDiffResource,
   parseSubagentResource,
   parseTaskResource,
+  parseUploadResource,
+  resourceDescription,
+  resourcePathSegments,
   resourceTitle,
   snapshotDiffResource,
   subagentResource,
   taskResource,
+  uploadResource,
 } from './resource-address'
 
 describe('parseResourceAddress', () => {
@@ -224,5 +228,51 @@ describe('task and subagent addresses', () => {
     expect(parseTaskResource('crw-resource://subagent/s1/t')).toBeNull()
     expect(parseSubagentResource('crw-resource://subagent//t')).toBeNull()
     expect(parseSubagentResource('crw-resource://subagent/s1/t/junk')).toBeNull()
+  })
+})
+
+describe('upload addresses', () => {
+  it('round-trips id, name and size with a canonical query', () => {
+    const address = uploadResource({ id: 'u-1', name: 'report 2026.pdf', size: 12345 })
+    expect(address).toBe('crw-resource://upload/u-1/report%202026.pdf?size=12345')
+    expect(parseUploadResource(address)).toEqual({ id: 'u-1', name: 'report 2026.pdf', size: 12345 })
+  })
+
+  it('carries unicode and reserved characters through one encoded name segment', () => {
+    const address = uploadResource({ id: 'u-2', name: '文档#1?.md', size: 10 })
+    expect(parseUploadResource(address)).toEqual({ id: 'u-2', name: '文档#1?.md', size: 10 })
+    expect(resourceTitle(address)).toBe('文档#1?.md')
+  })
+
+  it('keeps a slash inside the name within one segment', () => {
+    const address = uploadResource({ id: 'u-3', name: 'weird/name.txt', size: 3 })
+    expect(parseUploadResource(address)).toEqual({ id: 'u-3', name: 'weird/name.txt', size: 3 })
+  })
+
+  it('accepts size 0 (empty upload) and rejects missing / malformed sizes', () => {
+    expect(parseUploadResource(uploadResource({ id: 'u-4', name: 'empty.txt', size: 0 }))).toEqual({
+      id: 'u-4',
+      name: 'empty.txt',
+      size: 0,
+    })
+    expect(parseUploadResource('crw-resource://upload/u-1/a.txt')).toBeNull()
+    expect(parseUploadResource('crw-resource://upload/u-1/a.txt?size=')).toBeNull()
+    expect(parseUploadResource('crw-resource://upload/u-1/a.txt?size=abc')).toBeNull()
+    expect(parseUploadResource('crw-resource://upload/u-1/a.txt?size=-1')).toBeNull()
+  })
+
+  it('rejects malformed upload addresses and foreign protocols', () => {
+    expect(parseUploadResource('crw-resource://upload//a.txt?size=1')).toBeNull()
+    expect(parseUploadResource('crw-resource://upload/u-1/?size=1')).toBeNull()
+    expect(parseUploadResource(fileResource('s1', '/a.ts'))).toBeNull()
+  })
+
+  it('derives chip labels: title = name, segments disambiguate equal names', () => {
+    const a = uploadResource({ id: 'u-5', name: 'log.txt', size: 1 })
+    const b = uploadResource({ id: 'u-6', name: 'log.txt', size: 2 })
+    expect(resourceTitle(a)).toBe('log.txt')
+    expect(resourcePathSegments(a)).toEqual(['u-5', 'log.txt'])
+    expect(resourcePathSegments(b)).toEqual(['u-6', 'log.txt'])
+    expect(resourceDescription(a)).toBe('log.txt — upload u-5')
   })
 })

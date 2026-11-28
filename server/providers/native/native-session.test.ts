@@ -1889,7 +1889,7 @@ describe('NativeSession', () => {
 
     // The first API request advertises the builtins plus the discovered tool.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'Agent', 'Task', 'TaskOutput', 'TaskStop', 'Monitor', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
     ])
     // The permission request carries the server OWNED BY the tool's FQN,
     // resolved from discovery metadata (never parsed back out of the name).
@@ -2037,12 +2037,12 @@ describe('NativeSession', () => {
     // The parent advertises both delegation names plus the discovered MCP
     // tool; every nested request drops both (depth cap 1) but keeps MCP and Skill.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'Agent', 'Task', 'TaskOutput', 'TaskStop', 'Monitor', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
     ])
     const nestedRequests = requests.filter((r) => !r.tools.some((t) => t.name === 'Agent'))
     expect(nestedRequests).toHaveLength(2)
     for (const r of nestedRequests) {
-      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo'])
+      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop', 'Monitor', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo'])
       expect(r.tools.some((tool) => tool.name === 'Task')).toBe(false)
       expect(r.system).not.toContain(AGENT_GUIDANCE)
     }
@@ -3336,7 +3336,7 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('review') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
 
-    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
+    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'Agent', 'Task', 'TaskOutput', 'TaskStop', 'Monitor', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
     const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
     // The definition's prompt is the nested instruction suffix and its model the
     // default nested model...
@@ -3566,7 +3566,7 @@ describe('NativeSession', () => {
     // The effective tool list holds from construction (rebuildTools runs in the
     // constructor), not builtins-only until the first turn.
     expect((coreOf(session) as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name))
-      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
+      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'Agent', 'Task', 'TaskOutput', 'TaskStop', 'Monitor', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
     const other = provider.createSession({ id: 'agents-cap-other', cwd: dir })
     expect((coreOf(session) as unknown as { todoWriteTool: unknown }).todoWriteTool)
       .not.toBe((coreOf(other) as unknown as { todoWriteTool: unknown }).todoWriteTool)
@@ -8981,6 +8981,52 @@ describe('auto-memory prompt section (Task 5)', () => {
       expect(row, 'a Memory category must be priced').toBeDefined()
       expect(row!.tokens).toBeGreaterThan(0)
       expect(row!.kind).toBe('used')
+    } finally {
+      await session.destroy()
+    }
+  })
+})
+
+describe('native system prompt: environment + agent roster', () => {
+  it('main prompt carries <env> and <available_agents>; nested keeps env, drops the roster', async () => {
+    const dir = await tempDir('native-env-prompt-')
+    await mkdir(join(dir, '.git'), { recursive: true })
+    await writeFile(join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8')
+    const defs: Record<string, StoredAgentDefinition> = {
+      reviewer: agentDefinition({ description: 'Reviews code', tools: ['Read', 'Grep'] }),
+    }
+    const store = {
+      get: (name: string) => defs[name],
+      has: (name: string) => name in defs,
+      list: () => Object.values(defs),
+    } as unknown as AgentDefinitionStore
+    const provider = new NativeProvider({ stateDir: dir, agentStore: store, ports: makeNativePorts({ stateDir: dir }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+      [textTurn('ok'), textTurn('nested-ok')],
+      requests,
+    )
+    const session = provider.createSession({ id: 'env-prompt', cwd: dir, permissionMode: 'bypassPermissions' })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+
+      const main = requests[0].system
+      expect(main).toContain('<env>')
+      expect(main).toContain(`Working directory: ${dir}`)
+      expect(main).toContain('Is a git repository: yes (branch "main")')
+      expect(main).toContain('<available_agents>')
+      expect(main).toContain('- reviewer (tools: Read, Grep): Reviews code')
+
+      await runNestedAgent(session, dir, { description: 'd', prompt: 'p', subagent_type: 'reviewer' })
+      await vi.waitFor(() => expect(requests.length).toBeGreaterThan(1))
+      const nested = requests[1].system
+      // A subagent works in the same directory, but cannot delegate further.
+      expect(nested).toContain('<env>')
+      expect(nested).not.toContain('<available_agents>')
+      expect(nested).not.toContain('- reviewer')
     } finally {
       await session.destroy()
     }

@@ -33,6 +33,7 @@ import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil,
 import type { ScheduledSendsApi } from '../hooks/useScheduledSends'
 import type { TranscriptRecovery } from '../session-sync/session-synchronizer'
 import type { RebuildWaitingState } from '../session-store/types'
+import { PANEL_SELECTOR } from '../theme'
 import { SchedulePicker } from './SchedulePicker'
 import { HoverHint } from './HoverHint'
 
@@ -42,13 +43,6 @@ import { HoverHint } from './HoverHint'
 const WHEEL_STEP_PX = 80 // accumulated px (deltaMode-normalized) to step once
 const WHEEL_STEP_MS = 120 // min ms between history steps
 const WHEEL_ACCUM_TTL = WHEEL_STEP_MS * 4 // a pause longer than this discards stale accumulated delta
-
-/** Scheduled-send UI is hidden pending a UI redesign (spec:
- *  docs/superpowers/specs/2026-09-07-scheduled-send-design.md). Flip to true
- *  to re-enable the composer's clock button + pending chips + time picker.
- *  The server routes, the useScheduledSends hook, and Chat wiring stay
- *  active either way, so re-enabling is a one-constant change. */
-const SCHEDULE_SEND_ENABLED = false
 
 // The @file/@folder menu is a lazy chunk so the startup bundle never carries it.
 const FilePicker = lazy(() => import('./FilePicker'))
@@ -808,9 +802,15 @@ export const Composer = memo(function Composer({
   ])
 
   // ── Scheduled send popover state ─────────────────────────────
-  const [scheduleAnchor, setScheduleAnchor] = useState<DOMRect | null>(null)
+  /** Popover anchor plus the panel that opened it. The picker portals to
+   *  body, so it needs the panel up front for its [data-portaled] stamp. */
+  const [scheduleAnchor, setScheduleAnchor] = useState<{ rect: DOMRect; owner: Element | null } | null>(null)
 
   const pendingScheduled = scheduled?.schedules.filter((s) => s.status === 'pending') ?? []
+  /** Due but parked by a pending transcript rebuild; the manager retries it
+   *  in order once admission restores, so it must stay visible (distinct from
+   *  a failure) instead of silently vanishing from the chip row. */
+  const deferredScheduled = scheduled?.schedules.filter((s) => s.status === 'deferred') ?? []
   const failedScheduled = scheduled?.schedules.filter((s) => s.status === 'failed') ?? []
   const filesPending = files.some((file) => file.status === 'uploading')
   const filesFailed = files.some((file) => file.status === 'error')
@@ -827,6 +827,20 @@ export const Composer = memo(function Composer({
     onSendScheduled?.(fireAtMs)
   }, [onSendScheduled])
 
+  /** Right-click on the shared send/interrupt control is the scheduled-send
+   *  entry (the clock button that used to sit beside it was removed). The
+   *  native menu is always suppressed; the picker opens for a schedulable
+   *  draft in EITHER state — scheduling while a turn runs is allowed, and
+   *  left-click still sends / interrupts. */
+  const handleSendContextMenu = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault()
+    if (!canSchedule) return
+    setScheduleAnchor({
+      rect: e.currentTarget.getBoundingClientRect(),
+      owner: e.currentTarget.closest(PANEL_SELECTOR),
+    })
+  }, [canSchedule])
+
   const canSend =
     !disabled && !sending && !attachmentsPending && (!filesFailed || commandLike)
     && (input.trim() !== '' || pastedImages.length > 0 || files.some((file) => file.status === 'ready'))
@@ -837,6 +851,13 @@ export const Composer = memo(function Composer({
       : filesFailed && !commandLike
         ? 'Some attachments failed to upload'
         : null
+  /** Hover copy for the shared send/interrupt control. The scheduling hint
+   *  applies in BOTH states: right-click schedules the draft even mid-turn. */
+  const sendControlHint =
+    (canInterrupt
+      ? `Interrupt the current turn${queueNote}${backgroundTasksSupported ? ' (Alt+B backgrounds it)' : ''}`
+      : blockedReason ?? 'Send message (Enter)')
+    + (canSchedule ? ' · right-click to schedule' : '')
 
   // Degraded transcript (spec §10): a read-only snapshot replaces the editor
   // with a Retry rebuild banner (the host also disables send). Takes
@@ -963,13 +984,31 @@ export const Composer = memo(function Composer({
       </div>,
     )
   }
-  if (SCHEDULE_SEND_ENABLED && (pendingScheduled.length > 0 || failedScheduled.length > 0) && scheduled) {
+  if ((pendingScheduled.length > 0 || deferredScheduled.length > 0 || failedScheduled.length > 0) && scheduled) {
     composerRows.push(
       <div className="scheduled-sends" key="scheduled-sends">
         {pendingScheduled.map((s) => (
           <span key={s.id} className="scheduled-chip" title={formatScheduledExact(s.fireAt)}>
             <IconClock size={12} aria-hidden />
             <span>{formatScheduledRelative(s.fireAt, scheduled.now)}</span>
+            <button
+              type="button"
+              className="scheduled-chip-cancel"
+              aria-label={`Cancel scheduled message ${s.id}`}
+              onClick={() => void scheduled.cancel(s.id)}
+            >
+              <IconX size={12} />
+            </button>
+          </span>
+        ))}
+        {deferredScheduled.map((s) => (
+          <span
+            key={s.id}
+            className="scheduled-chip scheduled-chip-deferred"
+            title={`Scheduled for ${formatScheduledExact(s.fireAt)} — waiting for transcript rebuild`}
+          >
+            <IconClock size={12} aria-hidden />
+            <span>Waiting for transcript rebuild</span>
             <button
               type="button"
               className="scheduled-chip-cancel"
@@ -1389,19 +1428,6 @@ export const Composer = memo(function Composer({
             </button>
           </HoverHint>
         )}
-        {SCHEDULE_SEND_ENABLED && onSendScheduled && scheduled && (
-          <HoverHint label="Schedule this message for a later time" side="top">
-            <button
-              className="btn btn-icon"
-              type="button"
-              onClick={(e) => setScheduleAnchor(e.currentTarget.getBoundingClientRect())}
-              disabled={!canSchedule}
-              aria-label="Schedule send"
-            >
-              <IconClock size={18} />
-            </button>
-          </HoverHint>
-        )}
         {composerControls && (
           <div className="composer-session-controls">{composerControls}</div>
         )}
@@ -1418,17 +1444,14 @@ export const Composer = memo(function Composer({
             title and the aria-label (which screen readers announce) can't
             drift apart on the pluralization again. */}
         <HoverHint
-          label={
-            canInterrupt
-              ? `Interrupt the current turn${queueNote}${backgroundTasksSupported ? ' (Alt+B backgrounds it)' : ''}`
-              : blockedReason ?? 'Send message (Enter)'
-          }
+          label={sendControlHint}
           side="top"
         >
           <button
             className={'btn btn-icon composer-send ' + (canInterrupt ? 'btn-danger' : 'btn-primary')}
             type="button"
             onClick={canInterrupt ? onInterrupt : onSend}
+            onContextMenu={handleSendContextMenu}
             disabled={!canInterrupt && !canSend}
             aria-label={
             canInterrupt
@@ -1468,8 +1491,13 @@ export const Composer = memo(function Composer({
         <ContextMenu x={menuPos.x} y={menuPos.y} items={menuItems} onClose={closeMenu} />
       )}
 
-      {SCHEDULE_SEND_ENABLED && scheduleAnchor && (
-        <SchedulePicker anchorRect={scheduleAnchor} onPick={confirmScheduled} onClose={() => setScheduleAnchor(null)} />
+      {scheduleAnchor && (
+        <SchedulePicker
+          anchorRect={scheduleAnchor.rect}
+          ownerPanel={scheduleAnchor.owner}
+          onPick={confirmScheduled}
+          onClose={() => setScheduleAnchor(null)}
+        />
       )}
 
     </div>

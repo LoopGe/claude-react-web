@@ -648,7 +648,14 @@ describe('native subagent transcripts end to end', () => {
       expect(legacyEventsOf(loadNativeSessionLogSync(stateDir, id)).find(
         (event) => event.type === 'subagent/descriptor',
       )).toMatchObject({ toolUseId: 'task-detach', toolName: 'Task', depth: 1 })
-      expect(seen.frames.filter((frame) => frame.type === 'result')).toHaveLength(1)
+      // The backgrounded settle injects a continuation turn (CLI parity), so the
+      // stable state is the parent result PLUS the continuation result. Wait for
+      // it rather than racing the continuation's settlement.
+      await vi.waitFor(() => {
+        expect(seen.frames.filter((frame) => frame.type === 'result')).toHaveLength(2)
+      })
+      // The Task call keeps a single launch-ack tool_result on the main thread;
+      // the real report rides the notification, never a second tool_result.
       expect(seen.frames.filter((frame) => frame.type === 'user'
         && frame.parent_tool_use_id == null
         && frame.message?.content?.[0]?.tool_use_id === 'task-detach')).toHaveLength(1)

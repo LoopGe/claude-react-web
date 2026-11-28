@@ -275,19 +275,26 @@ export function applyMessage(state: SessionState, message: SdkMessage): SessionS
   }
 
   if (incomingMessage.type === 'result') {
-    // A draft still live at the turn's end is an interrupted half-card ("no
-    // roll back"): freeze it as a session-memory partial row. A salvaged
-    // partial response would have superseded the draft already (the MESSAGE
-    // above), so this fires exactly when nothing salvaged it. Thinking freezes
-    // BEFORE text (block order within a response), one ordered list so
-    // multiple interrupts keep their chronological row order.
+    // A TEXT draft still live at the turn's end is an interrupted half-card:
+    // freeze it as a session-memory partial row, anchored to this result frame
+    // so the renderer can place it back at the interrupted turn instead of the
+    // live tail. A salvaged partial response would have superseded the draft
+    // already (the MESSAGE above), so this fires exactly when nothing salvaged
+    // it.
+    //
+    // Thinking is deliberately NOT frozen: it is internal reasoning the model
+    // never saw and the backend never persisted. Freezing it only left a
+    // collapsed "thinking" tombstone stuck at the transcript tail, so the live
+    // thinking draft is dropped with the turn.
     const m = working.mirror
     const entries: FrozenDraft[] = []
-    if (m.thinkingDraft) entries.push({ kind: 'thinking', ...m.thinkingDraft })
-    if (m.draft) entries.push({ kind: 'text', ...m.draft })
-    const frozen = entries.length > 0
-      ? { ...m, frozenDrafts: [...m.frozenDrafts, ...entries], draft: null, thinkingDraft: null }
-      : m
+    if (m.draft) entries.push({ kind: 'text', ...m.draft, anchorUuid: messageUuid ?? '' })
+    const frozen = {
+      ...m,
+      frozenDrafts: entries.length > 0 ? [...m.frozenDrafts, ...entries] : m.frozenDrafts,
+      draft: null,
+      thinkingDraft: null,
+    }
     // Turn-end sweep via the shared helper. The live-only concerns
     // (liveTurn=null, clearAbandonedPlaceholders) are applied on top.
     working = {

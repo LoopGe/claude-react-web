@@ -3,6 +3,9 @@ import { mkdtemp, writeFile, mkdir, rm, stat as realStat, readFile, readdir as r
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createJsonlPageCache } from './jsonl-cache.js'
+import { NativeSessionLog } from './providers/native/session-log/log.js'
+import { nativeHistoryCache } from './providers/native/session-log/cache.js'
+import { nativeSessionLogPath } from './providers/native/session-log/paths.js'
 import {
   deriveTaskListFromLines,
   deriveTaskListForSession,
@@ -399,5 +402,147 @@ describe('deriveTaskListForSession folds subagent transcripts (the bug)', () => 
     expect(snap.tasks).toEqual([
       { id: '1', subject: 'A', status: 'completed', stale: false },
     ])
+  })
+})
+
+describe('deriveTaskListForSession native source (neutral v3 log)', () => {
+  // Native sessions keep their transcript in <stateDir>/native-sessions/<id>/
+  // session.v1.jsonl (neutral v3 events), NOT the CLI JSONL — the derive must
+  // read it through the existing host read cache (events → SDK RawLines via
+  // the adapter seam) and fold with the SAME deriveTaskListFromLines. Every
+  // fixture here is written and CLOSED before deriving: the snapshot path
+  // needs no live session (dormant parity).
+  let dir: string
+  const sid = '44444444-4444-4444-8444-444444444444'
+  const prevEnv = process.env.CLAUDE_CONFIG_DIR
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'tasklist-native-'))
+    // Isolate the CLI fallback too: a derive without a native source must
+    // never scan the real user transcript dir.
+    process.env.CLAUDE_CONFIG_DIR = dir
+  })
+  afterEach(async () => {
+    if (prevEnv === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = prevEnv
+    nativeHistoryCache.invalidate(sid)
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  })
+
+  let ts = 0
+  const stamp = (): string => new Date(Date.UTC(2026, 0, 1, 0, 0, ts++)).toISOString()
+  beforeEach(() => { ts = 0 })
+
+  function userEvent(content: unknown[], parent: string | null = null) {
+    return {
+      type: 'user' as const, uuid: `u-${ts}`, session_id: sid,
+      parent_tool_use_id: parent, timestamp: stamp(),
+      message: { role: 'user' as const, content },
+    }
+  }
+  function assistantEvent(blocks: unknown[], parent: string | null = null) {
+    return {
+      type: 'assistant' as const, uuid: `a-${ts}`, session_id: sid,
+      parent_tool_use_id: parent, timestamp: stamp(),
+      message: { role: 'assistant' as const, content: blocks },
+    }
+  }
+  const human = (text: string) => userEvent([{ type: 'text', text }])
+  const createResult = (toolUseId: string, text: string) => userEvent([toolResultBlock(toolUseId, text)])
+
+  async function writeLog(events: Parameters<NativeSessionLog['append']>[0][]): Promise<void> {
+    const log = NativeSessionLog.open({ stateDir: dir, id: sid, cwd: '/repo', resume: false })
+    for (const e of events) log.append(e)
+    await log.flush()
+    await log.close()
+  }
+
+  it('derives id/subject/status from a create→result→update chain (id parsed from result text)', async () => {
+    await writeLog([
+      human('do it'),
+      assistantEvent([create('c1', 'Deploy service')]),
+      createResult('c1', 'Task #3 created successfully: Deploy service'),
+      assistantEvent([update('3', { status: 'in_progress' })]),
+    ])
+    const snap = await deriveTaskListForSession(sid, { stateDir: dir })
+    expect(snap).toEqual({
+      rev: 2,
+      tasks: [{ id: '3', subject: 'Deploy service', status: 'in_progress', stale: false }],
+    })
+  })
+
+  it('computes the stale boundary from genuine human inputs only', async () => {
+    await writeLog([
+      human('first request'),
+      assistantEvent([create('c1', 'old task')]),
+      createResult('c1', 'Task #1 created successfully: old task'),
+      assistantEvent([update('1', { status: 'completed' })]),
+      human('second request'), // boundary — after the completion
+      assistantEvent([create('c2', 'current task')]),
+      createResult('c2', 'Task #2 created successfully: current task'),
+      assistantEvent([update('2', { status: 'completed' })]), // touched in the current turn
+    ])
+    const snap = await deriveTaskListForSession(sid, { stateDir: dir })
+    expect(snap.rev).toBe(4)
+    expect(snap.tasks).toEqual([
+      { id: '1', subject: 'old task', status: 'completed', stale: true },
+      { id: '2', subject: 'current task', status: 'completed', stale: false },
+    ])
+  })
+
+  it('folds sidechain Task* events; a sidechain prompt does NOT move the boundary', async () => {
+    // Native sidechain frames live in the SAME log (parent_tool_use_id set) —
+    // the read cache keeps them, so the fold sees the subagent's completion
+    // without a second file. The subagent's prompt is not the user moving on.
+    await writeLog([
+      human('do it'),
+      assistantEvent([create('c1', 'A')]),
+      createResult('c1', 'Task #1 created successfully: A'),
+      assistantEvent([update('1', { status: 'in_progress' })]),
+      userEvent([{ type: 'text', text: 'You are implementing Task 1' }], 'agent-tool'),
+      assistantEvent([update('1', { status: 'completed' })], 'agent-tool'),
+    ])
+    const snap = await deriveTaskListForSession(sid, { stateDir: dir })
+    expect(snap.rev).toBe(3)
+    expect(snap.tasks).toEqual([
+      { id: '1', subject: 'A', status: 'completed', stale: false },
+    ])
+  })
+
+  it('matches deriveTaskListFromLines over the projected SDK lines', async () => {
+    await writeLog([
+      human('do it'),
+      assistantEvent([create('c1', 'Deploy')]),
+      createResult('c1', 'Task #7 created successfully: Deploy'),
+      assistantEvent([update('7', { status: 'in_progress', activeForm: 'Deploying' })]),
+      human('next'),
+    ])
+    const loaded = await nativeHistoryCache.load(dir, sid)
+    expect(loaded).not.toBeNull()
+    const snap = await deriveTaskListForSession(sid, { stateDir: dir })
+    expect(snap).toEqual(deriveTaskListFromLines(loaded!.lines))
+  })
+
+  it('a missing native log degrades to empty (no CLI fallback)', async () => {
+    expect(await deriveTaskListForSession(sid, { stateDir: dir })).toEqual({ rev: 0, tasks: [] })
+  })
+
+  it('a corrupt native log degrades to empty (contained failure)', async () => {
+    const p = nativeSessionLogPath(dir, sid)
+    await mkdir(join(dir, 'native-sessions', sid), { recursive: true })
+    await writeFile(p, 'this is not a session log\n')
+    expect(await deriveTaskListForSession(sid, { stateDir: dir })).toEqual({ rev: 0, tasks: [] })
+  })
+
+  it('a CLI session still derives from the JSONL when no native source is given (regression)', async () => {
+    const proj = join(dir, 'projects', 'proj')
+    await mkdir(proj, { recursive: true })
+    const cliSid = '55555555-5555-4555-8555-555555555555'
+    await writeFile(join(proj, `${cliSid}.jsonl`), [
+      JSON.stringify({ type: 'user', timestamp: '2026-01-01T00:00:00Z', message: { content: [{ type: 'text', text: 'do it' }] } }),
+      JSON.stringify({ type: 'assistant', timestamp: '2026-01-01T00:00:01Z', message: { content: [create('c1', 'A')] } }),
+      JSON.stringify({ type: 'user', timestamp: '2026-01-01T00:00:02Z', message: { content: [toolResultBlock('c1', 'Task #1 created successfully: A')] } }),
+    ].join('\n') + '\n')
+    const snap = await deriveTaskListForSession(cliSid)
+    expect(snap).toEqual({ rev: 1, tasks: [{ id: '1', subject: 'A', status: 'pending', stale: false }] })
   })
 })

@@ -15,6 +15,7 @@
 
 import { useEffect, type CSSProperties, type ReactNode } from 'react'
 import { motion, useMotionValue, useSpring } from 'motion/react'
+import { useDndContext } from '@dnd-kit/core'
 import { motionSuppressed } from '../utils/reduced-motion'
 import { tiltFromVelocity } from './payload'
 
@@ -35,6 +36,17 @@ export function DragGhost({ children, className, style, tilt = true }: {
 }) {
   const tiltRaw = useMotionValue(0)
   const tiltSpring = useSpring(tiltRaw, TILT_SPRING)
+
+  // A CSS entrance animation would replay when dnd-kit clones the overlay to
+  // play its drop animation: the clone re-renders this component from the
+  // frozen element, and fresh mounts restart animations. The public DnD context
+  // is the discriminator — `active` is the dragged item on the live overlay and
+  // null in the drop clone (dnd-kit clears it before handing the clone to its
+  // AnimationManager), so the lift-in class exists only while genuinely lifted.
+  // The context re-renders this component on collision updates; that is cheap
+  // because its `children` element is prop-identical (React skips the subtree —
+  // the SessionCard clone is memoized), so only this wrapper is re-rendered.
+  const { active } = useDndContext()
 
   useEffect(() => {
     if (!tilt || motionSuppressed()) return
@@ -79,7 +91,7 @@ export function DragGhost({ children, className, style, tilt = true }: {
 
   return (
     <motion.div
-      className={className ? `dnd-ghost ${className}` : 'dnd-ghost'}
+      className={`dnd-ghost${active != null ? ' dnd-ghost-lift-in' : ''}${className ? ` ${className}` : ''}`}
       style={{ rotate: tilt ? tiltSpring : 0, ...style }}
       // The ghost is a visual clone of real, focusable markup (SessionCard,
       // sortable grips) — keep the clone out of the tab order and the a11y

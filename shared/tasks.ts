@@ -44,9 +44,10 @@ export function isTerminalTaskStatus(status: string): boolean {
 
 /** The CLI names a task's kind twice, differently: the `task_*` frames and
  *  `background_tasks_changed` carry the internal discriminant (`local_bash`,
- *  `local_agent`, `local_workflow`), while `BackgroundTaskSummary.type` (the
- *  Stop-hook payload) carries the friendly label (`shell`, `subagent`,
- *  `monitor`, `workflow`). The UI is written against the friendly label —
+ *  `local_agent`, `local_monitor`, `local_workflow`), while
+ *  `BackgroundTaskSummary.type` (the Stop-hook payload) carries the friendly
+ *  label (`shell`, `subagent`, `monitor`, `workflow`). The UI is written
+ *  against the friendly label —
  *  TasksPanel's TypeIcon matches 'shell' / 'subagent' / 'workflow' — so a
  *  record created from a frame used to fall through to the generic icon while
  *  an otherwise identical record created by the watcher seed (which writes
@@ -62,6 +63,7 @@ export function isTerminalTaskStatus(status: string): boolean {
 const TASK_TYPE_ALIASES: Record<string, string> = {
   local_bash: 'shell',
   local_agent: 'subagent',
+  local_monitor: 'monitor',
   local_workflow: 'workflow',
 }
 
@@ -110,8 +112,8 @@ export interface TaskRecordUi {
   subagentType?: string
   /** 'shell' | 'subagent' | 'monitor' | 'workflow' — the friendly label, always
    *  normalized on write (see normalizeTaskType) even though the `task_*`
-   *  frames spell it `local_bash` / `local_agent` / `local_workflow`. An
-   *  unrecognised discriminant passes through as-is. */
+   *  frames spell it `local_bash` / `local_agent` / `local_monitor` /
+   *  `local_workflow`. An unrecognised discriminant passes through as-is. */
   taskType?: string
   workflowName?: string
   status: TaskStatus

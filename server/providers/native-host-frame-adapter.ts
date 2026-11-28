@@ -69,7 +69,7 @@ import type { SupplementOutcome } from './steering-format.js'
 import type { FileAttachmentRef } from '../../shared/attachments.js'
 import type { HookRunStatus } from '../../shared/hooks.js'
 import type { ImageAttachmentRef, LegacyImageBlock } from '../../shared/image-attachment.js'
-import { freezeMessage, type RequestMessage, type ToolResultMessage } from './native/vocabulary/message.js'
+import { freezeMessage, type RequestMessage, type ToolResultMessage, type UserMessage } from './native/vocabulary/message.js'
 import { brandString } from './native/vocabulary/brand.js'
 import { parseToolInput, type ContentBlock, type TokenUsage } from './native/vocabulary/types.js'
 import type { NativeLiveFrame } from './native/vocabulary/stream.js'
@@ -102,12 +102,12 @@ export interface NativeFrameEnvelope {
 
 /** Everything the live CONVERSATION projection consumes: the streaming-axis
  *  NativeLiveFrame (assembler chunks + raw passthrough), the settled assistant
- *  bundle, and a first-class tool result. Operational frames are projected by
- *  projectNativeEventToSdk, not here. The core emission union (NativeCoreFrame)
- *  is wider than this conversation-only input on the operational axis and
- *  narrower on the tool-result axis (first-class tool results travel the
- *  persistence path + this projection, not the core emission union). */
-export type NativeHostFrame = NativeLiveFrame | AssistantFrame | ToolResultMessage
+ *  bundle, a first-class tool result, and a core-originated user injection.
+ *  Operational frames are projected by projectNativeEventToSdk, not here. The
+ *  core emission union (NativeCoreFrame) adds the live-only operational
+ *  surface and the sidechain envelope wrapper to this conversation-only
+ *  input. */
+export type NativeHostFrame = NativeLiveFrame | AssistantFrame | ToolResultMessage | UserMessage
 
 /** Mark an unreachable closed-union branch (mirrors the vocabulary assembler). */
 function assertNever(value: never, context: string): never {
@@ -190,9 +190,13 @@ function hookOutcome(status: HookRunStatus): 'success' | 'error' | 'cancelled' {
 /** Project a neutral live conversation frame to the SDK AgentMessage the host
  *  pump consumes. The RawStreamEvent event travels VERBATIM (R2 byte-identity). */
 export function projectNativeFrameToSdk(frame: NativeHostFrame, env: NativeFrameEnvelope): AgentMessage {
-  // A first-class tool result is discriminated by its role (it has no `type`).
+  // Role-bearing conversation frames (tool result / user injection) have no
+  // `type` discriminant — they are discriminated by their role.
   if ('role' in frame && frame.role === 'tool') {
     return projectToolResult(frame, env)
+  }
+  if ('role' in frame && frame.role === 'user') {
+    return projectUserInjection(frame, env)
   }
   const live = frame as NativeLiveFrame | AssistantFrame
   switch (live.type) {
@@ -230,6 +234,25 @@ function projectAssistant(frame: AssistantFrame, env: NativeFrameEnvelope): Agen
       stop_reason: frame.stopReason,
       usage: sdkUsage(frame.usage),
     },
+  } as unknown as AgentMessage
+}
+
+/** Project a core-originated user injection (the <task-notification>
+ *  background-completion turn) to the SDK user frame the pump consumes. NO
+ *  synthetic marker is stamped: the host classifies this frame BY CONTENT
+ *  (classifyUserFrameOrigin's task-notification rung), exactly like the CLI's
+ *  own injection. Text-only by contract — a non-text block here is a producer
+ *  violation, surfaced loudly. */
+function projectUserInjection(message: UserMessage, env: NativeFrameEnvelope): AgentMessage {
+  const content = message.content.map((block) => {
+    if (block.type !== 'text') {
+      throw new Error(`native host adapter: user-injection block kind "${block.type}" is not a live emission`)
+    }
+    return { type: 'text', text: block.text }
+  })
+  return {
+    ...frameEnvelope(env, 'user'),
+    message: { role: 'user', content },
   } as unknown as AgentMessage
 }
 
@@ -701,13 +724,14 @@ function isOperationalFrame(frame: NativeCoreFrame): frame is OperationalFrame {
 }
 
 /** Envelope for a conversation frame: the assistant bundle carries its own
- *  neutral uuid (message.id); a first-class tool result carries its minted id
- *  (shared with the persisted result); raw passthrough mints a fresh frame
- *  uuid (the legacy streamEventFrame mints ctx.uuid() likewise). The sidechain
- *  parent is supplied by the core's emission context (the enveloped wrapper). */
+ *  neutral uuid (message.id); a role-bearing frame (first-class tool result /
+ *  user injection) carries its minted id (shared with the persisted message);
+ *  raw passthrough mints a fresh frame uuid (the legacy streamEventFrame mints
+ *  ctx.uuid() likewise). The sidechain parent is supplied by the core's
+ *  emission context (the enveloped wrapper). */
 function conversationEnv(frame: NativeHostFrame, sessionId: string, parentToolUseId: string | null): NativeFrameEnvelope {
-  // A first-class tool result is the only role-bearing host frame; it carries
-  // its minted id (shared with the persisted result).
+  // Role-bearing frames carry their minted id (shared with the persisted
+  // message), so live and disk replay agree on identity.
   if ('role' in frame) {
     return { sessionId, uuid: frame.id, parentToolUseId }
   }

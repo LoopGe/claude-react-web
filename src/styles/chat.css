@@ -1739,6 +1739,13 @@ button.chat-empty-env-chip:hover {
   background: color-mix(in srgb, var(--danger) 12%, var(--bg-elev-2));
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
 }
+/* Due, but parked until transcript-rebuild admission restores. Amber, not
+   danger: the payload is retained and retried, never lost. */
+.scheduled-chip-deferred {
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  color: var(--warn-text);
+}
 .scheduled-chip-cancel,
 .scheduled-chip-dismiss {
   background: transparent;
@@ -3382,6 +3389,8 @@ button.msg-mention-chip:hover {
   align-items: center;
   font-family: var(--sans);
 }
+/* The tool-card surface collapses the same background label at 479px
+   (utilities.css, where the status label goes with it) — tune both together. */
 @container (max-width: 590px) {
   .subagent-card-background-action .tool-card-bg-btn > span {
     display: none;

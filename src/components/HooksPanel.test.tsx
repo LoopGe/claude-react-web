@@ -59,3 +59,26 @@ describe('HooksPanel run log', () => {
     expect(container.querySelector('.hooks-activity-input')).toBeNull()
   })
 })
+describe('HooksPanel native source note', () => {
+  beforeEach(() => {
+    mockedGet.mockReset()
+  })
+
+  it('shows the source-coverage note on a native session', async () => {
+    mockedGet.mockResolvedValue({ hooks: {}, runs: [] })
+    const native = { id: 's1', provider: 'native' } as unknown as SessionInfo
+    const { container } = render(<HooksPanel session={native} onSessionUpdate={() => {}} />)
+    await screen.findByText('Configured Hooks')
+    expect(container.querySelector('.hooks-native-source-note')?.textContent).toContain(
+      "this session's config only",
+    )
+  })
+
+  it('does not show the source-coverage note on a claude session', async () => {
+    mockedGet.mockResolvedValue({ hooks: {}, runs: [] })
+    const claude = { id: 's1', provider: 'claude' } as unknown as SessionInfo
+    const { container } = render(<HooksPanel session={claude} onSessionUpdate={() => {}} />)
+    await screen.findByText('Configured Hooks')
+    expect(container.querySelector('.hooks-native-source-note')).toBeNull()
+  })
+})

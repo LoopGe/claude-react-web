@@ -5,8 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildConfigRouter } from './config-routes.js'
 import { setServerDefaultCwd } from '../default-cwd.js'
-import { setConfigPath, loadConfig, __setConfigForTest } from '../config.js'
+import { config, setConfigPath, loadConfig, __setConfigForTest } from '../config.js'
 import { createErrorHandler } from '../errors.js'
+import { buildApp } from '../app.js'
+import { SessionStore } from '../persistence.js'
 import type { SessionManager } from '../session-manager.js'
 
 // The route dynamically imports the real probe; stub it so this file can
@@ -291,6 +293,40 @@ describe('config routes — non-object inputs must not 500', () => {
       // Nothing maskable: the live token is empty and the raw one is not a string.
       expect(body.authTokenMasked).toBeUndefined()
     } finally {
+      rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('GET /config — effective defaultProvider', () => {
+  // GET /config is composed in app.ts (not buildConfigRouter), so this surface
+  // is exercised through buildApp — the same precedent as web-import's
+  // mount-gate tests. The sessionStore points at a temp dir so the lazily-built
+  // SessionManager never touches the real state dir.
+  it('reports the auth-aware effective default, live across config changes', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'crw-cfg-default-provider-'))
+    const prevToken = config.authToken
+    try {
+      const { app } = buildApp({ sessionStore: new SessionStore({ stateDir }) })
+
+      __setConfigForTest({ authToken: 'sk-test' })
+      const configuredRes = await app.request('/api/config')
+      expect(configuredRes.status).toBe(200)
+      const configured = (await configuredRes.json()) as { configured?: boolean; defaultProvider?: string }
+      // The same auth fact `configured` reports, projected as a provider id.
+      expect(configured.configured).toBe(true)
+      expect(configured.defaultProvider).toBe('native')
+
+      // Same app instance: the field reads the LIVE config, not a boot
+      // snapshot — a setup/profile change flips it without a restart.
+      __setConfigForTest({ authToken: '' })
+      const unconfiguredRes = await app.request('/api/config')
+      expect(unconfiguredRes.status).toBe(200)
+      const unconfigured = (await unconfiguredRes.json()) as { configured?: boolean; defaultProvider?: string }
+      expect(unconfigured.configured).toBe(false)
+      expect(unconfigured.defaultProvider).toBe('claude')
+    } finally {
+      __setConfigForTest({ authToken: prevToken })
       rmSync(stateDir, { recursive: true, force: true })
     }
   })

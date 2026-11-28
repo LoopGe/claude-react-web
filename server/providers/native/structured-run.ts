@@ -164,8 +164,10 @@ export async function runStructuredOnce(
         stream,
         tools,
         maxTurns: req.maxTurns,
-        // Foreground Bash rides runForeground; nothing can background a task
-        // headless, so the manager's emit never fires.
+        // Headless has no TaskOutput tool and this inline manager is never
+        // destroyed, so model opt-in backgrounding (run_in_background) is
+        // bounded by the command's own lifetime but unreaped; the no-op sink
+        // drops the settle injection (no live task channel, no durable log).
         tasks: new NativeTaskManager(() => { /* no live task channel */ }),
         cwd: ctx.cwd,
         requestPermission: async (toolName, input, _toolUseId, callSignal, readOnlyHint) => {

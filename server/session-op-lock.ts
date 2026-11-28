@@ -5,7 +5,7 @@
 // by session id. Two properties matter beyond a plain promise chain:
 //
 //   - Re-entrant per async context. Public entry points call each other
-//     (compact → clear, setProfile → setModel / restart, discard → fork,
+//     (compact → clear, setProfile → restart, discard → fork,
 //     setAppTools → setFirstPartyTool). A nested `run(key)` issued from inside
 //     an op that already holds `key` runs immediately instead of queueing
 //     behind itself (which would deadlock). "Inside" is tracked with

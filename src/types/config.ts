@@ -181,6 +181,10 @@ export interface Defaults {
  *  map — GET /config folds it in at load. */
 export interface ConfigResponse extends Partial<GlobalPrefs> {
   configured?: boolean
+  /** Effective default provider for new sessions — auth-aware server default
+   *  (`native` when an API token is configured, else `claude`), read live.
+   *  Absent on a legacy server; consumers fall back to `claude`. */
+  defaultProvider?: string
   defaults: Defaults
   models?: string[]
   maxGroupPanels?: number

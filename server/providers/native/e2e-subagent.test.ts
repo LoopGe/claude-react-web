@@ -32,6 +32,7 @@ import { nativeCoreOf } from '../native-host-frame-adapter.js'
 import type { ProviderSessionHandle } from '../types.js'
 import type { CanonicalEvent } from './canonical.js'
 import type { TaskRecordUi } from '../../../shared/tasks.js'
+import { isTaskNotificationUserMessage } from '../../../shared/user-frames.js'
 import { PROGRESS_INTERVAL_MS } from './subagent-progress.js'
 
 const AGENT_ID = 'agent-1'
@@ -347,10 +348,12 @@ describe('native synchronous Agent detach', () => {
     let releaseNested!: () => void
     const nestedGate = new Promise<void>((resolve) => { releaseNested = resolve })
     let parentRounds = 0
+    const requests: Array<{ messages: unknown[] }> = []
     const first = await makeFixture(dir)
     ;(first.provider as unknown as { _testStream: unknown })._testStream = async function* (
       req: StreamReq,
     ) {
+      requests.push({ messages: structuredClone(req.messages) })
       if (isNestedRequest(req)) {
         markNestedStarted()
         await nestedGate
@@ -404,8 +407,11 @@ describe('native synchronous Agent detach', () => {
       releaseNested()
     }
 
+    // The backgrounded settle injects a <task-notification> continuation turn
+    // (CLI parity), so the parent result plus the continuation result both land.
     await vi.waitFor(() => {
       expect(frames.some((f) => f.subtype === 'task_notification')).toBe(true)
+      expect(frames.filter((f) => f.type === 'result' && f.parent_tool_use_id == null)).toHaveLength(2)
     }, { timeout: 5000 })
     sub.unsubscribe()
 
@@ -413,10 +419,27 @@ describe('native synchronous Agent detach', () => {
     expect(sidechainFrames.length).toBeGreaterThan(0)
     expect(sidechainFrames.every((f) => f.parent_tool_use_id === AGENT_ID)).toBe(true)
     const topLevelResultFrames = frames.filter((f) => f.type === 'result' && f.parent_tool_use_id == null)
-    expect(topLevelResultFrames).toHaveLength(1)
+    expect(topLevelResultFrames).toHaveLength(2)
+    expect(topLevelResultFrames[0].result).toBe(PARENT_DONE)
+    // The continuation turn is the model's scripted response to the injection.
+    expect(topLevelResultFrames[1].result).toBe(PARENT_DONE)
+    expect(topLevelResultFrames[1].is_error).toBeFalsy()
     const notification = frames.find((f) => f.subtype === 'task_notification')
     expect(notification?.result).toBe('real final report')
     expect(notification?.result).not.toContain('running in the background')
+    // The two host folds agree on ONE terminal record holding the real report.
+    expect(liveSession(first.sm, info.id).tasks.get(AGENT_ID)).toMatchObject({
+      status: 'completed',
+      result: 'real final report',
+    })
+    // The model-facing half: exactly one content-classified injection user
+    // frame, and the continuation turn's request carries its XML + the report.
+    const injections = frames.filter((f) => isTaskNotificationUserMessage(f))
+    expect(injections).toHaveLength(1)
+    expect(injections[0].parent_tool_use_id).toBeNull()
+    const continuation = JSON.stringify(requests[requests.length - 1].messages)
+    expect(continuation).toContain('<task-notification>')
+    expect(continuation).toContain('real final report')
   }, 30000)
 
   it('keeps nested Bash foreground when the outer Agent is not detached', async () => {

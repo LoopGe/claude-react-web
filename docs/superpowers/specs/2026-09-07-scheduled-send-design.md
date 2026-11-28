@@ -1,6 +1,6 @@
 # Spec:定时发送(Scheduled Send)功能
 
-- 状态:draft(等待用户评审)
+- 状态:implemented(2026-11-27 更新入口:右键发送按钮;恢复胶囊条并补 deferred 显示)
 - 日期:2026-09-07
 - 范围:新功能(非 bug 簇)。在 `claude-react-web` 增加「写好消息 → 指定未来时间 → 服务端到点自动发出」的定时发送能力。
 - 前置裁决(用户已批准):① 语义=**定时发送**(非撤销窗口/节流);② 可靠性=**服务端调度、重启不保留**(进程内内存,不落盘);③ UI 形态=**发送框上方的待发胶囊条**(非对话流气泡、非全局面板)。
@@ -180,3 +180,15 @@ interface ScheduledSendDeps {
 - D5(设计):body 与 `POST /messages` **同构同源校验**;到点直接复用 `sm.send/sendContent`(§4.2/§4.7)。
 - D6(设计):到点失败只记 `failed`,**不自动 resume/不重试**(§4.8)。
 - D7(设计):删除清理走 `subscribeGlobal` 的 `removed` 事件,不改 DELETE handler(§4.2/§4.4)。
+
+## 8. 2026-11-27 更新:入口与状态展示
+
+- **入口**:移除此前被 `SCHEDULE_SEND_ENABLED=false` 隐藏的时钟按钮;右键点击发送/中断共用控件直接打开 `SchedulePicker`(**发送态与 working 的停止态均可**,锚点为该按钮的 `getBoundingClientRect()`)。右键始终 `preventDefault()`;草稿不可定时(空输入 / 有文件 / 附件处理中 / `disabled`)时不打开。左键行为不变(发送 / 中断)。
+- **待发展示恢复**:删除 `SCHEDULE_SEND_ENABLED` 常量,输入框上方的胶囊条重新启用——定时成功后输入/图片会被清空,胶囊是用户唯一的「已排定」回执。
+- **deferred 胶囊**:`status:'deferred'` 的记录(到点因 transcript-rebuild admission 关闭而推迟,服务端保留 payload 并按序重试)以琥珀色胶囊显示「Waiting for transcript rebuild」,可取消(与 pending 共用 DELETE 路由)。此前 UI 只过滤 pending/failed,deferred 会凭空消失、看起来像已发送。**`useScheduledSends` 的 3 秒对账轮询以 pending+deferred 为开关**——否则 deferred 重试完成后的 sent/failed 翻转永远收不到,琥珀胶囊会残留;1 秒倒计时仍只对 pending 运行。
+- **弹窗必须 portal 到 body**:`.chat-bottom-stack` 的 `z-index:2` 形成面板内 stacking context,`position:fixed` 的 picker 即使 `z-index:60` 也无法越过相邻面板(实测两个并排面板时,弹窗右侧约 108px 被后一个面板的 working-bar 盖住)。故 `SchedulePicker` 与 backdrop 通过 `createPortal` 挂到 `document.body`,并用 `markPortaledSurface` 打上所属面板的 `data-panel-id`(与 `ContextMenu`/`HoverPopover` 同一模式)。
+- 左键发送/中断行为不变;服务端、`useScheduledSends`、WS 协议零改动。
+- **D8(用户)**:入口 = 右键发送按钮直开选择器(发送态与 working 停止态均可),移除时钟按钮。
+- **D9(用户)**:deferred 状态纳入 UI,单独琥珀色胶囊,不并入 pending。
+- **D10(已知取舍)**:触屏与键盘没有右键入口——旧的时钟按钮本是触屏兜底,已按 D8 移除;若后续需要,编辑器右键菜单加「Schedule send…」是最省的补救。
+- **D11(缺陷修复)**:弹窗被相邻面板遮挡的根因是面板内 stacking context,不是 CSS 裁剪;修复采用 portal 到 body,不改面板/层级体系。

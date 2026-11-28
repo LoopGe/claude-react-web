@@ -403,6 +403,12 @@ export interface ProviderCapabilities {
   supportsResume: boolean
   supportsFork: boolean
   supportsPlugins: boolean
+  /** Selective plugin-SKILL discovery from `enabledPlugins` (the create-dialog
+   *  plugin picker). Distinct from supportsPlugins (plugins as agent
+   *  extensions): native has no plugin agent-extension runtime but consumes
+   *  enabledPlugins to narrow its plugin-skill catalog, so both providers
+   *  support this. */
+  supportsPluginSkills: boolean
   supportsFastMode: boolean
   supportsEffortLevel: boolean
   supportsThinkingControl: boolean
@@ -430,8 +436,10 @@ export interface ProviderCapabilities {
   /** Sandboxed execution (claude's flag-settings sandbox layer). Providers
    *  without it reject a sandbox-enabled create with 501. */
   supportsSandbox: boolean
-  /** Hook engine (claude's settings hooks). Native has none — a hooks config
-   *  edited there would never execute, so the surface locks. */
+  /** Hook engine. Native runs the session-scoped hook config its own engine
+   *  executes (flag source = the Settings Hooks tab); file-based / plugin /
+   *  agent-frontmatter sources and the layer-2 events without a native trigger
+   *  are called out in the panel, not gated out of it. */
   supportsHooks: boolean
   /** Auto-memory settings (the flag-settings memory layer). Both providers
    *  accept the memory keys in applyFlagSettings; native validates the directory
@@ -482,6 +490,15 @@ export interface ProviderSessionRef {
   cwd: string
 }
 
+/** A provider-owned durable transcript source for the host's tasklist
+ *  derive (server/tasklist-state.ts reads the neutral v3 event log under
+ *  `stateDir`). Returned by providers whose sessions persist such a log;
+ *  providers on the CLI JSONL path omit `tasklistSource` entirely. */
+export interface TasklistSource {
+  /** App state dir holding the provider's per-session logs. */
+  stateDir: string
+}
+
 export interface AgentProvider {
   readonly name: string
   readonly capabilities: ProviderCapabilities
@@ -522,4 +539,10 @@ export interface AgentProvider {
    *  projects. Optional: providers that can't retitle transcripts omit it and
    *  the host keeps its own metadata title as the source of truth. */
   renameSession?(sessionId: string, title: string, opts?: { dir?: string }): Promise<unknown>
+  /** The durable transcript source for the host tasklist derive, or
+   *  undefined when this provider has none for `id`. Needs no live session —
+   *  dormant sessions derive from disk. Optional: providers whose transcript
+   *  is the CLI JSONL (claude) omit it and the host uses the JSONL read path,
+   *  so the manager never branches on a provider name. */
+  tasklistSource?(id: string): TasklistSource | undefined
 }
