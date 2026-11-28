@@ -72,6 +72,14 @@ import { createTaskOutputTool } from './tools/task-output.js'
 import { createTaskStopTool } from './tools/task-stop.js'
 import { createEnterWorktreeTool, createExitWorktreeTool, type WorktreeSession } from './tools/worktree.js'
 import { createMonitorTool, createNodeMonitorSpawn } from './tools/monitor.js'
+import {
+  createListMcpResourcesTool,
+  createReadMcpResourceTool,
+  createRefreshMcpToolsTool,
+  type ListMcpResourcesInput,
+  type ReadMcpResourceInput,
+  type RefreshMcpToolsInput,
+} from './tools/mcp-resources.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
 import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
@@ -632,6 +640,9 @@ export class NativeSession implements NativeSessionCore {
   /** Watches a command's stdout / a WebSocket's frames as a background monitor
    *  task; event batches join the same idle-injection queue as completions. */
   private readonly monitorTool: ToolDef
+  private readonly listMcpResourcesTool: ToolDef<ListMcpResourcesInput>
+  private readonly readMcpResourceTool: ToolDef<ReadMcpResourceInput>
+  private readonly refreshMcpToolsTool: ToolDef<RefreshMcpToolsInput>
   /** Isolation pair (CLI parity): present only when the host wired a git
    *  worktree port. Together they ARE the session's cwd state — every
    *  tool/hook reads `workingCwd`, which is `worktree?.path ?? opts.cwd`. */
@@ -1080,6 +1091,24 @@ export class NativeSession implements NativeSessionCore {
         inject: (notification) => this.enqueueTaskNotification(notification),
         spawn: createNodeMonitorSpawn(),
       })
+      // Model-facing MCP resource tools. Read-only projections of the live
+      // connection manager: they never dial, and ListMcpResources is gated by
+      // the server's declared `resources` capability, exactly like the CLI.
+      const mcpResourceDeps = {
+        serverNames: () => this.mcp?.serverNames() ?? [],
+        capabilities: (server: string) => this.mcp?.capabilities(server),
+        listResources: (server: string, signal: AbortSignal) => this.mcp!.listResources(server, signal),
+        readResource: (server: string, uri: string, signal: AbortSignal) =>
+          this.mcp!.readResource(server, uri, signal),
+        refreshTools: (server: string | undefined, signal: AbortSignal) =>
+          this.mcp!.refreshTools(server, signal),
+        onToolsRefreshed: () => {
+          if (!this._closed) this.rebuildTools()
+        },
+      }
+      this.listMcpResourcesTool = createListMcpResourcesTool(mcpResourceDeps)
+      this.readMcpResourceTool = createReadMcpResourceTool(mcpResourceDeps)
+      this.refreshMcpToolsTool = createRefreshMcpToolsTool(mcpResourceDeps)
       const worktreePort = this.opts.ports.worktree
       // The live cwd the Agent tool hands nested runs (and its own Bash calls).
       const liveAgentCwd = (): string => this.worktree?.path ?? opts.cwd
@@ -2440,6 +2469,9 @@ export class NativeSession implements NativeSessionCore {
       this.taskOutputTool,
       this.taskStopTool,
       this.monitorTool,
+      this.listMcpResourcesTool,
+      this.readMcpResourceTool,
+      this.refreshMcpToolsTool,
       ...(this.enterWorktreeTool && this.exitWorktreeTool ? [this.enterWorktreeTool, this.exitWorktreeTool] : []),
       skillTool,
       createEnterPlanModeTool({ enterPlanMode: () => this.enterPlanMode() }),

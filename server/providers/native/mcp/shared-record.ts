@@ -64,7 +64,12 @@ import { mcpToolFqn } from '../../../../shared/mcp-fqn.js'
 import type { NativeMcpTransportPort } from '../ports.js'
 import { createLogger } from '../../../log.js'
 import { captureBirthTime, processIdentity } from '../../../win32-job.js'
-import type { NativeMcpServerConfig, NativeMcpStatus, NativeMcpToolInfo } from './connections.js'
+import type {
+  NativeMcpResourceEntry,
+  NativeMcpServerConfig,
+  NativeMcpStatus,
+  NativeMcpToolInfo,
+} from './connections.js'
 
 const log = createLogger('native-mcp-shared')
 
@@ -368,6 +373,58 @@ export class SharedRecord {
     return client.readResource({ uri })
   }
 
+  /** The server's declared capabilities (the `resources` key gates the
+   *  resource tools), or undefined while not connected. */
+  serverCapabilities(): Record<string, unknown> | undefined {
+    return this.client?.getServerCapabilities() as Record<string, unknown> | undefined
+  }
+
+  /** `resources/list` following `nextCursor` until exhausted, bounded by the
+   *  caller's signal and this record's own abort. */
+  async listResources(signal: AbortSignal): Promise<NativeMcpResourceEntry[]> {
+    const client = this.client
+    if (this.status !== 'connected' || !client) throw new Error('MCP server is not connected')
+    const out: NativeMcpResourceEntry[] = []
+    let cursor: string | undefined
+    do {
+      const page = await client.listResources(cursor === undefined ? undefined : { cursor }, {
+        timeout: this.toolTimeoutMs,
+        signal: AbortSignal.any([signal, this.abort.signal]),
+      })
+      for (const resource of page.resources) {
+        out.push({
+          uri: resource.uri,
+          name: resource.name,
+          ...(resource.mimeType !== undefined ? { mimeType: resource.mimeType } : {}),
+          ...(resource.description !== undefined ? { description: resource.description } : {}),
+        })
+      }
+      cursor = page.nextCursor
+    } while (cursor !== undefined)
+    return out
+  }
+
+  /** Re-read the tool list over the LIVE connection (never dials) and diff it
+   *  against the currently registered set, so the caller can report additions
+   *  and removals. Serialized on the mutation queue so a reconnect cannot swap
+   *  the client mid-listing. */
+  async refreshTools(): Promise<{ toolCount: number; added: string[]; removed: string[] }> {
+    return this.enqueue(async () => {
+      const client = this.client
+      if (this.status !== 'connected' || !client) throw new Error('MCP server is not connected')
+      const before = new Set(this.tools.map((tool) => tool.name))
+      const next = this.declaresTools() ? await this.discoverTools(client) : []
+      const after = new Set(next.map((tool) => tool.name))
+      this.tools = next
+      this.cachedTools = next
+      return {
+        toolCount: next.length,
+        added: [...after].filter((name) => !before.has(name)),
+        removed: [...before].filter((name) => !after.has(name)),
+      }
+    })
+  }
+
   /** Abort in-flight work, then close the client under a bounded deadline and
    *  confirm the stdio child actually exited (a second `closeTimeoutMs`
    *  window). Idempotent; never throws. Aborting BEFORE awaiting is what keeps
@@ -434,7 +491,9 @@ export class SharedRecord {
     client.onclose = () => this.handleLoss(client)
     try {
       await this.raceConnect(this.openConnection(client))
-      const discovered = await this.discoverTools(client)
+      // A resource-only stdio server declares no `tools` capability; skip
+      // discovery instead of failing the connection on its -32601 answer.
+      const discovered = this.declaresTools() ? await this.discoverTools(client) : []
       this.tools = discovered
       this.cachedTools = discovered
       const version = client.getServerVersion()
@@ -587,6 +646,12 @@ export class SharedRecord {
         (err) => finish(err instanceof Error ? err : new Error(String(err))),
       )
     })
+  }
+
+  /** Whether this server declared a `tools` capability. A resource-only
+   *  server answers `tools/list` with -32601, so discovery must be skipped. */
+  private declaresTools(): boolean {
+    return this.client?.getServerCapabilities()?.tools !== undefined
   }
 
   /** `listTools` following `nextCursor` until exhausted. Every page is bounded

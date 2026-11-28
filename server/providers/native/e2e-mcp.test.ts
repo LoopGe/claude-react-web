@@ -64,6 +64,19 @@ function toolUseTurn(id: string, name: string, inputJson = '{}'): CanonicalEvent
 
 /** A real in-process MCP server with one `echo` tool — the same fixture the
  *  connection manager's and provider's own tests use. */
+/** A real in-process MCP server with one TEXT resource, for the model-facing
+ *  resource tools. */
+function resourceServer(name = 'res-server'): McpServer {
+  const server = new McpServer({ name, version: '1.0.0' })
+  server.registerResource(
+    'notes',
+    'res://notes',
+    { mimeType: 'text/plain', description: 'A note' },
+    async () => ({ contents: [{ uri: 'res://notes', mimeType: 'text/plain', text: 'hello resource' }] }),
+  )
+  return server
+}
+
 function echoServer(name = 'echo-server'): McpServer {
   const server = new McpServer({ name, version: '1.0.0' })
   server.registerTool(
@@ -576,5 +589,67 @@ describe('native per-server MCP permission-mode override', () => {
       .resolves.toEqual({ warning: expect.stringContaining('no MCP server named "not-configured"') })
     // First-party + user-configured names are known without a connection pass.
     await expect(fx.sm.setMcpPermissionModeOverride(id, 'git-tools', 'default')).resolves.toEqual({})
+  })
+})
+
+// ── Model-facing MCP resource tools ────────────────────────────────────────
+describe('native MCP resource tools end to end', () => {
+  it('lists a server resource and reads its text through the session', async () => {
+    const { cwd, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(
+      toolUseTurn('l1', 'ListMcpResources', JSON.stringify({ server: 'res' })),
+      toolUseTurn('r1', 'ReadMcpResource', JSON.stringify({ server: 'res', uri: 'res://notes' })),
+      textTurn('read the note'),
+    )
+    const seen: SeenPermission[] = []
+    const id = await createSession(fx, cwd, {
+      mcpServers: { res: { type: 'sdk', name: 'res', instance: resourceServer() } },
+      canUseTool: allowingCanUseTool(seen),
+    })
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    await sendAndWait(fx, id, frames, 'read the mcp note', 1)
+    unsubscribe()
+
+    // The tools are advertised next to the regular builtin set.
+    expect(toolNames(fx.requests[0])).toEqual(
+      expect.arrayContaining(['ListMcpResources', 'ReadMcpResource', 'RefreshMcpTools', 'Bash']),
+    )
+    expect(seen.filter((s) => s.name === 'ListMcpResources' || s.name === 'ReadMcpResource'))
+      .toHaveLength(2)
+    const listing = fx.requests.flatMap(toolResultsOf).find((r) => r.tool_use_id === 'l1')
+    expect(JSON.parse(listing!.text)).toEqual([
+      { uri: 'res://notes', name: 'notes', mimeType: 'text/plain', description: 'A note', server: 'res' },
+    ])
+    const read = fx.requests.flatMap(toolResultsOf).find((r) => r.tool_use_id === 'r1')
+    expect(JSON.parse(read!.text)).toEqual({
+      contents: [{ uri: 'res://notes', mimeType: 'text/plain', text: 'hello resource' }],
+    })
+  })
+
+  it('refreshes a connected server over the live connection', async () => {
+    const { cwd, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    fx.scripts.push(
+      toolUseTurn('f1', 'RefreshMcpTools', JSON.stringify({ server: 'a' })),
+      textTurn('refreshed'),
+    )
+    const id = await createSession(fx, cwd, {
+      mcpServers: { a: { type: 'sdk', name: 'a', instance: echoServer() } },
+      canUseTool: allowingCanUseTool([]),
+    })
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    await sendAndWait(fx, id, frames, 'refresh tools', 1)
+    unsubscribe()
+
+    const refreshed = fx.requests.flatMap(toolResultsOf).find((r) => r.tool_use_id === 'f1')
+    const [json] = refreshed!.text.split('\n\n')
+    expect(JSON.parse(json!)).toEqual([
+      { server: 'a', status: 'refreshed', toolCount: 1, added: [], removed: [] },
+    ])
+    // The same-tool list survives the refresh: the echo tool is still there.
+    expect(toolNames(fx.requests.at(-1)!)).toContain(ECHO_FQN)
   })
 })

@@ -102,6 +102,24 @@ export interface NativeMcpToolInfo {
   meta?: Record<string, unknown>
 }
 
+/** One `resources/list` entry, with the shape the CLI's resource tools expose. */
+export interface NativeMcpResourceEntry {
+  uri: string
+  name: string
+  mimeType?: string
+  description?: string
+}
+
+/** One server's answer to `RefreshMcpTools`: `not_connected` means the tool
+ *  never dials — it only re-reads an existing connection. */
+export interface NativeMcpRefreshResult {
+  server: string
+  status: 'refreshed' | 'not_connected'
+  toolCount: number
+  added: string[]
+  removed: string[]
+}
+
 export interface NativeMcpStatus {
   name: string
   status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled'
@@ -329,8 +347,105 @@ export class NativeMcpConnections {
     })
   }
 
+  /** Every configured server name, in status (name) order. */
+  serverNames(): string[] {
+    return [...this.records.keys()].sort((a, b) => a.localeCompare(b))
+  }
+
+  /** The server's declared capabilities, or undefined while it is not
+   *  connected. The `resources` key is the CLI's gate for resource listing. */
+  capabilities(name: string): Record<string, unknown> | undefined {
+    const entry = this.records.get(name)
+    if (!entry) return undefined
+    if (entry.kind === 'local') {
+      return entry.status === 'connected'
+        ? (entry.client?.getServerCapabilities() as Record<string, unknown> | undefined)
+        : undefined
+    }
+    if (!entry.enabled || entry.record.status !== 'connected') return undefined
+    return entry.record.serverCapabilities()
+  }
+
+  /** `resources/list` for one connected server, following `nextCursor` until
+   *  exhausted. Throws when the server is unknown or not connected; returns
+   *  `[]` for a connected server that advertises no resource support. */
+  async listResources(name: string, signal: AbortSignal): Promise<NativeMcpResourceEntry[]> {
+    await this.queue
+    const entry = this.records.get(name)
+    if (!entry) throw new Error(`unknown MCP server: ${name}`)
+    if (!(this.capabilities(name)?.resources)) return []
+    if (entry.kind === 'local') {
+      const client = entry.client
+      if (entry.status !== 'connected' || !client) throw new Error(`MCP server "${name}" is not connected`)
+      const out: NativeMcpResourceEntry[] = []
+      let cursor: string | undefined
+      do {
+        const page = await client.listResources(cursor === undefined ? undefined : { cursor }, {
+          timeout: this.toolTimeoutMs,
+          signal: AbortSignal.any([signal, entry.abort.signal]),
+        })
+        for (const resource of page.resources) {
+          out.push({
+            uri: resource.uri,
+            name: resource.name,
+            ...(resource.mimeType !== undefined ? { mimeType: resource.mimeType } : {}),
+            ...(resource.description !== undefined ? { description: resource.description } : {}),
+          })
+        }
+        cursor = page.nextCursor
+      } while (cursor !== undefined)
+      return out
+    }
+    if (!entry.enabled || entry.record.status !== 'connected') {
+      throw new Error(`MCP server "${name}" is not connected`)
+    }
+    return entry.record.listResources(signal)
+  }
+
+  /** Re-read the tool list of one (or every) CONNECTED server over the live
+   *  connection and report which names appeared or disappeared. Never dials:
+   *  a server that is not connected comes back `not_connected`. Serialized on
+   *  the mutation queue so a reconnect cannot swap a client mid-listing. */
+  async refreshTools(name: string | undefined, signal: AbortSignal): Promise<NativeMcpRefreshResult[]> {
+    return this.enqueue(async () => {
+      const targets = name === undefined
+        ? [...this.records.values()].sort((a, b) => a.name.localeCompare(b.name))
+        : [this.requireEntry(name)]
+      const out: NativeMcpRefreshResult[] = []
+      for (const entry of targets) {
+        const connected = entry.kind === 'local'
+          ? entry.status === 'connected' && entry.client !== undefined
+          : entry.enabled && entry.record.status === 'connected'
+        if (!connected) {
+          out.push({ server: entry.name, status: 'not_connected', toolCount: 0, added: [], removed: [] })
+          continue
+        }
+        if (entry.kind === 'local') {
+          const before = new Set(entry.tools.map((tool) => tool.name))
+          const client = entry.client!
+          const next = client.getServerCapabilities()?.tools === undefined
+            ? []
+            : await this.discoverTools(entry, client, signal)
+          const after = new Set(next.map((tool) => tool.name))
+          entry.tools = next
+          out.push({
+            server: entry.name,
+            status: 'refreshed',
+            toolCount: next.length,
+            added: [...after].filter((toolName) => !before.has(toolName)),
+            removed: [...before].filter((toolName) => !after.has(toolName)),
+          })
+          continue
+        }
+        const result = await entry.record.refreshTools()
+        out.push({ server: entry.name, status: 'refreshed', ...result })
+      }
+      return out
+    })
+  }
+
   /** Forward a resource read to a connected server, result unchanged. */
-  async readResource(name: string, uri: string): Promise<unknown> {
+  async readResource(name: string, uri: string, signal?: AbortSignal): Promise<unknown> {
     await this.queue
     const entry = this.records.get(name)
     if (!entry) throw new Error(`unknown MCP server: ${name}`)
@@ -338,7 +453,8 @@ export class NativeMcpConnections {
       if (entry.status !== 'connected' || !entry.client) {
         throw new Error(`MCP server "${name}" is not connected`)
       }
-      return entry.client.readResource({ uri })
+      const callSignal = signal === undefined ? entry.abort.signal : AbortSignal.any([signal, entry.abort.signal])
+      return entry.client.readResource({ uri }, { signal: callSignal })
     }
     if (!entry.enabled || entry.record.status !== 'connected') {
       throw new Error(`MCP server "${name}" is not connected`)
@@ -551,7 +667,12 @@ export class NativeMcpConnections {
     rec.client = client
     try {
       await this.raceConnect(rec, this.openConnection(rec, client))
-      rec.tools = await this.discoverTools(rec, client)
+      // A resource-only server advertises NO `tools` capability, and asking
+      // `tools/list` anyway answers -32601 Method not found — which used to fail
+      // the whole connection. Discovery follows the declared capability.
+      rec.tools = client.getServerCapabilities()?.tools === undefined
+        ? []
+        : await this.discoverTools(rec, client)
       const version = client.getServerVersion()
       if (version) rec.serverInfo = { name: version.name, version: version.version }
       rec.status = 'connected'
@@ -618,13 +739,18 @@ export class NativeMcpConnections {
   /** `listTools` following `nextCursor` until exhausted. Every page is bounded
    *  by the record's signal plus the connect timeout, so a server that
    *  handshakes but never lists tools cannot hold `whenReady()` open. */
-  private async discoverTools(rec: ServerRecord, client: Client): Promise<NativeMcpToolInfo[]> {
+  private async discoverTools(
+    rec: ServerRecord,
+    client: Client,
+    signal?: AbortSignal,
+  ): Promise<NativeMcpToolInfo[]> {
     const out: NativeMcpToolInfo[] = []
+    const callSignal = signal === undefined ? rec.abort.signal : AbortSignal.any([signal, rec.abort.signal])
     let cursor: string | undefined
     do {
       const page = await client.listTools(cursor === undefined ? undefined : { cursor }, {
         timeout: this.connectTimeoutMs,
-        signal: rec.abort.signal,
+        signal: callSignal,
       })
       for (const tool of page.tools) out.push(toolInfo(rec.name, tool))
       cursor = page.nextCursor
