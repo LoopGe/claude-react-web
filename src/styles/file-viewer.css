@@ -130,31 +130,26 @@
 }
 
 /* Bar actions group: wrap toggle + Copy sit together on the right (the bar is
-   space-between — label left, actions right). */
+   space-between — label left, actions right). One gap with the card action
+   cluster via --gap-actions. */
 .code-block-actions {
   display: flex;
   align-items: center;
-  gap: var(--space-1-5);
+  gap: var(--gap-actions);
 }
 
-/* Wrap toggle icon button. Always visible (it reports the reading state);
-   pressed = wrap ON. Reuses theme vars — no new palette. */
+/* Wrap toggle icon button: .icon-btn + .icon-btn-sm (controls.css) supply
+   the box; the bar context keeps its always-visible hairline (member
+   border-color) instead of the card ghost's reveal-on-hover, and the
+   pressed state is the only other delta. Always visible reports the
+   reading state; pressed = wrap ON. */
 .code-block-wrap {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: 1px solid var(--code-block-border);
-  border-radius: var(--radius-xs);
-  padding: 1px 5px;
-  color: var(--fg-muted);
-  cursor: pointer;
+  border-color: var(--code-block-border);
 }
-.code-block-wrap:hover {
-  background: var(--bg-elev);
-  color: var(--fg);
-}
-.code-block-wrap[aria-pressed='true'] {
+/* `.icon-btn.` prefix = the base hover's specificity (0,3,0) — a plain
+ * (0,2,0) head would let `:hover:not(:disabled)` recolor a PRESSED toggle
+ * back to gray ink + neutral border, inverting the state it reports. */
+.icon-btn.code-block-wrap[aria-pressed='true'] {
   color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 40%, var(--code-block-border));
 }

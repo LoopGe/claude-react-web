@@ -174,7 +174,7 @@ export const CodeBlock = memo(function CodeBlock({
       <div className="code-block-bar">
         <span className="code-block-lang">{label ?? lang ?? 'code'}</span>
         {showCopy && (
-          <button type="button" className="code-block-copy" onClick={handleCopy}>
+          <button type="button" className="action-btn action-btn-sm code-block-copy" onClick={handleCopy}>
             {copied ? 'Copied!' : 'Copy'}
           </button>
         )}

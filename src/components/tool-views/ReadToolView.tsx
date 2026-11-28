@@ -40,7 +40,8 @@ export const ReadToolView = memo(function ReadToolView({ input, toolUseId, searc
   return (
     <ToolCard
       icon={<IconFileText />}
-      title={<FilePathTitle path={filePath} params={readLineParams(offset, limit)} />}
+      title={<FilePathTitle path={filePath} />}
+      preview={{ path: filePath, params: readLineParams(offset, limit) }}
       chips={rangeText ? <span className="pill tool-chip">{rangeText}</span> : null}
       toolUseId={toolUseId}
       searchQuery={searchQuery}

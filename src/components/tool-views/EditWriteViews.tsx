@@ -139,6 +139,7 @@ export const EditToolView = memo(function EditToolView({ input, toolUseId, searc
     <ToolCard
       icon={<IconFileCode />}
       title={filePath ? <FilePathTitle path={filePath} /> : 'edit'}
+      preview={filePath ? { path: filePath } : undefined}
       chips={chips}
       toolUseId={toolUseId}
       copyValue={copyValue}
@@ -198,6 +199,7 @@ export const WriteToolView = memo(function WriteToolView({ input, toolUseId, sea
     <ToolCard
       icon={<IconFileText />}
       title={filePath ? <FilePathTitle path={filePath} badge="new file" /> : 'write'}
+      preview={filePath ? { path: filePath } : undefined}
       chips={<span className="pill tool-chip">{totalLines} line{totalLines === 1 ? '' : 's'}</span>}
       toolUseId={toolUseId}
       copyValue={() => content}
@@ -262,6 +264,7 @@ export function NotebookEditToolView({ input, toolUseId, searchQuery, activeMatc
     <ToolCard
       icon={<IconNotebook />}
       title={<FilePathTitle path={filePath} />}
+      preview={{ path: filePath }}
       chips={chips}
       toolUseId={toolUseId}
       copyValue={isDelete ? undefined : () => newSource}

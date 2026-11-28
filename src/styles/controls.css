@@ -92,6 +92,100 @@
 .btn-icon.btn-danger:hover:not(:disabled) {
   background-color: color-mix(in srgb, var(--danger) 12%, transparent);
 }
+/* --- Card ghost buttons (.icon-btn / .action-btn micro-tier) -----------
+   In-card actions (copy, background verb, open-in-preview, panel icon
+   tools) ride the quiet ghost language that .tool-copy-btn originated —
+   a filled .btn-icon would compete with the status pills sitting right
+   next to them. The hover model is the ORIGINAL copy button's triad — a
+   dark --bg ground, the reserved transparent border revealed as --border,
+   and lifted ink — reviewed as the look to keep. What the family adds on
+   top of the originals: press feedback matching .btn (scale) and focus on
+   the global :focus-visible ring (no bespoke outlines); copied is INK
+   ONLY, never a filled state — a colored ground here reads heavy next to
+   the quiet status pills. Members compose the base + their hook class and
+   keep ONLY semantic deltas (stop's danger fill, the verb's accent hover,
+   the code fence's opacity reveal). */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--size-26px);
+  height: var(--size-26px);
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent; /* reserved box: hover never nudges the glyph */
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-instant) var(--motion-ease-standard);
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--fg);
+}
+.icon-btn:active:not(:disabled) { transform: scale(var(--motion-scale-press)); }
+.icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* One copy-complete language for the family: ink only (the original
+   .tool-copy-btn behavior — no ground fill, which read heavy); the icon
+   swap itself is component-side. The :not(:disabled) shape matches the
+   hover rule's specificity so the green ink survives while the pointer is
+   over the button (a plain .icon-btn.copied at 0,2,0 would lose its color
+   to the hover lift — the pre-unification rule kept copied winning). */
+.icon-btn.copied:not(:disabled) {
+  color: var(--ok-text);
+}
+/* Compact tier for bar-mounted icon toggles (the wrap button) — the
+   original thin-bar metrics instead of the 26px square, so a bar row of
+   icon + text buttons stays flush. */
+.icon-btn-sm {
+  width: auto;
+  height: auto;
+  padding: 1px var(--space-1);
+}
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  height: 22px;
+  padding: 0 var(--space-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-instant) var(--motion-ease-standard);
+}
+.action-btn:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--fg);
+}
+.action-btn:active:not(:disabled) { transform: scale(var(--motion-scale-press)); }
+.action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Compact tier for bar-mounted controls (the code-fence copy keeps its
+   original auto-height / 1px padding metrics — a card-row-sized 22px pill
+   inside a thin bar reads heavy). Declared on the base, not the member. */
+.action-btn-sm {
+  height: auto;
+  padding: 1px var(--space-2);
+}
 /* Bell ⇄ bell-off crossfade: two lucide glyphs stacked in one grid slot,
    opacity flipped by the enabled/disabled state class. Transition timing
    comes from the shared .slot-morph class on the svgs (utilities.css). */

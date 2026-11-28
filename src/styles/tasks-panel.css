@@ -100,19 +100,9 @@
 
 .tasks-panel-spacer { flex: 1; }
 
-.tasks-panel-icon-btn {
-  border: none;
-  background: transparent;
-  color: var(--fg);
-  width: var(--size-26px);
-  height: var(--size-26px);
-  border-radius: var(--radius-xs);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.tasks-panel-icon-btn:hover:not(:disabled) { background: var(--btn-hover-bg); }
+/* Panel icon tools ride the shared .icon-btn ghost tier (controls.css —
+   same 26×26, radius, hover ground, press and ring as a card's copy
+   button); the class stays as the panel-local hook, styling none. */
 
 .tasks-panel-body {
   display: flex;
@@ -235,24 +225,13 @@
 }
 .tasks-row-timer-final { color: var(--fg-muted); }
 
-.tasks-row-stop {
-  border: none;
-  background: transparent;
-  color: var(--fg-muted);
-  width: var(--size-24px);
-  height: var(--size-24px);
-  flex-shrink: 0;
-  border-radius: var(--radius-xs);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
+/* Stop rides the .icon-btn base (26×26 now, was 24 — a larger hit target);
+   the danger solid-invert hover is the destructive-action semantic the
+   base must not erase, and wins at equal specificity by file order. */
 .tasks-row-stop:hover:not(:disabled) {
   background: var(--danger);
   color: var(--bg);
 }
-.tasks-row-stop:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* --- on-demand completion-output viewer -------------------------------- */
 

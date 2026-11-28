@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
-// FilePathTitle's open-preview button: null-safe without a link context,
-// resolves the file address from the session cwd, forwards line params; and
-// Read's 0-based offset → 1-based line mapping.
+// The card's open-preview button (PreviewOpenButton, in the right-aligned
+// actions cluster since the card-button unification): null-safe without a
+// link context, resolves the file address from the session cwd, forwards
+// line params; and Read's 0-based offset → 1-based line mapping.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, render } from '@testing-library/react'
-import { FilePathTitle, readLineParams } from './shared'
+import { FilePathTitle, PreviewOpenButton, readLineParams } from './shared'
 import { SessionCwdProvider } from '../../hooks/useSessionCwd'
 import { parseFileResource } from '../../../shared/resource-address'
 
@@ -21,15 +22,18 @@ beforeEach(() => {
   linkState.value = { sessionId: 's1', baseDir: '/repo', openResource }
 })
 
+// Mirrors the real card structure: title (copy) in the flow, eye in the
+// actions cluster — the pair must never regress into sharing one button.
 function renderTitle(params?: Record<string, number>) {
   return render(
     <SessionCwdProvider value="/repo">
-      <FilePathTitle path="src/a.ts" params={params} />
+      <FilePathTitle path="src/a.ts" />
+      <PreviewOpenButton path="src/a.ts" params={params} />
     </SessionCwdProvider>,
   )
 }
 
-describe('FilePathTitle open preview', () => {
+describe('PreviewOpenButton', () => {
   it('renders no open button without a link context', () => {
     linkState.value = null
     const { container } = renderTitle()

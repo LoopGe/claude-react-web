@@ -231,6 +231,11 @@
   --pill-pad-bar: 1px var(--space-1-5);
   --pill-tint: 14%;
   --pill-border-tint: 35%;
+  /* Gap between grouped buttons (card action cluster, code-bar actions).
+     6px, not 8: the ghost bases reserve transparent boxes around their
+     glyphs, so perceived spacing runs wide. Chip/metadata rows stay on
+     --space-2 (8px) — different family, different rhythm. */
+  --gap-actions: var(--space-1-5);
   /* Control-geometry tokens: fixed small dimensions for icons, status dots,
      badge thumbs, scrollbar bars — the DOT/ICON/BAR sizes that keep recurring
      as width/height. Kept as a SEPARATE family from --space-* (which is about

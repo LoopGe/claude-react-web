@@ -34,6 +34,8 @@ import { toolResultBodyParts } from '../../shared/tool-result-text'
 import { countMatches } from '../../shared/search/match'
 import { MsgImage } from './MsgImage'
 import { AnsiText } from './AnsiText'
+import { PreviewOpenButton } from './tool-views/shared'
+import type { ResourceParams } from '../resources/tab-store'
 
 // ---------------------------------------------------------------------------
 // CopyButton
@@ -66,7 +68,7 @@ export function CopyButton({
     <HoverHint label={copied ? 'Copied!' : label} side="top">
       <button
         type="button"
-        className={`tool-copy-btn${copied ? ' copied' : ''} ${className}`.trim()}
+        className={`icon-btn tool-copy-btn${copied ? ' copied' : ''} ${className}`.trim()}
         onClick={() => { void copy(getValue) }}
         aria-label={copied ? 'Copied' : label}
       >
@@ -182,7 +184,7 @@ export function BackgroundToolButton({
     <HoverHint label={title} side="top">
       <button
         type="button"
-        className="tool-card-bg-btn"
+        className="action-btn tool-card-bg-btn"
         onClick={onClick}
         aria-label={ariaLabel}
       >
@@ -346,6 +348,7 @@ export const ToolCard = memo(function ToolCard({
   copyValue,
   copyLabel,
   onBackground,
+  preview,
   className = '',
   children,
   searchQuery,
@@ -365,6 +368,12 @@ export const ToolCard = memo(function ToolCard({
    *  offered while the card is running — a settled tool has nothing to
    *  detach. Views pass it only for backgroundable tools (Bash/PowerShell). */
   onBackground?: () => void
+  /** File the card touches — renders the open-in-preview eye at the tail of
+   *  the right-aligned actions cluster (the card-button unification moved
+   *  it out of the title; every card action rides the right edge). The
+   *  button self-gates on a live resource-link context, so consumers pass it
+   *  whenever a path exists, dormant or not. */
+  preview?: { path: string; params?: ResourceParams }
   className?: string
   children?: ReactNode
   /** Current search query — passed to inline tool result for highlighting. */
@@ -385,7 +394,7 @@ export const ToolCard = memo(function ToolCard({
   // resolver the badge below uses, so the two can never disagree.
   const resolvedStatus = useResolvedToolStatus(toolUseId, status)
   const showBackground = onBackground != null && resolvedStatus === 'running'
-  const hasActions = showBackground || !hideStatus || copyValue != null
+  const hasActions = showBackground || !hideStatus || copyValue != null || preview != null
   // When this tool's pending permission dialog has been minimized, surface a
   // "Review permission" chip so the user can re-open it. Mirrors the inline
   // reopen button PlanCard/QuestionCard render when minimized.
@@ -399,17 +408,20 @@ export const ToolCard = memo(function ToolCard({
         </span>
         {title != null && <span className="tool-card-title">{title}</span>}
         {chips}
-        {isPermMinimized && toolUseId && (
-          <button
-            type="button"
-            className="tool-card-perm-reopen"
-            onClick={() => onReopenPermission(toolUseId)}
-          >
-            Review permission
-          </button>
-        )}
-        {hasActions && (
+        {/* Every card ACTION lives in this right-aligned cluster (pill-style
+            unification follow-through): the minimized-permission reopen, the
+            background verb, the status badge, copy, and the preview eye. */}
+        {(hasActions || isPermMinimized) && (
           <span className="tool-card-actions">
+            {isPermMinimized && toolUseId && (
+              <button
+                type="button"
+                className="tool-card-perm-reopen"
+                onClick={() => onReopenPermission(toolUseId)}
+              >
+                Review permission
+              </button>
+            )}
             {showBackground && (
               <BackgroundToolButton
                 onClick={onBackground}
@@ -419,6 +431,7 @@ export const ToolCard = memo(function ToolCard({
             )}
             {!hideStatus && <ToolStatusBadgeResolved status={resolvedStatus} />}
             {copyValue && <CopyButton getValue={copyValue} label={copyLabel} />}
+            {preview && <PreviewOpenButton path={preview.path} params={preview.params} />}
           </span>
         )}
       </div>

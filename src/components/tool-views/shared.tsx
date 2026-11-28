@@ -111,53 +111,33 @@ export function readLineParams(
  *  absolute path (resolved against the session cwd — see useCopyablePath)
  *  to the clipboard, with a 2s "copied" affordance. The untruncated absolute
  *  path + the click hint are in the hover `title` so the user can preview
- *  exactly what they'll get before clicking.  */
+ *  exactly what they'll get before clicking.
+ *
+ *  The open-in-preview eye is NOT part of the title anymore — card action
+ *  buttons ride the right-aligned `.tool-card-actions` cluster (ToolCard's
+ *  `preview` prop renders PreviewOpenButton there). */
 export function FilePathTitle({
   path,
   badge,
-  params,
 }: {
   path: string
   badge?: string
-  /** Navigation params for the resource preview (Read's line target). */
-  params?: ResourceParams
 }) {
-  const { copied, title, onClick, absPath } = useCopyablePath(path)
-  const link = useResourceLinkContext()
+  const { copied, title, onClick } = useCopyablePath(path)
   const { dir, base } = splitFilePath(path)
   const shortDir = dir ? shortenDir(dir, 48) : ''
   return (
-    <>
-      <button
-        type="button"
-        className={`tool-card-filepath${copied ? ' copied' : ''}`}
-        title={title}
-        onClick={onClick}
-      >
-        <span className="tool-card-filepath-base">{base || path}</span>
-        {badge && <span className="tool-card-filepath-badge">{badge}</span>}
-        {shortDir && <span className="tool-card-filepath-dir">{shortDir}</span>}
-        {copied && <span className="tool-card-filepath-copied copied-pop">copied</span>}
-      </button>
-      {link && absPath && (
-        <button
-          type="button"
-          className="tool-card-filepath-open"
-          title={`Open in preview\n${absPath}`}
-          aria-label={`Open ${path}`}
-          onClick={(e) => {
-            e.stopPropagation()
-            link.openResource(
-              link.sessionId,
-              fileResource(link.sessionId, absPath),
-              params ? { params } : undefined,
-            )
-          }}
-        >
-          <IconEye size={13} />
-        </button>
-      )}
-    </>
+    <button
+      type="button"
+      className={`tool-card-filepath${copied ? ' copied' : ''}`}
+      title={title}
+      onClick={onClick}
+    >
+      <span className="tool-card-filepath-base">{base || path}</span>
+      {badge && <span className="tool-card-filepath-badge">{badge}</span>}
+      {shortDir && <span className="tool-card-filepath-dir">{shortDir}</span>}
+      {copied && <span className="tool-card-filepath-copied copied-pop">copied</span>}
+    </button>
   )
 }
 
@@ -178,6 +158,37 @@ export function CopyablePathChip({ path }: { path: string }) {
       onClick={onClick}
     >
       {`in ${path}`}
+    </button>
+  )
+}
+
+/** Open-in-preview eye — a `.icon-btn` ghost rendered in ToolCard's
+ *  right-aligned actions cluster (was beside the title until the card-button
+ *  unification put every card action on the right). Self-gates: without a
+ *  resource-link context (dormant panels, previews not wired) it renders
+ *  nothing, so consumers can pass ToolCard's `preview` prop unconditionally.
+ *  Path resolution rides useCopyablePath — the same resolver the title uses,
+ *  so the tooltip's absolute path and the copy target can never disagree. */
+export function PreviewOpenButton({ path, params }: { path: string; params?: ResourceParams }) {
+  const link = useResourceLinkContext()
+  const { absPath } = useCopyablePath(path)
+  if (!link || !absPath) return null
+  return (
+    <button
+      type="button"
+      className="icon-btn tool-card-filepath-open"
+      title={`Open in preview\n${absPath}`}
+      aria-label={`Open ${path}`}
+      onClick={(e) => {
+        e.stopPropagation()
+        link.openResource(
+          link.sessionId,
+          fileResource(link.sessionId, absPath),
+          params ? { params } : undefined,
+        )
+      }}
+    >
+      <IconEye size={13} />
     </button>
   )
 }

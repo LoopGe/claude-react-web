@@ -1,11 +1,13 @@
-// Pins the truncation contract of the file-tool card title row (copy button
-// + open-in-preview button inside .tool-card-title). In a narrow panel the
-// title flexes below its content width; the row must then truncate INSIDE the
-// copy button (dir suffix first, then the file name with an ellipsis). If the
-// nowrap file-name span ever regains its automatic minimum size, it paints
-// outside the shrunk copy button — straight across the sibling eye button
-// (measured live: 21.8px of overlap at a 370px card). happy-dom runs no
-// layout, so these declarations are pinned textually.
+// Pins the truncation contract of the file-tool card title row (the
+// click-to-copy path button inside .tool-card-title — the open-in-preview
+// eye now rides the right-aligned .tool-card-actions cluster, see
+// card-btn-anatomy.test.ts). In a narrow panel the title flexes below its
+// content width; the row must then truncate INSIDE the copy button (dir
+// suffix first, then the file name with an ellipsis). If the nowrap
+// file-name span ever regains its automatic minimum size, it paints outside
+// the shrunk copy button into the actions zone (measured live: 21.8px of
+// overlap at a 370px card). happy-dom runs no layout, so these declarations
+// are pinned textually.
 import { describe, expect, it } from 'vitest'
 import { readCss, standaloneRuleBodies } from './contrast-test-utils'
 
@@ -51,10 +53,14 @@ describe('file-path title truncation', () => {
     expect(ruleBody('.tool-card-filepath')).toContain('overflow: clip')
   })
 
-  it('keeps the open-in-preview button unshrinkable', () => {
-    // The eye is the fixed anchor the truncation makes room for; a shrinkable
-    // eye would reintroduce a collision from the other side.
-    expect(ruleBody('.tool-card-filepath-open')).toContain('flex: 0 0 auto')
+  it('keeps the actions cluster (and the eye inside it) unshrinkable', () => {
+    // The cluster is the fixed anchor the truncating title makes room for; a
+    // shrinkable cluster would reintroduce a collision from the other side.
+    // The eye lost its own `flex: 0 0 auto` with the move to the ghost tier —
+    // .icon-btn's flex-shrink: 0 (controls.css) now carries that guarantee.
+    expect(ruleBody('.tool-card-actions')).toContain('flex-shrink: 0')
+    const controls = readCss('./controls.css')
+    expect(standaloneRuleBodies(controls, '.icon-btn')[0]).toContain('flex-shrink: 0')
   })
 
   it('leaves the file-path title unclipped so the focus ring survives', () => {

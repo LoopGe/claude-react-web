@@ -449,23 +449,17 @@
   letter-spacing: 0.04em;
   opacity: 0.7;
 }
+/* Code-fence copy: .action-btn anatomy (controls.css) + two member deltas —
+   the bar-tuned hairline border and the opacity reveal (the block stays
+   clean until you touch it). The base transition already covers opacity. */
 .code-block-copy {
-  background: none;
-  border: 1px solid var(--code-block-border);
-  border-radius: var(--radius-xs);
-  padding: 1px 8px;
-  font: inherit;
-  font-size: var(--fs-xs);
-  color: var(--fg-muted);
-  cursor: pointer;
+  border-color: var(--code-block-border);
   opacity: 0;
-  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .code-block:hover .code-block-copy { opacity: 1; }
 /* Keyboard users can't hover — reveal the copy button when any child of the
    code block (the copy button itself, or the scrollable <pre>) has focus. */
 .code-block:focus-within .code-block-copy { opacity: 1; }
-.code-block-copy:hover { background: var(--bg-elev); color: var(--fg); }
 /* Remove top rounding from <pre> inside a code-block so it sits flush
    under the bar. */
 .code-block > pre {
@@ -2015,7 +2009,7 @@
 }
 .perm-summary {
   display: flex;
-  gap: var(--space-1-5);
+  gap: var(--space-2);
   flex-wrap: wrap;
   margin-top: var(--space-0-5);
 }
@@ -3806,8 +3800,10 @@ details.question-inline-card-minimized {
   background: var(--warn-hover);
 }
 /* "Review permission" pill on a ToolCard whose pending tool-permission dialog
-   the user has minimized. Mirrors .plan-card-reopen — reuses --warn so no new
-   theme color is introduced. */
+   the user has minimized — moved into the right-aligned .tool-card-actions
+   cluster, but deliberately NOT a ghost-family member: it is a filled warn
+   CTA (mirrors .plan-card-reopen, reuses --warn), and flattening it into the
+   quiet action tier read heavy. Reopen the dialog where it belongs. */
 .tool-card-perm-reopen {
   padding: var(--space-0-5) var(--space-2-5);
   font-size: var(--fs-xs);

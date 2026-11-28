@@ -160,7 +160,7 @@ export const TasksPanel = memo(function TasksPanel({
           )}
         </span>
         <span className="tasks-panel-spacer" />
-        <button className="tasks-panel-icon-btn" onClick={onClose} aria-label="Close">
+        <button className="icon-btn tasks-panel-icon-btn" onClick={onClose} aria-label="Close">
           <IconX size={14} />
         </button>
       </header>
@@ -330,7 +330,7 @@ const TaskRow = memo(function TaskRow({
         <HoverHint label={`Stop ${task.description || task.taskId}`} side="top">
           <button
             type="button"
-            className="tasks-row-stop"
+            className="icon-btn tasks-row-stop"
             disabled={stopping}
             onClick={() => onStop(task.taskId)}
           >

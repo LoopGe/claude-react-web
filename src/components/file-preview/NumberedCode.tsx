@@ -207,7 +207,7 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
         <div className="code-block-actions">
           <button
             type="button"
-            className="code-block-wrap"
+            className="icon-btn icon-btn-sm code-block-wrap"
             aria-pressed={wrap}
             aria-label="Toggle word wrap"
             title="Toggle word wrap"
@@ -215,7 +215,7 @@ export function NumberedCode({ contents, lang, label, line, endLine, revision = 
           >
             <IconWrapText />
           </button>
-          <button type="button" className="code-block-copy" onClick={handleCopy}>
+          <button type="button" className="action-btn action-btn-sm code-block-copy" onClick={handleCopy}>
             {copied ? 'Copied!' : 'Copy'}
           </button>
         </div>
