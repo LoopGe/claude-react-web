@@ -50,6 +50,40 @@ describe('MonitorBar', () => {
     expect(container.querySelector('.monitor-bar-count')?.textContent).toBe('1')
   })
 
+  it('correlates the native launch ack (tool_use ids) with TaskStop', () => {
+    // The native provider's launch ack is "Task <toolu_…> is running in the
+    // background." — the id is a tool_use id, so the parser's charset must
+    // keep `_`. TaskStop names the same id; the row must drop immediately
+    // instead of waiting out the (default five minute) timeout window.
+    const msgs: SdkMessage[] = [
+      monitorUseMsg('m1', 'Monitor', { description: 'Watch build', command: 'tail -f build.log' }),
+      resultMsg('m1', 'Task toolu_01ABC is running in the background.\nUse TaskOutput with task_id="toolu_01ABC" to retrieve its final output.'),
+      monitorUseMsg('stop1', 'TaskStop', { task_id: 'toolu_01ABC' }),
+    ]
+    const { container } = render(<MonitorBar messages={msgs} />)
+    expect(container.querySelector('.monitor-bar')).toBeNull()
+  })
+
+  it('keeps a running monitor when a native EVENT batch (no task id) arrives', () => {
+    // The native provider's batches are status-free: no <task-id>, no <status>,
+    // no <result>, only <event> lines. A live watch must not be evicted.
+    const msgs = [
+      ...runningMonitor('m1', 'Watch build'),
+      {
+        type: 'user',
+        message: {
+          content: [{
+            type: 'text',
+            text: '<task-notification><summary>Watch build</summary><event>tick</event></task-notification>',
+          }],
+        },
+      } as unknown as SdkMessage,
+    ]
+    const { container } = render(<MonitorBar messages={msgs} />)
+    expect(container.querySelector('.monitor-bar')).not.toBeNull()
+    expect(container.querySelector('.monitor-bar-count')?.textContent).toBe('1')
+  })
+
   it('drops a monitor whose task settled (a <task-notification> injection carried its task id)', () => {
     // The harness delivers a `<task-notification>` user injection when a
     // background task settles — the same server task id MonitorBar parses

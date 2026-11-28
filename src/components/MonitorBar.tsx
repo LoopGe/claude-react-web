@@ -406,10 +406,13 @@ function extractRunningMonitors(messages: SdkMessage[], now: number): MonitorInf
   })
 }
 
-/** Parse the background task id out of a "Monitor started (task <id>, …)"
- *  result string. */
+/** Parse the background task id out of a launch acknowledgement. Two grammars
+ *  reach this: the CLI's "Monitor started (task <id>, …)" and the native
+ *  provider's generic "Task <id> is running in the background." Native ids are
+ *  tool_use ids (`toolu_…`), so the charset keeps `_` / `-`; the match is
+ *  case-insensitive so both sentences correlate identically. */
 function parseMonitorTaskId(text: string): string | undefined {
-  const m = text.match(/task\s+([A-Za-z0-9]+)/)
+  const m = text.match(/task\s+([A-Za-z0-9_-]+)/i)
   return m ? m[1] : undefined
 }
 

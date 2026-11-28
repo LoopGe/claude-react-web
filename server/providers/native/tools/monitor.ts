@@ -59,6 +59,9 @@ export const MONITOR_GUIDANCE =
 export type MonitorInput = {
   description: string
   timeout_ms?: number
+  /** Watch until TaskStop or the watch ends; ignores timeout_ms (CLI parity:
+   *  the deadline is 0 when persistent). */
+  persistent?: boolean
   command?: string
   ws?: { url: string; protocols?: string[] }
 }
@@ -102,6 +105,9 @@ function validateMonitorInput(input: MonitorInput): void {
   if (hasCommand === hasWs) {
     throw new ToolInputError('provide exactly one of command or ws')
   }
+  if (input.persistent !== undefined && typeof input.persistent !== 'boolean') {
+    throw new ToolInputError('persistent must be a boolean')
+  }
   if (hasCommand) {
     if (typeof input.command !== 'string' || input.command.trim() === '') {
       throw new ToolInputError('command must be a non-empty string')
@@ -134,7 +140,8 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
       type: 'object',
       properties: {
         description: { type: 'string', description: 'Short human-readable description of what is being watched (shown in the task list).' },
-        timeout_ms: { type: 'number', description: `Kill the watch after this many ms. Defaults to ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}.` },
+        timeout_ms: { type: 'number', description: `End the watch after this many ms. Defaults to ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}. Ignored when persistent.` },
+        persistent: { type: 'boolean', description: 'Keep watching until TaskStop or the watch ends (process exit / socket close); the timeout is ignored.' },
         command: { type: 'string', description: 'Shell command whose stdout lines become events. Filter at the source and cover failure signatures. Mutually exclusive with ws.' },
         ws: {
           type: 'object',
@@ -162,7 +169,10 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
       const target: MonitorTarget = input.command !== undefined
         ? { kind: 'command', command: input.command, cwd: ctx.cwd }
         : { kind: 'ws', url: input.ws!.url, ...(input.ws!.protocols !== undefined ? { protocols: input.ws!.protocols } : {}) }
-      const timeoutMs = Math.min(MAX_TIMEOUT_MS, Math.max(1, Math.floor(input.timeout_ms ?? DEFAULT_TIMEOUT_MS)))
+      const persistent = input.persistent === true
+      const timeoutMs = persistent
+        ? 0
+        : Math.min(MAX_TIMEOUT_MS, Math.max(1, Math.floor(input.timeout_ms ?? DEFAULT_TIMEOUT_MS)))
       // The loop always anchors a backgroundable call to its tool_use id; the
       // task record (and the event deliveries' task-id) key on it.
       const taskId = ctx.toolUseId!
@@ -182,10 +192,12 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
           if (pending.length === 0) return
           const events = pending
           pending = []
-          // Non-foldable event delivery: no toolUseId, empty result — the host
-          // renders the <event> lines as a neutral card and never settles the
-          // running task record (Task 7's pinned monitor shape).
-          deps.inject({ taskId, description, status: 'completed', result: '', events })
+          // Non-foldable event delivery: no task-id, no status, no toolUseId,
+          // no result — the host renders the <event> lines as a neutral card
+          // and no status-shaped consumer can mistake a live watch for a
+          // settled task (the client MonitorBar settles on a matching
+          // <task-id>, which is why batches carry none).
+          deps.inject({ description, events })
         }
         const pushEvent = (line: string) => {
           if (line.trim() === '') return
@@ -195,7 +207,7 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
         const settle = (outcome: ToolOutcome) => {
           if (settled) return
           settled = true
-          clearTimeout(timer)
+          if (timer !== null) clearTimeout(timer)
           if (batchTimer !== null) {
             clearTimeout(batchTimer)
             batchTimer = null
@@ -252,12 +264,16 @@ export function createMonitorTool(deps: MonitorToolDeps): ToolDef<MonitorInput> 
           handle.kill()
           settle({ text: 'Monitor stopped.', isError: true })
         }
-        const timer = setTimeout(() => {
-          timedOut = true
-          handle.kill()
-          // Expiry is the designed end of a watch, not a failure.
-          settle({ text: `Monitor expired after ${timeoutMs}ms.`, isError: false })
-        }, timeoutMs)
+        // A persistent watch has no deadline: it ends only on TaskStop (the
+        // abort listener), a natural exit, or an error.
+        const timer = persistent
+          ? null
+          : setTimeout(() => {
+            timedOut = true
+            handle.kill()
+            // Expiry is the designed end of a watch, not a failure.
+            settle({ text: `Monitor expired after ${timeoutMs}ms.`, isError: false })
+          }, timeoutMs)
         ctx.signal.addEventListener('abort', onAbort, { once: true })
       })
     },

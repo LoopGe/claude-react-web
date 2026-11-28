@@ -33,11 +33,15 @@ const TASK_TYPE_FRAME = {
  *  (the XML `<summary>`); `events` carries monitor event lines (Monitor
  *  tasks) — a plain completion carries only `result`. */
 export interface TaskNotificationFacts {
-  taskId: string
+  /** Omitted by a Monitor EVENT batch: the batch is a live watch reporting
+   *  stdout, not a task status change, and a `<task-id>` there would let a
+   *  status-shaped consumer (the client MonitorBar) settle a running task. */
+  taskId?: string
   toolUseId?: string
   description: string
-  status: 'completed' | 'failed' | 'stopped'
-  result: string
+  /** Omitted with `taskId` on an event batch, for the same reason. */
+  status?: 'completed' | 'failed' | 'stopped'
+  result?: string
   events?: string[]
 }
 
@@ -52,11 +56,11 @@ function escapeXmlText(text: string): string {
  *  so a result carrying markup survives the round trip. */
 export function taskNotificationXml(facts: TaskNotificationFacts): string {
   const parts = [
-    `<task-id>${escapeXmlText(facts.taskId)}</task-id>`,
+    ...(facts.taskId !== undefined ? [`<task-id>${escapeXmlText(facts.taskId)}</task-id>`] : []),
     ...(facts.toolUseId !== undefined ? [`<tool-use-id>${escapeXmlText(facts.toolUseId)}</tool-use-id>`] : []),
-    `<status>${facts.status}</status>`,
+    ...(facts.status !== undefined ? [`<status>${facts.status}</status>`] : []),
     `<summary>${escapeXmlText(facts.description)}</summary>`,
-    `<result>${escapeXmlText(facts.result)}</result>`,
+    ...(facts.result !== undefined ? [`<result>${escapeXmlText(facts.result)}</result>`] : []),
     ...(facts.events ?? []).map((event) => `<event>${escapeXmlText(event)}</event>`),
   ]
   return `<task-notification>${parts.join('')}</task-notification>`
@@ -304,8 +308,15 @@ export class NativeTaskManager {
       isBackgrounded: true,
       time: record.startedAt,
     })
+    // A Monitor is the one background task whose launch the CLIENT also
+    // surfaces (MonitorBar parses this acknowledgement for the task id), so it
+    // speaks the CLI's wording: `Monitor started (task <id>, <description>)`.
+    // Bash / Agent keep the generic TaskOutput pointer.
     record.resolveLoop({
-      text: `Task ${record.metadata.toolUseId} is running in the background.\nUse TaskOutput with task_id="${record.metadata.toolUseId}" to retrieve its final output.`,
+      text: record.metadata.taskType === 'monitor'
+        ? `Monitor started (task ${record.metadata.toolUseId}, ${record.metadata.description})\n`
+          + `Events arrive as task notifications while the watch runs. Stop it early with TaskStop task_id="${record.metadata.toolUseId}".`
+        : `Task ${record.metadata.toolUseId} is running in the background.\nUse TaskOutput with task_id="${record.metadata.toolUseId}" to retrieve its final output.`,
       isError: false,
     })
     return true

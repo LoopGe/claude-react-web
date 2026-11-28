@@ -65,6 +65,7 @@ describe('Monitor tool metadata', () => {
       properties: {
         description: { type: 'string' },
         timeout_ms: { type: 'number' },
+        persistent: { type: 'boolean' },
         command: { type: 'string' },
         ws: { type: 'object' },
       },
@@ -94,6 +95,7 @@ describe('Monitor input validation', () => {
 
   it('rejects a non-number or non-finite timeout_ms', async () => {
     await expect(tool().run({ description: 'd', command: 'c', timeout_ms: 'fast' as never }, ctx())).rejects.toThrow(ToolInputError)
+    await expect(tool().run({ description: 'd', command: 'c', persistent: 'yes' as never }, ctx())).rejects.toThrow(/persistent must be a boolean/)
     await expect(tool().run({ description: 'd', command: 'c', timeout_ms: NaN }, ctx())).rejects.toThrow(ToolInputError)
     await expect(tool().run({ description: 'd', command: 'c', timeout_ms: Infinity }, ctx())).rejects.toThrow(ToolInputError)
   })
@@ -126,11 +128,15 @@ describe('Monitor command event stream', () => {
 
     await vi.advanceTimersByTimeAsync(MONITOR_BATCH_MS)
     expect(injected).toHaveLength(1)
-    expect(injected[0]).toMatchObject({ taskId: 'tu-mon', description: 'watch', events: ['line1', 'line2', 'line3'] })
-    // Event deliveries are NOT foldable completions: no tool-use-id, empty result
+    // An event batch is not a task status: no <task-id>/<status>, so the
+    // client's settle-on-task-id consumer cannot hide a live watch.
+    expect(injected[0]).toMatchObject({ description: 'watch', events: ['line1', 'line2', 'line3'] })
+    expect(injected[0].taskId).toBeUndefined()
+    expect(injected[0].status).toBeUndefined()
+    // Event deliveries are NOT foldable completions: no tool-use-id, no result
     // (the host renders them as neutral cards and never settles the task record).
     expect(injected[0].toolUseId).toBeUndefined()
-    expect(injected[0].result).toBe('')
+    expect(injected[0].result).toBeUndefined()
 
     calls[0].events.onEnd({ code: 0 })
     await expect(running).resolves.toMatchObject({ isError: false })
@@ -235,7 +241,10 @@ describe('Monitor background-task lifecycle', () => {
       parent.signal,
     )
     expect(manager.background('tu-stop')).toBe(true)
-    await expect(loop).resolves.toMatchObject({ text: expect.stringContaining('background') })
+    // The launch acknowledgement names the task in the CLIENT's grammar
+    // ("Monitor started (task <id>, <description>)"), so MonitorBar can
+    // correlate TaskStop and settle notifications with this row.
+    await expect(loop).resolves.toMatchObject({ text: expect.stringContaining('Monitor started (task tu-stop, watch)') })
     // The detach announced a local_monitor task.
     expect(frames.find((f) => f.type === 'task/started')).toMatchObject({ taskType: 'local_monitor', isBackgrounded: true })
 
@@ -265,6 +274,33 @@ describe('Monitor background-task lifecycle', () => {
     await vi.waitFor(() => {
       const final = injected.find((n) => n.toolUseId === 'tu-exp')
       expect(final).toMatchObject({ status: 'completed', result: expect.stringContaining('5ms') })
+    })
+  })
+
+  it('a persistent watch ignores timeout_ms and ends only on TaskStop', async () => {
+    const { port, calls } = stubSpawn()
+    const injected: TaskNotificationFacts[] = []
+    const manager = new NativeTaskManager(() => {}, (n) => injected.push(n))
+    const tool = createMonitorTool({ inject: (n) => injected.push(n), spawn: port })
+    const parent = new AbortController()
+
+    const loop = manager.runForeground(
+      { toolUseId: 'tu-persist', taskType: 'monitor', description: 'watch' },
+      (signal) => tool.run({ description: 'watch', command: 'sleep 999', timeout_ms: 5, persistent: true }, ctx('tu-persist', signal)),
+      parent.signal,
+    )
+    manager.background('tu-persist')
+    await expect(loop).resolves.toMatchObject({ text: expect.stringContaining('Monitor started (task tu-persist, watch)') })
+
+    // Past the requested deadline: a persistent watch is still alive.
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(calls[0].handle.killed).toBe(false)
+    expect(injected.find((n) => n.toolUseId === 'tu-persist')).toBeUndefined()
+
+    await createTaskStopTool(manager).run({ task_id: 'tu-persist' }, ctx())
+    expect(calls[0].handle.killed).toBe(true)
+    await vi.waitFor(() => {
+      expect(injected.find((n) => n.toolUseId === 'tu-persist')).toMatchObject({ status: 'stopped' })
     })
   })
 
