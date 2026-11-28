@@ -243,6 +243,9 @@ export async function startDreamRun(deps: DreamRunDeps, input: DreamRunInput): P
     taskType: 'subagent',
     description: 'Memory consolidation',
     subagentType: 'dream',
+    // App-initiated, not model-dispatched: the settle feeds the TasksPanel but
+    // never wakes the model with a <task-notification> turn (silent consolidation).
+    silentCompletion: true,
   }, execute, input.signal)
   deps.tasks.background(toolUseId)
 

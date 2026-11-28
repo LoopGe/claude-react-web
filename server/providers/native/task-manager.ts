@@ -8,6 +8,14 @@ export interface NativeTaskMetadata {
   taskType: 'shell' | 'subagent' | 'monitor'
   description: string
   subagentType?: string
+  /** App-initiated runs (the auto-memory dream) set this: their settle still
+   *  emits the operational task/notification frame (the TasksPanel roster +
+   *  result), but does NOT inject a model-facing <task-notification> turn. The
+   *  model never dispatched the task, so waking it with a completion it did not
+   *  ask for is an unsolicited turn — the dream is silent fire-and-forget
+   *  consolidation. Model-dispatched background tasks (Bash / Agent) leave this
+   *  unset and keep the CLI-parity completion wake. */
+  silentCompletion?: boolean
 }
 
 /** The neutral live-frame task discriminant for each metadata task type. The
@@ -101,7 +109,9 @@ export class NativeTaskManager {
   // wires it to its idle-injection queue, which delivers the facts as a
   // <task-notification> user turn (CLI parity — the operational frame alone
   // only feeds the TasksPanel). A foreground settle never injects: the parent
-  // already holds the result via its tool_result.
+  // already holds the result via its tool_result. An app-initiated
+  // silent-completion run (metadata.silentCompletion, the dream) also skips the
+  // inject: the model never dispatched it, so its settle is TasksPanel-only.
   constructor(
     private readonly emit: (frame: OperationalFrame) => void,
     private readonly inject?: (notification: TaskNotificationFacts) => void,
@@ -193,13 +203,18 @@ export class NativeTaskManager {
           result: outcome.text,
           time: Date.now(),
         })
-        this.inject?.({
-          taskId: record.metadata.toolUseId,
-          toolUseId: record.metadata.toolUseId,
-          description: record.metadata.description,
-          status: record.status,
-          result: outcome.text,
-        })
+        // The operational frame above always feeds the TasksPanel. The model-
+        // facing wake is only for tasks the model dispatched; an app-initiated
+        // silent-completion run (the dream) settles without waking the model.
+        if (!record.metadata.silentCompletion) {
+          this.inject?.({
+            taskId: record.metadata.toolUseId,
+            toolUseId: record.metadata.toolUseId,
+            description: record.metadata.description,
+            status: record.status,
+            result: outcome.text,
+          })
+        }
       }
       this.pruneTerminalRecords()
     })
