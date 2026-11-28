@@ -110,6 +110,64 @@
   word-wrap: break-word;
 }
 
+/* Monitor event batch card (MonitorEventView) — the compact render for a
+   <task-notification> monitor event injection (CLI disk replay + native
+   mid-turn delivery). Warn accent matches the MonitorBar's identity; body
+   is verbatim stdout in a <pre>, bash-msg-pre's scroll discipline. */
+.msg.monitor-event {
+  padding: 0;
+  overflow: hidden;
+  background: var(--msg-tool-result-bg);
+  border-color: var(--msg-tool-result-border);
+}
+.monitor-event-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-2-5);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elev-3) 50%, transparent);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+.monitor-event-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: var(--warn);
+}
+.monitor-event-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.monitor-event-count {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.monitor-event-body { padding: var(--space-2) var(--space-2-5); }
+.monitor-event-pre {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--fg);
+  max-height: 320px;
+  overflow-y: auto;
+}
+.monitor-event-pre + .monitor-event-pre {
+  margin-top: var(--space-1-5);
+  padding-top: var(--space-1-5);
+  border-top: 1px dashed var(--border);
+}
+
 /* system/memory_recall: auto-memory recall card. File-backed entries list
    filename + scope badge (no body — the CLI lazy-loads content);
    synthesized summaries and organization-scope entries render their body

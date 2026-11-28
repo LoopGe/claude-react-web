@@ -4391,7 +4391,7 @@ describe('MessageList', () => {
       expect(container.textContent).toContain('hello world')
     })
 
-    it('renders an unparseable <task-notification> body via the neutral card fallback', () => {
+    it('renders a monitor event batch as the compact card, not raw XML', () => {
       const notification = [
         '<task-notification>',
         '<task-id>b69rtzfqh</task-id>',
@@ -4405,6 +4405,9 @@ describe('MessageList', () => {
         ])} />,
       )
       expect(container.textContent).toContain('Monitor expired after 15m with no events delivered')
+      expect(container.querySelector('.monitor-event')).toBeTruthy()
+      expect(container.querySelector('.monitor-event-title')?.textContent).toBe('push retry outcome')
+      expect(container.textContent).not.toContain('<task-notification>')
     })
 
     it('renders an isSynthetic user message as a neutral card, NOT a "you" bubble', () => {

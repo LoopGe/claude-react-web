@@ -43,4 +43,18 @@ describe('renderMatchMarks', () => {
     const { marked } = marks('Search search', 'Search', { caseSensitive: true })
     expect(marked).toEqual(['Search'])
   })
+
+  it('lights only the activeIdx range with search-hl-active', () => {
+    const { container } = render(<div>{renderMatchMarks('tick tick tick', 'tick', { activeIdx: 1 })}</div>)
+    const all = container.querySelectorAll('mark.search-hl')
+    const active = container.querySelectorAll('mark.search-hl-active')
+    expect(all).toHaveLength(3)
+    expect(active).toHaveLength(1)
+    expect(all[1].classList.contains('search-hl-active')).toBe(true)
+  })
+
+  it('no active mark when activeIdx is undefined or out of range', () => {
+    const { container } = render(<div>{renderMatchMarks('tick tick', 'tick', { activeIdx: 5 })}</div>)
+    expect(container.querySelectorAll('mark.search-hl-active')).toHaveLength(0)
+  })
 })

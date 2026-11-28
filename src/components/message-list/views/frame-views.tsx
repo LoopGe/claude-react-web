@@ -13,8 +13,10 @@ import { AnsiText } from '../../AnsiText'
 import { HoverHint } from '../../HoverHint'
 import type { SdkMessage } from '../../../types'
 import { formatClockTime, formatTokens } from '../../../utils/format'
-import { IconSquare } from '../../icons/ToolIcons'
+import { IconCircleDot, IconSquare } from '../../icons/ToolIcons'
 import { countMatches } from '../../../search'
+import { renderMatchMarks } from '../../../utils/highlight-matches'
+import { monitorEventTitle, type MonitorEventBatch } from '../../../../shared/user-frames.js'
 import { extractTag } from '../rendering'
 
 /** Render a `!` bash-mode synthetic message. Parses <bash-input>,
@@ -638,3 +640,65 @@ export const BottomOverlaySpacer = memo(function BottomOverlaySpacer({ height }:
   return <div className="virtuoso-bottom-spacer" style={{ height }} aria-hidden />
 })
 
+/** Compact card for a monitor EVENT batch — the visible leftover class of
+ *  the task-notification visibility gate (no tool-use-id, `<event>` payload;
+ *  both the CLI's disk-replayed batches and native's mid-turn injections).
+ *  Header: the watch description (CLI `Monitor event: "…"` framing stripped)
+ *  + an event-count badge; body: each event verbatim in a <pre> (raw stdout,
+ *  never markdown). Search marks rebase onto the SAME per-part strings the
+ *  search index segments on (monitorEventSearchText's parts), so ordinals
+ *  agree end to end; a query spanning a part boundary counts server-side
+ *  but has no client mark (the accepted mention-boundary exception class). */
+export const MonitorEventView = memo(function MonitorEventView({ batch, searchQuery, activeMatchIdx }: {
+  batch: MonitorEventBatch
+  searchQuery?: string
+  activeMatchIdx?: number
+}) {
+  const title = monitorEventTitle(batch)
+  const q = searchQuery?.trim()
+  // Segment-local active ordinals, walked in the index's order (title
+  // first — skipped when empty, exactly like the index's filter).
+  const { titleActive, eventActive } = useMemo(() => {
+    const counts = [title ? countMatches(title, q ?? '') : 0, ...batch.events.map((e) => countMatches(e, q ?? ''))]
+    let titleActive: number | undefined
+    const eventActive = new Map<number, number>()
+    if (q && activeMatchIdx != null && activeMatchIdx >= 0) {
+      let remaining = activeMatchIdx
+      for (let i = 0; i < counts.length; i++) {
+        if (remaining < counts[i]) {
+          if (i === 0) titleActive = remaining
+          else eventActive.set(i - 1, remaining)
+          break
+        }
+        remaining -= counts[i]
+      }
+    }
+    return { titleActive, eventActive }
+  }, [title, batch.events, q, activeMatchIdx])
+  const bodyRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!q) return
+    const el = bodyRef.current?.querySelector('.search-hl-active')
+    if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [q, activeMatchIdx])
+  return (
+    <div className="msg monitor-event" role="note" aria-label={`Monitor event: ${title || 'watch'}`}>
+      <div className="monitor-event-header" data-text-interaction-exclude="">
+        <span className="monitor-event-icon" aria-hidden><IconCircleDot size={12} /></span>
+        <span className="monitor-event-title">
+          {q ? renderMatchMarks(title, q, { activeIdx: titleActive }) : title || 'monitor event'}
+        </span>
+        {batch.events.length > 1 && (
+          <span className="monitor-event-count">{batch.events.length} events</span>
+        )}
+      </div>
+      <div className="monitor-event-body" ref={bodyRef} data-text-interaction-source="">
+        {batch.events.map((event, i) => (
+          <pre key={i} className="monitor-event-pre">
+            {q ? renderMatchMarks(event, q, { activeIdx: eventActive.get(i) }) : event}
+          </pre>
+        ))}
+      </div>
+    </div>
+  )
+})

@@ -8,6 +8,41 @@ import { extractMessageSearchSegments } from './extract.js'
 
 const file = { id: 'upload-1', name: 'report.pdf', size: 42 }
 
+describe('monitor event batch search segments', () => {
+  const batchMsg = (xml: string) => ({
+    type: 'user',
+    parent_tool_use_id: null,
+    message: { content: [{ type: 'text', text: xml }] },
+  })
+
+  it('indexes exactly the card visible strings (title framing stripped, events verbatim)', () => {
+    const segments = extractMessageSearchSegments(batchMsg(
+      '<task-notification><task-id>m1</task-id><summary>Monitor event: "build watch"</summary>' +
+      '<event>line a</event><event>line b</event></task-notification>'))
+    expect(segments).toEqual([{ type: 'text', text: 'build watch' + String.fromCharCode(10) + 'line a' + String.fromCharCode(10) + 'line b' }])
+  })
+
+  it('does not index the XML plumbing (task-id, tag names)', () => {
+    const segments = extractMessageSearchSegments(batchMsg(
+      '<task-notification><task-id>abc123</task-id><summary>Monitor event: "x"</summary>' +
+      '<event>output</event></task-notification>'))
+    const joined = segments.map((s) => s.text).join(' ')
+    expect(joined).not.toContain('abc123')
+    expect(joined).not.toContain('task-notification')
+  })
+
+  it('leaves a foldable notification on the markdown path (unchanged)', () => {
+    const segments = extractMessageSearchSegments(batchMsg(
+      '<task-notification><task-id>t1</task-id><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><result>report</result></task-notification>'))
+    // Not the monitor-card single-segment shape: the legacy markdown walk
+    // still owns foldable injections (they are hidden rows, but the global
+    // search index keeps scanning them).
+    expect(segments.length).toBeGreaterThan(0)
+    expect(segments[0].text).toContain('task-notification')
+  })
+})
+
 describe('message search segments', () => {
   it('keeps text and top-level attachments in source order', () => {
     const segments = extractMessageSearchSegments({

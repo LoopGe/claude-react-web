@@ -5,6 +5,9 @@ import {
   imagePayloadOfContent,
   imagePayloadOfMessage,
   isHumanUserMessage,
+  monitorEventSearchText,
+  monitorEventTitle,
+  parseMonitorEventBatch,
   parseTaskNotificationInjection,
   parseUnroutableCompletion,
 } from './user-frames'
@@ -178,6 +181,95 @@ describe('parseUnroutableCompletion', () => {
 
   it('returns null for a non-notification frame', () => {
     expect(parseUnroutableCompletion(msg('plain user text'))).toBeNull()
+  })
+})
+
+describe('parseMonitorEventBatch', () => {
+  it('parses a CLI monitor event batch (summary framing kept verbatim)', () => {
+    expect(parseMonitorEventBatch(msg(
+      '<task-notification><task-id>m1</task-id><summary>Monitor event: "build"</summary>' +
+      '<event>exe produced</event></task-notification>'))).toEqual({
+      taskId: 'm1',
+      summary: 'Monitor event: "build"',
+      events: ['exe produced'],
+    })
+  })
+
+  it('parses the native shape (empty result element, bare description)', () => {
+    expect(parseMonitorEventBatch(msg(
+      '<task-notification><task-id>tu1</task-id><status>completed</status>' +
+      '<summary>watch the feed</summary><result></result><event>tick 1</event></task-notification>'))).toEqual({
+      taskId: 'tu1',
+      summary: 'watch the feed',
+      events: ['tick 1'],
+    })
+  })
+
+  it('collects EVERY non-empty event body in document order, unescaped', () => {
+    const p = parseMonitorEventBatch(msg(
+      '<task-notification><task-id>m1</task-id><event>line a</event><event>  </event>' +
+      '<event>b &lt;c&gt; &amp; d</event></task-notification>'))
+    expect(p?.events).toEqual(['line a', 'b <c> & d'])
+  })
+
+  it('keeps multi-line event bodies intact (a batched delivery)', () => {
+    const p = parseMonitorEventBatch(msg(
+      '<task-notification><task-id>m1</task-id><event>l1\nl2\nl3</event></task-notification>'))
+    expect(p?.events).toEqual(['l1\nl2\nl3'])
+  })
+
+  it('returns null for a foldable injection (TasksPanel owns it)', () => {
+    expect(parseMonitorEventBatch(msg(
+      '<task-notification><task-id>t1</task-id><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><event>x</event></task-notification>'))).toBeNull()
+  })
+
+  it('returns null for a result-bearing completion (unroutable parser owns it)', () => {
+    expect(parseMonitorEventBatch(msg(
+      '<task-notification><task-id>a1</task-id><status>completed</status>' +
+      '<result>report</result><event>x</event></task-notification>'))).toBeNull()
+  })
+
+  it('returns null for a status-only notice and for whitespace-only events', () => {
+    expect(parseMonitorEventBatch(msg(
+      '<task-notification><task-id>a1</task-id><status>stopped</status></task-notification>'))).toBeNull()
+    expect(parseMonitorEventBatch(msg(
+      '<task-notification><task-id>m1</task-id><event>\n </event></task-notification>'))).toBeNull()
+  })
+
+  it('returns null for a non-notification frame', () => {
+    expect(parseMonitorEventBatch(msg('plain user text'))).toBeNull()
+  })
+
+  it('leaves taskId/summary undefined when absent', () => {
+    const p = parseMonitorEventBatch(msg(
+      '<task-notification><event>x</event></task-notification>'))
+    expect(p).toEqual({ events: ['x'] })
+  })
+})
+
+describe('monitorEventTitle / monitorEventSearchText', () => {
+  it('strips the CLI framing prefix for display', () => {
+    expect(monitorEventTitle({ summary: 'Monitor event: "build watch"', events: ['x'] })).toBe('build watch')
+  })
+
+  it('keeps a bare (native) description verbatim', () => {
+    expect(monitorEventTitle({ summary: 'watch the feed', events: ['x'] })).toBe('watch the feed')
+  })
+
+  it('returns empty for a missing summary', () => {
+    expect(monitorEventTitle({ events: ['x'] })).toBe('')
+  })
+
+  it('joins title then events with newlines — the card visible strings', () => {
+    expect(monitorEventSearchText({
+      summary: 'Monitor event: "build"',
+      events: ['line a', 'line b'],
+    })).toBe('build\nline a\nline b')
+  })
+
+  it('skips an empty title in the join (matches the index filter)', () => {
+    expect(monitorEventSearchText({ events: ['only event'] })).toBe('only event')
   })
 })
 

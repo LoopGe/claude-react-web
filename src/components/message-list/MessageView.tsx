@@ -16,6 +16,7 @@ import { localCommandOf } from '../../../shared/results.js'
 import { toolResultTextRuns } from '../../../shared/tool-result-text.js'
 import { countMatches, extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../../search'
 import { getBlocks, isHumanUserMessage, userMessageOriginKind } from '../../session-store/normalize'
+import { parseMonitorEventBatch } from '../../../shared/user-frames.js'
 import { BlockView, ToolResultBlock } from './blocks'
 import { DraftTextBody } from './draft-body'
 import { ThinkingBody } from './thinking-body'
@@ -40,6 +41,7 @@ import {
   MemoryRecallView,
   ModelRefusalFallbackView,
   ModelRefusalNoFallbackView,
+  MonitorEventView,
   PermissionDeniedView,
   PluginInstallView,
   RateLimitErrorDivider,
@@ -478,6 +480,12 @@ export const MessageView = memo(function MessageView({
     // fields (0.3.x), isHumanUserMessage falls back to true and this branch
     // is skipped — preserving the existing "you" rendering for real input.
     if (!isHumanUserMessage(msg)) {
+      // A monitor event batch gets its own compact card (title + verbatim
+      // event lines) instead of the raw-XML neutral fallback below.
+      const monitorBatch = parseMonitorEventBatch(msg)
+      if (monitorBatch) {
+        return <MonitorEventView batch={monitorBatch} searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />
+      }
       const kind = userMessageOriginKind(msg) ?? 'system'
       return (
         <div className="msg tool-result">

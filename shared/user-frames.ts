@@ -309,6 +309,62 @@ export function parseUnroutableCompletion(msg: UserFrameShape): UnroutableComple
   return { taskId: raw.taskId, status: raw.status, summary: raw.summary, result: raw.result }
 }
 
+/** A monitor EVENT batch — the visible leftover class of the visibility gate
+ *  (no `<tool-use-id>` to fold, no `<result>`, but non-empty `<event>` lines).
+ *  Both producers emit this shape: the CLI harness (disk-replayed Monitor
+ *  batches and expiry notices) and the native provider's mid-turn event
+ *  injection. The transcript renders it as a compact MonitorEventView card
+ *  instead of the neutral raw-XML fallback. */
+export interface MonitorEventBatch {
+  /** The monitor's background task id (`<task-id>`), when carried. */
+  taskId?: string
+  /** The watch description (`<summary>`), verbatim — the CLI prefixes it
+   *  with `Monitor event: "…"`, native carries the bare description. */
+  summary?: string
+  /** EVERY non-empty `<event>` body, entity-unescaped, in document order.
+   *  One body may itself span several stdout lines (a batched delivery). */
+  events: string[]
+}
+
+export function parseMonitorEventBatch(msg: UserFrameShape): MonitorEventBatch | null {
+  const raw = readTaskNotification(msg)
+  if (!raw || raw.toolUseId || raw.result) return null
+  const events = extractXmlTags(taskNotificationText(msg), 'event').filter((e) => e.trim())
+  if (events.length === 0) return null
+  return {
+    ...(raw.taskId !== undefined ? { taskId: raw.taskId } : {}),
+    ...(raw.summary !== undefined ? { summary: raw.summary } : {}),
+    events,
+  }
+}
+
+/** The CLI harness prefixes a monitor batch's `<summary>` with
+ *  `Monitor event: "<description>"`; the native producer carries the bare
+ *  description. The card's header already says "monitor event", so the
+ *  prefix is stripped for display. */
+const MONITOR_SUMMARY_PREFIX_RE = /^Monitor event:\s*"([\s\S]*)"$/
+
+/** The card's title text: the watch description with the CLI's framing
+ *  prefix stripped. Empty when the batch carries no summary. */
+export function monitorEventTitle(batch: MonitorEventBatch): string {
+  const summary = batch.summary ?? ''
+  const m = MONITOR_SUMMARY_PREFIX_RE.exec(summary)
+  return m ? m[1] : summary
+}
+
+/** ONE search-index segment text for a monitor event batch — the exact
+ *  visible strings (title, then each event body) joined by newlines. The
+ *  card's match-ordinal walk counts the SAME parts in the same order, so
+ *  per-part hits agree end to end; a query spanning a '
+' join counts here
+ *  but has no client mark (the accepted mention-boundary exception class —
+ *  see MessageView's userTextActive walk). Raw stdout stays raw (no markdown
+ *  flattening — the card renders it verbatim in a <pre>). */
+export function monitorEventSearchText(batch: MonitorEventBatch): string {
+  const parts = [monitorEventTitle(batch), ...batch.events]
+  return parts.filter((p) => p).join('\n')
+}
+
 // ---------------------------------------------------------------------------
 // Frame-origin classification (the ingestion decision point).
 //

@@ -43,6 +43,7 @@ import { stripHandles } from '../attachment-handle.js'
 import { isFileBlock } from '../attachments.js'
 import { splitFileHandleText, type MessageSearchSegment } from './segments.js'
 import { toolResultTextRuns } from '../tool-result-text.js'
+import { parseMonitorEventBatch, monitorEventSearchText } from '../user-frames.js'
 
 interface SearchableMessage {
   type?: string
@@ -231,6 +232,15 @@ export function extractMessagePlainText(msg: SearchableMessage): string | null {
  * in its own segment. */
 export function extractMessageSearchSegments(msg: SearchableMessage): MessageSearchSegment[] {
   const out: MessageSearchSegment[] = []
+  // A monitor event batch renders as the compact MonitorEventView card
+  // (title + verbatim event lines), NOT as markdown — index exactly the
+  // card's visible strings so search ordinals land on real marks.
+  const monitorBatch = msg.type === 'user' ? parseMonitorEventBatch(msg) : null
+  if (monitorBatch) {
+    const text = monitorEventSearchText(monitorBatch)
+    if (text) out.push({ type: 'text', text })
+    return out
+  }
   const pushMarkdown = (markdown: string): void => {
     const text = extractPlainText(markdown)
     if (text) out.push({ type: 'text', text })

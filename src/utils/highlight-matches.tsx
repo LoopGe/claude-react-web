@@ -13,7 +13,12 @@ import type { MatchOptions } from '../../shared/search/types'
 export function renderMatchMarks(
   text: string,
   query: string,
-  opts?: MatchOptions,
+  opts?: MatchOptions & {
+    /** Index of the ONE range that is the active navigation target; its
+     *  <mark> gets the extra search-hl-active class. Undefined = all marks
+     *  render at the default colour. */
+    activeIdx?: number
+  },
 ): ReactNode {
   const ranges = findRanges(text, query, opts)
   if (ranges.length === 0) return text
@@ -24,7 +29,7 @@ export function renderMatchMarks(
     const { start, end } = ranges[i]
     if (start > cursor) out.push(text.slice(cursor, start))
     out.push(
-      <mark key={i} className="search-hl">
+      <mark key={i} className={i === opts?.activeIdx ? 'search-hl search-hl-active' : 'search-hl'}>
         {text.slice(start, end)}
       </mark>,
     )
