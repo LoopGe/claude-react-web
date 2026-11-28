@@ -87,6 +87,11 @@ export const ThinkingBody = memo(function ThinkingBody(props: ThinkingBodyProps)
     <AnimatedDetails
       className="thinking-details"
       summaryClassName="thinking-summary"
+      // The live row's height churns every flush; track it natively so the
+      // transcript row grows in the same commit as the content and the follow
+      // pin never paints a stale frame (the streaming flicker). Settled and
+      // frozen rows have static content and keep the default pin contract.
+      nativeSnapHeight={live}
       summary={(
         <>
           <span className="thinking-label">thinking</span>
