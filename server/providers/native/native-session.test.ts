@@ -8210,6 +8210,52 @@ describe('per-turn memory + environment overlay', () => {
   })
 })
 
+describe('native system prompt: environment + agent roster', () => {
+  it('main prompt carries <env> and <available_agents>; nested keeps env, drops the roster', async () => {
+    const dir = await tempDir('native-env-prompt-')
+    await mkdir(join(dir, '.git'), { recursive: true })
+    await writeFile(join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8')
+    const defs: Record<string, StoredAgentDefinition> = {
+      reviewer: agentDefinition({ description: 'Reviews code', tools: ['Read', 'Grep'] }),
+    }
+    const store = {
+      get: (name: string) => defs[name],
+      has: (name: string) => name in defs,
+      list: () => Object.values(defs),
+    } as unknown as AgentDefinitionStore
+    const provider = new NativeProvider({ stateDir: dir, agentStore: store, ports: makeNativePorts({ stateDir: dir }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+      [textTurn('ok'), textTurn('nested-ok')],
+      requests,
+    )
+    const session = provider.createSession({ id: 'env-prompt', cwd: dir, permissionMode: 'bypassPermissions' })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+
+      const main = requests[0].system
+      expect(main).toContain('<env>')
+      expect(main).toContain(`Working directory: ${dir}`)
+      expect(main).toContain('Is a git repository: yes (branch "main")')
+      expect(main).toContain('<available_agents>')
+      expect(main).toContain('- reviewer (tools: Read, Grep): Reviews code')
+
+      await runNestedAgent(session, dir, { description: 'd', prompt: 'p', subagent_type: 'reviewer' })
+      await vi.waitFor(() => expect(requests.length).toBeGreaterThan(1))
+      const nested = requests[1].system
+      // A subagent works in the same directory, but cannot delegate further.
+      expect(nested).toContain('<env>')
+      expect(nested).not.toContain('<available_agents>')
+      expect(nested).not.toContain('- reviewer')
+    } finally {
+      await session.destroy()
+    }
+  })
+})
+
 // ── Plugin commands (plugin parity T2) ──────────────────────────────────────
 // The plugin port is exercised through the REAL host loader over a stub
 // marketplace source (the same shape plugin-contributions.test.ts uses), so

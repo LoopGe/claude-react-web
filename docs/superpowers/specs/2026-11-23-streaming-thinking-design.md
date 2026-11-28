@@ -89,7 +89,7 @@ thinking）——**0 帧含多个 thinking 块**，thinking 均为单块帧（`[
 
 ### 5.2 行模型：thinking 行 = 独立 transcript 行，平行于正文草稿
 
-`buildTranscriptRows` 尾部行序：`[…settled, frozen…, thinking 行?, 正文草稿行?]`。
+`buildTranscriptRows` 尾部行序：`[…settled（frozen text 已按锚点插回其回合）, thinking 行?, 正文草稿行?]`。
 thinking 行在正文草稿**上方**（块序 thinking 先于 text；上一响应的内容已定稿）。
 
 - **出现时机**：该响应第一条**主线程** `thinking_delta` 到达时（`content_block_start`
@@ -241,12 +241,14 @@ thinking 块的定稿 assistant 帧（主线程、content 含 thinking 块）到
 ### 5.7 打断（interrupt）
 
 - **CLI 抢救半截 thinking 成真消息**：走正常 supersede，零特殊处理（继承旧 §5.7）。
-- **无抢救**（打断于 thinking 流式中）：thinkingDraft 定格进统一 frozen 列表
-  （§5.3 tagged union）——渲染为**折叠态**静态行（partial 文本在展开体内，用户可
-  展开查看；my call：与定稿折叠行同形态，比展开半截文本更贴近「思考被打断」的
-  语义）。生命周期与 frozen text 一致：按打断时序位于下一响应行上方、不进索引、
-  刷新后消失。
-- thinking 已 done 但帧未到即打断：同上定格（done 态本就是折叠）。
+- **无抢救**（打断于 thinking 流式中）：thinkingDraft **不再冻结**，随回合丢弃。
+  2026-11-27 用户裁决：thinking 是内部推理，模型未看到、后端不持久化；保留只会
+  在客户端留下折叠的 "thinking" 残卡，没有回看价值。
+- **正文 text 半截**：仍冻结为 `FrozenDraft`，但带 `anchorUuid`（该回合 `result`
+  的 uuid）。`mergeFrozenDraftRows` 把它插回 **result footer 之前**（下一响应
+  之前），而不是所有 settled 行之后；长时间会话中不会再出现「残卡固定在列表
+  底部」。锚点不在已加载的历史窗口时暂不渲染；刷新后消失；不进搜索索引。
+- thinking 已 done 但帧未到即打断：同样不冻结，直接丢弃。
 
 ### 5.8 滚动 / WorkingBubble / 虚拟化
 

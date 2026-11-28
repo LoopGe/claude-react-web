@@ -2,11 +2,19 @@ import { describe, it, expect } from 'vitest'
 import { providerSupports, GATED_FEATURES } from './provider-capabilities.js'
 
 describe('providerSupports (pre-create capability source)', () => {
-  it('native locks hooks/memory/sandbox/account; both providers support plugins', () => {
-    for (const f of ['plugins', 'hooks', 'memory', 'sandbox', 'account'] as const) {
+  it('native locks memory/sandbox/account; both providers support plugins', () => {
+    for (const f of ['plugins', 'memory', 'sandbox', 'account'] as const) {
       expect(providerSupports('native', f)).toBe(f === 'plugins')
       expect(providerSupports('claude', f)).toBe(true)
     }
+  })
+
+  it('hooks is supported on both providers (native runs session-scoped hooks)', () => {
+    // The native engine executes the session/flag hook config, so the surface
+    // must not lock. Source coverage (settings files / plugins / agent
+    // frontmatter) is a panel note, not a capability gate.
+    expect(providerSupports('native', 'hooks')).toBe(true)
+    expect(providerSupports('claude', 'hooks')).toBe(true)
   })
 
   it('pluginSkills is true for native and claude', () => {

@@ -18,9 +18,10 @@
  * existing sessions; this map is only for the pre-create draft.
  */
 
-/** The provider-gated features, in presentation order. hooks/memory/sandbox/
- *  account are locked on native (claude-only CLI features); plugins (agent
- *  extensions: commands/agents/hooks/MCP/skills) and pluginSkills (selective
+/** The provider-gated features, in presentation order. memory/sandbox/account
+ *  are locked on native (claude-only CLI features); plugins (agent extensions:
+ *  commands/agents/hooks/MCP/skills), hooks (the session-scoped config its own
+ *  engine executes, plus plugin hook sources), and pluginSkills (selective
  *  plugin-skill discovery via enabledPlugins) are functional on both providers. */
 export const GATED_FEATURES = ['plugins', 'hooks', 'memory', 'sandbox', 'account', 'pluginSkills'] as const
 
@@ -34,7 +35,7 @@ export type GatedFeature = (typeof GATED_FEATURES)[number]
  */
 const PROVIDER_GATED_FEATURE_SUPPORT = new Map<string, Record<GatedFeature, boolean>>([
   ['claude', { plugins: true, hooks: true, memory: true, sandbox: true, account: true, pluginSkills: true }],
-  ['native', { plugins: true, hooks: false, memory: false, sandbox: false, account: false, pluginSkills: true }],
+  ['native', { plugins: true, hooks: true, memory: false, sandbox: false, account: false, pluginSkills: true }],
 ])
 
 /**

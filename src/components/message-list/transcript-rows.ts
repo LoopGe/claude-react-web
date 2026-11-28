@@ -115,45 +115,25 @@ export interface TranscriptRow {
   }
 }
 
-/** Rows for the in-place draft card (inline streaming) and its frozen
- *  interrupted half-cards: synthetic assistant messages marked `isDraft`,
- *  keyed by their draft key (the settled message later adopts that key via
- *  mirror.draftRowKeys, so the hand-off never remounts — see
- *  docs/superpowers/specs/2026-10-28-inplace-streaming-card-design.md §5.1).
- *  Frozen rows first (one ordered list, text and thinking interleaved by
- *  interrupt time), then the live THINKING row, then the live text draft
- *  (block order: thinking precedes text within a response). `renderableIndex`
- *  is relative to the returned group — the caller offsets it when appending
- *  after settled rows. `msg.message.content` is a placeholder: the draft body
- *  renders from the store (`draft.text` / `thinkingDraft.text`), not from the
- *  message. Frozen thinking half-cards carry a thinking placeholder +
- *  `isThinkingDraft` (MessageView's draft branch renders them via
- *  ThinkingBody). */
+/** Rows for the LIVE in-place draft card (inline streaming): synthetic
+ *  assistant messages marked `isDraft`, keyed by their draft key (the settled
+ *  message later adopts that key via mirror.draftRowKeys, so the hand-off never
+ *  remounts — see docs/superpowers/specs/2026-10-28-inplace-streaming-card-design.md
+ *  §5.1). The live THINKING row comes first, then the live text draft (block
+ *  order: thinking precedes text within a response). `renderableIndex` is
+ *  relative to the returned group — the caller offsets it when appending after
+ *  settled rows. `msg.message.content` is a placeholder: the draft body renders
+ *  from the store (`draft.text` / `thinkingDraft.text`), not from the message.
+ *
+ *  Frozen interrupted TEXT half-cards are NOT part of this tail: they are
+ *  anchored to the result frame that closed their turn and re-inserted there by
+ *  `mergeFrozenDraftRows`, so they never sit below later turns. Thinking is
+ *  never frozen. */
 export function buildDraftRows(
   draft: DraftState | null,
-  frozenDrafts: readonly FrozenDraft[],
   thinkingDraft: ThinkingDraftState | null = null,
 ): TranscriptRow[] {
-  const rows: TranscriptRow[] = frozenDrafts.map((d, i) => ({
-    id: d.key,
-    msg: {
-      type: 'assistant',
-      uuid: d.key,
-      isDraft: true,
-      ...(d.kind === 'thinking' ? { isThinkingDraft: true } : {}),
-      parent_tool_use_id: null,
-      // Frozen half-cards carry their text (MessageView renders it
-      // statically) — see MessageView's draft branch.
-      message: {
-        role: 'assistant',
-        content: [d.kind === 'thinking' ? { type: 'thinking', thinking: d.text } : { type: 'text', text: d.text }],
-      },
-    } as unknown as SdkMessage,
-    isCompactSummary: false,
-    plainText: '',
-    renderableIndex: i,
-    itemIndex: -1,
-  }))
+  const rows: TranscriptRow[] = []
   if (thinkingDraft) {
     rows.push({
       id: thinkingDraft.key,
@@ -192,6 +172,67 @@ export function buildDraftRows(
     })
   }
   return rows
+}
+
+/** Synthetic row for one anchored, frozen TEXT half-card. Carries its text
+ *  statically (MessageView renders frozen text from the placeholder content). */
+function frozenDraftRow(d: Extract<FrozenDraft, { kind: 'text' }>): TranscriptRow {
+  return {
+    id: d.key,
+    msg: {
+      type: 'assistant',
+      uuid: d.key,
+      isDraft: true,
+      parent_tool_use_id: null,
+      message: { role: 'assistant', content: [{ type: 'text', text: d.text }] },
+    } as unknown as SdkMessage,
+    isCompactSummary: false,
+    plainText: '',
+    // Draft rows are not search-indexed; a mid-list insertion must not
+    // renumber the settled rows' dense renderable indices.
+    renderableIndex: -1,
+    itemIndex: -1,
+  }
+}
+
+/**
+ * Re-insert frozen TEXT half-cards at the turn they were interrupted in.
+ *
+ * Each entry is anchored to the `result` frame that closed its turn. The row
+ * belongs immediately BEFORE that result footer (the result row itself is the
+ * first settled row at/after the anchor item); when the footer row was dropped
+ * as an orphan, the next turn's first row (or the end) takes the slot — still
+ * the end of the interrupted turn, never the transcript tail.
+ *
+ * Anchors resolve against `items`, the loaded transcript window: an entry whose
+ * anchor is paged out is omitted until that page loads. Unanchored legacy
+ * entries and thinking entries (no longer produced) are skipped. Rows are
+ * returned unchanged (same reference) when nothing is anchored.
+ */
+export function mergeFrozenDraftRows(
+  rows: readonly TranscriptRow[],
+  frozenDrafts: readonly FrozenDraft[],
+  items: readonly TranscriptItem[],
+): TranscriptRow[] {
+  const byInsertAt = new Map<number, TranscriptRow[]>()
+  for (const d of frozenDrafts) {
+    if (d.kind !== 'text' || !d.anchorUuid) continue
+    const anchorIndex = items.findIndex((item) => item.id === d.anchorUuid)
+    if (anchorIndex < 0) continue
+    let at = rows.findIndex((row) => row.itemIndex >= anchorIndex)
+    if (at < 0) at = rows.length
+    const list = byInsertAt.get(at)
+    if (list) list.push(frozenDraftRow(d))
+    else byInsertAt.set(at, [frozenDraftRow(d)])
+  }
+  if (byInsertAt.size === 0) return rows as TranscriptRow[]
+  const out: TranscriptRow[] = []
+  for (let i = 0; i <= rows.length; i++) {
+    const frozen = byInsertAt.get(i)
+    if (frozen) out.push(...frozen)
+    if (i < rows.length) out.push(rows[i]!)
+  }
+  return out
 }
 
 export interface BuildTranscriptRowsInput {

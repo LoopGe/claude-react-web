@@ -10,7 +10,9 @@ import { ResourcePaneContext, type ResourcePaneContextValue } from './context'
 import { createFileProvider } from './providers/file'
 import { createDiffProvider } from './providers/diff'
 import { createSnapshotDiffProvider } from './providers/snapshot-diff'
-import { forgetPdfViewState } from '../components/file-preview/pdf-view-state'
+import { createUploadProvider } from './providers/upload'
+import { parseUploadResource } from '../../shared/resource-address'
+import { forgetPdfViewState, uploadViewStateKeyOf } from '../components/file-preview/pdf-view-state'
 
 /** Kinds whose body reads the client session mirror directly — they have no
  *  provider stream, but must still be accepted by the store's `canOpen` gate. */
@@ -34,6 +36,7 @@ export function ResourcePaneProvider({ children, providers, invalidate }: Props)
       createFileProvider(),
       createDiffProvider(),
       createSnapshotDiffProvider(),
+      createUploadProvider(),
     ]) {
       instance.register(provider)
     }
@@ -45,9 +48,14 @@ export function ResourcePaneProvider({ children, providers, invalidate }: Props)
     () =>
       new ResourcePaneStore({
         canOpen: (kind) => registry.hasProvider(kind) || LOCAL_RESOURCE_KINDS.has(kind),
-        // Per-address view state leaves with the tab. Non-file addresses have
-        // no PDF view state, so the forget is a no-op for them.
-        onTabClosed: (tab) => forgetPdfViewState(tab.address),
+        // Per-address view state leaves with the tab. An upload tab's PDF viewer
+        // keys retention on the upload id (the ref-keyed byte path), so its
+        // address maps back to that key; other kinds have no PDF view state and
+        // the forget is a no-op for them.
+        onTabClosed: (tab) => {
+          const upload = parseUploadResource(tab.address)
+          forgetPdfViewState(upload ? uploadViewStateKeyOf(upload.id) : tab.address)
+        },
       }),
   )
 

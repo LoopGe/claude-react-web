@@ -1223,17 +1223,18 @@ describe('SettingsPanel plugins tab — per-session enabled state', () => {
 })
 
 describe('SettingsPanel locked-feature gates (native vs claude vs legacy)', () => {
-  // The projected native frame: plugins supported (the T6 capability flip),
-  // the other four locked-feature booleans explicit false. The gate convention
-  // is `!== false`, so a legacy frame (booleans undefined) stays
-  // claude-compatible — pinned in its own tests below.
+  // The projected native frame: plugins supported (the T6 capability flip) and
+  // hooks supported (the engine runs the session-scoped config plus plugin
+  // sources); memory/sandbox/account explicit false. The gate convention is
+  // `!== false`, so a legacy frame (booleans undefined) stays claude-compatible
+  // — pinned in its own tests below.
   const nativeSession = {
     id: 's1',
     provider: 'native',
     running: true,
     terminated: false,
     pluginsSupported: true,
-    hooksSupported: false,
+    hooksSupported: true,
     memorySupported: false,
     sandboxSupported: false,
     accountInfoSupported: false,
@@ -1341,17 +1342,17 @@ describe('SettingsPanel locked-feature gates (native vs claude vs legacy)', () =
 
   // ── Hooks tab ──
 
-  it('native hooks tab shows the locked notice and never fetches hook config', async () => {
+  it('native hooks tab mounts the live HooksPanel with the source-coverage note', async () => {
     const { container } = renderPanel({ session: nativeSession, tab: 'hooks' })
-    await waitFor(() => expect(notice(container)).not.toBeNull())
-    expect(notice(container)?.textContent).toContain('requires the Claude CLI')
-    // HooksPanel is not mounted: no config read, no editor chrome.
-    expect(container.textContent).not.toContain('Configured Hooks')
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
+    await waitFor(() => expect(container.textContent).toContain('Configured Hooks'))
+    expect(notice(container)).toBeNull()
+    // Source coverage (settings files / plugins / agent frontmatter) is a
+    // panel note instead of a locked surface.
+    expect(container.textContent).toContain("this session's config only")
     const hooksCalls = (api.get as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) =>
       String(url).endsWith('/hooks'),
     )
-    expect(hooksCalls).toHaveLength(0)
+    expect(hooksCalls.length).toBeGreaterThan(0)
   })
 
   it('claude hooks tab mounts the live HooksPanel, no notice', async () => {

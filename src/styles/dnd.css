@@ -8,10 +8,72 @@
  * desktop-icon motion language. All colour comes from theme tokens. */
 
 .dnd-ghost {
+  /* Identity base so the landing's translate can transition from a number
+     (`none` is interpolable too, but an explicit 0 keeps the pairing obvious). */
+  translate: 0 0;
   scale: 1.05;
   filter: drop-shadow(var(--card-shadow));
   pointer-events: none;
   z-index: 1;
+}
+
+/* The lifted copy rises out of the card it replaces. Scale-only (no
+   translate): the overlay already follows the pointer and the velocity tilt
+   rides `transform`, so the entrance must stay on the standalone `scale`
+   property. The class is added by DragGhost only while the public DnD context
+   still reports an active drag — the drop clone dnd-kit mounts to play its
+   drop animation sees `active === null` and therefore never restarts this. */
+@keyframes dnd-ghost-lift-in {
+  from {
+    opacity: 0;
+    scale: 1;
+  }
+  to {
+    opacity: 1;
+    scale: 1.05;
+  }
+}
+.dnd-ghost-lift-in:not(.dnd-ghost-panel):not(.dnd-ghost-section) {
+  animation: dnd-ghost-lift-in var(--motion-duration-base) var(--motion-ease-standard);
+}
+
+/* Drop landing — dnd-kit keeps the overlay alive for its 260ms drop glide
+   (DROP_ANIMATION in motion.ts), whose side effects add `.dnd-ghost-landing`
+   to the overlay wrapper. The lifted copy settles BACK into the list as it
+   glides: the 1.05 lift scale returns to 1, and the single-card ghost's full
+   rounding transitions to the run-position radius of the card it lands on
+   (motion.ts reads that radius off the source card and writes
+   `--dnd-landing-radius`). Without this the handoff is a hard swap — a 5%-
+   larger, all-round-corners ghost popping into a square card at the same rect.
+   The settle durations come from `--dnd-drop-duration`, which motion.ts
+   writes from DROP_DURATION_MS on the overlay node before flipping this
+   class — one owner for the glide length (the 260ms fallback mirrors the
+   constant for the impossible unset case; drag-motion.test.ts pins them
+   together). `animation: none` cancels an in-flight lift-in so the settle
+   owns the scale from the first frame.
+
+   The translate is NOT decoration: dnd-kit measures the overlay's single child
+   (this element, at scale 1.05) and aligns THAT scaled box's top-left to the
+   landing card. Shrinking it about its centre would therefore slide the visual
+   box right/down by (scale-1)/2 of the measured size and snap back when the
+   ghost is discarded. motion.ts writes the exact counter-translation over the
+   same duration, pinning the top-left to the landing card for the whole
+   settle. Scale and translate share the ease, so their sum stays constant. */
+.dnd-ghost-landing .dnd-ghost {
+  animation: none;
+  scale: 1;
+  translate: var(--dnd-landing-dx, 0px) var(--dnd-landing-dy, 0px);
+  /* The resting card carries no drop-shadow (only its inset hairline), so the
+     lift shadow must fade out WITH the settle — leaving it on would make it
+     vanish in one frame at the handoff, reading as a flash. */
+  filter: none;
+  transition: scale var(--dnd-drop-duration, 260ms) var(--motion-ease-standard),
+              translate var(--dnd-drop-duration, 260ms) var(--motion-ease-standard),
+              filter var(--dnd-drop-duration, 260ms) var(--motion-ease-standard);
+}
+.dnd-ghost-landing .dnd-ghost-session:not(.dnd-ghost-section) .session-item-shell > .session-item {
+  border-radius: var(--dnd-landing-radius, var(--radius-md));
+  transition: border-radius var(--dnd-drop-duration, 260ms) var(--motion-ease-standard);
 }
 
 /* The portaled DragOverlay wrapper (DragOverlayPortal). Above the modal
@@ -25,6 +87,45 @@
    the list the card springs back into on drop. */
 .dnd-source-dim {
   opacity: 0.35;
+}
+
+/* Main-area drop affordances — a compatible drag in flight lights the
+   collision winner with the SAME accent dashed-ring language the sidebar's
+   drop targets already speak (.session-group-header.drop-target,
+   .new-session-btn.drop-target), plus a pill naming the outcome. The pill is
+   the load-bearing half: without it, dropping a sidebar card onto a chat
+   panel had no visible contract at all — no ring, no label — and the release
+   silently swapped panel slots (the reported "dragged right, released, and
+   my card jumped" surprise). Instant on/off, no transition: drag feedback
+   must track the collision winner without lag. */
+.chat-panel.drop-target,
+.main-body.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+.dnd-drop-pill {
+  position: absolute;
+  top: var(--space-3);
+  left: 50%;
+  translate: -50% 0;
+  z-index: var(--z-panel-overlay);
+  padding: var(--space-1) var(--space-2-5);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--accent);
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--card-shadow);
+}
+/* The empty grid has no header to anchor under — centre the pill in the
+   open space instead. */
+.main-body > .dnd-drop-pill {
+  top: 50%;
+  translate: -50% -50%;
 }
 
 /* Panels use the same source-dim language, scaled up: a near-fullscreen
@@ -109,6 +210,21 @@ body.has-bg .chat-panel.chat-panel-ghost {
   .dnd-ghost {
     scale: 1;
     filter: drop-shadow(var(--toast-shadow));
+  }
+
+  /* The lift-in and the landing settle are motion, not layout — without these
+     the ghost would still pop in / shrink back under reduced motion. The
+     lift-in selector must repeat the `:not()` guards: specificity (not media
+     or order among unequal weights) decides against the animated rule. The
+     landing scale is already pinned to 1 by the base rule above, so only its
+     transitions need cancelling. */
+  .dnd-ghost-lift-in:not(.dnd-ghost-panel):not(.dnd-ghost-section),
+  .dnd-ghost-landing .dnd-ghost {
+    animation: none;
+  }
+  .dnd-ghost-landing .dnd-ghost,
+  .dnd-ghost-landing .dnd-ghost-session:not(.dnd-ghost-section) .session-item-shell > .session-item {
+    transition: none;
   }
 
   /* The media block sits later in source order and would otherwise re-enable

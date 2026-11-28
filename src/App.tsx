@@ -31,10 +31,11 @@ import {
 } from './utils/reduced-motion'
 import { DndContext, pointerWithin, rectIntersection, useDroppable, type Collision, type CollisionDetection, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent, type UniqueIdentifier } from '@dnd-kit/core'
 import { useAppDndSensors } from './dnd/sensors'
-import type { DragPayload, PanelGhostSnapshot } from './dnd/payload'
+import type { ActiveDragInfo, DragPayload, PanelGhostSnapshot } from './dnd/payload'
 import { collisionDataOf, collisionPayloadOf, dndData, dndExtraOf, dndPayloadOf } from './dnd/payload'
 import { DragGhost } from './dnd/DragGhost'
 import { DragOverlayPortal } from './dnd/DragOverlayPortal'
+import { ActiveDragContext } from './dnd/active-drag'
 import { useIsMobile } from './hooks/useIsMobile'
 import { useSwipeToClose } from './hooks/useSwipeToClose'
 import { useVisualViewportHeight } from './hooks/useVisualViewportHeight'
@@ -142,7 +143,7 @@ import { TEXT_SPACING_CSS } from '../shared/text-spacing'
 import { FONT_SIZE_SCALE } from '../shared/font-size'
 import { applyAnimationSpeedToDocument } from './utils/motion-preference-dom'
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
-import { closeGroupPanelsState } from './utils/group-panels'
+import { closeGroupPanelsState, groupsAfterSlotTakeover } from './utils/group-panels'
 import { evictFromGroups, inheritGroupId, inheritSidebarOrderId, joinGroupOfSource, placeInGroupId } from './utils/session-slot'
 import { resetCompletion, reconcileSnapshotPending, shouldClearResetPendingOnError, isDeliberateHandoffCancel } from './utils/reset-completion'
 import { buildNewLikeThisForm, buildRestartSessionBody } from './utils/new-like-this'
@@ -208,22 +209,35 @@ function withoutId(prev: Set<string>, id: string): Set<string> {
  *  <DndContext> — useDroppable called outside a DndContext is a no-op
  *  dispatch and never registers the droppable. Merges App's bodyRef (panel
  *  column resize / scroll snapshotting read the element directly). */
-function MainGridDropZone({ bodyRef, className, style, panelCount, children }: {
+function MainGridDropZone({ bodyRef, className, style, panelCount, dropHintArmed, children }: {
   bodyRef: React.MutableRefObject<HTMLDivElement | null>
   className: string
   style?: React.CSSProperties
   panelCount: number
+  /** True while a sidebar-card drag is airborne over an EMPTY grid — the
+   *  zone then lights its drop ring + outcome pill on collision win. Gated to
+   *  the empty grid: with panels open, main-body only wins collisions in the
+   *  few-px gaps between them, where a full-area ring would strobe on every
+   *  crossing (and a gap drop merely opens/focuses — the lightest outcome). */
+  dropHintArmed: boolean
   children: React.ReactNode
 }) {
-  const { setNodeRef } = useDroppable({ id: 'main-grid', data: dndData({ kind: 'main-grid' }) })
+  const { setNodeRef, isOver } = useDroppable({ id: 'main-grid', data: dndData({ kind: 'main-grid' }) })
   // Stable merged ref — an inline arrow would detach/re-register the
   // droppable on every App render (and App re-renders on every WS frame).
   const mergedRef = useCallback((el: HTMLDivElement | null) => {
     bodyRef.current = el
     setNodeRef(el)
   }, [setNodeRef, bodyRef])
+  const showHint = isOver && dropHintArmed
   return (
-    <div ref={mergedRef} className={className} data-panel-count={panelCount} style={style}>
+    <div
+      ref={mergedRef}
+      className={showHint ? `${className} drop-target` : className}
+      data-panel-count={panelCount}
+      style={style}
+    >
+      {showHint && <div className="dnd-drop-pill" aria-hidden>Release to open</div>}
       {children}
     </div>
   )
@@ -4108,74 +4122,55 @@ export function App() {
   /** Drop a sidebar card onto a specific slot in the main grid. If the
    *  slot is occupied by another session, that session is evicted (panel
    *  closes, session stays alive) and the new one takes its place.
-   *  When both sessions are already open, swaps their slots (consistent
-   *  with swapPanels) and syncs the shared group's order. */
+   *  When both sessions are already open, swaps their PANEL slots — but
+   *  never the sidebar/group ORDER: a sidebar drop is a sidebar gesture
+   *  whose panel is just an "open here" target (see the setGroups note). */
   const openAtSlot = useCallback(
     (id: string, targetId: string, lastTurnAt: number | undefined) => {
-      setOpenIds((prev) => {
-        // Already open — swap slots with the target (same semantics as
-        // swapPanels; a true swap, not a splice-move). Also sync group
-        // order below.
-        if (prev.includes(id)) {
-          const i = prev.indexOf(id)
-          const j = prev.indexOf(targetId)
-          if (i < 0 || j < 0 || i === j) return prev
-          const next = prev.slice()
-          ;[next[i], next[j]] = [next[j], next[i]]
-          return next
-        }
-        // Not open yet: replace whatever's in the target slot.
-        const j = prev.indexOf(targetId)
-        if (j < 0) return prev
-        const next = prev.slice()
+      // Eager read (not a functional updater), mirroring swapPanels: the
+      // scroll snapshot + FLIP must only run when slots actually change, and
+      // an identical panel swap must glide identically whichever gesture
+      // caused it — a card drop used to teleport panels while the header
+      // drag animated the same mutation.
+      const prevOpen = openIdsRef.current
+      const i = prevOpen.indexOf(id)
+      const j = prevOpen.indexOf(targetId)
+      let swapped = false
+      let handedOff = false
+      if (i >= 0 && j >= 0 && i !== j) {
+        // Already open — swap slots with the target (a true swap, not a
+        // splice-move).
+        const next = prevOpen.slice()
+        ;[next[i], next[j]] = [next[j], next[i]]
+        snapshotPanelScrolls()
+        setOpenIds(next)
+        swapped = true
+        handedOff = true
+      } else if (i < 0 && j >= 0) {
+        // Not open yet: replace whatever's in the target slot (the evicted
+        // session stays alive in the sidebar). The incoming panel mounts with
+        // its own entrance animation — nothing moves position, so no FLIP.
+        const next = prevOpen.slice()
         next[j] = id
-        return next
-      })
-      // Sync group state to match the panel-slot change above. A group is a
-      // synced workspace (openIds === group.sessionIds when active), so a
-      // slot swap must update membership too — otherwise the replaced
-      // member lingers in the group (alive in the sidebar) while the new
-      // occupant sits in the group's panel slot from outside the group.
-      setGroups((prev) => {
-        // Same-group swap: both sessions are members of the same group →
-        // swap their positions in the group to mirror the panel swap.
-        const sameGroupId = prev.find(
-          (g) => g.sessionIds.includes(id) && g.sessionIds.includes(targetId),
-        )?.id
-        if (sameGroupId) {
-          return prev.map((g) => {
-            if (g.id !== sameGroupId) return g
-            const i = g.sessionIds.indexOf(id)
-            const j = g.sessionIds.indexOf(targetId)
-            if (i < 0 || j < 0) return g
-            const ids = g.sessionIds.slice()
-            ;[ids[i], ids[j]] = [ids[j], ids[i]]
-            return { ...g, sessionIds: ids }
-          })
-        }
-        // Replace membership: targetId is in a group but id is not (id is
-        // the newly-resumed/dragged session taking targetId's panel slot).
-        // Swap group membership — targetId leaves the group, id joins at
-        // the same position. Guarded on `id` not already being in any group
-        // so a cross-group panel drag-swap doesn't yank membership around.
-        const idInAnyGroup = prev.some((g) => g.sessionIds.includes(id))
-        const targetGroupId = prev.find((g) => g.sessionIds.includes(targetId))?.id
-        if (targetGroupId && !idInAnyGroup) {
-          return prev.map((g) => {
-            if (g.id !== targetGroupId) return g
-            const idx = g.sessionIds.indexOf(targetId)
-            if (idx < 0) return g
-            const ids = g.sessionIds.slice()
-            ids[idx] = id
-            return { ...g, sessionIds: ids }
-          })
-        }
-        return prev
-      })
+        setOpenIds(next)
+        handedOff = true
+      }
+      // Group membership sync for the slot takeover — pure transition in
+      // utils/group-panels.ts (unit-tested, including the same-group no-op
+      // this bug rode in on): an ungrouped taker joins the target's group at
+      // its position; a same-group or cross-group taker changes NOTHING —
+      // group.sessionIds is the sidebar's render order and only sidebar
+      // gestures may rewrite it. Gated on an ACTUAL handoff: when neither
+      // branch ran (e.g. the target's panel closed while a /resume was in
+      // flight), no slot changed hands and membership must not move either.
+      if (handedOff) {
+        setGroups((prev) => groupsAfterSlotTakeover({ groups: prev, id, targetId }))
+      }
       setFocusedId(id)
       setLastSeenTurn((prev) => ({ ...prev, [id]: lastTurnAt ?? Date.now() }))
+      if (swapped) animatePanels(id, targetId)
     },
-    [setLastSeenTurn, setGroups],
+    [setLastSeenTurn, setGroups, snapshotPanelScrolls, animatePanels],
   )
 
   const handleAcceptSidebarDrop = useCallback(async (sidebarId: string, targetSlotId: string) => {
@@ -4220,6 +4215,18 @@ export function App() {
   //   main-grid     — drop a sidebar card on the empty grid to open it
   const dndSensors = useAppDndSensors()
   const [dndActive, setDndActive] = useState<DragPayload | null>(null)
+  /** Broadcast for the drop-affordance leaves (ActiveDragContext): the
+   *  payload plus whether the dragged session already owns a panel — the
+   *  fact that decides the panel pill's wording (swap vs replace). Memoized
+   *  so the context identity flips only at drag boundaries / panel-set
+   *  changes, never on the collision hot path. */
+  const activeDragInfo = useMemo<ActiveDragInfo | null>(
+    () =>
+      dndActive
+        ? { payload: dndActive, isOpen: 'id' in dndActive && openIds.includes(dndActive.id) }
+        : null,
+    [dndActive, openIds],
+  )
   /** Which surface the active drag started on (payload `origin` extra). The
    *  strip lifts compact tab/chip ghosts, a sidebar SECTION drag lifts a real
    *  header+cards preview, and the sidebar's cards keep their card ghosts.
@@ -4669,9 +4676,10 @@ export function App() {
   // through to resumeSession, which adopts them server-side before swapping.
   //
   // "Replaces the current one" is literal: the picked session takes the old
-  // session's panel slot AND group membership (openAtSlot syncs both), and
-  // the old session is deleted — silently, by design (picking in the resume
-  // dialog is the confirmation; unlike the sidebar/panel deletes there's no
+  // session's panel slot AND — when the picked session is ungrouped — its
+  // group membership (openAtSlot's groupsAfterSlotTakeover), and the old
+  // session is deleted — silently, by design (picking in the resume dialog is
+  // the confirmation; unlike the sidebar/panel deletes there's no
   // ConfirmDialog on this path) — so it doesn't linger in the sidebar.
   // Without the delete, the replaced session would just drop to the sidebar
   // (still alive, still in the way), which is "removed" not "replaced".
@@ -5158,6 +5166,11 @@ export function App() {
       onDragEnd={handleDndEnd}
       onDragCancel={handleDndCancel}
     >
+    {/* Broadcast of the in-flight drag payload for the drop-affordance leaves
+        (ChatPanel's ring + hint pill). Flips exactly twice per drag, so the
+        heavy consumers re-render at the boundaries only — never on the
+        collision hot path (see dnd/active-drag.ts). */}
+    <ActiveDragContext.Provider value={activeDragInfo}>
     <div
       className={[
         'app',
@@ -5497,6 +5510,7 @@ export function App() {
           bodyRef={bodyRef}
           className="main-body"
           panelCount={openSessions.length || 1}
+          dropHintArmed={dndActive?.kind === 'sidebar-card' && openSessions.length === 0}
           style={{ gridTemplateColumns: gridTemplate }}
         >
           {openSessions.length === 0 && (
@@ -5818,6 +5832,9 @@ export function App() {
           <UploadsManagerDialog
             open={uploadsDialogOpen}
             onClose={() => setUploadsDialogOpen(false)}
+            /* Same panel the header's resource-preview eye (beside this
+               dialog's opener) manages: the row eye opens upload tabs there. */
+            resourceSessionId={focusedId ?? openIds[0] ?? null}
           />
         </Suspense>
       )}
@@ -5871,6 +5888,7 @@ export function App() {
       )}
     </div>
     <DragOverlayPortal>{renderDndGhost()}</DragOverlayPortal>
+    </ActiveDragContext.Provider>
     </DndContext>
     </ImageViewerProvider>
     </ErrorBoundary>

@@ -240,6 +240,40 @@ export interface SubagentResource {
   toolUseId: string
 }
 
+export interface UploadResource {
+  /** Registry upload id — the durable content reference (bytes are immutable). */
+  id: string
+  /** Upload file name (a basename). Carries the chip title and the preview-kind
+   *  detection; encoded as ONE segment even if it contains a `/`. */
+  name: string
+  /** Byte count recorded at upload time. Carried in the query so a tab restored
+   *  from persistence still pre-gates the PDF reader before fetching bytes. */
+  size: number
+}
+
+/** Upload addresses key on the upload id; the file name rides as a second
+ *  segment (titles fall out of the default last-segment rule) and the size as
+ *  a canonical query. Same id + name + size is the same resource: the registry
+ *  entry is immutable, so identity can include every field the body needs. */
+export function uploadResource(input: UploadResource): string {
+  return buildResourceAddress('upload', [input.id, input.name], { size: String(input.size) })
+}
+
+export function parseUploadResource(address: string): UploadResource | null {
+  const parsed = parseResourceAddress(address)
+  if (!parsed || parsed.protocol !== 'upload') return null
+  const [id, ...rest] = parsed.segments
+  const name = rest.join('/')
+  if (!id || !name) return null
+  // `Number('')` is 0 — an EMPTY size query must not silently become a legal
+  // zero-byte upload; the PDF over-cap pre-gate depends on a real number.
+  const rawSize = parsed.query.size
+  if (rawSize === undefined || rawSize === '') return null
+  const size = Number(rawSize)
+  if (!Number.isSafeInteger(size) || size < 0) return null
+  return { id, name, size }
+}
+
 export function taskResource(sessionId: string, taskId: string): string {
   return buildResourceAddress('task', [sessionId, taskId])
 }
@@ -357,6 +391,10 @@ export function resourceDescription(address: string): string {
     case 'subagent': {
       const toolUseId = parsed.segments[1]
       return toolUseId ? `agent ${toolUseId}` : address
+    }
+    case 'upload': {
+      const upload = parseUploadResource(address)
+      return upload ? `${upload.name} — upload ${upload.id.slice(0, 8)}` : address
     }
     default:
       return parsed.segments.filter(Boolean).join('/') || address

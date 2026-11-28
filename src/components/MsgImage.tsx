@@ -1,7 +1,9 @@
 import type { ImgHTMLAttributes } from 'react'
 import { useImageViewerTrigger, type ViewerImage } from '../hooks/image-viewer-context'
 
-type ImgAttrs = Pick<ImgHTMLAttributes<HTMLImageElement>, 'title' | 'loading' | 'decoding'>
+/** `onError` is part of the contract for byte-lazy hosts (the upload resource
+ *  body shows its own failure hint when a direct-URL image 404s). */
+type ImgAttrs = Pick<ImgHTMLAttributes<HTMLImageElement>, 'title' | 'loading' | 'decoding' | 'onError'>
 
 /**
  * The shared message-image renderer — every in-transcript image (markdown

@@ -21,7 +21,8 @@ import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { useSessionActiveWorktree } from '../session-store/selectors'
 import { useDraggable, useDroppable } from '@dnd-kit/core'
-import { dndData, pointerOnlyListeners } from '../dnd/payload'
+import { dndData, panelDropHint, pointerOnlyListeners } from '../dnd/payload'
+import { useActiveDrag } from '../dnd/active-drag'
 import { useGitStatus } from '../hooks/useGitStatus'
 import { useSessionSynchronizer } from '../session-sync/useSessionSynchronizer'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
@@ -397,6 +398,15 @@ export const ChatPanel = memo(function ChatPanel({
     id: `panel-drop-${session.id}`,
     data: dndData({ kind: 'main-panel', id: session.id }),
   })
+  // Drop affordance: when this panel is the collision winner for a compatible
+  // in-flight drag, ring + name the outcome exactly (swap vs replace). The active
+  // payload comes from App's ActiveDragContext (flips twice per drag), never
+  // from useDndContext (identity churns on every collision update — this is
+  // the heaviest component in the tree). panelDropHint is the pure contract:
+  // incompatible drags and self-targets keep the panel unlit, so the
+  // affordance never promises an outcome handleDndEnd won't produce.
+  const activeDrag = useActiveDrag()
+  const dropHint = panelDrop.isOver ? panelDropHint(activeDrag, session.id) : null
   // Stable combined node ref for the section (draggable + droppable). The
   // draggable NODE is the whole panel: dnd-kit aligns the drag ghost and
   // measures the drop animation's target from this node's rect, and the
@@ -954,6 +964,7 @@ export const ChatPanel = memo(function ChatPanel({
         // into a quiet hole for the drag (same .dnd-source-dim language the
         // sidebar cards use), so the screen doesn't read as two panels.
         panelDrag.isDragging ? 'dnd-source-dim' : '',
+        dropHint ? 'drop-target' : '',
         `mode-${permMode}`,
       )}
       onAnimationEnd={(e) => {
@@ -967,6 +978,13 @@ export const ChatPanel = memo(function ChatPanel({
         void e
       }}
     >
+      {/* Drop-outcome pill — decorative (dnd-kit's live region owns the
+          drag announcements); positioned by .dnd-drop-pill in dnd.css. */}
+      {dropHint && (
+        <div className="dnd-drop-pill" aria-hidden>
+          {dropHint === 'swap' ? 'Release to swap panels' : 'Release to replace this panel'}
+        </div>
+      )}
       <div
         ref={panelDrag.setActivatorNodeRef}
         className="chat-panel-header"

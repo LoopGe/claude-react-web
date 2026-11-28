@@ -142,6 +142,20 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A file-path title clips itself (base/dir ellipsis + the copy button's own
+   clip), so the outer clip is unnecessary here — and harmful: the copy
+   button's negative-margin wash bleed reaches exactly the title's edges,
+   where this clip would cut it and the button's :focus-visible ring. */
+.tool-card-title:has(.tool-card-filepath) {
+  overflow: visible;
+  /* Floor at the eye button's width: the eye never shrinks, so a title
+     narrower than it would let the eye escape this now-unclipped box into
+     the actions zone. The floor makes the header wrap one line earlier
+     instead, where the title owns a whole line. Derived: eye 13px icon +
+     2×--space-1 padding = 21px, + the title's --space-1-5 gap = 27px; 32px
+     keeps 5px of slack — re-derive if the eye's geometry changes. */
+  min-width: 32px;
+}
 .tool-card-title-code {
   font-family: var(--mono);
   font-size: var(--fs-sm);
@@ -157,10 +171,26 @@
   flex-wrap: nowrap;
   margin-left: auto;
 }
-@container (max-width: 239px) {
+/* Dense cards collapse the action chrome to icons. Three-panel splits put
+   cards at ~350-480px, exactly where the title starts truncating file names;
+   the status icon + colour still carry the state without the label, and the
+   reclaimed ~30-60px goes to the title. (Supersedes the old 240px tier, which
+   only fired below any realistic pressure point. The subagent surface
+   collapses the same background label at 590px in chat.css — tune both
+   together.) */
+@container (max-width: 479px) {
   .tool-card-actions .tool-card-bg-btn > span,
   .tool-card-actions .tool-status-label {
     display: none;
+  }
+  /* The icon-only pill adopts the shipped compact geometry
+     (.tool-status-compact) instead of keeping full-text padding around a
+     13px icon — one dense-row treatment, not two. */
+  .tool-card-actions .tool-status {
+    padding: var(--space-0-5);
+    width: var(--size-18px);
+    height: var(--size-18px);
+    justify-content: center;
   }
 }
 .tool-card-body {
@@ -300,6 +330,12 @@
   color: inherit;
   cursor: pointer;
   border-radius: var(--radius-xs);
+  /* Clipping container for the row: the open-in-preview button is laid out
+     right after this box, so any child painting outside it (see the base
+     span's shrink rules below) would land on top of that button. `clip`,
+     not `hidden`: no scroll container (no keyboard-scrollable hidden text,
+     no persisted scroll offset) for the same visual clip. */
+  overflow: clip;
 }
 .tool-card-filepath:hover {
   background: var(--btn-hover-bg);
@@ -360,6 +396,15 @@
   font-weight: 600;
   color: var(--fg);
   white-space: nowrap;
+  /* Shrinkable with an ellipsis: without `min-width: 0` the nowrap text's
+     automatic minimum size keeps this span at full text width inside a
+     shrunk copy button, and the overflow paints across the sibling
+     open-in-preview button. Truncates only after the dir suffix is gone
+     (see its flex-shrink). `clip` like the button: same visual clip, no
+     scroll container. */
+  min-width: 0;
+  overflow: clip;
+  text-overflow: ellipsis;
 }
 .tool-card-filepath-badge {
   font-size: var(--fs-2xs);
@@ -381,6 +426,15 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  /* Weighted flex shrink: the suffix truncates away before the file name
+     starts ellipsizing — the name identifies the card, the suffix is only
+     context. Its content is middle-ellipsized in JS so the leaf folder
+     survives THAT cut (see FilePathTitle); once this CSS shrink engages,
+     the right-ellipsis eats the leaf first, and at width 0 the suffix is
+     gone by design. (The button's 8px gap on each side of the zero-width
+     suffix stays reserved — flex gaps don't collapse, and margins on the
+     suffix wouldn't vanish either; accepted dead space.) */
+  flex-shrink: 999;
 }
 
 /* Tool status pill — tiny icon + (optional) text inline at the right

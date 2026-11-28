@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { closeGroupPanelsState } from './group-panels'
+import { closeGroupPanelsState, groupsAfterSlotTakeover } from './group-panels'
+import type { SessionGroup } from '../types'
 
 describe('closeGroupPanelsState', () => {
   it('removes every group member from the open set', () => {
@@ -76,5 +77,40 @@ describe('closeGroupPanelsState', () => {
     })
     expect(res.openIds).toEqual(['a', 'b'])
     expect(res.focusedId).toBe('a')
+  })
+})
+
+describe('groupsAfterSlotTakeover', () => {
+  const g = (id: string, sessionIds: string[]): SessionGroup => ({ id, name: id, sessionIds })
+
+  it('leaves a same-group takeover untouched — the sidebar must not reorder (the jump-to-first bug)', () => {
+    const groups = [g('g1', ['a', 'b', 'c'])]
+    // Dropping the middle card onto the first member's panel used to swap
+    // their sessionIds positions, teleporting the card to the top.
+    expect(groupsAfterSlotTakeover({ groups, id: 'b', targetId: 'a' })).toBe(groups)
+  })
+
+  it('leaves a cross-group takeover untouched (no membership yanking)', () => {
+    const groups = [g('g1', ['a']), g('g2', ['b'])]
+    expect(groupsAfterSlotTakeover({ groups, id: 'a', targetId: 'b' })).toBe(groups)
+  })
+
+  it('joins an ungrouped taker into the target group at its position', () => {
+    const groups = [g('g1', ['a', 'b']), g('g2', ['c'])]
+    const next = groupsAfterSlotTakeover({ groups, id: 'x', targetId: 'b' })
+    expect(next.find((x) => x.id === 'g1')?.sessionIds).toEqual(['a', 'x'])
+    expect(next.find((x) => x.id === 'g2')).toBe(groups[1])
+  })
+
+  it('is a no-op when the target is ungrouped or ids match', () => {
+    const groups = [g('g1', ['a'])]
+    expect(groupsAfterSlotTakeover({ groups, id: 'x', targetId: 'y' })).toBe(groups)
+    expect(groupsAfterSlotTakeover({ groups, id: 'a', targetId: 'a' })).toBe(groups)
+  })
+
+  it('does not mutate the input groups', () => {
+    const groups = [g('g1', ['a', 'b'])]
+    groupsAfterSlotTakeover({ groups, id: 'x', targetId: 'b' })
+    expect(groups[0].sessionIds).toEqual(['a', 'b'])
   })
 })

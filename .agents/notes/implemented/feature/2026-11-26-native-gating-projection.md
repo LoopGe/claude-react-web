@@ -56,11 +56,13 @@ renders the fixed text "This feature requires the Claude CLI." — TEXT only;
 the install button awaits the packaging block, and there is deliberately no
 placeholder button. Its color tokens are defined in both themes.
 
-- **Plugins and hooks tabs** are selectable but locked: the locked tab body
-  renders the notice instead of the live content — no fetches, no dead
-  controls. The `SESSION_TAB_GROUPS_NO_PLUGINS` hiding and the plugins
-  deep-link redirect are gone; the plugins auto-reload stays gated, so no
-  501-bound POST fires.
+- **Plugins tab** is selectable but locked: the locked tab body renders the
+  notice instead of the live content — no fetches, no dead controls. The
+  `SESSION_TAB_GROUPS_NO_PLUGINS` hiding and the plugins deep-link redirect
+  are gone; the plugins auto-reload stays gated, so no 501-bound POST fires.
+  (The hooks tab was locked the same way at the time; the engine landing later
+  that day unlocked it — see
+  [native prompt environment and hooks unlock](2026-11-28-native-prompt-environment-and-hooks-unlock.md).)
 - **Memory and sandbox sections** (General tab) stay rendered with their
   controls disabled and the notice; each folds its own boolean into its own
   disabled flag (the two are independent). The "resume the session" hint is

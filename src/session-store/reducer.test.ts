@@ -5650,7 +5650,7 @@ describe('in-place draft lifecycle (draft / supersede / interrupt-freeze)', () =
     state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
     state = reduceSessionState(state, { type: 'MESSAGE', message: resultMsg('r1') })
     expect(state.mirror.draft).toBeNull()
-    expect(state.mirror.frozenDrafts).toEqual([{ kind: 'text', key: 'draft:1', text: 'half' }])
+    expect(state.mirror.frozenDrafts).toEqual([{ kind: 'text', key: 'draft:1', text: 'half', anchorUuid: 'r1' }])
   })
 
   it('result after a supersede freezes nothing', () => {
@@ -5677,7 +5677,7 @@ describe('in-place draft lifecycle (draft / supersede / interrupt-freeze)', () =
     state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
     state = replay(state, [resultMsg('r-replay')])
     expect(state.mirror.draft).toBeNull()
-    expect(state.mirror.frozenDrafts).toEqual([{ kind: 'text', key: 'draft:1', text: 'half' }])
+    expect(state.mirror.frozenDrafts).toEqual([{ kind: 'text', key: 'draft:1', text: 'half', anchorUuid: 'r-replay' }])
   })
 })
 

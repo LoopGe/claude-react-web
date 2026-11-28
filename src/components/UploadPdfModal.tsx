@@ -1,32 +1,25 @@
 // Ref-keyed uploaded-PDF preview.
 //
-// Builder call (Task 6): a DEDICATED modal, not a `crw-resource://upload/<id>`
-// provider. The ResourceModal system is a per-session host — mounted inside
-// each Chat panel, tabs keyed by sessionId, invalidation driven by
-// git-snapshot — while uploaded bytes are durable, immutable and session-less
-// (common uploads carry no sessionId, and the Uploads Manager is an app-level
-// dialog with no ResourceModal host). The chips carry only a
-// FileAttachmentRef, so there is no session identity to open a resource tab
-// with. This host fetches raw bytes by upload id from
-// GET /api/uploads/:id/content (verified server-side, no live session needed)
-// and renders the same LazyPdfBody the cwd preview uses — refusing over-cap
-// sizes before the fetch, the same posture as the cwd read path.
+// The chips (sent message / composer draft) keep this DEDICATED modal: they
+// carry only a FileAttachmentRef, and the ResourceModal is a per-session host —
+// a chip's panel may be any session, and a draft has none at all. The Uploads
+// Manager's row eye is the exception that got a resource strip entry
+// (`crw-resource://upload/<id>` provider → ResourceUploadBody), decided later;
+// both paths share UploadPdfViewer for the bytes.
+//
+// The viewer fetches raw bytes by upload id from GET /api/uploads/:id/content
+// (verified server-side, no live session needed) and renders the same
+// LazyPdfBody the cwd preview uses — refusing over-cap sizes before the fetch,
+// the same posture as the cwd read path.
 
 import { useEffect, useState } from 'react'
 import { Overlay } from './Overlay'
 import LazyPdfBody from './file-preview/LazyPdfBody'
+import { uploadViewStateKeyOf } from './file-preview/pdf-view-state'
 import { formatBytes } from '../utils/format'
 import type { FileAttachmentRef } from '../../shared/attachments'
 import { PDF_PREVIEW_MAX_BYTES } from '../../shared/read-file'
 import { IconDownload, IconFileText, IconLoader, IconX } from './icons/ToolIcons'
-
-/** View-state retention key for one upload: the upload id is the durable
- *  identity (no session involved). Like the resource modal's tabs, state
- *  survives close/reopen within the page session; the in-memory store resets
- *  on reload. */
-function viewStateKeyOf(id: string): string {
-  return `upload:${id}`
-}
 
 /** Raw bytes of one recorded upload, fetched by id. The content route
  *  verifies the bytes against the registry digest before serving, so a
@@ -59,8 +52,9 @@ function useUploadPdfBytes(id: string | null): { bytes: Uint8Array | null; error
 }
 
 /** The ref-keyed byte-source host: bytes-by-id → LazyPdfBody, with the
- *  fetch's loading/error states. Shared by the chip modal below and
- *  UploadPreview's PDF branch so both surfaces fetch identically.
+ *  fetch's loading/error states. Shared by the chip modal below and the
+ *  resource strip's upload body (ResourceUploadBody) so both surfaces fetch
+ *  identically.
  *
  *  `size` (the ref's recorded byte count) gates the fetch: uploads are
  *  capped at 500 MB server-side, and buffering + parsing an oversized PDF
@@ -89,17 +83,18 @@ export function UploadPdfViewer({ id, name, size }: { id: string; name: string; 
         </div>
       )}
       {bytes !== null && (
-        <LazyPdfBody bytes={bytes} title={name} viewStateKey={viewStateKeyOf(id)} />
+        <LazyPdfBody bytes={bytes} title={name} viewStateKey={uploadViewStateKeyOf(id)} />
       )}
     </div>
   )
 }
 
 /** In-app PDF preview opened by a sent-message / composer-draft PDF chip.
- *  Same chrome family as UploadPreview (header + download + close); the body
- *  is the shared ref-keyed viewer. Portalled fixed backdrop (Overlay 'modal'
- *  default) so a chip inside a panel opens it above every panel-scoped
- *  surface. */
+ *  A header + download + close card; the body is the shared ref-keyed viewer.
+ *  Portalled fixed backdrop (Overlay 'modal' default) so a chip inside a panel
+ *  opens it above every panel-scoped surface. (The Uploads Manager's row eye
+ *  no longer opens a modal like this — it routes to the resource strip's
+ *  `upload` tab, which reuses this file's UploadPdfViewer for the body.) */
 export function UploadPdfModal({
   file,
   onClose,
@@ -119,7 +114,7 @@ export function UploadPdfModal({
       <div className="modal-header">
         <h3>
           <IconFileText size={16} aria-hidden />{' '}
-          <span className="uploads-preview-title">{file.name}</span>
+          <span className="upload-pdf-modal-title">{file.name}</span>
         </h3>
         <span className="uploads-stats">{formatBytes(file.size)}</span>
         <a
