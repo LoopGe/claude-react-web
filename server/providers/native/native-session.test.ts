@@ -480,6 +480,7 @@ type CapturedRequest = {
 
 type NativeContextUsage = {
   totalTokens: number
+  measuredTotalTokens?: number
   maxTokens: number
   model: string
   autoCompactThreshold: number
@@ -989,14 +990,99 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'comp-fresh', cwd: dir })
     try {
       const usage = (await session.getContextUsage?.()) as NativeContextUsage
-      expect(usage.totalTokens).toBe(0)
       expect(usage.categories!.find((c) => c.name === 'System prompt')!.tokens).toBeGreaterThan(0)
+      // No usage sample yet: the total is the price of the request the next
+      // turn WOULD send — the fixed sections plus the raw history — never the
+      // 0 that used to contradict the rows under it.
+      const used = usage.categories!.filter((c) => c.kind === 'used')
+      expect(usage.totalTokens).toBeGreaterThan(0)
+      expect(used.reduce((s, c) => s + c.tokens, 0)).toBe(usage.totalTokens)
       // Spawn seeds an environment <system-reminder> user message into
       // history; with no usage sample the Messages row prices it directly.
       const core = nativeCoreOf(session as never) as unknown as { history: Array<{ role: string; content: ContentBlock[] }> }
       const expectedMessages = core.history.reduce((s, m) => s + estimateMessage(m), 0)
       expect(usage.categories!.find((c) => c.name === 'Messages')!.tokens).toBe(expectedMessages)
       expect(usage.categories!.every((c) => c.tokens >= 0)).toBe(true)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('prices the pre-turn total on the summary probe the Context bar seeds from', async () => {
+    // The manager's spawn/subscribe seed probe passes { detail: 'summary' } —
+    // the reading that paints a fresh session's bar. Before this, that probe
+    // answered an exact 0 (lastUsage is turn-end accounting) while its own
+    // breakdown rows priced ~40k of fixed sections, so the bar showed 0% under
+    // a table that said the window was already partly spent.
+    const dir = await tempDir('native-composition-seed-')
+    const provider = providerWithStreamer([], dir)
+    const session = provider.createSession({ id: 'comp-seed', cwd: dir })
+    try {
+      const full = (await session.getContextUsage?.()) as NativeContextUsage
+      const summary = (await session.getContextUsage?.({ detail: 'summary' })) as NativeContextUsage
+      // Same total on both shapes: the seed probe cannot paint a different
+      // number than the panel it sits under.
+      expect(summary.totalTokens).toBe(full.totalTokens)
+      expect(summary.totalTokens).toBeGreaterThan(0)
+      expect(summary.categories).toBeUndefined() // summary stays breakdown-free
+      // And it is exactly what the rows say — fixed sections + raw history.
+      expect(full.categories!.filter((c) => c.kind === 'used').reduce((s, c) => s + c.tokens, 0))
+        .toBe(summary.totalTokens)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('clamps a pre-turn price that cannot fit its window, so the seed still paints', async () => {
+    // The snapshot builder refuses an over-window total (a reading larger than
+    // its own maxTokens is unparseable, not a fill level). A model window
+    // smaller than the sections the next request owes would therefore be
+    // refused and the bar would go back to empty for the whole first turn —
+    // the failure the seed exists to prevent. The total lands AT the window.
+    const dir = await tempDir('native-composition-tiny-')
+    // 4k window under this fixture's fixed price (~8k) so the clamp binds.
+    // Asserting `totalTokens === maxTokens` is also the drift guard: if the
+    // fixture ever prices below the window, that equality fails and the pin
+    // stops being vacuous by accident.
+    const { modelContext } = resolverOf(async () => ({ contextWindow: 4_000, source: 'endpoint' }))
+    const provider = new NativeProvider({ stateDir: dir, modelContext, ports: makeNativePorts({ stateDir: dir }) })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of pricedTurn('ok', 20_000)) yield ev
+    }
+    const session = provider.createSession({ id: 'comp-tiny', cwd: dir })
+    try {
+      const usage = (await session.getContextUsage?.({ detail: 'summary' })) as NativeContextUsage
+      expect(usage.totalTokens).toBe(4_000)
+      expect(usage.totalTokens).toBe(usage.maxTokens) // clamped AT the window, never above
+      expect(usage.measuredTotalTokens).toBe(0) // no authoritative sample yet
+      // The reading the seed probe consumes survives its own over-window guard.
+      const full = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(full.totalTokens).toBe(4_000)
+      expect(full.categories!.every((c) => c.tokens >= 0)).toBe(true)
+      expect(full.categories!.find((c) => c.name === 'Free space')!.tokens).toBe(0)
+      expect(full.categories!.find((c) => c.name === 'Messages')!.tokens).toBe(0)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('never lets the pre-turn estimate displace an authoritative sample', async () => {
+    // The estimate is confined to the no-sample case: once a round reports
+    // real usage, totalTokens is that measurement, even when it is SMALLER
+    // than the estimate (a 20-token turn under a ~40k fixed price).
+    const dir = await tempDir('native-composition-authority-')
+    const provider = providerWithStreamer([pricedTurn('ok', 20)], dir)
+    const session = provider.createSession({ id: 'comp-authority', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      const preTurn = (await session.getContextUsage?.({ detail: 'summary' })) as NativeContextUsage
+      expect(preTurn.totalTokens).toBeGreaterThan(0)
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const postTurn = (await session.getContextUsage?.({ detail: 'summary' })) as NativeContextUsage
+      expect(postTurn.totalTokens).toBe(20)
+      expect(postTurn.totalTokens).toBeLessThan(preTurn.totalTokens)
     } finally {
       await session.destroy()
     }
@@ -6050,9 +6136,13 @@ describe('NativeSession', () => {
       createUserMessage({ content: [{ type: 'text', text: 'SUMMARY' }], source: { kind: 'user' } }),
     ]))
     expect(JSON.stringify(history)).not.toContain('OLD-PROMPT')
-    // The context bar resets; the per-model billing totals do not.
+    // The authoritative sample is gone, so the bar drops back to pricing the
+    // compacted history (context + summary) rather than showing 0; the
+    // per-model billing totals do not reset. Must be far under the
+    // pre-compact 100K-class reading, not merely non-zero.
     const usage = (await session.getContextUsage?.()) as { totalTokens: number }
-    expect(usage.totalTokens).toBe(0)
+    expect(usage.totalTokens).toBeGreaterThan(0)
+    expect(usage.totalTokens).toBeLessThan(20_000)
 
     // A subsequent turn runs from the compacted history; the log stays
     // append-only (old events plus the compact boundary plus the new turn).
@@ -6239,9 +6329,12 @@ describe('NativeSession', () => {
 
     const resumed = provider.createSession({ id: 'compact-resume', cwd: dir, resume: 'compact-resume' })
     // The compact floor drops the pre-compact prompt tokens from the LAST
-    // reading (the live path reset them in compactInPlace)...
+    // reading (the live path reset them in compactInPlace), so the resumed
+    // probe is back in no-sample territory and prices the post-compact
+    // history instead of reporting 0...
     const usage = (await resumed.getContextUsage?.()) as { totalTokens: number }
-    expect(usage.totalTokens).toBe(0)
+    expect(usage.totalTokens).toBeGreaterThan(0)
+    expect(usage.totalTokens).toBeLessThan(20_000)
     // ...while the billing totals still sum the pre-compact assistant round.
     expect(await resumed.getUsage?.()).toEqual({
       session: {

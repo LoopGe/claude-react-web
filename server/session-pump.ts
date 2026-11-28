@@ -2141,6 +2141,14 @@ async function cleanupPump(session: Session, deps: PumpDeps, pumpHandle: Provide
  *  rawMaxTokens is included because ContextBar prefers it over maxTokens. */
 export interface LiteContextUsage {
   totalTokens: number
+  /** The provider's MEASURED prompt tokens, present only when `totalTokens`
+   *  may be priced rather than measured (native's pre-first-turn and
+   *  post-compact answers). The auto-compact gate reads this lens, never the
+   *  priced total: fixed sections (system prompt, tool schemas, memory) are
+   *  exactly what compaction cannot remove, so gating on a price lets an
+   *  over-pinned session re-trigger forever. Absent = `totalTokens` is the
+   *  measurement. */
+  measuredTotalTokens?: number
   maxTokens: number
   rawMaxTokens: number
   percentage: number
@@ -2599,7 +2607,9 @@ export function applyContextUsage(session: Session, usage: LiteContextUsage): vo
  *  zero-turn SEED path only) accepts an EXACT zero total, because the cache
  *  is empty by definition there — nothing to clobber — and the painted window
  *  is what lets the mid-turn assistant derivation run before the first turn
- *  ends (native's getContextUsage total is turn-end accounting, 0 pre-turn).
+ *  ends. Native now prices its own pre-turn total (it answers 0 only when it
+ *  genuinely has nothing to measure), so what this mainly serves is a
+ *  zero-answer claude backend.
  *  @internal — exported for the SessionManager's reconcile probe and unit
  *              tests. */
 export function liteContextUsageFromSdkUsage(
@@ -2616,6 +2626,7 @@ export function liteContextUsageFromSdkUsage(
   if (!raw || typeof raw !== 'object') return null
   const r = raw as {
     totalTokens?: unknown
+    measuredTotalTokens?: unknown
     maxTokens?: unknown
     // rawMaxTokens is deliberately NOT read: the builder always emits
     // rawMaxTokens === maxTokens (see the doc) — the resolved-vs-advertised
@@ -2674,6 +2685,12 @@ export function liteContextUsageFromSdkUsage(
     percentage: (totalTokens / maxTokens) * 100,
     model,
     source: 'probe',
+  }
+  // Carried only when the provider had to price the total: an absent field
+  // means totalTokens IS the measurement, so the gate can use one expression.
+  const measured = r.measuredTotalTokens
+  if (typeof measured === 'number' && Number.isFinite(measured) && measured >= 0 && measured !== totalTokens) {
+    out.measuredTotalTokens = Math.round(measured)
   }
   if (typeof r.autoCompactThreshold === 'number' && Number.isFinite(r.autoCompactThreshold) && r.autoCompactThreshold >= 0) {
     out.autoCompactThreshold = Math.round(r.autoCompactThreshold)

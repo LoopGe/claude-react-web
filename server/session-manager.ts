@@ -983,6 +983,9 @@ interface AutoCompactPressure {
   maxTokens: number
   model: string
   autoCompactThreshold?: number
+  /** The provider's MEASURED prompt tokens when its total may be priced.
+   *  Providers that always report a measured total leave it undefined. */
+  measuredTotalTokens?: number
 }
 
 /** Narrow only the raw control response used for compaction. Unlike the UI
@@ -992,6 +995,7 @@ function autoCompactPressureFromRaw(raw: unknown): AutoCompactPressure | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as {
     totalTokens?: unknown
+    measuredTotalTokens?: unknown
     maxTokens?: unknown
     model?: unknown
     autoCompactThreshold?: unknown
@@ -1003,11 +1007,18 @@ function autoCompactPressureFromRaw(raw: unknown): AutoCompactPressure | null {
     r.autoCompactThreshold !== undefined &&
     (typeof r.autoCompactThreshold !== 'number' || !Number.isFinite(r.autoCompactThreshold) || r.autoCompactThreshold < 0)
   ) return null
+  // Optional, validated like the threshold: a malformed value must not poison
+  // the gate, and dropping it falls back to totalTokens.
+  const measuredValid =
+    typeof r.measuredTotalTokens === 'number'
+    && Number.isFinite(r.measuredTotalTokens)
+    && r.measuredTotalTokens >= 0
   return {
     totalTokens: r.totalTokens,
     maxTokens: r.maxTokens,
     model: r.model,
     ...(r.autoCompactThreshold !== undefined ? { autoCompactThreshold: r.autoCompactThreshold } : {}),
+    ...(measuredValid ? { measuredTotalTokens: r.measuredTotalTokens as number } : {}),
   }
 }
 
@@ -6237,8 +6248,15 @@ export class SessionManager {
     if (!usage) return
     const threshold = usage.autoCompactThreshold
       ?? Math.floor(usage.maxTokens * defaultConfig.nativeAutoCompactRatio)
-    if (threshold <= 0 || usage.totalTokens < threshold) return
-    await this.runInPlaceCompact(s, compactInPlace, usage.totalTokens, 'auto', threshold)
+    // Gate on the MEASURED prompt tokens, never the priced total: the fixed
+    // sections an estimate must include (system prompt, tool schemas, memory)
+    // are exactly what compaction cannot remove, so pricing them would make
+    // an over-pinned session re-trigger forever — one summary round-trip per
+    // turn, with nothing left to compact. Providers that report a priced
+    // total say so via measuredTotalTokens.
+    const measured = usage.measuredTotalTokens ?? usage.totalTokens
+    if (threshold <= 0 || measured < threshold) return
+    await this.runInPlaceCompact(s, compactInPlace, measured, 'auto', threshold)
   }
 
   /** User-invoked `/compact` (the native control turn's recorded request).
@@ -7889,12 +7907,14 @@ export class SessionManager {
       label: 'context-usage seed probe',
       onResolved: (raw) => {
         if (s.lastContextUsage || s.lastTurnAt !== lastTurnAtFire) return
-        // allowZeroTotal: native's pre-turn answer is an exact zero (its
-        // lastUsage is turn-end accounting). The cache is empty here by
-        // definition, so painting 0 / window is safe — and the window is
-        // what the pump's mid-turn assistant derivation divides against,
-        // so the FIRST turn refreshes per round instead of staying empty
-        // until the turn-end reconcile probe.
+        // allowZeroTotal: a backend with nothing to measure yet answers an
+        // exact zero (native prices its pre-turn total and only answers 0
+        // when it has no sections either; a claude backend can answer 0
+        // before its CLI settles). The cache is empty here by definition, so
+        // painting 0 / window is safe — and the window is what the pump's
+        // mid-turn assistant derivation divides against, so the FIRST turn
+        // refreshes per round instead of staying empty until the turn-end
+        // reconcile probe.
         const seeded = liteContextUsageFromSdkUsage(raw, undefined, { allowZeroTotal: true })
         if (seeded) applyContextUsage(s, seeded)
         this.foldSdkAutoCompactFacts(s, raw)

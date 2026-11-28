@@ -3812,13 +3812,93 @@ export class NativeSession implements NativeSessionCore {
         : { type: 'enabled', budgetTokens: tokens }
   }
 
+  /** Price the next request's fixed sections, plus its raw history. ONE
+   *  pricing routine behind both the lite `totalTokens` and the breakdown
+   *  rows, so the bar and the table can never disagree by construction. The
+   *  history walk is only consumed when no usage sample exists (the caller
+   *  skips this entirely otherwise), which keeps the per-turn probe O(fixed
+   *  sections) exactly as before. Reads the EFFECTIVE tool list (`this.tools`,
+   *  already persona-filtered by rebuildTools) so a restrictive persona prices
+   *  only the schemas the next request actually injects. */
+  private priceContextSections(): {
+    fixedTokens: number
+    historyTokens: number
+    systemTokens: number
+    systemToolsTokens: number
+    mcpToolsTokens: number
+    skillTokens: number
+    memoryTokens: number
+    autoMemoryTokens: number
+    mcpPrices: Map<string, number>
+  } {
+    const skillSection = this.currentSkillView().section()
+    const persona = this.currentProfile?.instruction
+    // Memory and environment price the cached per-turn snapshot; a null
+    // snapshot (read probe before the constructor seed lands) omits both.
+    const memory = this.memorySnapshot
+    const memorySection = memory ? renderMemorySection(memory.files) : ''
+    // The auto-memory section prices the same session-level snapshot the
+    // per-turn overlay renders (its own category, distinct from the
+    // instruction chain).
+    const autoMemorySection = this.autoMemorySection()
+    const envSection = this.environmentSection()
+    const system = joinPromptParts(persona ? `${this.baseSystem}\n\n${persona}` : this.baseSystem, envSection)
+    const systemTokens = estimateText(system) + ROLE_OVERHEAD
+    const memoryTokens = memorySection ? estimateText(memorySection) + ROLE_OVERHEAD : 0
+    const autoMemoryTokens = autoMemorySection ? estimateText(autoMemorySection) + ROLE_OVERHEAD : 0
+    const skillTokens = skillSection ? estimateText(skillSection) + ROLE_OVERHEAD : 0
+    const builtinTools = this.tools.filter((t) => !this.mcpToolServers.has(t.name))
+    const mcpTools = this.tools.filter((t) => this.mcpToolServers.has(t.name))
+    const systemToolsTokens = builtinTools.reduce((s, t) => s + estimateToolSchema(t), 0)
+    // Per-FQN prices computed ONCE, shared by the MCP row and the payload.
+    const mcpPrices = new Map(mcpTools.map((t) => [t.name, estimateToolSchema(t)]))
+    const mcpToolsTokens = [...mcpPrices.values()].reduce((s, n) => s + n, 0)
+    return {
+      fixedTokens: systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens + memoryTokens + autoMemoryTokens,
+      historyTokens: this.history.reduce((s, m) => s + estimateMessage(m), 0),
+      systemTokens,
+      systemToolsTokens,
+      mcpToolsTokens,
+      skillTokens,
+      memoryTokens,
+      autoMemoryTokens,
+      mcpPrices,
+    }
+  }
+
+  /** The request's prompt-token total as the API measured it: input + cache
+   *  reads + cache writes. Output is not part of the window the NEXT request
+   *  sends, so this matches the pump's mid-turn formula. `lastUsage` is
+   *  turn-end accounting — written only on a settled success (never on an
+   *  interrupt or a failed turn) and reset by an in-place compact — so zero
+   *  here means "no authoritative sample yet", never "the context is empty".
+   *  Callers must price that case rather than report 0.
+   *
+   *  Also surfaced verbatim as the response's `measuredTotalTokens`: the
+   *  auto-compact gate reads ONLY this lens, because a priced total includes
+   *  sections compaction cannot remove (system prompt, tool schemas, memory),
+   *  and a window pinned under them would otherwise re-trigger forever. */
+  private measuredContextTokens(): number {
+    const usage = this.lastUsage
+    return usage.input_tokens
+      + (usage.cache_read_input_tokens ?? 0)
+      + (usage.cache_creation_input_tokens ?? 0)
+  }
+
   /** Wire shape consumed by the host's reconcile probe
    *  (liteContextUsageFromSdkUsage in session-pump.ts): { totalTokens,
    *  maxTokens, model, autoCompactThreshold }. Capacity is resolved for the
-   *  captured route and retried when an actual effective-model change lands. */
+   *  captured route and retried when an actual effective-model change lands.
+   *
+   *  `totalTokens` is the API's own measurement whenever one exists, and this
+   *  provider's price of the next request when none does: a brand-new (or just
+   *  compacted) session already owes the system prompt, tool schemas, skills
+   *  and memory files it is about to send, so answering 0 painted a bar that
+   *  contradicted the breakdown table under it, and read as "no pressure" to
+   *  the auto-compact gate. The estimate is confined to exactly the case that
+   *  used to answer 0 — an authoritative sample always wins, and every round
+   *  from the first response onward is authoritative. */
   async getContextUsage(opts?: { detail?: 'summary' | 'full' }): Promise<unknown> {
-    // Match the pump's mid-turn formula: prompt tokens = input + cache reads
-    // + cache writes. Output is not part of the window the next request sends.
     for (;;) {
       const generation = this.modelGeneration
       const model = this.model
@@ -3836,81 +3916,91 @@ export class NativeSession implements NativeSessionCore {
       // Refresh the skill-listing cap from the resolved window. The manager
       // fires this probe after every turn, so a model down-switch shrinks the
       // cap for the next turn; the default budget holds until the first
-      // resolve. Set BEFORE the composition below so the breakdown prices the
+      // resolve. Set BEFORE the pricing below so the breakdown prices the
       // same budgeted section the next request will send.
       this.skills.setListingBudget(Math.floor(contextWindow * LISTING_BUDGET_FRACTION))
-      const usage = this.lastUsage
       // The spawn pin is a policy ceiling clamped under the model window; the
       // ratio policy and output reserve apply to that effective window. The
       // bar denominator (maxTokens) stays the resolved model window.
       const pin = this.opts.autoCompactWindow
       const effectiveWindow = pin !== undefined && pin > 0 ? Math.min(contextWindow, pin) : contextWindow
       const outputReservedWindow = effectiveWindow - DEFAULT_MAX_TOKENS
-      const totalTokens =
-        usage.input_tokens
-        + (usage.cache_read_input_tokens ?? 0)
-        + (usage.cache_creation_input_tokens ?? 0)
+      const measured = this.measuredContextTokens()
+      // A { detail: 'summary' } probe reads only the lite fields + auto-compact
+      // facts, so it skips the breakdown — but the no-sample total still needs
+      // the pricing the rows would use, and that IS the fresh-session /
+      // post-compact case the seed probe exists for. With a sample in hand the
+      // summary path stays exactly as cheap as before.
+      const priced = opts?.detail === 'summary' && measured > 0 ? null : this.priceContextSections()
+      // An estimate that cannot fit its window is clamped TO the window: the
+      // snapshot builder refuses an over-window reading, so a model window
+      // smaller than the sections the next request owes (system prompt + tool
+      // schemas + memory can exceed a 32k window on their own) would otherwise
+      // starve the seed and re-empty the bar for the whole first turn — the
+      // exact failure the seed exists to prevent. `maxTokens` stays the real
+      // window, so the bar reads "full before you start", which is truthful.
+      const totalTokens = measured > 0
+        ? measured
+        : Math.min(priced!.fixedTokens + priced!.historyTokens, contextWindow)
+      // The authoritative lens for the compaction gate: `totalTokens` may be
+      // priced, and a price must never buy a summary round-trip.
+      const measuredTotalTokens = measured
       const autoCompactThreshold = outputReservedWindow > 0
         ? Math.min(Math.floor(effectiveWindow * this.opts.ports.config.nativeAutoCompactRatio), outputReservedWindow)
         : 0
       return {
         totalTokens,
+        measuredTotalTokens,
         maxTokens: contextWindow,
         model,
         autoCompactThreshold,
         // The manager's reconcile/seed probes pass { detail: 'summary' } and
         // read only the lite fields + auto-compact facts; skip the breakdown
         // so a probe never pays for a composition nobody reads.
-        ...(opts?.detail === 'summary' ? {} : this.contextComposition(totalTokens, contextWindow, autoCompactThreshold)),
+        ...(opts?.detail === 'summary' || priced === null
+          ? {}
+          : this.contextComposition(totalTokens, contextWindow, autoCompactThreshold, priced)),
       }
     }
   }
 
-  /** Heuristic composition of the next request's context, anchored to the
-   *  last real usage sample: the used rows sum to `totalTokens` by
-   *  construction (Messages is the residual), so the split is approximate
-   *  but the total is exact. O(prompt + tools) — never walks history, which
-   *  matters because the manager fires getContextUsage as a post-turn
-   *  reconcile probe. Reads the EFFECTIVE tool list (`this.tools`, already
-   *  persona-filtered by rebuildTools) so a restrictive persona prices only
-   *  the schemas the next request injects. Non-atomic by design (DSH
-   *  precedent): totalTokens describes the last request, the estimates the
-   *  next one; nothing makes decisions from this table. */
+  /** Breakdown of the next request's context, priced by `priceContextSections`
+   *  (the SAME routine that produced `totalTokens` above, so the rows can
+   *  never disagree with the bar). The used rows sum to `totalTokens` by
+   *  construction: Messages is the residual, which is the API-measured
+   *  conversation when a usage sample exists and the raw-history estimate
+   *  when it does not — the two are identical because the total was built from
+   *  those same two parts. Non-atomic by design (DSH precedent): totalTokens
+   *  describes the last request, the estimates the next one; nothing makes
+   *  decisions from this table. */
   private contextComposition(
     totalTokens: number,
     maxTokens: number,
     autoCompactThreshold: number,
+    priced: ReturnType<NativeSession['priceContextSections']>,
   ): {
     categories: Array<{ name: string; tokens: number; kind: 'used' | 'buffer' | 'free' }>
     skills?: { includedSkills: number; totalSkills: number; tokenCount: number; skillFrontmatter: Array<{ name: string; source: string; tokens: number }> }
     mcpTools?: Array<{ name: string; serverName: string; tokens: number; isLoaded: true }>
   } {
     const skillView = this.currentSkillView()
-    const skillSection = skillView.section()
-    const persona = this.currentProfile?.instruction
-    // Memory and environment price the cached per-turn snapshot; a null
-    // snapshot (read probe before the constructor seed lands) omits both.
-    const memory = this.memorySnapshot
-    const memorySection = memory ? renderMemorySection(memory.files) : ''
-    // The auto-memory section prices the same session-level snapshot the per-turn
-    // overlay renders (its own category, distinct from the instruction chain).
-    const autoMemorySection = this.autoMemorySection()
-    const envSection = this.environmentSection()
-    const system = joinPromptParts(persona ? `${this.baseSystem}\n\n${persona}` : this.baseSystem, envSection)
-    const systemTokens = estimateText(system) + ROLE_OVERHEAD
-    const memoryTokens = memorySection ? estimateText(memorySection) + ROLE_OVERHEAD : 0
-    const autoMemoryTokens = autoMemorySection ? estimateText(autoMemorySection) + ROLE_OVERHEAD : 0
-    const skillTokens = skillSection ? estimateText(skillSection) + ROLE_OVERHEAD : 0
-    const builtinTools = this.tools.filter((t) => !this.mcpToolServers.has(t.name))
-    const mcpTools = this.tools.filter((t) => this.mcpToolServers.has(t.name))
-    const systemToolsTokens = builtinTools.reduce((s, t) => s + estimateToolSchema(t), 0)
-    // Per-FQN prices computed ONCE, shared by the MCP row and the payload.
-    const mcpPrices = new Map(mcpTools.map((t) => [t.name, estimateToolSchema(t)]))
-    const mcpToolsTokens = [...mcpPrices.values()].reduce((s, n) => s + n, 0)
-    const estimated = systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens + memoryTokens + autoMemoryTokens
-    const messagesTokens = totalTokens > 0
-      ? Math.max(0, totalTokens - estimated)
-      : this.history.reduce((s, m) => s + estimateMessage(m), 0)
+    const {
+      systemTokens,
+      systemToolsTokens,
+      mcpToolsTokens,
+      skillTokens,
+      memoryTokens,
+      autoMemoryTokens,
+      mcpPrices,
+      fixedTokens: estimated,
+    } = priced
+    // Clamped, not assumed: an authoritative sample smaller than the current
+    // fixed pricing (a model switch, or a section that grew since) leaves the
+    // conversation at 0 rather than negative. When the fixed sections alone
+    // exceed the window (a tiny window, whose lite total the caller clamped to
+    // fit), the rows over-state and Messages + Free sit at 0 — a genuinely
+    // over-capacity request has no honest smaller split.
+    const messagesTokens = Math.max(0, totalTokens - estimated)
     const bufferTokens = autoCompactThreshold > 0 ? maxTokens - autoCompactThreshold : 0
     const freeTokens = Math.max(0, maxTokens - totalTokens - bufferTokens)
 
