@@ -343,6 +343,43 @@ describe('runTurn — neutral emission + neutral history', () => {
     await expect(waiting).resolves.toMatchObject({ finalText: 'done' })
   })
 
+  it('auto-detaches when shouldBackground is true, with no host detach call', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 'tu-auto', 'Detachable', '{"command":"go","run_in_background":true}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const execution = deferred<ToolOutcome>()
+    let taskSignal: AbortSignal | undefined
+    const tool: ToolDef<{ command: string; run_in_background?: boolean }> = {
+      name: 'Detachable', description: 'd', guidance: 'g', promptOrder: 1, schema: {},
+      backgroundable: {
+        taskType: 'shell',
+        describe: (input) => `run ${input.command}`,
+        shouldBackground: (input) => input.run_in_background === true,
+      },
+      async run(_input, ctx) { taskSignal = ctx.signal; return execution.promise },
+    }
+    const taskFrames: OperationalFrame[] = []
+    const tasks = new NativeTaskManager((frame) => taskFrames.push(frame))
+    const turn = new AbortController()
+    const waiting = runTurn(
+      baseDeps({ stream: s.stream.bind(s), tools: [tool], tasks }),
+      defaultFrameContext('sess-1'), [], userText('hi'), 'm1', turn.signal,
+    )
+    await vi.waitFor(() => expect(s.calls).toHaveLength(2))
+    const results = wireToolResults(s.calls[1])
+    expect(results).toEqual([expect.objectContaining({ tool_use_id: 'tu-auto', is_error: false })])
+    expect(results[0].content[0].text).toContain('TaskOutput')
+    expect(taskFrames).toEqual([
+      expect.objectContaining({ type: 'task/started', taskId: 'tu-auto', isBackgrounded: true }),
+    ])
+    // The detach resolves the loop, not the run: the task keeps its own live
+    // signal and settles later through the task manager.
+    expect(taskSignal!.aborted).toBe(false)
+    execution.resolve({ text: 'eventual output' })
+    await expect(waiting).resolves.toMatchObject({ finalText: 'done' })
+  })
+
   it('keeps non-backgroundable tools on the direct path with the original turn signal', async () => {
     const s = scriptedStreamer([
       [startStop, ...toolUseBlock(0, 'tu-direct', 'Direct', '{}'), deltaStop('tool_use')],
@@ -509,6 +546,45 @@ describe('runTurn — neutral emission + neutral history', () => {
     expect(JSON.stringify(second).split('[ADDITIONAL GUIDANCE]')).toHaveLength(2)
     // The supplement joined the NEUTRAL history as a user message.
     expect(history.some((m) => m.role === 'user' && JSON.stringify(m.content).includes(wrapped))).toBe(true)
+  })
+
+  it('injects drained task-notifications into neutral history before the NEXT request, verbatim', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const xml = '<task-notification><task-id>t1</task-id><status>completed</status><result>ok</result></task-notification>'
+    let drainCalls = 0
+    const drainInjection = async () => { drainCalls++; return drainCalls === 1 ? [] : [{ uuid: 'inj-1', text: xml }] }
+    const history: RequestMessage[] = []
+    await runTurn(baseDeps({ stream: s.stream.bind(s), drainInjection }), defaultFrameContext('sess-1'), history, userText('hi'), 'm1', new AbortController().signal)
+    // Called at the top of EVERY round (sibling to drainSupplement).
+    expect(drainCalls).toBe(2)
+    expect(JSON.stringify(s.calls[0])).not.toContain('<task-notification>')
+    const second = s.calls[1] as Array<{ role: string; content: Array<{ type: string; text?: string }> }>
+    // The injection is the last user message of the next request, AFTER the
+    // previous round's grouped tool results — appended verbatim, never re-wrapped.
+    expect(second.at(-1)).toEqual({ role: 'user', content: [{ type: 'text', text: xml }] })
+    expect(JSON.stringify(second).split('<task-notification>')).toHaveLength(2)
+    expect(history.some((m) => m.role === 'user' && JSON.stringify(m.content).includes(xml))).toBe(true)
+  })
+
+  it('drains supplements and injections at the same round boundary, supplement first', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const wrapped = '[ADDITIONAL GUIDANCE] pivot'
+    const xml = '<task-notification><task-id>t1</task-id><status>completed</status><result>ok</result></task-notification>'
+    let round = 0
+    const drainSupplement = async () => { round++; return round === 1 ? [] : [{ uuid: 'sup-1', text: wrapped }] }
+    const drainInjection = async () => (round === 1 ? [] : [{ uuid: 'inj-1', text: xml }])
+    await runTurn(baseDeps({ stream: s.stream.bind(s), drainSupplement, drainInjection }), defaultFrameContext('sess-1'), [], userText('hi'), 'm1', new AbortController().signal)
+    const second = s.calls[1] as Array<{ role: string; content: Array<{ type: string; text?: string }> }>
+    const texts = second.filter((m) => m.role === 'user').map((m) => m.content.map((b) => b.text ?? '').join(''))
+    expect(texts).toContain(wrapped)
+    expect(texts).toContain(xml)
+    expect(texts.indexOf(wrapped)).toBeLessThan(texts.indexOf(xml))
   })
 
   it('second wire request carries the assistant blocks and grouped tool results', async () => {

@@ -16,7 +16,7 @@
 // source). `replayState` rides along for API replay but is not the stop-reason
 // authority.
 
-import type { AssistantMessage, ToolResultMessage } from './message.js'
+import type { AssistantMessage, ToolResultMessage, UserMessage } from './message.js'
 import type { TokenUsage } from './types.js'
 import type { StreamChunk, RawStreamEvent } from './stream.js'
 import type { ReplayEnvelope } from './source.js'
@@ -75,7 +75,7 @@ export type OperationalFrame =
       type: 'task/started'
       taskId: string
       toolUseId: string
-      taskType: 'local_bash' | 'local_agent'
+      taskType: 'local_bash' | 'local_agent' | 'local_monitor'
       description: string
       subagentType?: string
       isBackgrounded: boolean
@@ -132,13 +132,13 @@ export type OperationalFrame =
  *  The core stamps `parentToolUseId` at emission — null for the main thread,
  *  the spawning `tool_use` id for a nested (Agent/Task) runner — because the
  *  conversation frames themselves (assistant bundle / raw passthrough /
- *  first-class tool result) carry no envelope identity. The host adapter
- *  derives the SDK envelope from this context (T10; the nested runner's
- *  neutral parent axis, T15). Operational frames are NOT wrapped: they carry
- *  their envelope inline. */
+ *  first-class tool result / user injection) carry no envelope identity. The
+ *  host adapter derives the SDK envelope from this context (T10; the nested
+ *  runner's neutral parent axis, T15). Operational frames are NOT wrapped:
+ *  they carry their envelope inline. */
 export interface EnvelopedConversationFrame {
   type: 'enveloped-conversation'
-  frame: AssistantFrame | RawStreamEvent | ToolResultMessage
+  frame: AssistantFrame | RawStreamEvent | ToolResultMessage | UserMessage
   parentToolUseId: string | null
 }
 
@@ -149,15 +149,18 @@ export interface EnvelopedConversationFrame {
  *  AssistantFrame is the settled assistant bundle; OperationalFrame is the
  *  live-only system/result surface; ToolResultMessage is a first-class live
  *  tool result (T10 folds it into the emission union — the loop emits it via
- *  the widened NativeLoopFrame). The core emits conversation frames wrapped
- *  in EnvelopedConversationFrame so the sidechain parent travels neutrally;
- *  the bare conversation variants remain for the projection contract and
- *  main-thread convenience. The host adapter projects each member to the SDK
- *  AgentMessage the pump consumes. */
+ *  the widened NativeLoopFrame); UserMessage is a core-originated user
+ *  conversation turn — the <task-notification> background-completion
+ *  injection, which the host classifies by content. The core emits
+ *  conversation frames wrapped in EnvelopedConversationFrame so the sidechain
+ *  parent travels neutrally; the bare conversation variants remain for the
+ *  projection contract and main-thread convenience. The host adapter
+ *  projects each member to the SDK AgentMessage the pump consumes. */
 export type NativeCoreFrame =
   | StreamChunk
   | RawStreamEvent
   | AssistantFrame
   | OperationalFrame
   | ToolResultMessage
+  | UserMessage
   | EnvelopedConversationFrame

@@ -1,8 +1,9 @@
 // Server-side derivation of the TaskCreate/TaskUpdate checklist state from
-// the FULL transcript (the durable CLI JSONL via jsonl-cache). The client
-// folds only its in-memory window, so creates beyond the ring/memory cap
-// degrade to `Task #N` stubs — this module is the authoritative base layer
-// the client merges under its window fold (shared/task-list.ts#mergeTaskList).
+// the FULL transcript (the durable CLI JSONL via jsonl-cache, or a native
+// session's neutral v3 log via nativeHistoryCache). The client folds only
+// its in-memory window, so creates beyond the ring/memory cap degrade to
+// `Task #N` stubs — this module is the authoritative base layer the client
+// merges under its window fold (shared/task-list.ts#mergeTaskList).
 //
 // No new persistence: the transcript IS the persistence. Every call re-folds
 // the cached parsed lines (O(lines) over already-parsed JS objects — ms at
@@ -14,13 +15,16 @@
 // PRE-2.x transcripts that wrote sidechain lines INLINE into the main JSONL
 // stay invisible — jsonl-cache's parseRenderable drops isSidechain lines —
 // so tasks completed by inline sidechains on those old sessions still read
-// as in_progress here.
+// as in_progress here. Native logs carry sidechain frames INLINE (parent
+// provenance, one log) and the native read cache keeps them, so the native
+// derive folds main + sidechain in a single pass.
 
 import { performance } from 'node:perf_hooks'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { jsonlPageCache } from './jsonl-cache.js'
 import { findTranscriptFile } from './history-reader.js'
+import { nativeHistoryCache } from './providers/native/session-log/cache.js'
 import { resolveSubagentDir, splitCompleteLines, parseRawJsonLines } from './subagent-transcripts.js'
 import { metrics } from './metrics.js'
 import { createLogger } from './log.js'
@@ -31,6 +35,7 @@ import {
   type TasklistSnapshotTask,
 } from '../shared/task-list.js'
 import { isHumanUserMessage } from '../shared/user-frames.js'
+import type { TasklistSource } from './providers/types.js'
 
 const log = createLogger('tasklist')
 
@@ -245,8 +250,20 @@ function parseSubagentFileLines(chunk: string): unknown[] {
 /** Production reader. */
 export const readSubagentTranscriptLines = createSubagentLineReader(subagentIo)
 
+/** The provider-owned transcript source for the derive. The contract home
+ *  is the provider seam (AgentProvider.tasklistSource returns it); re-exported
+ *  here so the derive's host consumers (manager / broadcaster) take the type
+ *  from the derive module itself. */
+export type { TasklistSource } from './providers/types.js'
+
 /** Derive the snapshot for one session. [] payload on any failure — the
  *  client degrades to its window fold (today's behavior).
+ *
+ *  `source` selects a provider-owned durable log: the neutral v3 event log
+ *  under `stateDir`, read through the SAME host read cache the history path
+ *  uses (events projected to SDK RawLines at the adapter seam, renderable
+ *  main + sidechain lines in seq order). Absent = the CLI JSONL path below,
+ *  unchanged.
  *
  *  rev note: rev counts Task* tool_use events over main+sub lines, so a
  *  degraded derive (a subagent file unreadable → main-only) yields a LOWER
@@ -254,10 +271,28 @@ export const readSubagentTranscriptLines = createSubagentLineReader(subagentIo)
  *  drops that frame and keeps its last good state — which is the desired
  *  keep-the-richer-snapshot behavior — and folding resumes once the reads
  *  recover and new events push rev back up to the high-water mark. */
-export async function deriveTaskListForSession(sessionId: string): Promise<TasklistSnapshotPayload> {
+export async function deriveTaskListForSession(
+  sessionId: string,
+  source?: TasklistSource,
+): Promise<TasklistSnapshotPayload> {
   const t0 = performance.now()
   const observeMs = () => metrics.observe('tasklist_derive_ms', performance.now() - t0)
   try {
+    if (source) {
+      const loaded = await nativeHistoryCache.load(source.stateDir, sessionId)
+      // null = no log on disk (a session that never completed a turn).
+      // Corruption THROWS in the cache (its contract, unlike readAll's
+      // swallow-to-[]) and lands in the outer catch → degraded empty.
+      if (!loaded) { observeMs(); return { rev: 0, tasks: [] } }
+      // loaded.lines already interleaves main and sidechain frames in
+      // append (seq) order — the chronological merge the CLI path builds
+      // from two files is inherent here, so no mergeTranscriptLines. No
+      // compact floor either: task state is cumulative across compacts,
+      // matching the CLI readAll path (full renderable transcript).
+      const payload = deriveTaskListFromLines(loaded.lines)
+      observeMs()
+      return payload
+    }
     const found = await findTranscriptFile(sessionId)
     if (!found) { observeMs(); return { rev: 0, tasks: [] } }
     const main = await jsonlPageCache.readAll(sessionId)

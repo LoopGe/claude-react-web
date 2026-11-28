@@ -91,7 +91,7 @@ export function informationalFrame(ctx: FrameContext, text: string): Frame {
 export function taskStartedFrame(opts: {
   taskId: string
   toolUseId: string
-  taskType: 'local_bash' | 'local_agent'
+  taskType: 'local_bash' | 'local_agent' | 'local_monitor'
   description: string
   subagentType?: string
   receivedAt: number

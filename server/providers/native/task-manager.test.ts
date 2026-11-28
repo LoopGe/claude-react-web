@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { taskNotificationFrame, taskStartedFrame } from '../native-frames.js'
 import { projectNativeEventToSdk } from '../native-host-frame-adapter.js'
 import type { OperationalFrame } from './vocabulary/live-frame.js'
-import { NativeTaskManager, type NativeTaskMetadata } from './task-manager.js'
+import { NativeTaskManager, taskNotificationXml, type NativeTaskMetadata, type TaskNotificationFacts } from './task-manager.js'
+import {
+  classifyTaskNotificationInjection,
+  isTaskNotificationUserMessage,
+  parseTaskNotificationInjection,
+} from '../../../shared/user-frames.js'
 import type { ToolOutcome } from './tools/types.js'
 
 type TaskStarted = Extract<OperationalFrame, { type: 'task/started' }>
@@ -737,5 +742,154 @@ describe('NativeTaskManager neutral emission projects to the identical legacy SD
       status: 'completed', result: '', receivedAt: neutral.time,
     }))
     expect('result' in projected).toBe(false)
+  })
+})
+
+describe('background-completion injection sink (TaskNotificationFacts)', () => {
+  function setupWithSink() {
+    const frames: OperationalFrame[] = []
+    const injected: TaskNotificationFacts[] = []
+    const manager = new NativeTaskManager(
+      (frame) => frames.push(frame),
+      (notification) => injected.push(notification),
+    )
+    return { manager, frames, injected }
+  }
+
+  it('a backgrounded settle injects the completion facts alongside the operational frame', async () => {
+    const { manager, frames, injected } = setupWithSink()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-inject'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-inject')
+    await waiting
+    execution.resolve({ text: 'final output' })
+    await flush()
+
+    expect(notifications(frames)).toHaveLength(1)
+    expect(injected).toEqual([{
+      taskId: 'tu-inject',
+      toolUseId: 'tu-inject',
+      description: 'description for tu-inject',
+      status: 'completed',
+      result: 'final output',
+    }])
+  })
+
+  it('a foreground shell settle does NOT inject (no operational frame either)', async () => {
+    const { manager, injected } = setupWithSink()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-fg-shell'), () => execution.promise, new AbortController().signal)
+    execution.resolve({ text: 'foreground output' })
+    await waiting
+    await flush()
+    expect(injected).toEqual([])
+  })
+
+  it('a foreground subagent settle does NOT inject (the parent holds the report via tool_result)', async () => {
+    const { manager, frames, injected } = setupWithSink()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = { toolUseId: 'tu-fg-agent', taskType: 'subagent', description: 'research' }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+    execution.resolve({ text: 'foreground report' })
+    await waiting
+    await flush()
+    expect(notifications(frames)).toHaveLength(1)
+    expect(injected).toEqual([])
+  })
+
+  it('a backgrounded subagent settle injects its real report', async () => {
+    const { manager, injected } = setupWithSink()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = { toolUseId: 'tu-bg-agent', taskType: 'subagent', description: 'research' }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+    manager.background('tu-bg-agent')
+    await waiting
+    execution.resolve({ text: 'background report' })
+    await flush()
+    expect(injected).toEqual([{
+      taskId: 'tu-bg-agent',
+      toolUseId: 'tu-bg-agent',
+      description: 'research',
+      status: 'completed',
+      result: 'background report',
+    }])
+  })
+
+  it('a stopped backgrounded task injects stopped facts with the partial result', async () => {
+    const { manager, injected } = setupWithSink()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-stop-inject'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-stop-inject')
+    await waiting
+    const stopping = manager.stop('tu-stop-inject')
+    execution.resolve({ text: 'partial', isError: true })
+    await stopping
+    expect(injected).toHaveLength(1)
+    expect(injected[0]).toMatchObject({ status: 'stopped', result: 'partial' })
+  })
+
+  it('a settle with no sink wired stays operational-frame-only (standalone manager)', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-no-sink'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-no-sink')
+    await waiting
+    execution.resolve({ text: 'output' })
+    await flush()
+    expect(notifications(frames)).toHaveLength(1)
+  })
+})
+
+describe('taskNotificationXml (the host parser is the oracle)', () => {
+  function userFrame(text: string) {
+    return { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text }] } }
+  }
+
+  it('round-trips through the host injection parser, markup in fields intact', () => {
+    const facts: TaskNotificationFacts = {
+      taskId: 't1',
+      toolUseId: 'tu1',
+      description: 'run "a < b" & c > d',
+      status: 'completed',
+      result: 'line1\n<result>nested</result> & "quoted" \'single\'',
+    }
+    const xml = taskNotificationXml(facts)
+    const frame = userFrame(xml)
+    expect(isTaskNotificationUserMessage(frame)).toBe(true)
+    expect(parseTaskNotificationInjection(frame)).toEqual({
+      taskId: 't1',
+      toolUseId: 'tu1',
+      status: 'completed',
+      summary: 'run "a < b" & c > d',
+      result: 'line1\n<result>nested</result> & "quoted" \'single\'',
+    })
+    expect(classifyTaskNotificationInjection(frame)).toEqual({ foldable: true, hasPayload: true })
+  })
+
+  it('carries the status verbatim (failed / stopped are not normalized away)', () => {
+    for (const status of ['failed', 'stopped'] as const) {
+      const frame = userFrame(taskNotificationXml({
+        taskId: 't1', toolUseId: 'tu1', description: 'd', status, result: 'r',
+      }))
+      expect(parseTaskNotificationInjection(frame)?.status).toBe(status)
+    }
+  })
+
+  it('omits <tool-use-id> when the facts carry none (unroutable-completion shape)', () => {
+    const xml = taskNotificationXml({ taskId: 'a1', description: 'd', status: 'completed', result: 'the report' })
+    expect(xml).not.toContain('<tool-use-id>')
+    const frame = userFrame(xml)
+    expect(parseTaskNotificationInjection(frame)).toBeNull()
+    expect(classifyTaskNotificationInjection(frame)).toEqual({ foldable: false, hasPayload: true })
+  })
+
+  it('renders one <event> line per monitor event; events alone carry payload', () => {
+    const xml = taskNotificationXml({
+      taskId: 'm1', description: 'watch', status: 'completed', result: '', events: ['line one', 'line <two> & three'],
+    })
+    const frame = userFrame(xml)
+    expect(xml).toContain('<event>line one</event>')
+    expect(xml).toContain('<event>line &lt;two&gt; &amp; three</event>')
+    expect(classifyTaskNotificationInjection(frame)).toEqual({ foldable: false, hasPayload: true })
   })
 })

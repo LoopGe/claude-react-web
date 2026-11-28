@@ -336,10 +336,22 @@ describe('SessionEventBroadcaster tasklist-snapshot', () => {
     const sub = bc.subscribeTaskList('a')!
     const p = sub.iterable[Symbol.asyncIterator]().next()
     bc.broadcastTaskListChanged('a')
-    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledWith('a'))
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledWith('a', undefined))
     const frame = (await Promise.race([p, timeout(500)])) as { value: { kind: string; rev: number } }
     expect(frame.value.kind).toBe('tasklist-snapshot')
     expect(frame.value.rev).toBe(2)
+  })
+
+  it('passes the manager-resolved native source into the derive (live WS parity with the HTTP read)', async () => {
+    const s = makeSession('a', '/repo')
+    const bc = new SessionEventBroadcaster(
+      new Map([['a', s]]),
+      undefined,
+      undefined,
+      (id) => (id === 'a' ? { stateDir: '/native-state' } : undefined),
+    )
+    bc.broadcastTaskListChanged('a')
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledWith('a', { stateDir: '/native-state' }))
   })
 
   it('seeds a fresh subscriber with the last frame (subscribe-after-broadcast)', async () => {

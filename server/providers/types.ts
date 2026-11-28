@@ -483,6 +483,15 @@ export interface ProviderSessionRef {
   cwd: string
 }
 
+/** A provider-owned durable transcript source for the host's tasklist
+ *  derive (server/tasklist-state.ts reads the neutral v3 event log under
+ *  `stateDir`). Returned by providers whose sessions persist such a log;
+ *  providers on the CLI JSONL path omit `tasklistSource` entirely. */
+export interface TasklistSource {
+  /** App state dir holding the provider's per-session logs. */
+  stateDir: string
+}
+
 export interface AgentProvider {
   readonly name: string
   readonly capabilities: ProviderCapabilities
@@ -523,4 +532,10 @@ export interface AgentProvider {
    *  projects. Optional: providers that can't retitle transcripts omit it and
    *  the host keeps its own metadata title as the source of truth. */
   renameSession?(sessionId: string, title: string, opts?: { dir?: string }): Promise<unknown>
+  /** The durable transcript source for the host tasklist derive, or
+   *  undefined when this provider has none for `id`. Needs no live session —
+   *  dormant sessions derive from disk. Optional: providers whose transcript
+   *  is the CLI JSONL (claude) omit it and the host uses the JSONL read path,
+   *  so the manager never branches on a provider name. */
+  tasklistSource?(id: string): TasklistSource | undefined
 }

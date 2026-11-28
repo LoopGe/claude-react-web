@@ -141,7 +141,7 @@ import { DialogBroker } from './user-dialog-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
 import { SessionMcpManager } from './session-manager-mcp.js'
 import { SessionEventBroadcaster } from './session-broadcaster.js'
-import { deriveTaskListForSession } from './tasklist-state.js'
+import { deriveTaskListForSession, type TasklistSource } from './tasklist-state.js'
 import {
   BackgroundWatcherRegistry,
   buildTaskNotificationFrame,
@@ -1373,6 +1373,7 @@ export class SessionManager {
       this.sessions,
       (id) => this.transcriptHead(id)?.generation,
       (id) => this.queuedStatusFrames(id),
+      (id) => this.tasklistSource(id),
     )
 
     this.backgroundWatchers = new BackgroundWatcherRegistry({
@@ -8466,7 +8467,18 @@ export class SessionManager {
    *  (empty payload on failure). */
   async tasklistSnapshot(id: string): Promise<import('../shared/task-list.js').TasklistSnapshotPayload> {
     this.get(id)
-    return deriveTaskListForSession(id)
+    return deriveTaskListForSession(id, this.tasklistSource(id))
+  }
+
+  /** The provider's durable transcript source for the tasklist derive, or
+   *  undefined for providers on the CLI JSONL path. Resolved from the live
+   *  session or the persisted meta so DORMANT sessions derive too, then asked
+   *  of the provider itself (method-gated — no provider-name branch). Shared
+   *  with the broadcaster so the live WS snapshot and the HTTP read take one
+   *  path. */
+  private tasklistSource(id: string): TasklistSource | undefined {
+    const providerName = this.sessions.get(id)?.provider ?? this.store?.get(id)?.provider ?? this.defaultProvider
+    return this.providers.get(providerName).tasklistSource?.(id)
   }
 
   subscribeMessageStatus(id: string): {
