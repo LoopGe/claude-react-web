@@ -863,14 +863,23 @@ export function useTranscriptScroll({
       lastItemListH = itemListH
       lastPaddingTop = paddingTop
       lastPaddingBottom = paddingBottom
-      if (scrollStateRef.current.intent !== 'follow' || scrollStateRef.current.owner.kind === 'follow') return
+      if (scrollStateRef.current.intent !== 'follow') return
       if (Math.abs(contentDelta) < 1) return
       lastContentHeight = contentHeight
       if (Math.abs(contentDelta) <= ITEM_LIST_MICRO_DELTA_PX) {
         scheduleTrailingMicroPin()
         return
       }
-      pinToBottom(scroller)
+      // Streaming height growth (a thinking / draft row getting taller while its
+      // item count is unchanged) must pin in the SAME frame the row grew, exactly
+      // like the synchronous append pin — not stand down while a follow owner is
+      // active. Standing down let the growth paint one frame at the stale
+      // scrollTop (the row's bottom edge dipped below the pinned bottom) before
+      // the verify loop re-pinned next frame: the "thinking 块高度变化时向下一跳动
+      // 闪烁" flicker. allowDuringAnimation is safe here for the same reason it is
+      // for the append pin: the writer's follow loop re-reads its target each
+      // frame, finds remaining ≈ 0 and finalizes, so the two never fight.
+      pinToBottom(scroller, { allowDuringAnimation: true, delivery: 'next-observation' })
     })
 
     const scroller = scrollerRef.current

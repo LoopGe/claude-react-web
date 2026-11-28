@@ -125,6 +125,17 @@ interface AnimatedCollapseProps {
    *  Default false: for the ordinary content stretched to the body, the
    *  measured height IS the clamp and must never be adopted. */
   remeasureWhileClamped?: boolean
+  /** Track open-state content height NATIVELY (auto) instead of pinning a copy
+   *  via the ResizeObserver. A pin lands one observer broadcast after the content
+   *  grows, so the box — and the transcript row wrapping it — grows in a later
+   *  rendering step than the content commit; the transcript's item-list observer
+   *  then fires a frame after the growth painted, and the follow pin lands yet
+   *  another frame later (the streaming thinking block dips one growth-step low
+   *  each flush before snapping back). An auto box grows in the SAME commit as
+   *  its content, so the row height is current when the follow pin reads it. Only
+   *  for snap-mode bodies whose height churns while open (streaming thinking);
+   *  the open/close fold still pins explicitly. Default false keeps the pin. */
+  nativeSnapHeight?: boolean
 }
 
 export function AnimatedCollapse({
@@ -139,6 +150,7 @@ export function AnimatedCollapse({
   id,
   animateResize = false,
   remeasureWhileClamped = false,
+  nativeSnapHeight = false,
 }: AnimatedCollapseProps) {
   const [mounted, setMounted] = useState(open || !unmountOnExit)
   const bodyRef = useRef<HTMLDivElement | null>(null)
@@ -447,7 +459,11 @@ export function AnimatedCollapse({
       lastHeightRef.current = open ? nextHeight : 0
       const shouldAnimateInitialOpen = open && (appear || (!initiallyOpenRef.current && unmountOnExit))
       if (shouldAnimateInitialOpen) body.style.height = '0px'
-      else if (open) pinBodyPx(body, nextHeight)
+      else if (open && !nativeSnapHeight) pinBodyPx(body, nextHeight)
+      // nativeSnapHeight mounts open auto so the box tracks content in the same
+      // commit from the first flush (a mount pin would lag the first growth by one
+      // observer broadcast — see the snap-follow auto path).
+      else if (open) body.style.height = ''
       else body.style.height = '0px'
       body.style.opacity = open && !shouldAnimateInitialOpen ? '' : '0'
       if (shouldAnimateInitialOpen) animateHeight(0, nextHeight, true, true)
@@ -480,7 +496,7 @@ export function AnimatedCollapse({
 
     const startHeight = body.offsetHeight || lastHeightRef.current || content.scrollHeight
     animateHeight(startHeight, 0, false, true)
-  }, [animateHeight, appear, open, rendered, standDown, unmountOnExit])
+  }, [animateHeight, appear, nativeSnapHeight, open, rendered, standDown, unmountOnExit])
 
   // Apply / drop aria-hidden AFTER the height effect above, so `animatingRef`
   // already reflects a fold that just started. See hideClosedBody for why the
@@ -576,8 +592,10 @@ export function AnimatedCollapse({
         // difference on the next growth, and an animateResize body needs a pin
         // to tween FROM (the ToolGroupCard's member-append glide). So a body
         // left unpinned by a release — or by standDown, in the rendered case
-        // that let this measurement through — gets its pin back here.
-        if (body.style.height === '' && measured.height > 0) pinBodyPx(body, measured.height)
+        // that let this measurement through — gets its pin back here. A
+        // nativeSnapHeight body stays auto so its box keeps tracking content in
+        // the SAME commit (see below).
+        if (!nativeSnapHeight && body.style.height === '' && measured.height > 0) pinBodyPx(body, measured.height)
         return
       }
       lastHeightRef.current = measured.height
@@ -601,6 +619,17 @@ export function AnimatedCollapse({
         // natural height. fade=false — opacity belongs to the open/close beat,
         // not layout motion.
         animateHeight(currentHeight, measured.height, true, false, 'resize')
+      } else if (nativeSnapHeight) {
+        // nativeSnapHeight: track the content NATIVELY (auto) rather than pinning
+        // a copy of its height. A pin is written by THIS observer, one broadcast
+        // after the content grew, so the wrapping transcript row grows a rendering
+        // step late and the follow pin paints the streaming thinking block one
+        // growth-step low each flush before it snaps back. An auto box grows in
+        // the SAME commit as its content. The open/close fold still pins
+        // explicitly (animateHeight) — same contract as the nested-collapse auto
+        // path above.
+        body.style.transition = 'none'
+        if (body.style.height !== '') body.style.height = ''
       } else {
         // Snap-follow. Clear any transition the torn-down tween left on the
         // element so the jump is truly instant.
@@ -615,7 +644,7 @@ export function AnimatedCollapse({
     // post-reopen observation read as "continuous".
     lastResizeAtRef.current = -Infinity
     return () => observer.disconnect()
-  }, [animateHeight, animateResize, cleanupAnimation, open, remeasureWhileClamped, rendered, unmountOnExit])
+  }, [animateHeight, animateResize, cleanupAnimation, nativeSnapHeight, open, remeasureWhileClamped, rendered, unmountOnExit])
 
   useEffect(() => () => cleanupAnimation(), [cleanupAnimation])
 
@@ -646,6 +675,9 @@ interface AnimatedDetailsProps extends Omit<DetailsHTMLAttributes<HTMLDetailsEle
   contentClassName?: string
   durationMs?: number
   onOpenChange?: (open: boolean) => void
+  /** See AnimatedCollapse.nativeSnapHeight — track open content height natively
+   *  (auto) so a streaming row grows in the same commit as its content. */
+  nativeSnapHeight?: boolean
 }
 
 export function AnimatedDetails({
@@ -659,6 +691,7 @@ export function AnimatedDetails({
   contentClassName = '',
   durationMs = DEFAULT_DURATION_MS,
   onOpenChange,
+  nativeSnapHeight = false,
   ...detailsProps
 }: AnimatedDetailsProps) {
   const isControlled = controlledOpen != null
@@ -705,6 +738,7 @@ export function AnimatedDetails({
         contentClassName={contentClassName}
         unmountOnExit={false}
         durationMs={durationMs}
+        nativeSnapHeight={nativeSnapHeight}
         onExitComplete={() => { if (!openRef.current) setDetailsOpen(false) }}
       >
         {children}

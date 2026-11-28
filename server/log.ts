@@ -184,7 +184,9 @@ let cachedDayKeyExpiresAt = 0
  *  installation doesn't accumulate logs forever. */
 const MAX_LOG_FILES = 14
 
-function todayKey(): string {
+/** UTC-day key for the daily log file. Exported for fatal-report.ts so death
+ *  records and the logger always agree on the current file. */
+export function todayKey(): string {
   const now = Date.now()
   if (now < cachedDayKeyExpiresAt) return cachedDayKey
   const d = new Date(now)
@@ -194,19 +196,34 @@ function todayKey(): string {
   return cachedDayKey
 }
 
+/** Daily log file name for a date key. Exported so fatal-report.ts's death
+ *  records land in the SAME file the logger writes, without coupling to its
+ *  async stream — the naming contract has one owner. */
+export function serverLogFileName(dateKey: string): string {
+  return `server-${dateKey}.log`
+}
+
+/** One `[ts] [scope] msg` file line. Shared by writeToFile and fatal-report's
+ *  synchronous death records so the shape cannot drift between the writers. */
+export function formatFileLine(tag: string, msg: string, ts = new Date().toISOString()): string {
+  return `[${ts}] ${tag} ${msg}\n`
+}
+
 function openStream(dir: string): void {
   const date = todayKey()
   const logDir = joinPath(dir, 'logs')
   mkdirSync(logDir, { recursive: true })
-  const filePath = joinPath(logDir, `server-${date}.log`)
+  const filePath = joinPath(logDir, serverLogFileName(date))
   fileStream = createWriteStream(filePath, { flags: 'a' })
   fileStreamDate = date
   pruneOldLogs(logDir)
 }
 
 /** Drop the oldest `server-*.log` files past `MAX_LOG_FILES`. Failures are
- *  swallowed — log retention is best-effort and must never break logging. */
-function pruneOldLogs(logDir: string): void {
+ *  swallowed — log retention is best-effort and must never break logging.
+ *  Exported for fatal-report.ts: death records share this directory even when
+ *  opt-in file logging is off, so they must honor the same retention cap. */
+export function pruneOldLogs(logDir: string): void {
   try {
     const files = readdirSync(logDir)
       .filter((f) => /^server-\d{4}-\d{2}-\d{2}\.log$/.test(f))
@@ -263,13 +280,18 @@ export function isFileLoggingEnabled(): boolean {
 /** Current log file path (if enabled), or null. */
 export function getLogFilePath(): string | null {
   if (!fileStream || !fileLoggingDir) return null
-  return joinPath(fileLoggingDir, 'logs', `server-${fileStreamDate}.log`)
+  return joinPath(fileLoggingDir, 'logs', serverLogFileName(fileStreamDate))
 }
 
-function formatArg(arg: unknown): string {
+/** Format one log argument: Error→stack, string→verbatim, else JSON with a
+ *  String fallback. Exported for fatal-report.ts, whose death records must
+ *  format identically without riding the logger's filtered async path. */
+export function formatArg(arg: unknown): string {
   if (typeof arg === 'string') return arg
   if (arg instanceof Error) return arg.stack ?? arg.message
-  try { return JSON.stringify(arg) } catch { return String(arg) }
+  // JSON.stringify returns undefined (not a string) for undefined/function/
+  // symbol — e.g. a no-reason Promise.reject() — so fall through to String.
+  try { return JSON.stringify(arg) ?? String(arg) } catch { return String(arg) }
 }
 
 function writeToFile(tag: string, args: unknown[]): void {
@@ -282,7 +304,7 @@ function writeToFile(tag: string, args: unknown[]): void {
   }
   const ts = new Date().toISOString()
   const msg = args.map(formatArg).join(' ')
-  fileStream!.write(`[${ts}] ${tag} ${msg}\n`)
+  fileStream!.write(formatFileLine(tag, msg, ts))
 }
 
 // ─ Log ring buffer (opt-in, in-process) ──────────────────────────

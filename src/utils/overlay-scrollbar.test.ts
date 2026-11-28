@@ -386,6 +386,135 @@ describe('attachOverlayScrollbar', () => {
     controller.destroy()
   })
 
+  // The composer editor opts into native-faithful gating: an axis whose
+  // computed overflow is hidden shows no native bar even while
+  // scrollHeight > clientHeight (a hidden box is still a scroll container),
+  // so the thumb must not either. `.rich-prompt` keeps overflow:hidden while
+  // its height tween grows the box, and a thumb that keyed on scroll overflow
+  // alone would flash mid-tween (the very flash the hidden default prevents).
+  it('with respectHiddenOverflow, shows no track on an overflow:hidden axis even while content overflows, and reveals it when overflow flips to auto', async () => {
+    const parent = document.createElement('div')
+    const el = document.createElement('div')
+    parent.appendChild(el)
+    // happy-dom resolves computed style only for ATTACHED elements (detached
+    // reads return ''), and the gate reads computed overflow — so this pair
+    // lives in the document, unlike the geometry-only scaffolds above.
+    document.body.appendChild(parent)
+    stubGeometry(parent, el, () => 0)
+    el.style.overflowY = 'hidden'
+    // Pin the DOM fact the gate reads: happy-dom reflects inline overflow in
+    // getComputedStyle (no layout engine, but style resolution is real).
+    expect(getComputedStyle(el).overflowY).toBe('hidden')
+
+    const controller = attachOverlayScrollbar(el, { autoHide: 'never', respectHiddenOverflow: true })
+    const track = parent.querySelector<HTMLElement>('.os-track-vertical')!
+    try {
+      await flushFrame()
+      // scrollHeight 400 > clientHeight 150, yet hidden means no bar.
+      expect(track.classList.contains('os-track-hidden')).toBe(true)
+
+      // syncEditorHeight flips the inline overflow to auto once the draft passes
+      // max-height — the same flip must reveal the thumb.
+      el.style.overflowY = 'auto'
+      controller.update()
+      expect(track.classList.contains('os-track-hidden')).toBe(false)
+    } finally {
+      controller.destroy()
+      parent.remove()
+    }
+  })
+
+  it('with respectHiddenOverflow, gates each axis on its OWN computed overflow (both orientation)', async () => {
+    const parent = document.createElement('div')
+    const el = document.createElement('div')
+    parent.appendChild(el)
+    document.body.appendChild(parent)
+    stubGeometry(parent, el, () => 0)
+    Object.defineProperty(el, 'scrollWidth', { value: 600 })
+    el.style.overflowY = 'auto'
+    el.style.overflowX = 'hidden'
+
+    const controller = attachOverlayScrollbar(el, { orientation: 'both', autoHide: 'never', respectHiddenOverflow: true })
+    try {
+      await flushFrame()
+      const vertical = parent.querySelector<HTMLElement>('.os-track-vertical')!
+      const horizontal = parent.querySelector<HTMLElement>('.os-track-horizontal')!
+      expect(vertical.classList.contains('os-track-hidden')).toBe(false)
+      expect(horizontal.classList.contains('os-track-hidden')).toBe(true)
+    } finally {
+      controller.destroy()
+      parent.remove()
+    }
+  })
+
+  // The DEFAULT must keep the thumb on an overflow:hidden scroller:
+  // useAutoHeightTransition pins overflow:hidden for the duration of a dialog
+  // body's height tween (GitPanel, SettingsPanel, the pickers, ~25 surfaces)
+  // while the content stays overflowed and wheel-scrollable — there hidden is
+  // a clipping technique, not a no-scrollbar intent, and blanking the thumb
+  // mid-tween would strip the only scroll affordance (the native bar is
+  // already hidden by data-os-native-hidden).
+  it('by default keeps the thumb on an overflow:hidden scroller whose content overflows', async () => {
+    const parent = document.createElement('div')
+    const el = document.createElement('div')
+    parent.appendChild(el)
+    document.body.appendChild(parent)
+    stubGeometry(parent, el, () => 0)
+    el.style.overflowY = 'hidden'
+
+    const controller = attachOverlayScrollbar(el, { autoHide: 'never' })
+    const track = parent.querySelector<HTMLElement>('.os-track-vertical')!
+    try {
+      await flushFrame()
+      expect(track.classList.contains('os-track-hidden')).toBe(false)
+    } finally {
+      controller.destroy()
+      parent.remove()
+    }
+  })
+
+  // Cross-axis pin, vertical twin of the horizontal bottom-edge test below:
+  // CSS right:0 alone pins the track to the PARENT's padding-box right edge,
+  // which only coincides with the scroller when the scroller is flush right.
+  // The composer editor is not (composer-main has horizontal padding; the
+  // side-chat input row holds a Send/Attach button column to the right), so
+  // the track must be pinned to the SCROLLER's padding-box right edge.
+  it('pins the vertical track to the scroller right edge, not the parent right (non-flush scroller)', () => {
+    const parent = document.createElement('div')
+    const el = document.createElement('div')
+    const trailing = document.createElement('div')
+    parent.appendChild(el)
+    // A right-side sibling makes the parent's right edge differ from el's —
+    // the side-chat-drawer-actions column beside the editor.
+    parent.appendChild(trailing)
+    parent.getBoundingClientRect = () => dragRect(0, 0, 300, 200)
+    el.getBoundingClientRect = () => dragRect(0, 0, 200, 150)
+    Object.defineProperty(parent, 'clientTop', { value: 0 })
+    Object.defineProperty(parent, 'clientLeft', { value: 0 })
+    Object.defineProperty(el, 'clientTop', { value: 0 })
+    // Asymmetric horizontal borders: left border 2, padding-box width 196.
+    Object.defineProperty(el, 'clientLeft', { value: 2 })
+    Object.defineProperty(el, 'clientWidth', { value: 196 })
+    Object.defineProperty(el, 'clientHeight', { value: 150 })
+    Object.defineProperty(el, 'scrollWidth', { value: 200 })
+    Object.defineProperty(el, 'scrollHeight', { value: 400 })
+    Object.defineProperty(el, 'scrollTop', { value: 0, writable: true })
+
+    const controller = attachOverlayScrollbar(el, { autoHide: 'never' })
+    const track = parent.querySelector<HTMLElement>('.os-track-vertical')!
+    // happy-dom does no layout: stub the CSS-driven 6px thickness the sync reads.
+    Object.defineProperty(track, 'offsetWidth', { value: 6 })
+    try {
+      controller.update()
+      // padding-box right = left(0) + clientLeft(2) + clientWidth(196) = 198;
+      // minus the 6px thickness = 192 — NOT the parent's 300 - 6 = 294.
+      expect(track.style.left).toBe('192px')
+      expect(track.style.right).toBe('auto')
+    } finally {
+      controller.destroy()
+    }
+  })
+
   it('aligns the horizontal track to the padding-box bottom under asymmetric vertical borders', () => {
     const parent = document.createElement('div')
     const el = document.createElement('div')

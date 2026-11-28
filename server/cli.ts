@@ -21,8 +21,10 @@ import { isLoopbackHost, lanIPv4Addresses } from './net.js'
 import { setWebAuth } from './auth.js'
 import { loadConfig, config, setConfigPath } from './config.js'
 import { disableFileLogging, getLogFilePath, createLogger, setLogToStderr } from './log.js'
+import { installFatalReporting, recordShutdown, reportFatal } from './fatal-report.js'
 import { defaultStateDir } from './persistence.js'
 import { createServerContext } from './bootstrap.js'
+import type { AppPluginManager } from './app-plugins/app-plugin-manager.js'
 import { attachWebSocket } from './ws.js'
 import { SubagentTranscriptHub } from './subagent-transcript-hub.js'
 import { ProviderSubagentTranscriptHub } from './subagent-transcript-source.js'
@@ -89,6 +91,26 @@ async function main() {
 
 async function runServer(args: CliArgs): Promise<void> {
   const stateDir = args.stateDir ?? defaultStateDir()
+  // Deaths must leave a durable trace (see fatal-report.ts). Armed before
+  // loadConfig so even a config-load crash is recorded.
+  installFatalReporting(stateDir)
+  // The real shutdown handlers land at the END of runServer, after the slow
+  // context build + listen. A signal in that boot window would otherwise die
+  // by default disposition — no 'exit' event, no record, indistinguishable
+  // from an external kill. Record-and-exit until the graceful path is ready,
+  // tearing down plugin subprocesses once the manager exists (initialize()
+  // spawns them mid-context-build). A signal DURING initialize() can still
+  // orphan the children spawned so far; on a Windows console Ctrl+C they die
+  // with the host's console signal regardless.
+  let bootPlugins: AppPluginManager | null = null
+  const bootSignals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP']
+  const bootSignalHandler = (signal: NodeJS.Signals): void => {
+    recordShutdown(signal)
+    if (!bootPlugins) process.exit(0)
+    bootPlugins.prepareForShutdown()
+    void bootPlugins.shutdown().finally(() => process.exit(0))
+  }
+  for (const s of bootSignals) process.on(s, bootSignalHandler)
   await loadConfig(stateDir)
   if (!config.authToken) {
     console.warn(
@@ -130,6 +152,7 @@ async function runServer(args: CliArgs): Promise<void> {
     bind: { host: args.host, port: args.port },
   })
   const { app, sessionManager, appPluginManager } = ctx
+  bootPlugins = appPluginManager
 
   const { getLogConfig } = await import('./log.js')
   const initial = getLogConfig()
@@ -278,8 +301,17 @@ async function runServer(args: CliArgs): Promise<void> {
   // Default-on; disable with EVENT_LOOP_PROBE=0.
   const elProbe = startEventLoopProbe()
 
+  // One death, one record: a second signal during teardown (double Ctrl+C,
+  // daemon-stop racing SIGTERM) must not re-run shutdown or duplicate the record.
+  let shutdownStarted = false
   const shutdown = async (signal: string) => {
+    if (shutdownStarted) return
+    shutdownStarted = true
     console.log(`\n[cli] received ${signal}, shutting down...`)
+    // The console line above scrolls away with the terminal; this synchronous
+    // record survives it, so a signal-driven death is distinguishable from a
+    // crash or an external kill after the fact.
+    recordShutdown(signal)
     elProbe.stop()
     subagentTranscriptHub.close()
     // BEFORE any await: the same console signal that reaches us also kills
@@ -305,6 +337,8 @@ async function runServer(args: CliArgs): Promise<void> {
       setTimeout(() => process.exit(0), 3000).unref()
     }
   }
+  // The graceful path is ready — retire the boot-window record-and-exit handlers.
+  for (const s of bootSignals) process.off(s, bootSignalHandler)
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
   // Terminal close delivers SIGHUP to the foreground group only. The CLI
@@ -320,6 +354,6 @@ async function runServer(args: CliArgs): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('[cli] fatal:', err)
+  reportFatal('fatal', err)
   process.exit(1)
 })

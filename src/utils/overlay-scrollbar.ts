@@ -42,6 +42,17 @@ export interface OverlayScrollbarOptions {
   autoHideDelay?: number
   /** Min thumb length in px so a huge list still has a grabbable thumb. Default 24. */
   minThumbSize?: number
+  /**
+   * When true, an axis whose computed overflow is hidden/clip shows no thumb —
+   * the thumb appears exactly when a native bar would. Default false: hidden
+   * is treated as mere clipping, because useAutoHeightTransition pins
+   * overflow:hidden for the duration of a height tween on dialog bodies whose
+   * content stays overflowed and wheel-scrollable, and their thumb must
+   * survive the tween. The composer editor opts in: its overflow:hidden
+   * resting state means "no scrollbar while the box grows to fit", and a
+   * scroll-overflow-only gate would flash a thumb mid-tween.
+   */
+  respectHiddenOverflow?: boolean
 }
 
 export interface OverlayScrollbarController {
@@ -81,6 +92,7 @@ export function attachOverlayScrollbar(
     autoHide = 'leave',
     autoHideDelay = 600,
     minThumbSize = 24,
+    respectHiddenOverflow = false,
   } = opts
 
   const parent = el.parentElement
@@ -147,18 +159,29 @@ export function attachOverlayScrollbar(
   const syncTrackBox = () => {
     const er = el.getBoundingClientRect()
     const pr = parent.getBoundingClientRect()
-    // Read the horizontal track's CSS thickness HERE, alongside the rect reads
-    // and before any style write below: a read after the writes would force a
-    // second synchronous reflow per update on the scroll/streaming hot path.
+    // Read the tracks' CSS thickness HERE, alongside the rect reads and before
+    // any style write below: a read after the writes would force a second
+    // synchronous reflow per update on the scroll/streaming hot path.
     // INVARIANT: update() runs the axis pass (which owns os-track-hidden) before
-    // calling this, so the track's display state — and thus offsetHeight — is
-    // current. A hidden track reads 0, but its position is moot until the axis
+    // calling this, so the track's display state — and thus offsetHeight/Width —
+    // is current. A hidden track reads 0, but its position is moot until the axis
     // pass reveals it again on the next update. syncTrackBox is private; update()
     // is its sole caller, so the ordering is controlled, not an external contract.
     const hThickness = horizontal ? horizontal.track.offsetHeight : 0
+    const vThickness = vertical ? vertical.track.offsetWidth : 0
     if (vertical) {
       vertical.track.style.top = `${er.top - pr.top - parent.clientTop + el.clientTop}px`
       vertical.track.style.height = `${el.clientHeight}px`
+      // Pin the cross axis to el's padding-box right edge rather than trusting
+      // CSS right:0 — that only coincides with el when el is flush with the
+      // parent's right padding edge. A scroller inset by the parent's padding
+      // (the composer editor inside .composer-main) or sharing its parent with
+      // a right-side sibling (the side-chat input row's Send/Attach column)
+      // would float the thumb off the scroller, over the gutter or the buttons.
+      // The padding-box right is er.left + clientLeft + clientWidth (left border
+      // + padding-box width), the horizontal twin of the bottom-edge pin below.
+      vertical.track.style.left = `${er.left + el.clientLeft + el.clientWidth - pr.left - parent.clientLeft - vThickness}px`
+      vertical.track.style.right = 'auto'
     }
     if (horizontal) {
       horizontal.track.style.left = `${er.left - pr.left - parent.clientLeft + el.clientLeft}px`
@@ -177,7 +200,7 @@ export function attachOverlayScrollbar(
     }
   }
 
-  const updateAxis = (a: Axis | null, variant: 'vertical' | 'horizontal') => {
+  const updateAxis = (a: Axis | null, variant: 'vertical' | 'horizontal', overflow: string | undefined) => {
     if (!a) return
     const scrollSize = variant === 'vertical' ? el.scrollHeight : el.scrollWidth
     const clientSize = variant === 'vertical' ? el.clientHeight : el.clientWidth
@@ -190,7 +213,14 @@ export function attachOverlayScrollbar(
     // if content shrinks mid-drag (e.g. a message cleared) so there's no longer
     // overflow, hiding the track (display:none) can keep pointercancel from
     // firing and strand `dragging` true. Keep the thumb rendered until pointerup.
-    if (!dragging && (scrollSize - clientSize < 1 || trackSize === 0)) {
+    // Opt-in (respectHiddenOverflow): an axis whose computed overflow is
+    // hidden/clip shows no native bar even while scrollSize > clientSize (a
+    // hidden box is still a scroll container), so the thumb must not either —
+    // the composer editor's height tween grows the box under overflow:hidden,
+    // and a scroll-overflow-only gate would flash a thumb mid-tween. Default
+    // off: height-tween clipping on dialog bodies keeps its thumb (see opts).
+    const barless = overflow === 'hidden' || overflow === 'clip'
+    if (!dragging && (barless || scrollSize - clientSize < 1 || trackSize === 0)) {
       a.track.classList.add('os-track-hidden')
       return
     }
@@ -214,10 +244,14 @@ export function attachOverlayScrollbar(
 
   const update = () => {
     if (destroyed) return
+    // Computed-style read only for the opt-in gate, ahead of the layout reads
+    // below (style resolution only, no forced reflow); default consumers pay
+    // nothing on the scroll hot path.
+    const style = respectHiddenOverflow ? getComputedStyle(el) : null
     // Axis pass first: it owns the track's display state (os-track-hidden),
     // which syncTrackBox's horizontal thickness read (offsetHeight) depends on.
-    updateAxis(vertical, 'vertical')
-    updateAxis(horizontal, 'horizontal')
+    updateAxis(vertical, 'vertical', style?.overflowY)
+    updateAxis(horizontal, 'horizontal', style?.overflowX)
     syncTrackBox()
   }
 
