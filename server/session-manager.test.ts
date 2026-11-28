@@ -885,11 +885,11 @@ describe('SessionManager', () => {
     const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
     expect(claude.pluginSkillsSupported).toBe(true)
     expect(native.pluginSkillsSupported).toBe(true)
-    // Distinct from pluginsSupported (plugins as agent extensions): native
-    // consumes enabledPlugins for plugin-SKILL discovery, but its plugins tab
-    // stays locked.
+    // pluginsSupported (plugins as agent extensions) is also true on native
+    // now (full plugin parity); pluginSkills is the selective skill-discovery
+    // capability, functional on both providers.
     expect(claude.pluginsSupported).toBe(true)
-    expect(native.pluginsSupported).toBe(false)
+    expect(native.pluginsSupported).toBe(true)
     // Dormant projection (infoFromMeta) re-derives the same boolean from the
     // provider registry — no live handle is involved.
     await sm.unload(native.id)
