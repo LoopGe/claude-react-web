@@ -77,12 +77,12 @@ describe('ghost button bases (controls.css)', () => {
     expect(d['justify-content']).toBe('center')
   })
 
-  it('.action-btn is the 22px outlined text pill', () => {
+  it('.action-btn is the 22px ghost text pill (border revealed on hover, like .icon-btn)', () => {
     const blocks = bySel(controls, '.action-btn')
     expect(blocks).toHaveLength(1)
     const d = blocks[0]!.decls
     expect(d['height']).toBe('22px')
-    expect(d['border']).toBe('1px solid var(--border)')
+    expect(d['border']).toBe('1px solid transparent')
     expect(d['border-radius']).toBe('var(--radius-xs)')
     expect(d['padding']).toBe('0 var(--space-2)')
     expect(d['gap']).toBe('var(--space-1)')

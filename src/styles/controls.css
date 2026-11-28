@@ -157,7 +157,11 @@
   height: 22px;
   padding: 0 var(--space-2);
   background: transparent;
-  border: 1px solid var(--border);
+  /* Ghost, exactly like .icon-btn: no resting border, hover reveals one.
+     Buttons are quiet until touched; the bordered small-capsule language
+     belongs to the .pill family (status chips), so a verb can never be
+     mistaken for a state label at a glance. */
+  border: 1px solid transparent;
   border-radius: var(--radius-xs);
   color: var(--fg-muted);
   font-size: var(--fs-xs);
