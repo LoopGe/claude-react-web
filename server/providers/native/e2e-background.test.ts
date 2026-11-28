@@ -12,6 +12,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { TaskRecordUi } from '../../../shared/tasks.js'
+import { isTaskNotificationUserMessage } from '../../../shared/user-frames.js'
 import { SessionStore } from '../../persistence.js'
 import { SessionManager } from '../../session-manager.js'
 import { buildApiRouter } from '../../routes/index.js'
@@ -145,6 +146,16 @@ function taskNotifications(frames: Frame[], taskId: string): Frame[] {
   return frames.filter((frame) => frame.subtype === 'task_notification' && frame.task_id === taskId)
 }
 
+/** The model-facing half of a backgrounded settle: exactly one
+ *  content-classified <task-notification> user injection, whose XML rides the
+ *  continuation turn's request (the last scripted round in these tests). */
+function expectNotificationInjection(fx: Fixture, frames: Frame[]): void {
+  const injections = frames.filter((frame) => isTaskNotificationUserMessage(frame))
+  expect(injections).toHaveLength(1)
+  const continuation = JSON.stringify(fx.requests[fx.requests.length - 1].messages)
+  expect(continuation).toContain('<task-notification>')
+}
+
 function isNestedRequest(req: StreamRequest): boolean {
   return !req.tools.some((tool) => tool.name === 'Agent')
 }
@@ -220,6 +231,9 @@ describe('native background task acceptance through direct provider handles', ()
       expect(acknowledgements[0].is_error).toBe(false)
       expect(toolResultText(acknowledgements[0])).toContain('TaskOutput')
       await bash.release()
+      // The task settles while round 2's TaskOutput blocks, so the completion
+      // notification injects MID-TURN at round 3's boundary (Task 10) — one
+      // turn whose last request carries the XML, not a separate idle continuation.
       await vi.waitFor(() => {
         expect(topLevelResults(frames)).toHaveLength(1)
         expect(taskNotifications(frames, 'bash-detach')).toHaveLength(1)
@@ -233,6 +247,7 @@ describe('native background task acceptance through direct provider handles', ()
       expect(outputResults[0].is_error).toBe(false)
       expect(toolResultText(outputResults[0])).toContain(panel!.result!)
       expect(toolResultBlocks(frames, 'bash-detach')).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
       expect(topLevelResults(frames)).toHaveLength(1)
       expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-BASH')
     } finally {
@@ -275,8 +290,11 @@ describe('native background task acceptance through direct provider handles', ()
       expect(acknowledgements[0].is_error).toBe(false)
       expect(toolResultText(acknowledgements[0])).toContain('TaskOutput')
       releaseNested()
+      // The backgrounded settle injects a <task-notification> continuation
+      // turn (CLI parity): the parent result plus the continuation result.
       await vi.waitFor(() => {
         expect(taskNotifications(frames, 'agent-detach')).toHaveLength(1)
+        expect(topLevelResults(frames)).toHaveLength(2)
       }, { timeout: 5000 })
 
       const notifications = taskNotifications(frames, 'agent-detach')
@@ -289,7 +307,8 @@ describe('native background task acceptance through direct provider handles', ()
         (frame) => frame.parent_tool_use_id === 'agent-detach',
       )).toBe(true)
       expect(toolResultBlocks(frames, 'agent-detach')).toHaveLength(1)
-      expect(topLevelResults(frames)).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(2)
       expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-AGENT')
     } finally {
       releaseNested()
@@ -326,14 +345,19 @@ describe('native background task acceptance through direct provider handles', ()
       await expect(handle.backgroundTasks!('nested-bash')).resolves.toBe(true)
       await vi.waitFor(() => expect(nestedRounds).toBe(2), { timeout: 5000 })
       await expect(handle.stopTask!('outer-agent')).rejects.toThrow('not backgrounded')
-      expect(liveSession(fx.sm, id).tasks.has('outer-agent')).toBe(false)
+      // The outer Agent stays foreground: it has a live task record (foreground
+      // subagents appear in the panel — claude parity) but is NOT backgrounded,
+      // so detaching the nested Bash did not detach it.
+      expect(liveSession(fx.sm, id).tasks.get('outer-agent')).toMatchObject({ isBackgrounded: false })
       expect(toolResultBlocks(frames, 'outer-agent')).toHaveLength(0)
       const acknowledgements = toolResultBlocks(frames, 'nested-bash')
       expect(acknowledgements).toHaveLength(1)
       expect(toolResultText(acknowledgements[0])).toContain('TaskOutput')
       await bash.release()
+      // The nested settle injects a <task-notification> continuation turn on
+      // the MAIN thread once the parent settles (CLI parity).
       await vi.waitFor(() => {
-        expect(topLevelResults(frames)).toHaveLength(1)
+        expect(topLevelResults(frames)).toHaveLength(2)
         expect(taskNotifications(frames, 'nested-bash')).toHaveLength(1)
       }, { timeout: 5000 })
 
@@ -346,7 +370,8 @@ describe('native background task acceptance through direct provider handles', ()
       )
       expect(nestedResults).toHaveLength(1)
       expect(nestedResults[0].parent_tool_use_id).toBe('outer-agent')
-      expect(topLevelResults(frames)).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(2)
     } finally {
       await bash.release()
       unsubscribe()
@@ -480,6 +505,240 @@ describe('native background task acceptance through direct provider handles', ()
     afterRestart.unsubscribe()
   }, 30000)
 
+  it('backgrounds Bash via run_in_background with no host detach call', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-model-bg-bash-'))
+    dirs.push(dir)
+    const bash = await controlledBash(dir, 'model-bg-bash')
+    const fx = await makeFixture(dir)
+    fx.setStream((_req, round) => {
+      if (round === 1) {
+        return toolUseTurn('model-bg-bash', 'Bash', { command: bash.command, run_in_background: true })
+      }
+      if (round === 2) {
+        return toolUseTurn('read-model-bg', 'TaskOutput', {
+          task_id: 'model-bg-bash', block: true, timeout: 5000,
+        })
+      }
+      return textTurn('PARENT-AFTER-MODEL-BG')
+    })
+    const id = await createSession(fx, dir, 'model-bg-bash')
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    try {
+      await fx.sm.send(id, 'run a command in the background')
+      // No handle.backgroundTasks / REST call anywhere in this test: the
+      // model's run_in_background:true is the ONLY detach trigger.
+      await waitForFile(bash.started)
+      await vi.waitFor(() => expect(fx.requests).toHaveLength(2), { timeout: 5000 })
+      const acknowledgements = toolResultBlocks(frames, 'model-bg-bash')
+      expect(acknowledgements).toHaveLength(1)
+      expect(acknowledgements[0].is_error).toBe(false)
+      expect(toolResultText(acknowledgements[0])).toContain('TaskOutput')
+      // A foreground shell emits NO task frame (claude parity), so a panel
+      // record at all proves the detach's task/started(isBackgrounded:true)
+      // was emitted and folded.
+      expect(liveSession(fx.sm, id).tasks.get('model-bg-bash')).toMatchObject({
+        status: 'running',
+        isBackgrounded: true,
+      })
+      expect(taskNotifications(frames, 'model-bg-bash')).toHaveLength(0)
+
+      await bash.release()
+      // The task settles while round 2's TaskOutput blocks → the completion
+      // notification injects MID-TURN at round 3's boundary (Task 10): one turn.
+      await vi.waitFor(() => {
+        expect(topLevelResults(frames)).toHaveLength(1)
+        expect(taskNotifications(frames, 'model-bg-bash')).toHaveLength(1)
+      }, { timeout: 5000 })
+      const panel = liveSession(fx.sm, id).tasks.get('model-bg-bash')
+      expect(panel).toMatchObject({ status: 'completed', isBackgrounded: true })
+      expect(panel?.result).toContain(bash.output)
+      const outputResults = toolResultBlocks(frames, 'read-model-bg')
+      expect(outputResults).toHaveLength(1)
+      expect(outputResults[0].is_error).toBe(false)
+      expect(toolResultText(outputResults[0])).toContain(panel!.result!)
+      expect(toolResultBlocks(frames, 'model-bg-bash')).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(1)
+      expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-MODEL-BG')
+    } finally {
+      await bash.release()
+      unsubscribe()
+    }
+  }, 30000)
+
+  it('stops a detached Bash through a model TaskStop call', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-model-task-stop-'))
+    dirs.push(dir)
+    const bash = await controlledBash(dir, 'model-task-stop')
+    const fx = await makeFixture(dir)
+    fx.setStream(async (_req, round) => {
+      if (round === 1) {
+        return toolUseTurn('model-task-stop', 'Bash', { command: bash.command, run_in_background: true })
+      }
+      if (round === 2) {
+        // The stop must land on a LIVE process: wait for the spawned shell's
+        // own start marker before the model asks to stop it.
+        await waitForFile(bash.started)
+        return toolUseTurn('stop-model-task', 'TaskStop', { task_id: 'model-task-stop' })
+      }
+      return textTurn('PARENT-AFTER-STOP')
+    })
+    const id = await createSession(fx, dir, 'model-task-stop')
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    try {
+      await fx.sm.send(id, 'run then stop a background command')
+      // No handle.stopTask / REST call anywhere in this test: the model's
+      // TaskStop tool call is the ONLY stop trigger.
+      await vi.waitFor(() => expect(fx.requests).toHaveLength(2), { timeout: 5000 })
+      expect(liveSession(fx.sm, id).tasks.get('model-task-stop')).toMatchObject({
+        status: 'running',
+        isBackgrounded: true,
+      })
+      // The TaskStop call settles the task MID-TURN (round 2), so the stopped
+      // notification injects at round 3's boundary (Task 10): one turn whose
+      // last request carries the XML, not a separate idle continuation.
+      await vi.waitFor(() => {
+        expect(topLevelResults(frames)).toHaveLength(1)
+        expect(taskNotifications(frames, 'model-task-stop')).toHaveLength(1)
+      }, { timeout: 5000 })
+      expect(taskNotifications(frames, 'model-task-stop')[0].status).toBe('stopped')
+      const stopResults = toolResultBlocks(frames, 'stop-model-task')
+      expect(stopResults).toHaveLength(1)
+      expect(stopResults[0].is_error).toBe(false)
+      expect(toolResultText(stopResults[0])).toContain('stopped')
+      expect(liveSession(fx.sm, id).tasks.get('model-task-stop')).toMatchObject({
+        status: 'stopped',
+        isBackgrounded: true,
+      })
+      // The Bash call keeps its single launch-ack tool_result; the stop never
+      // produces a second result for it.
+      expect(toolResultBlocks(frames, 'model-task-stop')).toHaveLength(1)
+      expect(toolResultText(toolResultBlocks(frames, 'model-task-stop')[0])).toContain('TaskOutput')
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(1)
+      expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-STOP')
+    } finally {
+      await bash.release()
+      unsubscribe()
+    }
+  }, 30000)
+
+  it('backgrounds Agent via run_in_background and publishes its real report on settle', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-model-bg-agent-'))
+    dirs.push(dir)
+    const fx = await makeFixture(dir)
+    let parentRounds = 0
+    let markNestedStarted!: () => void
+    const nestedStarted = new Promise<void>((resolve) => { markNestedStarted = resolve })
+    let releaseNested!: () => void
+    const nestedGate = new Promise<void>((resolve) => { releaseNested = resolve })
+    fx.setStream(async (req) => {
+      if (isNestedRequest(req)) {
+        markNestedStarted()
+        await nestedGate
+        return textTurn('MODEL-BG-AGENT-REPORT')
+      }
+      // The detach resolves the parent BEFORE the nested request starts, so
+      // the parent script keys on its own round count, not the nested one.
+      parentRounds++
+      return parentRounds === 1
+        ? toolUseTurn('model-bg-agent', 'Agent', {
+            description: 'background research', prompt: 'inspect', run_in_background: true,
+          })
+        : textTurn('PARENT-AFTER-MODEL-BG-AGENT')
+    })
+    const id = await createSession(fx, dir, 'model-bg-agent')
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    try {
+      await fx.sm.send(id, 'delegate research in the background')
+      // No host detach call: run_in_background:true alone detaches the Agent.
+      await nestedStarted
+      await vi.waitFor(() => expect(topLevelResults(frames)).toHaveLength(1), { timeout: 5000 })
+      const acknowledgements = toolResultBlocks(frames, 'model-bg-agent')
+      expect(acknowledgements).toHaveLength(1)
+      expect(acknowledgements[0].is_error).toBe(false)
+      expect(toolResultText(acknowledgements[0])).toContain('TaskOutput')
+      expect(liveSession(fx.sm, id).tasks.get('model-bg-agent')).toMatchObject({
+        status: 'running',
+        isBackgrounded: true,
+      })
+      expect(taskNotifications(frames, 'model-bg-agent')).toHaveLength(0)
+
+      releaseNested()
+      // The backgrounded settle injects a <task-notification> continuation
+      // turn (CLI parity): the parent result plus the continuation result.
+      await vi.waitFor(() => {
+        expect(taskNotifications(frames, 'model-bg-agent')).toHaveLength(1)
+        expect(topLevelResults(frames)).toHaveLength(2)
+      }, { timeout: 5000 })
+      const notifications = taskNotifications(frames, 'model-bg-agent')
+      expect(notifications[0].result).toBe('MODEL-BG-AGENT-REPORT')
+      expect(notifications[0].result).not.toContain('running in the background')
+      const sidechain = frames.filter((frame) => frame.parent_tool_use_id != null)
+      expect(sidechain.length).toBeGreaterThan(0)
+      expect(sidechain.every((frame) => frame.parent_tool_use_id === 'model-bg-agent')).toBe(true)
+      expect(toolResultBlocks(frames, 'model-bg-agent')).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(2)
+      expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-MODEL-BG-AGENT')
+    } finally {
+      releaseNested()
+      unsubscribe()
+    }
+  }, 30000)
+
+  it('keeps Agent foreground when run_in_background is absent or false and returns the report', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-model-fg-agent-'))
+    dirs.push(dir)
+    const fx = await makeFixture(dir)
+    let parentRounds = 0
+    let nestedRounds = 0
+    fx.setStream((req) => {
+      if (isNestedRequest(req)) {
+        nestedRounds++
+        return textTurn(nestedRounds === 1 ? 'FG-REPORT-ABSENT' : 'FG-REPORT-FALSE')
+      }
+      parentRounds++
+      if (parentRounds === 1) {
+        return toolUseTurn('fg-agent-absent', 'Agent', { description: 'foreground absent', prompt: 'inspect' })
+      }
+      if (parentRounds === 2) {
+        return toolUseTurn('fg-agent-false', 'Agent', {
+          description: 'foreground false', prompt: 'inspect', run_in_background: false,
+        })
+      }
+      return textTurn('PARENT-AFTER-FOREGROUND')
+    })
+    const id = await createSession(fx, dir, 'model-fg-agent')
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
+
+    try {
+      await fx.sm.send(id, 'delegate two foreground subtasks')
+      await vi.waitFor(() => expect(topLevelResults(frames)).toHaveLength(1), { timeout: 5000 })
+      // The established foreground contract: the tool_result IS the subagent
+      // report, never a detach acknowledgement.
+      for (const [callId, report] of [
+        ['fg-agent-absent', 'FG-REPORT-ABSENT'],
+        ['fg-agent-false', 'FG-REPORT-FALSE'],
+      ] as const) {
+        const results = toolResultBlocks(frames, callId)
+        expect(results).toHaveLength(1)
+        expect(results[0].is_error).toBe(false)
+        expect(toolResultText(results[0])).toBe(report)
+        expect(liveSession(fx.sm, id).tasks.get(callId)).toMatchObject({
+          status: 'completed',
+          isBackgrounded: false,
+        })
+      }
+      expect(topLevelResults(frames)[0].result).toBe('PARENT-AFTER-FOREGROUND')
+    } finally {
+      unsubscribe()
+    }
+  }, 30000)
+
   it('enables the existing background and stop routes without changing their response shapes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'native-background-routes-'))
     dirs.push(dir)
@@ -500,22 +759,27 @@ describe('native background task acceptance through direct provider handles', ()
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ toolUseId: 'route-stop' }),
       })
-      const stopResponse = await app.request(`/sessions/${id}/tasks/route-stop/stop`, { method: 'POST' })
-      expect({
-        backgroundStatus: backgroundResponse.status,
-        stopStatus: stopResponse.status,
-      }).toEqual({ backgroundStatus: 200, stopStatus: 200 })
+      expect(backgroundResponse.status).toBe(200)
       expect(await backgroundResponse.json()).toEqual({ ok: true, backgrounded: true })
+      // Let the parent turn settle BEFORE stopping, so the stopped notification
+      // delivers as a deterministic idle continuation turn — otherwise the stop
+      // settle races the parent's last round boundary (mid-turn vs idle).
+      await vi.waitFor(() => expect(topLevelResults(frames)).toHaveLength(1), { timeout: 5000 })
+      const stopResponse = await app.request(`/sessions/${id}/tasks/route-stop/stop`, { method: 'POST' })
+      expect(stopResponse.status).toBe(200)
       expect(await stopResponse.json()).toEqual({ ok: true })
 
+      // The stopped settle injects a <task-notification> continuation turn
+      // (CLI parity), so the parent result plus the continuation result land.
       await vi.waitFor(() => {
-        expect(topLevelResults(frames)).toHaveLength(1)
+        expect(topLevelResults(frames)).toHaveLength(2)
         expect(taskNotifications(frames, 'route-stop')).toHaveLength(1)
       }, { timeout: 5000 })
       expect(taskNotifications(frames, 'route-stop')[0].status).toBe('stopped')
       expect(toolResultBlocks(frames, 'route-stop')).toHaveLength(1)
       expect(toolResultText(toolResultBlocks(frames, 'route-stop')[0])).toContain('TaskOutput')
-      expect(topLevelResults(frames)).toHaveLength(1)
+      expectNotificationInjection(fx, frames)
+      expect(topLevelResults(frames)).toHaveLength(2)
       expect(topLevelResults(frames)[0].result).toBe('ROUTE-PARENT-DONE')
     } finally {
       await bash.release()

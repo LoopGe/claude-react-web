@@ -8,8 +8,9 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { NativeProvider } from './native-provider.js'
-import { makeNativePorts } from '../native-host-adapters.js'
-import type { NativeAuxLlmPort } from './ports.js'
+import { makeNativePorts as makeHostPorts } from '../native-host-adapters.js'
+import type { NativeHostPortsDeps } from '../native-host-adapters.js'
+import type { NativeAuxLlmPort, NativeHostPorts, NativeMemoryPort, NativeMemoryReadResult } from './ports.js'
 import type { NativeMcpConnections, NativeMcpServerInstance } from './mcp/connections.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, appendSessionTitle, loadNativeSessionLogSync } from './session-log/log.js'
@@ -47,6 +48,7 @@ import { ASK_USER_QUESTION_GUIDANCE } from './tools/ask-user-question.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { CanonicalEvent } from './canonical.js'
 import { buildRequestBody } from './anthropic-stream.js'
+import { DEFAULT_MAX_TOKENS } from './native-session.js'
 import type { Frame } from '../native-frames.js'
 import { config, __setConfigForTest } from '../../config.js'
 import { AnthropicModelDiscovery } from './model-discovery.js'
@@ -59,6 +61,15 @@ import { UploadStore } from '../../upload-store.js'
 import { aliasPathOf, attachmentRoot } from '../../attachment-paths.js'
 import { estimateText, estimateMessage, estimateToolSchema, ROLE_OVERHEAD } from './estimate.js'
 import { BUILTIN_COMMANDS } from './commands.js'
+
+/** Hermetic memory default: session tests must never read the developer's real
+ *  CLAUDE.md chain (the host reader walks cwd ancestors + the user config dir).
+ *  An empty stub keeps the overlay's memory section absent unless a test injects
+ *  its own fixture port; the environment block still renders. A test passes
+ *  `memory` explicitly to override. */
+function makeNativePorts(deps: NativeHostPortsDeps = {}): NativeHostPorts {
+  return makeHostPorts({ memory: { read: async () => ({ files: [], isGitRepo: false }) }, ...deps })
+}
 
 /** The builtin slash rows every native catalog answer now carries ahead of
  *  the skill rows (the G3 slash surface). */
@@ -866,10 +877,10 @@ describe('NativeSession', () => {
     })
     const usage = (await session.getContextUsage?.()) as NativeContextUsage
     // Prompt tokens are input + cache (the scripted turn has input 10, no
-    // cache; output does not count). The default 200K window retains 160K.
+    // cache; output does not count). The default 1M window retains 900K.
     expect(usage.totalTokens).toBe(10)
-    expect(usage.maxTokens).toBe(200_000)
-    expect(usage.autoCompactThreshold).toBe(160_000)
+    expect(usage.maxTokens).toBe(1_000_000)
+    expect(usage.autoCompactThreshold).toBe(900_000)
     expect(typeof usage.model).toBe('string')
     await session.destroy()
   })
@@ -889,11 +900,60 @@ describe('NativeSession', () => {
       expect(usage.categories!.map((c) => c.name)).toEqual([
         'System prompt', 'System tools', 'Messages', 'Autocompact buffer', 'Free space',
       ])
-      expect(usage.categories!.find((c) => c.kind === 'buffer')!.tokens).toBe(40_000)
-      expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(60_000)
+      expect(usage.categories!.find((c) => c.kind === 'buffer')!.tokens).toBe(100_000) // 1M − 900K threshold
+      expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(800_000) // 1M − 100K used − 100K buffer
       const messages = used.find((c) => c.name === 'Messages')!
       const others = used.filter((c) => c.name !== 'Messages').reduce((s, c) => s + c.tokens, 0)
       expect(messages.tokens).toBe(100_000 - others)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('Memory Files row present with memory', async () => {
+    const dir = await tempDir('native-composition-memory-')
+    const memory: NativeMemoryPort = {
+      read: async () => ({
+        files: [{ path: join(dir, 'CLAUDE.md'), scope: 'project', content: 'COMPOSITION-MEMORY-FIXTURE' }],
+        isGitRepo: true,
+      }),
+    }
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir, memory }) })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of pricedTurn('ok', 100_000)) yield ev
+    }
+    const session = provider.createSession({ id: 'comp-memory', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      // Bare fixture: no skills, no MCP — the memory row slots in after
+      // System tools (the Skills position) and before Messages.
+      expect(usage.categories!.map((c) => c.name)).toEqual([
+        'System prompt', 'System tools', 'Memory Files', 'Messages', 'Autocompact buffer', 'Free space',
+      ])
+      expect(usage.categories!.find((c) => c.name === 'Memory Files')!.tokens).toBeGreaterThan(0)
+      const used = usage.categories!.filter((c) => c.kind === 'used')
+      expect(used.reduce((s, c) => s + c.tokens, 0)).toBe(100_000)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('Memory Files row omitted when empty', async () => {
+    const dir = await tempDir('native-composition-memory-empty-')
+    // The hermetic default stub reads an empty chain.
+    const provider = providerWithStreamer([pricedTurn('ok', 100_000)], dir)
+    const session = provider.createSession({ id: 'comp-memory-empty', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage.categories!.some((c) => c.name === 'Memory Files')).toBe(false)
     } finally {
       await session.destroy()
     }
@@ -957,21 +1017,21 @@ describe('NativeSession', () => {
   })
 
   it('derives the threshold from min(window, pin) on a pinned session', async () => {
-    // Default 200K window, pin 150000 → effectiveWindow 150000.
+    // Default 1M window, pin 150000 → effectiveWindow 150000.
     const usage = await pinnedUsage(150_000)
-    expect(usage.maxTokens).toBe(200_000) // denominator stays the model window
-    expect(usage.autoCompactThreshold).toBe(120_000) // min(floor(150000×0.8)=120000, 150000−16384=133616)
+    expect(usage.maxTokens).toBe(1_000_000) // denominator stays the model window
+    expect(usage.autoCompactThreshold).toBe(133_616) // min(floor(150000×0.9)=135000, 150000−16384=133616)
   })
 
   it('leaves an unpinned session byte-identical', async () => {
     const usage = await pinnedUsage(undefined)
-    expect(usage.maxTokens).toBe(200_000)
-    expect(usage.autoCompactThreshold).toBe(160_000)
+    expect(usage.maxTokens).toBe(1_000_000)
+    expect(usage.autoCompactThreshold).toBe(900_000)
   })
 
   it('clamps a pin above the model window to a no-op', async () => {
-    const usage = await pinnedUsage(300_000) // ≥ 200K window
-    expect(usage.autoCompactThreshold).toBe(160_000)
+    const usage = await pinnedUsage(1_500_000) // ≥ 1M window
+    expect(usage.autoCompactThreshold).toBe(900_000)
   })
 
   it('disables compaction and omits the buffer row for a tiny pin', async () => {
@@ -982,9 +1042,9 @@ describe('NativeSession', () => {
   })
 
   it('makes the composition buffer/free rows honest under a pin', async () => {
-    const usage = await pinnedUsage(150_000) // threshold 120000, totalTokens 100000
-    expect(usage.categories!.find((c) => c.kind === 'buffer')!.tokens).toBe(80_000) // 200000 − 120000
-    expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(20_000) // 200000 − 100000 − 80000
+    const usage = await pinnedUsage(150_000) // threshold 133616, totalTokens 100000
+    expect(usage.categories!.find((c) => c.kind === 'buffer')!.tokens).toBe(866_384) // 1000000 − 133616
+    expect(usage.categories!.find((c) => c.kind === 'free')!.tokens).toBe(33_616) // 1000000 − 100000 − 866384
   })
 
   it('recomputes min(newWindow, pin) on a model down-switch', async () => {
@@ -1005,13 +1065,13 @@ describe('NativeSession', () => {
       session.enqueueUserMessage(userMsg('hi') as never)
       await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
       const before = (await session.getContextUsage?.()) as NativeContextUsage
-      expect(before.autoCompactThreshold).toBe(120_000)
+      expect(before.autoCompactThreshold).toBe(133_616)
       contextWindow = 100_000
       await session.setModel?.('model-small')
       const after = (await session.getContextUsage?.()) as NativeContextUsage
-      // effectiveWindow = min(100000, 150000) = 100000 → min(80000, 83616) = 80000.
+      // effectiveWindow = min(100000, 150000) = 100000 → min(90000, 83616) = 83616.
       expect(after.maxTokens).toBe(100_000)
-      expect(after.autoCompactThreshold).toBe(80_000)
+      expect(after.autoCompactThreshold).toBe(83_616)
     } finally {
       await session.destroy()
     }
@@ -1220,9 +1280,11 @@ describe('NativeSession', () => {
   })
 
   it.each([
-    { model: 'model-a', contextWindow: 1_000_000, autoCompactThreshold: 800_000 },
-    { model: 'model-b', contextWindow: 200_000, autoCompactThreshold: 160_000 },
-    { model: 'model-c', contextWindow: 128_000, autoCompactThreshold: 102_400 },
+    { model: 'model-a', contextWindow: 1_000_000, autoCompactThreshold: 900_000 },
+    { model: 'model-b', contextWindow: 200_000, autoCompactThreshold: 180_000 },
+    // 128K: floor(128000×0.9)=115200 exceeds the output reserve
+    // (128000−16384=111616), so the reserve clamps the threshold.
+    { model: 'model-c', contextWindow: 128_000, autoCompactThreshold: 111_616 },
     { model: 'model-d', contextWindow: 16_000, autoCompactThreshold: 0 },
   ])('uses the resolved $contextWindow-token window for $model', async ({ model, contextWindow, autoCompactThreshold }) => {
     const dir = await tempDir('native-context-window-')
@@ -1255,7 +1317,7 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
       resolution.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
       await expect(pending).resolves.toMatchObject({
-        totalTokens: 10, model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 800_000,
+        totalTokens: 10, model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 900_000,
       })
     } finally {
       resolution.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
@@ -1277,11 +1339,11 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1))
       await session.setModel?.('model-b')
       const second = (await session.getContextUsage?.()) as NativeContextUsage
-      expect(second).toMatchObject({ model: 'model-b', maxTokens: 128_000, autoCompactThreshold: 102_400 })
+      expect(second).toMatchObject({ model: 'model-b', maxTokens: 128_000, autoCompactThreshold: 111_616 })
 
       modelA.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
       await expect(first).resolves.toMatchObject({
-        model: 'model-b', maxTokens: 128_000, autoCompactThreshold: 102_400,
+        model: 'model-b', maxTokens: 128_000, autoCompactThreshold: 111_616,
       })
       expect(resolve.mock.calls.map(([route]) => route.model)).toEqual(['model-a', 'model-b', 'model-b'])
     } finally {
@@ -1333,7 +1395,7 @@ describe('NativeSession', () => {
     try {
       const before = structuredClone(legacyViewOf(logOf(restored)))
       const usage = (await restored.getContextUsage?.()) as NativeContextUsage
-      expect(usage).toMatchObject({ model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 800_000 })
+      expect(usage).toMatchObject({ model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 900_000 })
       expect(legacyViewOf(logOf(restored))).toEqual(before)
       expect(resolve).toHaveBeenCalledWith(expect.objectContaining({
         model: 'model-a', providerId: 'default', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages',
@@ -1378,7 +1440,7 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'context-discovery', cwd: dir, model: 'model-a' })
     try {
       const usage = (await session.getContextUsage?.()) as NativeContextUsage
-      expect(usage).toMatchObject({ model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 800_000 })
+      expect(usage).toMatchObject({ model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 900_000 })
       expect(discovery).toHaveBeenCalledTimes(1)
     } finally {
       await session.destroy()
@@ -1479,7 +1541,7 @@ describe('NativeSession', () => {
     if (late) (provider as unknown as { _testStream: unknown })._testStream = scripted
     try {
       const usage = (await session.getContextUsage?.()) as NativeContextUsage
-      expect(usage).toMatchObject({ maxTokens: 200_000, autoCompactThreshold: 160_000 })
+      expect(usage).toMatchObject({ maxTokens: 1_000_000, autoCompactThreshold: 900_000 })
       expect(discovery).not.toHaveBeenCalled()
     } finally {
       await session.destroy()
@@ -1818,7 +1880,7 @@ describe('NativeSession', () => {
 
     // The first API request advertises the builtins plus the discovered tool.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'Agent', 'Task', 'TaskOutput', 'TaskStop', 'Monitor', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
     ])
     // The permission request carries the server OWNED BY the tool's FQN,
     // resolved from discovery metadata (never parsed back out of the name).
@@ -1966,12 +2028,12 @@ describe('NativeSession', () => {
     // The parent advertises both delegation names plus the discovered MCP
     // tool; every nested request drops both (depth cap 1) but keeps MCP and Skill.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'Agent', 'Task', 'TaskOutput', 'TaskStop', 'Monitor', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo',
     ])
     const nestedRequests = requests.filter((r) => !r.tools.some((t) => t.name === 'Agent'))
     expect(nestedRequests).toHaveLength(2)
     for (const r of nestedRequests) {
-      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo'])
+      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop', 'Monitor', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'mcp__a__echo'])
       expect(r.tools.some((tool) => tool.name === 'Task')).toBe(false)
       expect(r.system).not.toContain(AGENT_GUIDANCE)
     }
@@ -2130,7 +2192,7 @@ describe('NativeSession', () => {
       expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Skill'])
       expect(requests[0].system).toContain('REVIEW-PROMPT')
       expect(requests[0].system).toContain('- demo: demo description')
-      expect(requests[0].system).not.toContain('- other')
+      expect(requests[0].system).not.toContain('- other: other description')
       const skillResult = legacyViewOf(logOf(session)).find((event) =>
         event.type === 'user' && event.parent_tool_use_id === 'tu-parent')
       expect(skillResult?.message?.content?.[0]).toMatchObject({
@@ -2418,7 +2480,7 @@ describe('NativeSession', () => {
     expect(requests[0].model).toBe('reviewer-model')
     expect(requests[0].system).toContain('REVIEW-PROMPT')
     expect(requests[0].system).toContain('- demo: demo description')
-    expect(requests[0].system).not.toContain('- other')
+    expect(requests[0].system).not.toContain('- other: other description')
     // Persona fields win field-wise over the base tool profile: the base
     // disallowedTools ['Read'] must not remove the persona-allowed Read tool.
     expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read', 'Skill'])
@@ -2716,7 +2778,7 @@ describe('NativeSession', () => {
     expect(requests[0].model).toBe('base-model')
     expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read'])
     expect(requests[0].system).toContain('- demo: demo description')
-    expect(requests[0].system).not.toContain('- other')
+    expect(requests[0].system).not.toContain('- other: other description')
     expect(effectiveSettingsOf(session)).toEqual({
       model: 'base-model',
       permissionMode: 'acceptEdits',
@@ -2780,7 +2842,7 @@ describe('NativeSession', () => {
     expect(requests[0].system).toContain('OLD-REVIEW-PROMPT')
     expect(requests[0].system).not.toContain('NEW-REVIEW-PROMPT')
     expect(requests[0].system).toContain('- demo: demo description')
-    expect(requests[0].system).not.toContain('- other')
+    expect(requests[0].system).not.toContain('- other: other description')
     expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read'])
     expect(effectiveSettingsOf(resumed)).toEqual({
       model: 'reviewer-old',
@@ -3265,7 +3327,7 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('review') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
 
-    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
+    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'Agent', 'Task', 'TaskOutput', 'TaskStop', 'Monitor', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
     const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
     // The definition's prompt is the nested instruction suffix and its model the
     // default nested model...
@@ -3495,7 +3557,7 @@ describe('NativeSession', () => {
     // The effective tool list holds from construction (rebuildTools runs in the
     // constructor), not builtins-only until the first turn.
     expect((coreOf(session) as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name))
-      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
+      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'Agent', 'Task', 'TaskOutput', 'TaskStop', 'Monitor', 'Skill', 'EnterPlanMode', 'ExitPlanMode'])
     const other = provider.createSession({ id: 'agents-cap-other', cwd: dir })
     expect((coreOf(session) as unknown as { todoWriteTool: unknown }).todoWriteTool)
       .not.toBe((coreOf(other) as unknown as { todoWriteTool: unknown }).todoWriteTool)
@@ -3734,7 +3796,7 @@ describe('NativeSession', () => {
       expect(requests[0].system).toContain('FIRST-PERSONA')
       expect(requests[0].system).toContain('- demo: demo description')
       expect(requests[0].system).not.toContain('SECOND-PERSONA')
-      expect(requests[0].system).not.toContain('- other')
+      expect(requests[0].system).not.toContain('- other: other description')
       expect(permissionModes).toEqual(['plan'])
       expect(efforts).toEqual(['low', 'low'])
     } finally {
@@ -7219,6 +7281,158 @@ describe('NativeSession', () => {
     })
   })
 
+  describe('nested-stream fork seam', () => {
+    /** The widened streamFor request: the three fork overrides are optional,
+     *  so a caller that passes none keeps the session-default behavior. */
+    type ForkSeamReq = {
+      model: string
+      system: string
+      tools: unknown[]
+      messages: unknown[]
+      signal: AbortSignal
+      appendMessages?: unknown[]
+      maxTokens?: number
+      forkProfile?: boolean
+    }
+
+    const seamOf = (session: unknown): { streamFor: (req: ForkSeamReq) => AsyncIterable<CanonicalEvent> } =>
+      coreOf(session) as unknown as { streamFor: (req: ForkSeamReq) => AsyncIterable<CanonicalEvent> }
+
+    const prefix = [{ role: 'user', content: [{ type: 'text', text: 'prefix question' }] }]
+    const tail = [
+      { role: 'assistant', content: [{ type: 'text', text: 'tail answer' }] },
+      { role: 'user', content: [{ type: 'text', text: 'summarize progress' }] },
+    ]
+
+    it('fork seam: the scripted streamSupplier sees the flattened prefix + tail', async () => {
+      const dir = await tempDir('native-fork-seam-scripted-')
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const requests: CapturedRequest[] = []
+      ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('ok')], requests)
+      const session = provider.createSession({ id: 'fork-seam-scripted', cwd: dir })
+      try {
+        const events: CanonicalEvent[] = []
+        for await (const ev of seamOf(session).streamFor({
+          model: 'claude-sonnet-4-5', system: 'sys', tools: [], messages: prefix,
+          appendMessages: tail, maxTokens: 64, forkProfile: true,
+          signal: new AbortController().signal,
+        })) events.push(ev)
+        expect(events.length).toBeGreaterThan(0)
+        expect(requests).toHaveLength(1)
+        // The seam flattens the breakpoint-free tail into messages, exactly
+        // as runSuggestionFork's test seam does.
+        expect(requests[0].messages).toEqual([...prefix, ...tail])
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('fork seam: production forwards appendMessages/maxTokens and strips effort/fast mode under forkProfile', async () => {
+      const dir = await tempDir('native-fork-seam-prod-')
+      const origConfig = { ...config }
+      __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+      const requests: Array<Parameters<typeof buildRequestBody>[0]> = []
+      streamAnthropicMessagesMock.mockImplementation(async function* (req: Parameters<typeof buildRequestBody>[0]) {
+        requests.push(req)
+        for (const ev of textTurn('ok')) yield ev
+      })
+      const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir }) })
+      const session = provider.createSession({
+        id: 'fork-seam-prod', cwd: dir, model: 'claude-opus-4-8', effortLevel: 'high', fastMode: true,
+      })
+      const drain = async (req: ForkSeamReq): Promise<void> => {
+        const events: CanonicalEvent[] = []
+        for await (const ev of seamOf(session).streamFor(req)) events.push(ev)
+        expect(events.length).toBeGreaterThan(0)
+      }
+      try {
+        // Absent overrides keep the session defaults (existing callers unchanged).
+        await drain({ model: 'claude-opus-4-8', system: 'sys', tools: [], messages: prefix, signal: new AbortController().signal })
+        expect(requests).toHaveLength(1)
+        expect(requests[0].maxTokens).toBe(DEFAULT_MAX_TOKENS)
+        expect(requests[0].appendMessages).toBeUndefined()
+        expect(requests[0].effort).toBe('high')
+        expect(requests[0].fastMode).toBe(true)
+        const baseBody = buildRequestBody(requests[0]) as { max_tokens: number; output_config?: unknown; speed?: unknown }
+        expect(baseBody.max_tokens).toBe(DEFAULT_MAX_TOKENS)
+        expect(baseBody.output_config).toEqual({ effort: 'high' })
+        expect(baseBody.speed).toBe('fast')
+
+        // forkProfile: the small cap and the breakpoint-free tail reach the
+        // wire; effort and fast mode are stripped from the request.
+        await drain({
+          model: 'claude-opus-4-8', system: 'sys', tools: [], messages: prefix,
+          appendMessages: tail, maxTokens: 64, forkProfile: true,
+          signal: new AbortController().signal,
+        })
+        expect(requests).toHaveLength(2)
+        const forkReq = requests[1]
+        expect(forkReq.maxTokens).toBe(64)
+        expect(forkReq.appendMessages).toEqual(tail)
+        expect(forkReq.effort).toBeUndefined()
+        expect(forkReq.fastMode).toBeUndefined()
+        const body = buildRequestBody(forkReq) as { max_tokens: number; messages: unknown[]; output_config?: unknown; speed?: unknown }
+        expect(body.max_tokens).toBe(64)
+        expect(body.output_config).toBeUndefined()
+        expect(body.speed).toBeUndefined()
+        // The tail lands AFTER the cached prefix, verbatim and breakpoint-free;
+        // the prefix keeps its own last-block breakpoint.
+        expect(body.messages).toHaveLength(prefix.length + tail.length)
+        expect(body.messages.slice(prefix.length)).toEqual(tail)
+        expect(JSON.stringify(body.messages.slice(prefix.length))).not.toContain('cache_control')
+        const lastPrefix = body.messages[prefix.length - 1] as { content: Array<{ cache_control?: unknown }> }
+        expect(lastPrefix.content[lastPrefix.content.length - 1].cache_control).toEqual({ type: 'ephemeral' })
+      } finally {
+        await session.destroy()
+        streamAnthropicMessagesMock.mockReset()
+        streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
+        __setConfigForTest(origConfig)
+      }
+    })
+  })
+
+  describe('task/progress emission', () => {
+    it('emits verbatim on the live channel and never persists (live-only)', async () => {
+      const dir = await tempDir('native-task-progress-')
+      const provider = providerWithStreamer([], dir)
+      const session = provider.createSession({ id: 'task-progress-emission', cwd: dir })
+      const core = coreOf(session) as unknown as {
+        messages: AsyncIterable<Record<string, unknown>>
+        persistFrame: (frame: unknown, parentToolUseId: string | null) => void
+        emitFrame: (frame: unknown, parentToolUseId: string | null) => void
+      }
+      const neutral: Array<Record<string, unknown>> = []
+      void (async () => { for await (const frame of core.messages) neutral.push(frame) })()
+      const progressFrame = {
+        type: 'task/progress',
+        taskId: 'task-1',
+        toolUseId: 'tu-agent',
+        description: 'review the diff',
+        subagentType: 'reviewer',
+        usage: { totalTokens: 120, toolUses: 3, durationMs: 450 },
+        lastToolName: 'Read',
+        summary: 'reading files',
+        time: 1730000000000,
+      }
+      try {
+        const eventsBefore = neutralLogEvents(session).length
+        // The nested runner's emit pair (agentDeps.emit): persist + emit.
+        core.persistFrame(progressFrame, 'tu-agent')
+        core.emitFrame(progressFrame, 'tu-agent')
+        // The core seeds an ambient init frame; the emission under test is
+        // the first non-init frame on the channel.
+        await vi.waitFor(() => expect(neutral.some((frame) => frame.type !== 'init')).toBe(true))
+        // Operational: pushed verbatim, NOT wrapped in an enveloped-conversation
+        // (the wrapper is the conversation-frame path and would mis-project).
+        expect(neutral.find((frame) => frame.type !== 'init')).toEqual(progressFrame)
+        // R6 live-only: the persist half is a no-op for a non-assistant frame.
+        expect(neutralLogEvents(session)).toHaveLength(eventsBefore)
+      } finally {
+        await session.destroy()
+      }
+    })
+  })
+
   describe('title generation and account info', () => {
     const profile = (recapModel: string) => ({
       id: 'p1',
@@ -7815,6 +8029,165 @@ describe('native attachment occurrence neutral read (Task 4)', () => {
   function publicFile(attachment: NativeFileAttachment) {
     return { type: 'file', attachment: { id: attachment.id, name: attachment.name, size: attachment.size, digest: attachment.digest } }
   }
+})
+
+describe('per-turn memory + environment overlay', () => {
+  const MEM_FIXTURE: NativeMemoryReadResult = {
+    files: [{ path: '/repo/CLAUDE.md', scope: 'project', content: 'MEM-FIXTURE' }],
+    isGitRepo: true,
+  }
+
+  /** A controllable memory port: `set` swaps the read result between turns. */
+  function memoryStub(initial: NativeMemoryReadResult) {
+    let current = initial
+    const port: NativeMemoryPort = { read: async () => current }
+    return { port, set: (next: NativeMemoryReadResult) => { current = next } }
+  }
+
+  function streamerOf(provider: NativeProvider, scripts: CanonicalEvent[][], requests: CapturedRequest[]) {
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(scripts, requests)
+  }
+
+  async function drain(session: { messages: AsyncIterable<unknown> }, frames: Frame[]) {
+    for await (const f of session.messages) frames.push(f as Frame)
+  }
+
+  it('turn system carries behavior + memory + environment in order', async () => {
+    const dir = await tempDir('native-overlay-order-')
+    await writeProjectSkill(dir, 'demo')
+    const stub = memoryStub(MEM_FIXTURE)
+    const provider = new NativeProvider({
+      stateDir: dir,
+      agentStore: agentStoreOf({ reviewer: agentDefinition() }),
+      ports: makeNativePorts({ stateDir: dir, memory: stub.port }),
+    })
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'overlay-order', cwd: dir, agent: 'reviewer' })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      const sys = requests[0].system
+      expect(sys).toContain('# Tone and style')
+      expect(sys).toContain('MEM-FIXTURE')
+      expect(sys).toContain('# Environment')
+      expect(sys).toContain(`Working directory: ${dir}`)
+      expect(sys).toContain('Is a git repository: true')
+      const behavior = sys.indexOf('# Tone and style')
+      const persona = sys.indexOf('REVIEW-PROMPT')
+      const memory = sys.indexOf('MEM-FIXTURE')
+      const environment = sys.indexOf('# Environment')
+      const skills = sys.indexOf('<available_skills>')
+      expect(behavior).toBeGreaterThanOrEqual(0)
+      expect(persona).toBeGreaterThan(behavior)
+      expect(memory).toBeGreaterThan(persona)
+      expect(environment).toBeGreaterThan(memory)
+      expect(skills).toBeGreaterThan(environment)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('memory edit lands on the next turn', async () => {
+    const dir = await tempDir('native-overlay-edit-')
+    const stub = memoryStub(MEM_FIXTURE)
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir, memory: stub.port }) })
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('one'), textTurn('two')], requests)
+    const session = provider.createSession({ id: 'overlay-edit', cwd: dir })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      stub.set({ files: [{ path: '/repo/CLAUDE.md', scope: 'project', content: 'MEM-EDITED' }], isGitRepo: true })
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+      expect(requests[0].system).toContain('MEM-FIXTURE')
+      expect(requests[0].system).not.toContain('MEM-EDITED')
+      expect(requests[1].system).toContain('MEM-EDITED')
+      expect(requests[1].system).not.toContain('MEM-FIXTURE')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('byte-stable system across unchanged same-day turns', async () => {
+    const dir = await tempDir('native-overlay-stable-')
+    const stub = memoryStub(MEM_FIXTURE)
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir, memory: stub.port }) })
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('one'), textTurn('two')], requests)
+    const session = provider.createSession({ id: 'overlay-stable', cwd: dir })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+      expect(requests[1].system).toBe(requests[0].system)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('empty memory omits the section, environment stays', async () => {
+    const dir = await tempDir('native-overlay-empty-')
+    const stub = memoryStub({ files: [], isGitRepo: false })
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir, memory: stub.port }) })
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'overlay-empty', cwd: dir })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('hi') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+      expect(requests[0].system).not.toContain('# Memory Files')
+      expect(requests[0].system).toContain('# Environment')
+      expect(requests[0].system).toContain('Is a git repository: false')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('subagent system inherits memory + environment (and behavior), without delegation guidance', async () => {
+    const dir = await tempDir('native-overlay-subagent-')
+    const stub = memoryStub(MEM_FIXTURE)
+    const provider = new NativeProvider({ stateDir: dir, ports: makeNativePorts({ stateDir: dir, memory: stub.port }) })
+    const requests: CapturedRequest[] = []
+    streamerOf(provider, [
+      agentTurn('agent-1', { description: 'd', prompt: 'do it' }),
+      textTurn('NESTED-REPORT'),
+      textTurn('PARENT-DONE'),
+    ], requests)
+    const session = provider.createSession({
+      id: 'overlay-subagent',
+      cwd: dir,
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void drain(session, frames)
+    try {
+      session.enqueueUserMessage(userMsg('delegate') as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+      const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
+      expect(nested.system).toContain('MEM-FIXTURE')
+      expect(nested.system).toContain('# Environment')
+      expect(nested.system).toContain(`Working directory: ${dir}`)
+      // Both prompt variants carry the behavior sections (Task 2 coverage nit).
+      expect(nested.system).toContain('# Tone and style')
+      expect(nested.system).not.toContain(AGENT_GUIDANCE)
+      expect(requests[0].system).toContain('MEM-FIXTURE')
+      expect(requests[0].system).toContain('# Environment')
+      expect(requests[0].system).toContain(AGENT_GUIDANCE)
+    } finally {
+      await session.destroy()
+    }
+  })
 })
 
 describe('native system prompt: environment + agent roster', () => {

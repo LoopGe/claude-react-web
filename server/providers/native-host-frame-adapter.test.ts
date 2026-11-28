@@ -295,7 +295,7 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
     })
     const event: OperationalFrame = {
       type: 'task/started', taskId: 'task-1', toolUseId: 'tu-1', taskType: 'local_agent',
-      description: 'inspect the repo', subagentType: 'Explore', time: 1234,
+      description: 'inspect the repo', subagentType: 'Explore', isBackgrounded: true, time: 1234,
     }
     const projected = projectNativeEventToSdk(event) as Record<string, any>
     expect(projected).toEqual(golden)
@@ -309,9 +309,78 @@ describe('projectNativeEventToSdk — operational reconstruction (R6)', () => {
       taskId: 'task-2', toolUseId: 'tu-2', taskType: 'local_bash', description: 'run a shell', receivedAt: 99,
     })
     const event: OperationalFrame = {
-      type: 'task/started', taskId: 'task-2', toolUseId: 'tu-2', taskType: 'local_bash', description: 'run a shell', time: 99,
+      type: 'task/started', taskId: 'task-2', toolUseId: 'tu-2', taskType: 'local_bash', description: 'run a shell', isBackgrounded: true, time: 99,
     }
     expect(projectNativeEventToSdk(event)).toEqual(golden)
+  })
+
+  it('task_started: local_monitor projects the monitor discriminant verbatim (Phase C)', () => {
+    const golden = taskStartedFrame({
+      taskId: 'task-3', toolUseId: 'tu-3', taskType: 'local_monitor', description: 'watch the deploy log', receivedAt: 7,
+    })
+    const event: OperationalFrame = {
+      type: 'task/started', taskId: 'task-3', toolUseId: 'tu-3', taskType: 'local_monitor',
+      description: 'watch the deploy log', isBackgrounded: true, time: 7,
+    }
+    const projected = projectNativeEventToSdk(event) as Record<string, any>
+    expect(projected).toEqual(golden)
+    // The wire carries the internal discriminant; the host fold normalizes it
+    // to the friendly 'monitor' label (normalizeTaskType, shared/tasks.ts).
+    expect(projected.subtype).toBe('task_started')
+    expect(projected.task_type).toBe('local_monitor')
+    expect('subagent_type' in projected).toBe(false)
+    expect('session_id' in projected).toBe(false)
+    expect('uuid' in projected).toBe(false)
+    expect('parent_tool_use_id' in projected).toBe(false)
+  })
+
+  it('task_started: is_backgrounded projects the neutral isBackgrounded fact (false and true)', () => {
+    const event: OperationalFrame = {
+      type: 'task/started', taskId: 'task-9', toolUseId: 'tu-9', taskType: 'local_agent',
+      description: 'watch a task', subagentType: 'Explore', time: 42, isBackgrounded: false,
+    }
+    const foreground = projectNativeEventToSdk(event) as Record<string, any>
+    expect(foreground.is_backgrounded).toBe(false)
+    const backgrounded = projectNativeEventToSdk({ ...event, isBackgrounded: true }) as Record<string, any>
+    expect(backgrounded.is_backgrounded).toBe(true)
+  })
+
+  it('task_progress: full field set, neutral usage mapping, NO session envelope', () => {
+    const event: OperationalFrame = {
+      type: 'task/progress', taskId: 'tu1', toolUseId: 'tu1', description: 'analyze module',
+      subagentType: 'Explore',
+      usage: { totalTokens: 1200, toolUses: 4, durationMs: 31000 },
+      lastToolName: 'Read', summary: 'Analyzing authentication module', time: 1700000000000,
+    }
+    const projected = projectNativeEventToSdk(event) as Record<string, any>
+    expect(projected).toEqual({
+      type: 'system', subtype: 'task_progress',
+      task_id: 'tu1', tool_use_id: 'tu1', description: 'analyze module',
+      subagent_type: 'Explore',
+      usage: { total_tokens: 1200, tool_uses: 4, duration_ms: 31000 },
+      last_tool_name: 'Read', summary: 'Analyzing authentication module',
+      receivedAt: 1700000000000,
+    })
+    expect('session_id' in projected).toBe(false)
+    expect('uuid' in projected).toBe(false)
+    expect('parent_tool_use_id' in projected).toBe(false)
+  })
+
+  it('task_progress: omits subagent_type / last_tool_name / summary when absent', () => {
+    const event: OperationalFrame = {
+      type: 'task/progress', taskId: 'tu2', toolUseId: 'tu2', description: 'run a shell',
+      usage: { totalTokens: 0, toolUses: 0, durationMs: 0 }, time: 5,
+    }
+    const projected = projectNativeEventToSdk(event) as Record<string, any>
+    expect(projected).toEqual({
+      type: 'system', subtype: 'task_progress',
+      task_id: 'tu2', tool_use_id: 'tu2', description: 'run a shell',
+      usage: { total_tokens: 0, tool_uses: 0, duration_ms: 0 },
+      receivedAt: 5,
+    })
+    expect('subagent_type' in projected).toBe(false)
+    expect('last_tool_name' in projected).toBe(false)
+    expect('summary' in projected).toBe(false)
   })
 
   it('task_notification: terminal status, inline result, completion time', () => {

@@ -141,10 +141,11 @@ function isSessionLog(file: string): boolean {
   return relative(nativeDir, file).split(sep).join('/').startsWith('session-log/')
 }
 
-/** Neutral fork-seed receivers whose `.events` field is the NEUTRAL seed list
- *  (NativeForkSeed.events), NOT the log's dropped legacy read view. The only
- *  core `.events` read outside session-log is `forkSeed.events`. */
-const SEED_EVENTS_RECEIVERS = new Set(['forkSeed'])
+/** Neutral receivers whose `.events` field is a NEUTRAL fact list, NOT the
+ *  log's dropped legacy read view: `forkSeed.events` (NativeForkSeed.events)
+ *  and `facts.events` (TaskNotificationFacts monitor event lines). Every core
+ *  `.events` read outside session-log must be one of these. */
+const SEED_EVENTS_RECEIVERS = new Set(['forkSeed', 'facts'])
 
 interface ImportRef {
   specifier: string

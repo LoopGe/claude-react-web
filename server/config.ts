@@ -84,8 +84,15 @@ interface ConfigFile {
   nativePdfDocuments?: boolean
   /** Fraction of the context window at which the native auto-compact trigger
    *  fires when the session has no explicit `autoCompactWindow`
-   *  (`totalTokens >= maxTokens * ratio`). Range (0, 1]. Default: 0.8. */
+   *  (`totalTokens >= maxTokens * ratio`). Range (0, 1]. Default: 0.9. */
   nativeAutoCompactRatio?: number
+  /** Context window (tokens) the native provider assumes when a model has
+   *  neither a `profile.modelContextWindows` override nor a successful
+   *  endpoint discovery (`GET {baseUrl}/v1/models/{model}` → max_input_tokens).
+   *  A guess by construction — gateways that serve smaller models correct it
+   *  here, and per-model overrides stay the precise escape hatch. Positive
+   *  safe integer. Default: 1000000. */
+  nativeDefaultContextWindow?: number
   /** LEGACY alias for `maxGroupPanels` — still read so existing config.json
    *  files keep working; `maxGroupPanels` wins when both are present. */
   maxOpenPanels?: number
@@ -237,8 +244,11 @@ export interface ServerConfig {
   /** Native document projection for new PDF occurrences. Default: true. */
   readonly nativePdfDocuments: boolean
   /** Native auto-compact threshold ratio — see
-   *  ConfigFile.nativeAutoCompactRatio. Range (0, 1]. Default: 0.8. */
+   *  ConfigFile.nativeAutoCompactRatio. Range (0, 1]. Default: 0.9. */
   readonly nativeAutoCompactRatio: number
+  /** Native fallback context window — see
+   *  ConfigFile.nativeDefaultContextWindow. Default: 1000000. */
+  readonly nativeDefaultContextWindow: number
   readonly workingStuckMs: number
   readonly maxGroupPanels: number
   /** Undefined until config.json is loaded and `authToken` is populated.
@@ -351,7 +361,8 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   nativeAutoCompact: true,
   nativeAttachmentFidelity: true,
   nativePdfDocuments: true,
-  nativeAutoCompactRatio: 0.8,
+  nativeAutoCompactRatio: 0.9,
+  nativeDefaultContextWindow: 1_000_000,
   workingStuckMs: 60 * 60 * 1000,
   maxGroupPanels: 3,
   authToken: undefined,
@@ -648,6 +659,18 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { nativeAutoCompactRatio: number }).nativeAutoCompactRatio =
       Math.min(1, file_.nativeAutoCompactRatio)
     log.info(`nativeAutoCompactRatio: ${merged.nativeAutoCompactRatio}`)
+  }
+
+  // Fallback context window: a positive safe integer only — anything else
+  // keeps the default (a bad guess must not shrink the window to garbage).
+  if (
+    typeof file_.nativeDefaultContextWindow === 'number'
+    && Number.isSafeInteger(file_.nativeDefaultContextWindow)
+    && file_.nativeDefaultContextWindow > 0
+  ) {
+    ;(merged as { nativeDefaultContextWindow: number }).nativeDefaultContextWindow =
+      file_.nativeDefaultContextWindow
+    log.info(`nativeDefaultContextWindow: ${merged.nativeDefaultContextWindow}`)
   }
 
   // maxGroupPanels (canonical) wins over the legacy `maxOpenPanels` alias.

@@ -4055,6 +4055,40 @@ describe('liteContextUsageFromSdkUsage', () => {
   ])('returns null for %s', (_name, raw) => {
     expect(liteContextUsageFromSdkUsage(raw, aggregateLast())).toBeNull()
   })
+
+  it('a zero-total reading lands when the caller allows it (the zero-turn seed)', () => {
+    // Native's getContextUsage reports totalTokens 0 before the first turn
+    // (lastUsage is turn-end accounting). The SEED path accepts that reading —
+    // the cache is empty by definition there, so the zero guard's clobber
+    // protection has nothing to protect — and the painted window gives the
+    // mid-turn assistant derivation its denominator from round 1. Without
+    // this, a fresh native session's bar stayed empty its whole first turn.
+    const zero = { ...cliPayload, totalTokens: 0, percentage: 0 }
+    // Default (reconcile) path keeps refusing zero.
+    expect(liteContextUsageFromSdkUsage(zero, undefined)).toBeNull()
+    const out = liteContextUsageFromSdkUsage(zero, undefined, { allowZeroTotal: true })
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(0)
+    expect(out!.percentage).toBe(0)
+    expect(out!.maxTokens).toBe(1000000)
+    expect(out!.rawMaxTokens).toBe(1000000)
+    expect(out!.model).toBe('zhipuai/glm-5.3-flash')
+    expect(out!.autoCompactThreshold).toBe(967000)
+    expect(out!.source).toBe('probe')
+  })
+
+  it('allowZeroTotal still refuses a missing/negative/non-finite total, a fraction rounding to zero, and an unusable window/model', () => {
+    for (const raw of [
+      { maxTokens: 1000, model: 'm' },
+      { totalTokens: -1, maxTokens: 1000, model: 'm' },
+      { totalTokens: Number.NaN, maxTokens: 1000, model: 'm' },
+      { totalTokens: 0.4, maxTokens: 1000, model: 'm' },
+      { totalTokens: 0, maxTokens: 0, model: 'm' },
+      { totalTokens: 0, maxTokens: 1000 },
+    ]) {
+      expect(liteContextUsageFromSdkUsage(raw, undefined, { allowZeroTotal: true })).toBeNull()
+    }
+  })
 })
 
 describe('resultUsageUnverifiable', () => {

@@ -5,9 +5,53 @@ import type { ToolOutcome } from './tools/types.js'
 
 export interface NativeTaskMetadata {
   toolUseId: string
-  taskType: 'shell' | 'subagent'
+  taskType: 'shell' | 'subagent' | 'monitor'
   description: string
   subagentType?: string
+}
+
+/** The neutral live-frame task discriminant for each metadata task type. The
+ *  host adapter projects these to the SDK `task_started` shape; the friendly
+ *  client labels (shell / subagent / monitor) come from shared/tasks.ts. */
+const TASK_TYPE_FRAME = {
+  shell: 'local_bash',
+  subagent: 'local_agent',
+  monitor: 'local_monitor',
+} as const
+
+/** The model-facing completion facts of a backgrounded task settle — the
+ *  neutral input to the `<task-notification>` user injection (the CLI's
+ *  background-completion wake). `description` is the task's own description
+ *  (the XML `<summary>`); `events` carries monitor event lines (Monitor
+ *  tasks) — a plain completion carries only `result`. */
+export interface TaskNotificationFacts {
+  taskId: string
+  toolUseId?: string
+  description: string
+  status: 'completed' | 'failed' | 'stopped'
+  result: string
+  events?: string[]
+}
+
+function escapeXmlText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/** Build the harness `<task-notification>` injection body. The grammar is the
+ *  inverse of shared/user-frames.ts's parser (the host classifies the
+ *  injection BY CONTENT): task-id / tool-use-id / status / summary / result,
+ *  then one `<event>` line per monitor event. Text fields are entity-escaped
+ *  so a result carrying markup survives the round trip. */
+export function taskNotificationXml(facts: TaskNotificationFacts): string {
+  const parts = [
+    `<task-id>${escapeXmlText(facts.taskId)}</task-id>`,
+    ...(facts.toolUseId !== undefined ? [`<tool-use-id>${escapeXmlText(facts.toolUseId)}</tool-use-id>`] : []),
+    `<status>${facts.status}</status>`,
+    `<summary>${escapeXmlText(facts.description)}</summary>`,
+    `<result>${escapeXmlText(facts.result)}</result>`,
+    ...(facts.events ?? []).map((event) => `<event>${escapeXmlText(event)}</event>`),
+  ]
+  return `<task-notification>${parts.join('')}</task-notification>`
 }
 
 type TerminalStatus = 'completed' | 'failed' | 'stopped'
@@ -45,11 +89,23 @@ const MAX_OUTPUT_TIMEOUT = 600_000
 export class NativeTaskManager {
   private readonly records = new Map<string, TaskRecord>()
 
-  // Emits NEUTRAL live-only operational task frames (R6): task/started on
-  // detach, task/notification on a backgrounded settle. The host adapter owns
-  // the SDK projection (task_started / task_notification); the core never
-  // constructs SDK shapes. These frames are live-only — never persisted.
-  constructor(private readonly emit: (frame: OperationalFrame) => void) {}
+  // Emits NEUTRAL live-only operational task frames (R6): task/started on a
+  // foreground-subagent launch (isBackgrounded:false) and on detach of either
+  // type (isBackgrounded:true); task/notification when a backgrounded task
+  // settles (either type) or a foreground subagent settles. Foreground shells
+  // emit nothing — claude parity. The host adapter owns the SDK projection
+  // (task_started / task_notification); the core never constructs SDK shapes.
+  // These frames are live-only — never persisted.
+  //
+  // `inject` is the MODEL-facing half of a backgrounded settle: the session
+  // wires it to its idle-injection queue, which delivers the facts as a
+  // <task-notification> user turn (CLI parity — the operational frame alone
+  // only feeds the TasksPanel). A foreground settle never injects: the parent
+  // already holds the result via its tool_result.
+  constructor(
+    private readonly emit: (frame: OperationalFrame) => void,
+    private readonly inject?: (notification: TaskNotificationFacts) => void,
+  ) {}
 
   runForeground(
     metadata: NativeTaskMetadata,
@@ -78,6 +134,21 @@ export class NativeTaskManager {
     }
     this.records.set(metadata.toolUseId, record)
 
+    // Claude parity: a foreground subagent announces its launch immediately
+    // (isBackgrounded:false); a foreground shell stays silent.
+    if (metadata.taskType === 'subagent') {
+      this.emit({
+        type: 'task/started',
+        taskId: metadata.toolUseId,
+        toolUseId: metadata.toolUseId,
+        taskType: 'local_agent',
+        description: metadata.description,
+        ...(metadata.subagentType !== undefined ? { subagentType: metadata.subagentType } : {}),
+        isBackgrounded: false,
+        time: record.startedAt,
+      })
+    }
+
     let execution: Promise<ToolOutcome>
     try {
       execution = Promise.resolve(execute(controller.signal))
@@ -97,6 +168,21 @@ export class NativeTaskManager {
       this.resolveOutputWaiters(record, this.terminalOutcome(record))
       if (wasForeground) {
         record.resolveLoop(outcome)
+        // A foreground subagent reports its settle too (claude parity); a
+        // foreground shell resolves the loop only. A subagent backgrounded
+        // mid-flight has wasForeground === false and takes the branch below,
+        // so it notifies exactly once.
+        if (metadata.taskType === 'subagent') {
+          this.emit({
+            type: 'task/notification',
+            taskId: record.metadata.toolUseId,
+            toolUseId: record.metadata.toolUseId,
+            description: record.metadata.description,
+            status: record.status,
+            result: outcome.text,
+            time: Date.now(),
+          })
+        }
       } else {
         this.emit({
           type: 'task/notification',
@@ -106,6 +192,13 @@ export class NativeTaskManager {
           status: record.status,
           result: outcome.text,
           time: Date.now(),
+        })
+        this.inject?.({
+          taskId: record.metadata.toolUseId,
+          toolUseId: record.metadata.toolUseId,
+          description: record.metadata.description,
+          status: record.status,
+          result: outcome.text,
         })
       }
       this.pruneTerminalRecords()
@@ -190,9 +283,10 @@ export class NativeTaskManager {
       type: 'task/started',
       taskId: record.metadata.toolUseId,
       toolUseId: record.metadata.toolUseId,
-      taskType: record.metadata.taskType === 'shell' ? 'local_bash' : 'local_agent',
+      taskType: TASK_TYPE_FRAME[record.metadata.taskType],
       description: record.metadata.description,
       ...(record.metadata.subagentType !== undefined ? { subagentType: record.metadata.subagentType } : {}),
+      isBackgrounded: true,
       time: record.startedAt,
     })
     record.resolveLoop({

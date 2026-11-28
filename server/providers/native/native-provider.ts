@@ -9,7 +9,7 @@ import { HttpError } from '../../errors.js'
 import { claudeConfigDir } from '../../claude-config-dir.js'
 import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../../../shared/transcript-format.js'
 import type { SessionMeta } from '../../persistence.js'
-import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef } from '../types.js'
+import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef, TasklistSource } from '../types.js'
 import type { ResumableSession } from '../../session-types.js'
 import {
   listNativeResumableRows,
@@ -22,6 +22,7 @@ import type { NativeHostPorts } from './ports.js'
 import { NativeMcpConnections } from './mcp/connections.js'
 import { SharedRegistry } from './mcp/shared-registry.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
+import { BEHAVIOR_SECTIONS } from './prompt/behavior.js'
 import {
   readNativeEnvironment,
   environmentSection,
@@ -39,6 +40,7 @@ import { AnthropicModelDiscovery } from './model-discovery.js'
 import { AGENT_GUIDANCE } from './subagent.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
 import { TASK_OUTPUT_GUIDANCE } from './tools/task-output.js'
+import { TASK_STOP_GUIDANCE } from './tools/task-stop.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import { appendSessionTitle, deleteNativeSessionLog, hasNativeSessionLog } from './session-log/log.js'
 import { resolveNativeStateDir } from './session-log/paths.js'
@@ -54,6 +56,10 @@ import { lsTool } from './tools/ls.js'
 import { notebookEditTool } from './tools/notebook-edit.js'
 import { askUserQuestionTool } from './tools/ask-user-question.js'
 import { TODO_WRITE_GUIDANCE } from './tools/todo-write.js'
+import { TASK_CREATE_GUIDANCE } from './tools/task-create.js'
+import { TASK_UPDATE_GUIDANCE } from './tools/task-update.js'
+import { TASK_GET_GUIDANCE } from './tools/task-get.js'
+import { TASK_LIST_GUIDANCE } from './tools/task-list.js'
 import { WEB_SEARCH_GUIDANCE } from './tools/web-search.js'
 import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import type { ToolDef } from './tools/types.js'
@@ -87,6 +93,10 @@ const AGENT_SECTION: PromptSection = { name: 'tool:Agent', order: 80, text: AGEN
 /** TaskOutput is available to parent and nested loops through the shared manager. */
 const TASK_OUTPUT_SECTION: PromptSection = { name: 'tool:TaskOutput', order: 82, text: TASK_OUTPUT_GUIDANCE }
 
+/** TaskStop shares that manager, so its section rides the same unconditional
+ *  registration — a subagent can stop the session's backgrounded tasks too. */
+const TASK_STOP_SECTION: PromptSection = { name: 'tool:TaskStop', order: 83, text: TASK_STOP_GUIDANCE }
+
 /** The Skill tool's prompt section, same single-source rule. Registered in
  *  BOTH prompts: the Skill tool is still in a subagent's tool list. */
 const SKILL_SECTION: PromptSection = { name: 'tool:Skill', order: 85, text: SKILL_GUIDANCE }
@@ -102,6 +112,16 @@ const WEB_SEARCH_SECTION: PromptSection = { name: 'tool:WebSearch', order: 170, 
 /** TodoWrite is a per-session factory too (the list lives in the session's
  *  tool instance), so its section rides the same explicit registration. */
 const TODO_WRITE_SECTION: PromptSection = { name: 'tool:TodoWrite', order: 180, text: TODO_WRITE_GUIDANCE }
+
+/** The Task* family is session-owned as well (the store lives in the session),
+ *  so its four sections ride the same explicit registration as TodoWrite, in
+ *  BOTH prompt variants — a subagent creates and updates tasks in the same
+ *  session store. Order 180 matches the tools' promptOrder; the registry's
+ *  name tie-break sequences the family deterministically beside TodoWrite. */
+const TASK_CREATE_SECTION: PromptSection = { name: 'tool:TaskCreate', order: 180, text: TASK_CREATE_GUIDANCE }
+const TASK_UPDATE_SECTION: PromptSection = { name: 'tool:TaskUpdate', order: 180, text: TASK_UPDATE_GUIDANCE }
+const TASK_GET_SECTION: PromptSection = { name: 'tool:TaskGet', order: 180, text: TASK_GET_GUIDANCE }
+const TASK_LIST_SECTION: PromptSection = { name: 'tool:TaskList', order: 180, text: TASK_LIST_GUIDANCE }
 
 /** Build this session's system prompt (plus any per-session append). The
  *  subagent variant omits the Agent section and the `<available_agents>` roster
@@ -121,6 +141,8 @@ function renderSystem(
 ): string {
   const registry = new PromptSectionRegistry()
   registry.register(IDENTITY_SECTION)
+  // Behavior/tone guidance rides both prompt variants (parent and subagent).
+  for (const section of BEHAVIOR_SECTIONS) registry.register(section)
   registry.register(environmentSection(opts.env))
   if (opts.withAgentSection) {
     const agents = agentsSection(opts.agents)
@@ -132,8 +154,13 @@ function renderSystem(
   registry.register(WEB_FETCH_SECTION)
   registry.register(WEB_SEARCH_SECTION)
   registry.register(TODO_WRITE_SECTION)
+  registry.register(TASK_CREATE_SECTION)
+  registry.register(TASK_UPDATE_SECTION)
+  registry.register(TASK_GET_SECTION)
+  registry.register(TASK_LIST_SECTION)
   if (opts.withAgentSection) registry.register(AGENT_SECTION)
   registry.register(TASK_OUTPUT_SECTION)
+  registry.register(TASK_STOP_SECTION)
   registry.register(SKILL_SECTION)
   const rendered = registry.render()
   return opts.systemPromptAppend ? `${rendered}\n\n${opts.systemPromptAppend}` : rendered
@@ -247,6 +274,7 @@ export class NativeProvider implements AgentProvider {
       discovery: {
         retrieve: async (route) => this._testStream ? undefined : discovery.retrieve(route),
       },
+      defaultContextWindow: () => this.ports.config.nativeDefaultContextWindow,
     })
     this.attachmentReferences = opts.uploadStore?.attachmentReferences
       ?? new NativeAttachmentReferenceIndex({ stateDir: this.stateDir })
@@ -396,6 +424,7 @@ export class NativeProvider implements AgentProvider {
         commandsUserRoot: claudeConfigDir(),
         toolProfile: extractToolProfile(sdkOptions),
         promptSuggestions: opts.promptSuggestions ?? true,
+        agentProgressSummaries: opts.agentProgressSummaries ?? true,
         system,
         subagentSystem,
         canUseTool: opts.canUseTool,
@@ -502,5 +531,12 @@ export class NativeProvider implements AgentProvider {
    *  a missing log throws and the manager's best-effort seam catches it. */
   async renameSession(sessionId: string, title: string): Promise<void> {
     await appendSessionTitle(this.stateDir, sessionId, title)
+  }
+
+  /** Durable tasklist source for the host derive (server/tasklist-state.ts):
+   *  every session's neutral v3 log lives under this provider's state dir,
+   *  live or dormant — no session handle needed. */
+  tasklistSource(): TasklistSource {
+    return { stateDir: this.stateDir }
   }
 }

@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { taskNotificationFrame, taskStartedFrame } from '../native-frames.js'
 import { projectNativeEventToSdk } from '../native-host-frame-adapter.js'
 import type { OperationalFrame } from './vocabulary/live-frame.js'
-import { NativeTaskManager, type NativeTaskMetadata } from './task-manager.js'
+import { NativeTaskManager, taskNotificationXml, type NativeTaskMetadata, type TaskNotificationFacts } from './task-manager.js'
+import {
+  classifyTaskNotificationInjection,
+  isTaskNotificationUserMessage,
+  parseTaskNotificationInjection,
+} from '../../../shared/user-frames.js'
 import type { ToolOutcome } from './tools/types.js'
 
 type TaskStarted = Extract<OperationalFrame, { type: 'task/started' }>
@@ -52,6 +57,136 @@ describe('NativeTaskManager', () => {
 
     await expect(waiting).resolves.toEqual({ text: 'real foreground output' })
     expect(frames).toEqual([])
+  })
+
+  it('foreground subagent emits task/started at launch and task/notification at settle', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = {
+      toolUseId: 'tu-fg-agent', taskType: 'subagent', description: 'research', subagentType: 'Explore',
+    }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+
+    // The launch frame fires synchronously at registration, before execution settles.
+    expect(started(frames)).toHaveLength(1)
+    expect(started(frames)[0]).toMatchObject({
+      type: 'task/started',
+      taskId: 'tu-fg-agent',
+      toolUseId: 'tu-fg-agent',
+      taskType: 'local_agent',
+      description: 'research',
+      subagentType: 'Explore',
+      isBackgrounded: false,
+    })
+    expect(typeof started(frames)[0].time).toBe('number')
+    expect(notifications(frames)).toHaveLength(0)
+
+    execution.resolve({ text: 'foreground report' })
+    await expect(waiting).resolves.toEqual({ text: 'foreground report' })
+    await flush()
+
+    expect(notifications(frames)).toHaveLength(1)
+    expect(notifications(frames)[0]).toMatchObject({
+      taskId: 'tu-fg-agent',
+      toolUseId: 'tu-fg-agent',
+      description: 'research',
+      status: 'completed',
+      result: 'foreground report',
+    })
+    // Exactly one started (the launch) — no detach frame for a never-backgrounded task.
+    expect(started(frames)).toHaveLength(1)
+  })
+
+  it('foreground subagent failure emits task/notification with status failed', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = {
+      toolUseId: 'tu-fg-fail', taskType: 'subagent', description: 'research', subagentType: 'Explore',
+    }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+
+    expect(started(frames)).toHaveLength(1)
+    expect(notifications(frames)).toHaveLength(0)
+
+    execution.resolve({ text: 'failure details', isError: true })
+    await expect(waiting).resolves.toEqual({ text: 'failure details', isError: true })
+    await flush()
+
+    expect(notifications(frames)).toHaveLength(1)
+    expect(notifications(frames)[0]).toMatchObject({
+      taskId: 'tu-fg-fail',
+      toolUseId: 'tu-fg-fail',
+      description: 'research',
+      status: 'failed',
+      result: 'failure details',
+    })
+    expect(started(frames)).toHaveLength(1)
+  })
+
+  it('foreground subagent stopped via destroy emits task/notification with status stopped', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = {
+      toolUseId: 'tu-fg-stop', taskType: 'subagent', description: 'research', subagentType: 'Explore',
+    }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+
+    // destroy() is the stopRequested path a still-foreground record can take
+    // (stop() itself rejects foreground tasks).
+    const destroyed = manager.destroy()
+    execution.resolve({ text: 'partial report' })
+    await expect(waiting).resolves.toEqual({ text: 'partial report' })
+    await destroyed
+    await flush()
+
+    expect(notifications(frames)).toHaveLength(1)
+    expect(notifications(frames)[0]).toMatchObject({
+      taskId: 'tu-fg-stop',
+      status: 'stopped',
+      result: 'partial report',
+    })
+    expect(started(frames)).toHaveLength(1)
+  })
+
+  it('foreground shell emits no task frames and resolves the loop', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-fg-shell'), () => execution.promise, new AbortController().signal)
+
+    expect(frames).toEqual([])
+    execution.resolve({ text: 'shell output' })
+    await expect(waiting).resolves.toEqual({ text: 'shell output' })
+    await flush()
+    expect(frames).toEqual([])
+  })
+
+  it('foreground subagent backgrounded mid-flight emits exactly one notification', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = {
+      toolUseId: 'tu-fg-flip', taskType: 'subagent', description: 'flip', subagentType: 'Explore',
+    }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+
+    // Foreground launch frame.
+    expect(started(frames)).toHaveLength(1)
+    expect(started(frames)[0].isBackgrounded).toBe(false)
+
+    expect(manager.background('tu-fg-flip')).toBe(true)
+    await waiting
+
+    // Detach frame added; the settle now takes the backgrounded branch.
+    expect(started(frames)).toHaveLength(2)
+    expect(started(frames)[1].isBackgrounded).toBe(true)
+
+    execution.resolve({ text: 'flipped report' })
+    await flush()
+
+    // Exactly ONE notification — the backgrounded branch, never a duplicate foreground one.
+    expect(notifications(frames)).toHaveLength(1)
+    expect(notifications(frames)[0]).toMatchObject({
+      taskId: 'tu-fg-flip', status: 'completed', result: 'flipped report',
+    })
   })
 
   it('detaches with a TaskOutput acknowledgement while execution remains unresolved', async () => {
@@ -189,7 +324,13 @@ describe('NativeTaskManager', () => {
     expect(manager.background('tu-child')).toBe(true)
     await expect(childWait).resolves.toMatchObject({ isError: false })
     await expect(manager.stop('tu-outer')).rejects.toThrow(/not backgrounded/i)
-    expect(started(frames).map((frame) => frame.taskId)).toEqual(['tu-child'])
+    // The foreground subagent parent carries only its launch frame (false) —
+    // detaching the child never detaches the parent; the child carries its
+    // detach frame (true).
+    expect(started(frames).map((frame) => [frame.taskId, frame.isBackgrounded])).toEqual([
+      ['tu-outer', false],
+      ['tu-child', true],
+    ])
 
     outerExecution.resolve({ text: 'outer report' })
     childExecution.resolve({ text: 'child output' })
@@ -524,7 +665,9 @@ describe('NativeTaskManager neutral emission projects to the identical legacy SD
     manager.background('tu-agent')
     await waiting
 
-    const neutral = started(frames)[0]
+    // The foreground launch frame (isBackgrounded:false) now precedes the
+    // detach frame; this pin projects the DETACH frame (isBackgrounded:true).
+    const neutral = started(frames).find((frame) => frame.isBackgrounded)!
     expect(neutral.subagentType).toBe('Explore')
     expect(projectNativeEventToSdk(neutral)).toEqual(taskStartedFrame({
       taskId: 'tu-agent', toolUseId: 'tu-agent', taskType: 'local_agent',
@@ -599,5 +742,154 @@ describe('NativeTaskManager neutral emission projects to the identical legacy SD
       status: 'completed', result: '', receivedAt: neutral.time,
     }))
     expect('result' in projected).toBe(false)
+  })
+})
+
+describe('background-completion injection sink (TaskNotificationFacts)', () => {
+  function setupWithSink() {
+    const frames: OperationalFrame[] = []
+    const injected: TaskNotificationFacts[] = []
+    const manager = new NativeTaskManager(
+      (frame) => frames.push(frame),
+      (notification) => injected.push(notification),
+    )
+    return { manager, frames, injected }
+  }
+
+  it('a backgrounded settle injects the completion facts alongside the operational frame', async () => {
+    const { manager, frames, injected } = setupWithSink()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-inject'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-inject')
+    await waiting
+    execution.resolve({ text: 'final output' })
+    await flush()
+
+    expect(notifications(frames)).toHaveLength(1)
+    expect(injected).toEqual([{
+      taskId: 'tu-inject',
+      toolUseId: 'tu-inject',
+      description: 'description for tu-inject',
+      status: 'completed',
+      result: 'final output',
+    }])
+  })
+
+  it('a foreground shell settle does NOT inject (no operational frame either)', async () => {
+    const { manager, injected } = setupWithSink()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-fg-shell'), () => execution.promise, new AbortController().signal)
+    execution.resolve({ text: 'foreground output' })
+    await waiting
+    await flush()
+    expect(injected).toEqual([])
+  })
+
+  it('a foreground subagent settle does NOT inject (the parent holds the report via tool_result)', async () => {
+    const { manager, frames, injected } = setupWithSink()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = { toolUseId: 'tu-fg-agent', taskType: 'subagent', description: 'research' }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+    execution.resolve({ text: 'foreground report' })
+    await waiting
+    await flush()
+    expect(notifications(frames)).toHaveLength(1)
+    expect(injected).toEqual([])
+  })
+
+  it('a backgrounded subagent settle injects its real report', async () => {
+    const { manager, injected } = setupWithSink()
+    const execution = deferred<ToolOutcome>()
+    const meta: NativeTaskMetadata = { toolUseId: 'tu-bg-agent', taskType: 'subagent', description: 'research' }
+    const waiting = manager.runForeground(meta, () => execution.promise, new AbortController().signal)
+    manager.background('tu-bg-agent')
+    await waiting
+    execution.resolve({ text: 'background report' })
+    await flush()
+    expect(injected).toEqual([{
+      taskId: 'tu-bg-agent',
+      toolUseId: 'tu-bg-agent',
+      description: 'research',
+      status: 'completed',
+      result: 'background report',
+    }])
+  })
+
+  it('a stopped backgrounded task injects stopped facts with the partial result', async () => {
+    const { manager, injected } = setupWithSink()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-stop-inject'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-stop-inject')
+    await waiting
+    const stopping = manager.stop('tu-stop-inject')
+    execution.resolve({ text: 'partial', isError: true })
+    await stopping
+    expect(injected).toHaveLength(1)
+    expect(injected[0]).toMatchObject({ status: 'stopped', result: 'partial' })
+  })
+
+  it('a settle with no sink wired stays operational-frame-only (standalone manager)', async () => {
+    const { manager, frames } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-no-sink'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-no-sink')
+    await waiting
+    execution.resolve({ text: 'output' })
+    await flush()
+    expect(notifications(frames)).toHaveLength(1)
+  })
+})
+
+describe('taskNotificationXml (the host parser is the oracle)', () => {
+  function userFrame(text: string) {
+    return { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text }] } }
+  }
+
+  it('round-trips through the host injection parser, markup in fields intact', () => {
+    const facts: TaskNotificationFacts = {
+      taskId: 't1',
+      toolUseId: 'tu1',
+      description: 'run "a < b" & c > d',
+      status: 'completed',
+      result: 'line1\n<result>nested</result> & "quoted" \'single\'',
+    }
+    const xml = taskNotificationXml(facts)
+    const frame = userFrame(xml)
+    expect(isTaskNotificationUserMessage(frame)).toBe(true)
+    expect(parseTaskNotificationInjection(frame)).toEqual({
+      taskId: 't1',
+      toolUseId: 'tu1',
+      status: 'completed',
+      summary: 'run "a < b" & c > d',
+      result: 'line1\n<result>nested</result> & "quoted" \'single\'',
+    })
+    expect(classifyTaskNotificationInjection(frame)).toEqual({ foldable: true, hasPayload: true })
+  })
+
+  it('carries the status verbatim (failed / stopped are not normalized away)', () => {
+    for (const status of ['failed', 'stopped'] as const) {
+      const frame = userFrame(taskNotificationXml({
+        taskId: 't1', toolUseId: 'tu1', description: 'd', status, result: 'r',
+      }))
+      expect(parseTaskNotificationInjection(frame)?.status).toBe(status)
+    }
+  })
+
+  it('omits <tool-use-id> when the facts carry none (unroutable-completion shape)', () => {
+    const xml = taskNotificationXml({ taskId: 'a1', description: 'd', status: 'completed', result: 'the report' })
+    expect(xml).not.toContain('<tool-use-id>')
+    const frame = userFrame(xml)
+    expect(parseTaskNotificationInjection(frame)).toBeNull()
+    expect(classifyTaskNotificationInjection(frame)).toEqual({ foldable: false, hasPayload: true })
+  })
+
+  it('renders one <event> line per monitor event; events alone carry payload', () => {
+    const xml = taskNotificationXml({
+      taskId: 'm1', description: 'watch', status: 'completed', result: '', events: ['line one', 'line <two> & three'],
+    })
+    const frame = userFrame(xml)
+    expect(xml).toContain('<event>line one</event>')
+    expect(xml).toContain('<event>line &lt;two&gt; &amp; three</event>')
+    expect(classifyTaskNotificationInjection(frame)).toEqual({ foldable: false, hasPayload: true })
   })
 })

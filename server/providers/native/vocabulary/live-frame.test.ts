@@ -7,9 +7,10 @@
 //     agent-message / host-domain, value OR type). T18 formalizes the whole-core
 //     pin; this guards the vocabulary incrementally from T7 on.
 //   • shape — NativeCoreFrame is exactly StreamChunk | RawStreamEvent |
-//     AssistantFrame | OperationalFrame | ToolResultMessage |
+//     AssistantFrame | OperationalFrame | ToolResultMessage | UserMessage |
 //     EnvelopedConversationFrame (T10 folds tool results + the sidechain
-//     envelope into the emission union), and AssistantFrame carries stopReason
+//     envelope into the emission union; the task-notification injection folds
+//     the core-originated user turn), and AssistantFrame carries stopReason
 //     / model as FIRST-CLASS fields (F2: stop reason comes from the finish
 //     reason, not the replay envelope).
 
@@ -17,7 +18,7 @@ import { describe, expect, it, expectTypeOf } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createAssistantMessage, type ToolResultMessage } from './message.js'
+import { createAssistantMessage, type ToolResultMessage, type UserMessage } from './message.js'
 import type { StreamChunk, RawStreamEvent } from './stream.js'
 import type { ReplayEnvelope } from './source.js'
 import type { TokenUsage } from './types.js'
@@ -95,9 +96,9 @@ describe('vocabulary purity (F1: neutral, SDK-free)', () => {
 })
 
 describe('NativeCoreFrame union (core emission contract)', () => {
-  it('is exactly StreamChunk | RawStreamEvent | AssistantFrame | OperationalFrame | ToolResultMessage | EnvelopedConversationFrame', () => {
+  it('is exactly StreamChunk | RawStreamEvent | AssistantFrame | OperationalFrame | ToolResultMessage | UserMessage | EnvelopedConversationFrame', () => {
     expectTypeOf<NativeCoreFrame>().toEqualTypeOf<
-      StreamChunk | RawStreamEvent | AssistantFrame | OperationalFrame | ToolResultMessage | EnvelopedConversationFrame
+      StreamChunk | RawStreamEvent | AssistantFrame | OperationalFrame | ToolResultMessage | UserMessage | EnvelopedConversationFrame
     >()
   })
 
@@ -105,7 +106,7 @@ describe('NativeCoreFrame union (core emission contract)', () => {
     expectTypeOf<EnvelopedConversationFrame['type']>().toEqualTypeOf<'enveloped-conversation'>()
     expectTypeOf<EnvelopedConversationFrame['parentToolUseId']>().toEqualTypeOf<string | null>()
     expectTypeOf<EnvelopedConversationFrame['frame']>().toEqualTypeOf<
-      AssistantFrame | RawStreamEvent | ToolResultMessage
+      AssistantFrame | RawStreamEvent | ToolResultMessage | UserMessage
     >()
   })
 
@@ -134,17 +135,36 @@ describe('live-frame shapes (runtime)', () => {
     expect(frame.replayState).toBeUndefined()
   })
 
-  it('OperationalFrame covers the seven native live-only kinds with neutral discriminants', () => {
+  it('OperationalFrame covers the nine native live-only kinds with neutral discriminants', () => {
     const init: OperationalFrame = { type: 'init', sessionId: 's', uuid: 'u', parentToolUseId: null, fastMode: true }
     const retry: OperationalFrame = { type: 'api/retry', sessionId: 's', uuid: 'u', parentToolUseId: null, attempt: 1, maxRetries: 10, delayMs: 5 }
     const info: OperationalFrame = { type: 'informational', sessionId: 's', uuid: 'u', parentToolUseId: null, text: 'note' }
-    const started: OperationalFrame = { type: 'task/started', taskId: 't', toolUseId: 'tu', taskType: 'local_bash', description: 'd', time: 1 }
+    const started: OperationalFrame = { type: 'task/started', taskId: 't', toolUseId: 'tu', taskType: 'local_bash', description: 'd', isBackgrounded: true, time: 1 }
+    const progress: OperationalFrame = { type: 'task/progress', taskId: 't', toolUseId: 'tu', description: 'd', usage: { totalTokens: 10, toolUses: 2, durationMs: 3 }, time: 4 }
     const notified: OperationalFrame = { type: 'task/notification', taskId: 't', toolUseId: 'tu', description: 'd', status: 'completed', time: 2 }
     const result: OperationalFrame = { type: 'result', sessionId: 's', uuid: 'u', parentToolUseId: null, result: 'ok', usage, numTurns: 1, durationMs: 3, isError: false }
     const suggestion: OperationalFrame = { type: 'prompt/suggestion', sessionId: 's', uuid: 'u', parentToolUseId: null, suggestion: '跑测试' }
-    const kinds = [init, retry, info, started, notified, result, suggestion].map((f) => f.type)
-    expect(kinds).toEqual(['init', 'api/retry', 'informational', 'task/started', 'task/notification', 'result', 'prompt/suggestion'])
+    const hook: OperationalFrame = { type: 'hook/run', sessionId: 's', uuid: 'u', parentToolUseId: null, event: { kind: 'started', run: { id: 'r', hookId: 'h', hookName: 'n', event: 'PreToolUse', status: 'started', startedAt: 1, updatedAt: 1 } } }
+    const kinds = [init, retry, info, started, progress, notified, result, suggestion, hook].map((f) => f.type)
+    expect(kinds).toEqual(['init', 'api/retry', 'informational', 'task/started', 'task/progress', 'task/notification', 'result', 'prompt/suggestion', 'hook/run'])
+    // Compile-time exhaustiveness: a new union member must be enumerated here.
+    expectTypeOf<OperationalFrame['type']>().toEqualTypeOf<
+      'init' | 'api/retry' | 'informational' | 'task/started' | 'task/progress' | 'task/notification' | 'result' | 'prompt/suggestion' | 'hook/run'
+    >()
     expect(typeof suggestion.suggestion).toBe('string')
     expect(suggestion.parentToolUseId).toBeNull()
+  })
+
+  it('task/started taskType accepts the monitor discriminant (Phase C type plumbing)', () => {
+    // The neutral union carries the internal discriminant; the host fold
+    // (normalizeTaskType) maps local_monitor → the friendly 'monitor' label.
+    expectTypeOf<Extract<OperationalFrame, { type: 'task/started' }>['taskType']>().toEqualTypeOf<
+      'local_bash' | 'local_agent' | 'local_monitor'
+    >()
+    const monitor: Extract<OperationalFrame, { type: 'task/started' }> = {
+      type: 'task/started', taskId: 't', toolUseId: 'tu', taskType: 'local_monitor',
+      description: 'watch the deploy log', isBackgrounded: true, time: 1,
+    }
+    expect(monitor.taskType).toBe('local_monitor')
   })
 })

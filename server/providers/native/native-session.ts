@@ -45,7 +45,8 @@ import { finishReasonOf, type ContentBlock, type TokenUsage, type Usage } from '
 import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './vocabulary/session-event.js'
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
-import type { NativeHostPorts } from './ports.js'
+import type { NativeHostPorts, NativeMemoryReadResult } from './ports.js'
+import { joinPromptParts, renderMemorySection, renderEnvironment } from './prompt/overlay.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel, type RequestOutputFormat, type StreamRequest } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, type FrameContext } from './vocabulary/frame-context.js'
@@ -61,14 +62,21 @@ import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
 import { createAgentTool, type AgentToolDeps } from './subagent.js'
 import { EXPLORE_AGENT_DESCRIPTION, EXPLORE_AGENT_NAME } from './explore.js'
-import { NativeTaskManager } from './task-manager.js'
+import { NativeTaskManager, taskNotificationXml, type TaskNotificationFacts } from './task-manager.js'
 import { NativeSkillCatalog, LISTING_BUDGET_FRACTION, type NativeSkillCommand, type NativeSkillInvocationView, type NativeSkillView } from './skills.js'
 import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, type NativeCommand } from './commands.js'
 import { createSkillTool } from './tools/skill.js'
 import { createTaskOutputTool } from './tools/task-output.js'
+import { createTaskStopTool } from './tools/task-stop.js'
+import { createMonitorTool, createNodeMonitorSpawn } from './tools/monitor.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
 import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
+import { NativeTaskStore } from './task-store.js'
+import { createTaskCreateTool } from './tools/task-create.js'
+import { createTaskUpdateTool } from './tools/task-update.js'
+import { createTaskGetTool } from './tools/task-get.js'
+import { createTaskListTool } from './tools/task-list.js'
 import { createEnterPlanModeTool, createExitPlanModeTool, PLAN_MODE_GUIDANCE } from './tools/plan-mode.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import { agentUnusableReason } from '../../../shared/agent-definitions.js'
@@ -95,7 +103,7 @@ import {
   PreparedPdfStore,
   type PdfBudgetReservation,
 } from './pdf-documents.js'
-import { DEFAULT_CONTEXT_WINDOW, type NativeModelContextResolver } from './model-context.js'
+import { type NativeModelContextResolver } from './model-context.js'
 import {
   SUGGESTION_MAX_TOKENS,
   SUGGESTION_PROMPT,
@@ -115,7 +123,7 @@ import {
   resolveNativeReadTarget,
 } from './file-read.js'
 import { HookEngine, type HookDispatchContext } from './hooks/engine.js'
-import type { HookWake } from './hooks/rewake.js'
+import type { HookWake, PendingInjection } from './hooks/rewake.js'
 import { runPromptHook } from './hooks/prompt-executor.js'
 import { runAgentHook } from './hooks/agent-executor.js'
 import { runHttpHook } from './hooks/http-executor.js'
@@ -430,6 +438,11 @@ export interface NativeSessionOptions {
    *  `undefined` = enabled; the provider normalizes the create-body value to
    *  an explicit boolean (`?? true`). */
   promptSuggestions?: boolean
+  /** Subagent progress-summary intent (SDK `Options.agentProgressSummaries`).
+   *  `undefined` = enabled; the provider normalizes the create-body value to
+   *  an explicit boolean (`?? true`). Gates ONLY the summary fork — the
+   *  mechanical task/progress frame is always on. */
+  agentProgressSummaries?: boolean
   system: string
   /** The prompt a nested (Agent/Task) run gets: the parent system WITHOUT the
    *  shared delegation section, since nested tools exclude both names and a
@@ -533,6 +546,11 @@ export class NativeSession implements NativeSessionCore {
   private readonly taskTool: ToolDef
   /** Reads this session's detached Bash/Agent/Task outcomes through the shared manager. */
   private readonly taskOutputTool: ToolDef
+  /** Stops this session's backgrounded tasks through the same shared manager. */
+  private readonly taskStopTool: ToolDef
+  /** Watches a command's stdout / a WebSocket's frames as a background monitor
+   *  task; event batches join the same idle-injection queue as completions. */
+  private readonly monitorTool: ToolDef
   /** Local SKILL.md catalog. Discovery is kicked off at construction and
    *  awaited per turn, the same shape as MCP's `whenReady`. */
   private readonly skills: NativeSkillCatalog
@@ -547,6 +565,14 @@ export class NativeSession implements NativeSessionCore {
   /** TodoWrite is per-session because the tool instance owns the live todo
    *  list; two sessions must never share tasks. */
   private readonly todoWriteTool: ToolDef
+  /** The Task* family's per-session store: the FULL task records (the client
+   *  fold keeps only checklist fields). Rebuilt from the neutral log on
+   *  resume/fork beside the pdf-budget rebuild; the four tools share it. */
+  private readonly taskStore: NativeTaskStore
+  private readonly taskCreateTool: ToolDef
+  private readonly taskUpdateTool: ToolDef
+  private readonly taskGetTool: ToolDef
+  private readonly taskListTool: ToolDef
   /** The CURRENT discovery/reload in flight. Re-assigned by `reloadSkills`, so
    *  a manual reload supersedes the construction one (and can recover from a
    *  transient construction failure) for every per-turn await. */
@@ -570,6 +596,10 @@ export class NativeSession implements NativeSessionCore {
   /** Base values survive independently of the selected persona. The effective
    *  fields below are what the next request and permission broker observe. */
   private readonly baseSystem: string
+  /** The latest CLAUDE.md chain read: seeded fire-and-forget at construction
+   *  (for pre-turn readers) and refreshed authoritatively at each turn start.
+   *  Nested runs inherit this snapshot — they never call the port themselves. */
+  private memorySnapshot: NativeMemoryReadResult | null = null
   private baseModel: string
   private basePermissionMode: string | undefined
   private baseEffortLevel: EffortLevel | undefined
@@ -655,13 +685,18 @@ export class NativeSession implements NativeSessionCore {
   private steeringOpen = false
   /** Supplements admitted during the current turn, not yet injected. */
   private supplementQueue: Array<{ uuid: string; text: string }> = []
-  /** T23 (RS §4.4): asyncRewake exit-2 wakes awaiting idle delivery. The
-   *  engine's background completion enqueues here; the pump injects each wake
-   *  as a system turn only when no user input is pending — a mid-turn wake
-   *  waits for the active turn to settle, never corrupts it. Live-only (the
-   *  CLI notification queue is likewise in-memory); the injected feedback
-   *  message itself is durable like any turn message. */
-  private readonly hookRewakes: HookWake[] = []
+  /** T23 (RS §4.4): system injections — asyncRewake exit-2 wakes (hook
+   *  feedback) and backgrounded-task completion notifications. The engine's
+   *  background completion and the task manager's settle sink enqueue here.
+   *  Two delivery paths: task-notification items (Monitor event batches +
+   *  backgrounded settles) drain MID-TURN at the next round boundary via the
+   *  loop's drainInjection (injectTaskNotifications); hook-rewakes are
+   *  idle-only — the pump's wake branch delivers them, injections arriving
+   *  while idle, and any notification left with no remaining round boundary,
+   *  as a system turn when no user input is pending. Live-only (the CLI
+   *  notification queue is likewise in-memory); the injected message itself
+   *  is durable like any turn message. */
+  private readonly systemInjections: PendingInjection[] = []
   private lastUsage: Usage = { input_tokens: 0, output_tokens: 0 }
   /** The wire shape of the last MAIN-thread API request, captured per round in
    *  the turn's stream lambda (last round wins). The turn-end suggestion fork
@@ -818,6 +853,13 @@ export class NativeSession implements NativeSessionCore {
     })
     this.webSearchTool = createWebSearchTool()
     this.todoWriteTool = createTodoWriteTool({ todos: [] })
+    // The Task* family rides alongside TodoWrite (the CLI carries both). The
+    // store is per-session; resume/fork rebuild it from the log below.
+    this.taskStore = new NativeTaskStore()
+    this.taskCreateTool = createTaskCreateTool(this.taskStore)
+    this.taskUpdateTool = createTaskUpdateTool(this.taskStore)
+    this.taskGetTool = createTaskGetTool(this.taskStore)
+    this.taskListTool = createTaskListTool(this.taskStore)
     // Skills are discovered before the first turn can ask for them. The
     // policy is stored separately from discovery (the catalog resolves state
     // lazily), so configure-before/after-reload makes no difference.
@@ -827,8 +869,16 @@ export class NativeSession implements NativeSessionCore {
     // Custom commands are discovered before the first turn can invoke them,
     // the same per-turn-await shape as the skill catalog.
     this.commandsReady = this.startCommandReload()
-    this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
+    this.tasks = new NativeTaskManager(
+      (frame) => this.output.push(frame),
+      (notification) => this.enqueueTaskNotification(notification),
+    )
     this.taskOutputTool = createTaskOutputTool(this.tasks)
+    this.taskStopTool = createTaskStopTool(this.tasks)
+    this.monitorTool = createMonitorTool({
+      inject: (notification) => this.enqueueTaskNotification(notification),
+      spawn: createNodeMonitorSpawn(),
+    })
     // Every session can delegate, MCP or not: `tools` is a live getter and the
     // `emit` path is the session's own persist+push, so a nested run's frames
     // land in the transcript with their real parent. Built after `ctx` exists.
@@ -844,6 +894,9 @@ export class NativeSession implements NativeSessionCore {
       skillView: (policy) => this.skills.view(policy ?? this.baseSkillPolicy),
       skillToolFor: (view) => this.skillToolFor(view),
       tasks: this.tasks,
+      agentProgressSummaries: this.opts.agentProgressSummaries ?? true,
+      // The dep request (per-request + fork overrides) forwards unchanged
+      // into the session seam, which reads the optional fields.
       streamFor: (req, streamOpts) => this.streamFor(req, {
         ...streamOpts,
         suppressRetryFrames: true,
@@ -883,6 +936,9 @@ export class NativeSession implements NativeSessionCore {
       this.log = this.openFreshLog(opts)
     }
     this.pdfBudgets.rebuildFromEvents(neutralEventsOf(this.log))
+    // Replay the durable Task* calls so a resumed/forked session's store equals
+    // the live one (a fresh log folds to nothing).
+    this.taskStore.rebuild(neutralEventsOf(this.log))
     this.syncAttachmentReferences()
     // session-health's stuck-GC force-unloads sessions whose init never
     // lands — push it first, before any turn output. `fast_mode_state` is
@@ -919,6 +975,13 @@ export class NativeSession implements NativeSessionCore {
         .then(() => { if (!this._closed) this.rebuildTools() })
         .catch((err) => log.debug(`[${opts.id}] post-discovery tool refresh failed:`, err))
     }
+    // Seed the memory snapshot fire-and-forget so pre-turn readers see the
+    // CLAUDE.md chain without waiting for a turn. The per-turn read below is
+    // authoritative and surfaces failures loudly; this seed only warns. A
+    // destroy before settlement no-ops (same closed guard).
+    void this.opts.ports.memory.read(this.opts.cwd)
+      .then((r) => { if (!this._closed) this.memorySnapshot = r })
+      .catch((err) => log.warn(`[${this.opts.id}] memory seed failed:`, err))
     // SessionStart seam (RS §3, §13.2): fires at init with the source mapped
     // from the spawn mode — the SAME branch the log open used. CRW's /clear is
     // a host-driven fresh spawn, so it surfaces as 'startup'; there is no
@@ -1508,7 +1571,10 @@ export class NativeSession implements NativeSessionCore {
    *  passes neither, so its behavior is unchanged. `opts.effortLevel` (a
    *  getter, possibly returning undefined) and `opts.fastMode` override the
    *  session's live effort/fast-mode intent — the hook stream uses them to
-   *  strip session model config from evaluator rounds. */
+   *  strip session model config from evaluator rounds. `req.appendMessages`
+   *  / `req.maxTokens` / `req.forkProfile` are the nested-fork overrides: a
+   *  breakpoint-free tail appended after the cached prefix, a small output
+   *  cap, and stripped effort/fast-mode intent. Absent → session defaults. */
   private defaultStream(
     req: {
       model: string
@@ -1518,6 +1584,9 @@ export class NativeSession implements NativeSessionCore {
       signal: AbortSignal
       thinking?: ThinkingSetting
       outputFormat?: RequestOutputFormat
+      appendMessages?: unknown[]
+      maxTokens?: number
+      forkProfile?: boolean
     },
     opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined; fastMode?: boolean },
   ): AsyncIterable<CanonicalEvent> {
@@ -1528,11 +1597,12 @@ export class NativeSession implements NativeSessionCore {
         system: req.system,
         tools: req.tools,
         messages: req.messages,
-        maxTokens: DEFAULT_MAX_TOKENS,
+        maxTokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
         thinking: req.thinking ?? this.thinking,
         thinkingDisplay: this.thinkingDisplay,
-        effort: opts?.effortLevel ? opts.effortLevel() : this.effortLevel,
-        fastMode: opts?.fastMode ?? this.fastMode,
+        effort: req.forkProfile ? undefined : (opts?.effortLevel ? opts.effortLevel() : this.effortLevel),
+        fastMode: req.forkProfile ? undefined : (opts?.fastMode ?? this.fastMode),
+        ...(req.appendMessages ? { appendMessages: req.appendMessages } : {}),
         ...(req.outputFormat !== undefined ? { outputFormat: req.outputFormat } : {}),
         signal: req.signal,
       },
@@ -1561,12 +1631,23 @@ export class NativeSession implements NativeSessionCore {
       signal: AbortSignal
       thinking?: ThinkingSetting
       outputFormat?: RequestOutputFormat
+      appendMessages?: unknown[]
+      maxTokens?: number
+      forkProfile?: boolean
     },
     opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined; fastMode?: boolean },
   ): AsyncIterable<CanonicalEvent> {
-    // The test seam ignores opts: scripted streams have no retry path.
+    // The test seam ignores opts: scripted streams have no retry path. A
+    // fork tail is flattened into messages (runSuggestionFork's seam
+    // projection) so a scripted stream reads the full fork content; with no
+    // tail the request passes through untouched — the suggestion-snapshot
+    // pins hold the main round's wire arrays by reference through this seam.
     const testStream = this.opts.streamSupplier?.()
-    return testStream ? testStream(req) : this.defaultStream(req, opts)
+    return testStream
+      ? testStream(req.appendMessages
+        ? { ...req, messages: [...req.messages, ...req.appendMessages] }
+        : req)
+      : this.defaultStream(req, opts)
   }
 
   /** The RS §6.2 gateway fact for the agent-hook model fallback: a
@@ -1747,7 +1828,7 @@ export class NativeSession implements NativeSessionCore {
   private isOperationalFrame(frame: NativeLoopFrame): frame is OperationalFrame {
     if (!('type' in frame)) return false
     switch (frame.type) {
-      case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/notification': case 'result': case 'prompt/suggestion': case 'hook/run':
+      case 'init': case 'api/retry': case 'informational': case 'task/started': case 'task/progress': case 'task/notification': case 'result': case 'prompt/suggestion': case 'hook/run':
         return true
       default:
         return false
@@ -1930,8 +2011,15 @@ export class NativeSession implements NativeSessionCore {
    *  scoped Skill section. The view reads the shared catalog at call time, so
    *  a reload reaches the next run without reviving an excluded skill. */
   private subagentSystem(skillView: NativeSkillView): string {
+    const memory = this.memorySnapshot
     return withSkillsSection(
-      this.opts.subagentSystem ?? this.baseSystem,
+      joinPromptParts(
+        this.opts.subagentSystem ?? this.baseSystem,
+        memory ? renderMemorySection(memory.files) : '',
+        memory
+          ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
+          : '',
+      ),
       skillView.section(),
     )
   }
@@ -1950,14 +2038,23 @@ export class NativeSession implements NativeSessionCore {
     // EnterPlanMode binds to the session's host-bound entry hook so a
     // tool-driven mode change routes through the manager. Stateless, so a
     // fresh instance per rebuild is fine (the hook reads live opts at call).
+    // The Task* family rides every list as well (both main and nested derive
+    // from this array): a subagent can create and update tasks in the session
+    // store. TaskGet/TaskList are read-only queries — never backgroundable.
     const tools: ToolDef[] = [
       ...this.opts.tools,
       this.webFetchTool,
       this.webSearchTool,
       this.todoWriteTool,
+      this.taskCreateTool,
+      this.taskUpdateTool,
+      this.taskGetTool,
+      this.taskListTool,
       this.agentTool,
       this.taskTool,
       this.taskOutputTool,
+      this.taskStopTool,
+      this.monitorTool,
       skillTool,
       createEnterPlanModeTool({ enterPlanMode: () => this.enterPlanMode() }),
       createExitPlanModeTool(),
@@ -2008,17 +2105,20 @@ export class NativeSession implements NativeSessionCore {
   }
 
   private async pumpLoop(): Promise<void> {
-    while (!this._closed && (this.pendingDurableInitial !== null || this.input.length > 0 || this.hookRewakes.length > 0)) {
+    while (!this._closed && (this.pendingDurableInitial !== null || this.input.length > 0 || this.systemInjections.length > 0)) {
       // A new turn supersedes any in-flight suggestion. This covers the drain
       // path (input queued mid-turn, consumed here without a fresh enqueue) as
       // well as the ordinary next-message path; enqueue aborts too, but a fork
       // spawned after that enqueue (during turn/end finalization) is caught here.
       this.suggestionAbort?.abort()
-      // T23 (RS §4.4): a wake turn runs only when no user input is pending —
-      // user turns always take priority, and a parked durable head keeps its
-      // retry precedence. A mid-turn wake waits here for the next idle window.
+      // T23 (RS §4.4): an injection turn runs only when no user input is
+      // pending — user turns always take priority, and a parked durable head
+      // keeps its retry precedence. This idle wake branch serves hook-rewakes
+      // (always idle-only), injections arriving while idle, and notifications
+      // left queued with no remaining round boundary; a mid-turn notification
+      // drains earlier at the loop's round boundary (drainInjection).
       const wake = this.pendingDurableInitial === null && this.input.length === 0
-        ? this.hookRewakes.shift() ?? null
+        ? this.systemInjections.shift() ?? null
         : null
       // The user-turn shift/park stays SYNCHRONOUS at the top of the iteration
       // — BEFORE any await (notably sessionStartInit, which a turn interrupt
@@ -2092,18 +2192,18 @@ export class NativeSession implements NativeSessionCore {
         // pending === null ⇔ wake !== null by the construction above.
         if (pending === null) {
           const w = wake!
-          // T23 wake turn (RS §4.4): the hook feedback is a system injection,
-          // not a user prompt — no UserPromptSubmit dispatch (the wake must not
-          // re-feed the prompt hooks), no host pairing (receivedAt / consume /
-          // persistence callbacks), no skill invocation. The feedback message
-          // is durable like any turn message so resume/replay rebuilds the same
+          // T23 injection turn (RS §4.4): a system injection, not a user
+          // prompt — no UserPromptSubmit dispatch (it must not re-feed the
+          // prompt hooks), no host pairing (receivedAt / consume / persistence
+          // callbacks), no skill invocation. The injected message is durable
+          // like any turn message so resume/replay rebuilds the same
           // conversation. The host accounts the turn through the pump's
-          // unaccounted-turn assistant catch-all, exactly like a CLI-driven
-          // task-notification continuation.
+          // unaccounted-turn stamp, exactly like a CLI-driven task-notification
+          // continuation.
           // Mirror the user branch's discovery contract: a skillsReady
-          // rejection is captured and re-thrown only AFTER the feedback is
-          // durable — the wake was already shifted off the queue, so a bare
-          // await here would lose it with no park/retry to recover it.
+          // rejection is captured and re-thrown only AFTER the message is
+          // durable — the injection was already shifted off the queue, so a
+          // bare await here would lose it with no park/retry to recover it.
           let skillError: unknown
           try {
             await this.skillsReady
@@ -2111,9 +2211,10 @@ export class NativeSession implements NativeSessionCore {
           } catch (err) {
             skillError = err
           }
-          const feedback = createUserMessage({ content: [{ type: 'text', text: w.body }], source: { kind: 'user' } })
+          const body = w.kind === 'hook-rewake' ? w.wake.body : taskNotificationXml(w.notification)
+          const feedback = createUserMessage({ content: [{ type: 'text', text: body }], source: { kind: 'user' } })
           // The SessionStart seed/context lead the turn's messages exactly as
-          // on a user turn (a wake can be the session's first turn).
+          // on a user turn (an injection can be the session's first turn).
           initialMessages = [...this.sessionStartTurnMessages(), feedback]
           appendedInitialMessages = [...initialMessages]
           this.pendingSessionStartSeed = null
@@ -2132,14 +2233,23 @@ export class NativeSession implements NativeSessionCore {
           rawAppended = true
           this.steeringOpen = true
           await this.log.flush()
-          // The wake summary is the user-visible one-liner (RS §4.4).
-          this.output.push({
-            type: 'informational',
-            text: w.summary,
-            sessionId: this.opts.id,
-            uuid: this.ctx.uuid(),
-            parentToolUseId: null,
-          })
+          if (w.kind === 'hook-rewake') {
+            // The wake summary is the user-visible one-liner (RS §4.4); the
+            // feedback itself stays model-only (no conversation frame).
+            this.output.push({
+              type: 'informational',
+              text: w.wake.summary,
+              sessionId: this.opts.id,
+              uuid: this.ctx.uuid(),
+              parentToolUseId: null,
+            })
+          } else {
+            // The notification IS a conversation frame: the host pump
+            // classifies it by content (<task-notification>), stamps the
+            // continuation turn, folds it into session.tasks and rings it —
+            // no banner (the TasksPanel / neutral card render it).
+            this.output.push({ type: 'enveloped-conversation', frame: feedback, parentToolUseId: null })
+          }
           if (skillError !== undefined) throw skillError
         } else {
           const next = pending.message
@@ -2399,10 +2509,16 @@ export class NativeSession implements NativeSessionCore {
             turnProfile,
             turnBaseToolProfile,
           )
+          const memory = await this.opts.ports.memory.read(this.opts.cwd)
+          this.memorySnapshot = memory
           const turnSystem = withSkillsSection(
-            turnProfile?.instruction
-              ? `${this.baseSystem}\n\n${turnProfile.instruction}`
-              : this.baseSystem,
+            joinPromptParts(
+              turnProfile?.instruction
+                ? `${this.baseSystem}\n\n${turnProfile.instruction}`
+                : this.baseSystem,
+              renderMemorySection(memory.files),
+              renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() }),
+            ),
             skillView.section(),
           )
           const res = await runTurn(
@@ -2456,11 +2572,14 @@ export class NativeSession implements NativeSessionCore {
               system: turnSystem,
               fastModeState: () => (this.fastMode ? 'on' : 'off'),
               drainSupplement: () => this.injectSupplements(),
+              drainInjection: () => this.injectTaskNotifications(),
               onInitialMessagesOwned: () => { initialMessagesOwned = true },
-              // T23 (RS §4.4): the wake turn IS stop-hook feedback — its first
-              // Stop dispatch carries stop_hook_active:true so a well-behaved
-              // asyncRewake Stop hook terminates instead of re-waking forever.
-              initialStopHookActive: wake?.stopHookActive,
+              // T23 (RS §4.4): only a hook-rewake turn IS stop-hook feedback —
+              // its first Stop dispatch carries stop_hook_active:true so a
+              // well-behaved asyncRewake Stop hook terminates instead of
+              // re-waking forever. A task-notification continuation is an
+              // ordinary turn with a fresh Stop guard (false).
+              initialStopHookActive: wake === null ? undefined : wake.kind === 'hook-rewake' ? wake.wake.stopHookActive : false,
             },
             this.ctx,
             this.history,
@@ -2635,8 +2754,20 @@ export class NativeSession implements NativeSessionCore {
    *  the pump's loop condition picks it up at the next idle window. A wake is
    *  NOT a user enqueue: it never releases a durable-retry pause. */
   private enqueueHookWake(wake: HookWake): void {
+    this.enqueueInjection({ kind: 'hook-rewake', wake })
+  }
+
+  /** A backgrounded task's completion joins the same idle-injection queue as
+   *  a hook wake; the pump delivers it as a <task-notification> user turn.
+   *  A settle during destroy drops the injection (_closed) — teardown never
+   *  starts a new turn. */
+  private enqueueTaskNotification(notification: TaskNotificationFacts): void {
+    this.enqueueInjection({ kind: 'task-notification', notification })
+  }
+
+  private enqueueInjection(injection: PendingInjection): void {
     if (this._closed) return
-    this.hookRewakes.push(wake)
+    this.systemInjections.push(injection)
     if (this.pendingDurableInitial === null) this.startPump()
   }
 
@@ -2651,7 +2782,7 @@ export class NativeSession implements NativeSessionCore {
     void this.pumpLoop().finally(() => {
       this.pumping = false
       if (!this._closed && !this.durableRetryPaused
-        && (this.pendingDurableInitial !== null || this.input.length > 0 || this.hookRewakes.length > 0)) {
+        && (this.pendingDurableInitial !== null || this.input.length > 0 || this.systemInjections.length > 0)) {
         this.startPump()
       }
     })
@@ -2975,6 +3106,59 @@ export class NativeSession implements NativeSessionCore {
     return retained
   }
 
+  /** The loop's per-round MID-TURN injection drain (Task 10): pull ONLY
+   *  task-notification injections (Monitor event batches + backgrounded-task
+   *  settles) queued since the previous round, persist each as a durable
+   *  `user/message` (the XML body, so resume/replay rebuilds the same
+   *  conversation), await the flush barrier, then emit the user injection
+   *  conversation frame — the host classifies it by content, folds it into
+   *  session.tasks and rings it. The loop appends the returned text to history
+   *  before building the next request.
+   *
+   *  Hook-rewake wakes are NEVER drained here: they stay idle-only (the pump's
+   *  wake branch), so a mid-turn rewake waits for the next idle window. The
+   *  queue is cleared only AFTER the flush succeeds — a rejected flush throws
+   *  out of the turn (settling it as an error) with the batch still pending, so
+   *  the idle wake branch delivers it next; it is never silently dropped.
+   *  Mirrors injectSupplements' durability discipline; the queue is mutated in
+   *  place (its reference is readonly). */
+  private async injectTaskNotifications(): Promise<Array<{ uuid: string; text: string }>> {
+    // A COPY of the task-notification items: they stay queued until durable.
+    const batch = this.systemInjections.filter(
+      (item): item is Extract<PendingInjection, { kind: 'task-notification' }> => item.kind === 'task-notification',
+    )
+    if (batch.length === 0) return []
+    const prepared = batch.map((item) => {
+      const text = taskNotificationXml(item.notification)
+      const feedback = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+      return { item, text, feedback }
+    })
+    for (const { feedback } of prepared) {
+      this.log.append({
+        type: 'user/message',
+        time: Date.now(),
+        parentToolUseId: null,
+        data: {
+          role: 'user',
+          id: feedback.id,
+          content: feedback.content,
+          source: { kind: 'user' },
+        },
+      })
+    }
+    await this.log.flush()
+    // An item a concurrent path removed meanwhile is no longer ours to deliver.
+    const retained = prepared.filter(({ item }) => this.systemInjections.includes(item))
+    for (const item of batch) {
+      const at = this.systemInjections.indexOf(item)
+      if (at >= 0) this.systemInjections.splice(at, 1)
+    }
+    for (const { feedback } of retained) {
+      this.output.push({ type: 'enveloped-conversation', frame: feedback, parentToolUseId: null })
+    }
+    return retained.map(({ feedback, text }) => ({ uuid: feedback.id, text }))
+  }
+
   async backgroundTasks(toolUseId?: string): Promise<boolean> {
     return toolUseId === undefined ? this.tasks.background() : this.tasks.background(toolUseId)
   }
@@ -3095,7 +3279,7 @@ export class NativeSession implements NativeSessionCore {
             api: 'anthropic-messages',
             credentials: this.opts.credentials,
           })).contextWindow
-        : DEFAULT_CONTEXT_WINDOW
+        : this.opts.ports.config.nativeDefaultContextWindow
       if (generation !== this.modelGeneration) continue
       // Refresh the skill-listing cap from the resolved window. The manager
       // fires this probe after every turn, so a model down-switch shrinks the
@@ -3152,8 +3336,16 @@ export class NativeSession implements NativeSessionCore {
     const skillView = this.currentSkillView()
     const skillSection = skillView.section()
     const persona = this.currentProfile?.instruction
-    const system = persona ? `${this.baseSystem}\n\n${persona}` : this.baseSystem
+    // Memory and environment price the cached per-turn snapshot; a null
+    // snapshot (read probe before the constructor seed lands) omits both.
+    const memory = this.memorySnapshot
+    const memorySection = memory ? renderMemorySection(memory.files) : ''
+    const envSection = memory
+      ? renderEnvironment({ cwd: this.opts.cwd, isGitRepo: memory.isGitRepo, platform: process.platform, date: new Date() })
+      : ''
+    const system = joinPromptParts(persona ? `${this.baseSystem}\n\n${persona}` : this.baseSystem, envSection)
     const systemTokens = estimateText(system) + ROLE_OVERHEAD
+    const memoryTokens = memorySection ? estimateText(memorySection) + ROLE_OVERHEAD : 0
     const skillTokens = skillSection ? estimateText(skillSection) + ROLE_OVERHEAD : 0
     const builtinTools = this.tools.filter((t) => !this.mcpToolServers.has(t.name))
     const mcpTools = this.tools.filter((t) => this.mcpToolServers.has(t.name))
@@ -3161,7 +3353,7 @@ export class NativeSession implements NativeSessionCore {
     // Per-FQN prices computed ONCE, shared by the MCP row and the payload.
     const mcpPrices = new Map(mcpTools.map((t) => [t.name, estimateToolSchema(t)]))
     const mcpToolsTokens = [...mcpPrices.values()].reduce((s, n) => s + n, 0)
-    const estimated = systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens
+    const estimated = systemTokens + skillTokens + systemToolsTokens + mcpToolsTokens + memoryTokens
     const messagesTokens = totalTokens > 0
       ? Math.max(0, totalTokens - estimated)
       : this.history.reduce((s, m) => s + estimateMessage(m), 0)
@@ -3173,6 +3365,7 @@ export class NativeSession implements NativeSessionCore {
       { name: 'System tools', tokens: systemToolsTokens, kind: 'used' },
       ...(mcpToolsTokens > 0 ? [{ name: 'MCP tools', tokens: mcpToolsTokens, kind: 'used' as const }] : []),
       ...(skillTokens > 0 ? [{ name: 'Skills', tokens: skillTokens, kind: 'used' as const }] : []),
+      ...(memoryTokens > 0 ? [{ name: 'Memory Files', tokens: memoryTokens, kind: 'used' as const }] : []),
       { name: 'Messages', tokens: messagesTokens, kind: 'used' },
       ...(bufferTokens > 0 ? [{ name: 'Autocompact buffer', tokens: bufferTokens, kind: 'buffer' as const }] : []),
       { name: 'Free space', tokens: freeTokens, kind: 'free' },
