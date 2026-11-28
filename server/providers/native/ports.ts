@@ -250,6 +250,32 @@ export interface NativeAutoMemoryPort {
 
 /** The grouped domain ports injected as one unit through NativeProvider opts
  *  and threaded into NativeSessionOptions. */
+/** Git worktree lifecycle for the EnterWorktree / ExitWorktree tools. The
+ *  host owns the git process and the repo lock; native only describes what it
+ *  wants (a worktree under `.claude/worktrees/<name>` of the repo the session
+ *  works in). Errors surface as plain Error with a phrased, user-facing
+ *  message — the tools turn them into soft tool results. */
+export interface NativeWorktreePort {
+  /** Linked worktrees of the repo `cwd` belongs to, primary checkout first;
+   *  NULL when `cwd` is not inside a work tree (the tools' "needs a repo"
+   *  refusal, not a failure). */
+  list(cwd: string): Promise<Array<{ path: string; branch: string | null }> | null>
+  /** Create `<toplevel>/.claude/worktrees/<name>` on branch `worktree-<name>`
+   *  from the repo's HEAD (no fetch — unpushed commits are present, a
+   *  deliberate offline-friendly deviation from the CLI's `fresh` default). */
+  create(cwd: string, name: string): Promise<{ path: string; branch: string }>
+  /** The branch of an EXISTING linked worktree listed for `cwd`; throws when
+   *  the path is not a registered worktree under the repo's managed root. */
+  adopt(cwd: string, path: string): Promise<{ path: string; branch: string | null }>
+  /** What a `remove` exit would destroy: uncommitted files (porcelain lines,
+   *  capped) and commits reachable from the worktree HEAD but not the main
+   *  checkout's. */
+  inspect(worktreePath: string, mainCwd: string): Promise<{ dirtyFiles: string[]; unmergedCommits: number }>
+  /** Remove the worktree (and its branch when given). `force` discards
+   *  uncommitted files / unmerged commits — the caller has already confirmed. */
+  remove(mainCwd: string, worktreePath: string, branch: string | null, force: boolean): Promise<void>
+}
+
 export interface NativeHostPorts {
   config: NativeConfigPort
   auxLlm: NativeAuxLlmPort
@@ -266,4 +292,8 @@ export interface NativeHostPorts {
   transcript: NativeTranscriptPort
   memory: NativeMemoryPort
   autoMemory: NativeAutoMemoryPort
+  /** Absent on a host without git access (or a handle-only unit session):
+   *  EnterWorktree / ExitWorktree are then not registered at all, exactly as
+   *  the media tools stay absent without their ports. */
+  worktree?: NativeWorktreePort
 }

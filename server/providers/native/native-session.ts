@@ -28,6 +28,7 @@ import { createPushable, type Pushable } from '../../pushable.js'
 import { createLogger } from '../../log.js'
 import type { ProviderProfile } from '../../../shared/profile.js'
 import { effortLevelsForModel, supportsFastModeForModel, supportsThinkingForModel } from '../../../shared/model-capability.js'
+import { isAbsolute, join, resolve } from 'node:path'
 import type {
   NativeSessionCore,
   NativeAttachmentOccurrence,
@@ -41,7 +42,7 @@ import { runTurn, updatedInputRefusal, type LoopDeps, type NativeLoopFrame, type
 import { estimateText, estimateMessage, estimateToolSchema, ROLE_OVERHEAD } from './estimate.js'
 import { createUserMessage, freezeMessage, type RequestMessage, type ToolResultMessage } from './vocabulary/message.js'
 import { brandString } from './vocabulary/brand.js'
-import { finishReasonOf, type ContentBlock, type TokenUsage, type Usage } from './vocabulary/types.js'
+import { finishReasonOf, parseToolInput, type ContentBlock, type TokenUsage, type Usage } from './vocabulary/types.js'
 import type { AssistantStreamRecord, NativeSessionEvent, SessionEvent } from './vocabulary/session-event.js'
 import type { OperationalFrame, NativeCoreFrame, AssistantFrame } from './vocabulary/live-frame.js'
 import type { RawStreamEvent } from './vocabulary/stream.js'
@@ -69,6 +70,7 @@ import { BUILTIN_COMMANDS, discoverCommands, expandCommandBody, pluginCommandRow
 import { createSkillTool } from './tools/skill.js'
 import { createTaskOutputTool } from './tools/task-output.js'
 import { createTaskStopTool } from './tools/task-stop.js'
+import { createEnterWorktreeTool, createExitWorktreeTool, type WorktreeSession } from './tools/worktree.js'
 import { createMonitorTool, createNodeMonitorSpawn } from './tools/monitor.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
 import { createWebSearchTool } from './tools/web-search.js'
@@ -629,6 +631,18 @@ export class NativeSession implements NativeSessionCore {
   /** Watches a command's stdout / a WebSocket's frames as a background monitor
    *  task; event batches join the same idle-injection queue as completions. */
   private readonly monitorTool: ToolDef
+  /** Isolation pair (CLI parity): present only when the host wired a git
+   *  worktree port. Together they ARE the session's cwd state — every
+   *  tool/hook reads `workingCwd`, which is `worktree?.path ?? opts.cwd`. */
+  private readonly enterWorktreeTool?: ToolDef
+  private readonly exitWorktreeTool?: ToolDef
+  /** The active linked worktree (branch is resolved on enter; a resumed entry
+   *  starts branch-less and ExitWorktree resolves it through the port). */
+  private worktree: { path: string; branch: string | null } | null = null
+  /** Resume/fork restore of the isolation above — awaited before the first
+   *  turn so no tool can run in the launch checkout while the transcript (and
+   *  the client's worktree chip) says otherwise. */
+  private worktreeReady: Promise<void> | null = null
   /** Local SKILL.md catalog. Discovery is kicked off at construction and
    *  awaited per turn, the same shape as MCP's `whenReady`. */
   private readonly skills: NativeSkillCatalog
@@ -1058,11 +1072,27 @@ export class NativeSession implements NativeSessionCore {
         inject: (notification) => this.enqueueTaskNotification(notification),
         spawn: createNodeMonitorSpawn(),
       })
+      const worktreePort = this.opts.ports.worktree
+      // The live cwd the Agent tool hands nested runs (and its own Bash calls).
+      const liveAgentCwd = (): string => this.worktree?.path ?? opts.cwd
+      if (worktreePort) {
+        const sessionState: WorktreeSession = {
+          cwd: () => this.workingCwd,
+          mainCwd: () => this.opts.cwd,
+          active: () => this.worktree,
+          enter: (entry) => { this.worktree = entry },
+          leave: () => { this.worktree = null },
+        }
+        this.enterWorktreeTool = createEnterWorktreeTool({ port: worktreePort, session: sessionState })
+        this.exitWorktreeTool = createExitWorktreeTool({ port: worktreePort, session: sessionState })
+      }
       // Every session can delegate, MCP or not: `tools` is a live getter and the
       // `emit` path is the session's own persist+push, so a nested run's frames
       // land in the transcript with their real parent. Built after `ctx` exists.
       const agentDeps: AgentToolDeps = {
-        cwd: opts.cwd,
+        // Live, not a snapshot: a subagent dispatched AFTER EnterWorktree must
+        // inherit the worktree, not the launch checkout.
+        get cwd() { return liveAgentCwd() },
         model: () => this.model,
         effortLevel: () => this.effortLevel,
         permissionMode: () => this.permissionMode,
@@ -1420,6 +1450,62 @@ export class NativeSession implements NativeSessionCore {
     return log
   }
 
+  /** Where this session works NOW: the entered worktree, else the launch
+   *  directory. Every tool call / hook payload reads this live. */
+  private get workingCwd(): string {
+    return this.worktree?.path ?? this.opts.cwd
+  }
+
+  /** Resume/fork: re-enter the worktree the transcript's last EnterWorktree
+   *  left open, so a resumed session cannot quietly edit the launch checkout
+   *  while the client chip still says "worktree". Read from MODEL HISTORY (the
+   *  canonical `tool-call` blocks, whose arguments stay RAW JSON — parsed at
+   *  this boundary), which is what the client's fold reads too; a folded-away
+   *  prefix or a vanished directory means no restore — the chip is the
+   *  transcript's claim, and a mismatch is surfaced rather than invented. */
+  private restoreWorktreeFromHistory(): void {
+    const port = this.opts.ports.worktree
+    if (!port) return
+    let pending: { name?: unknown; path?: unknown } | null = null
+    for (const message of this.history) {
+      if (message.role !== 'assistant' || !Array.isArray(message.content)) continue
+      for (const block of message.content) {
+        // Model history is the CANONICAL vocabulary (`tool-call`); `tool_use`
+        // is only the wire projection, accepted here so this fold works on
+        // either side of that boundary.
+        if (typeof block !== 'object' || block === null) continue
+        const type = (block as { type?: unknown }).type
+        if (type !== 'tool-call' && type !== 'tool_use') continue
+        const name = (block as { name?: unknown }).name
+        if (name === 'EnterWorktree') pending = parseToolInput(String((block as { arguments?: unknown }).arguments ?? ''))
+        else if (name === 'ExitWorktree') pending = null
+      }
+    }
+    if (pending === null) return
+    const entry = pending
+    this.worktreeReady = (async () => {
+      try {
+        if (typeof entry.path === 'string' && entry.path !== '') {
+          const target = isAbsolute(entry.path) ? entry.path : resolve(this.opts.cwd, entry.path)
+          const adopted = await port.adopt(this.opts.cwd, target)
+          this.worktree = { path: adopted.path, branch: adopted.branch }
+          return
+        }
+        if (typeof entry.name !== 'string' || entry.name === '') return
+        // The managed root follows the REPO, which need not be opts.cwd — list
+        // the repo's worktrees and match the managed suffix instead of
+        // rebuilding the path by hand.
+        const entries = await port.list(this.opts.cwd)
+        const suffix = join('.claude', 'worktrees', entry.name).replaceAll('\\', '/')
+        const match = entries?.find((candidate) => candidate.path.replaceAll('\\', '/').endsWith(`/${suffix}`))
+        if (match) this.worktree = { path: match.path, branch: match.branch }
+        else log.warn(`[${this.opts.id}] worktree restore: no managed worktree named ${entry.name}`)
+      } catch (err) {
+        log.warn(`[${this.opts.id}] worktree restore failed:`, err)
+      }
+    })()
+  }
+
   /** Resume: rebuild model history from the persisted events, repairing any
    *  tool_use a crash left unanswered (the API rejects invalid tool history).
    *  The synthetic results are appended so they survive the next restart too,
@@ -1439,6 +1525,7 @@ export class NativeSession implements NativeSessionCore {
     // plus the synthetic results (now seq-numbered). `turn/end` is bookkeeping
     // and is skipped by `historyFromEvents`.
     this.history.push(...historyFromEvents(neutralEventsOf(log)))
+    this.restoreWorktreeFromHistory()
     this.restoreAgentSelection(neutralEventsOf(log), log)
     this.restoreUsage(events)
     return log
@@ -2318,6 +2405,7 @@ export class NativeSession implements NativeSessionCore {
       this.taskOutputTool,
       this.taskStopTool,
       this.monitorTool,
+      ...(this.enterWorktreeTool && this.exitWorktreeTool ? [this.enterWorktreeTool, this.exitWorktreeTool] : []),
       skillTool,
       createEnterPlanModeTool({ enterPlanMode: () => this.enterPlanMode() }),
       createExitPlanModeTool(),
@@ -2779,6 +2867,9 @@ export class NativeSession implements NativeSessionCore {
           // delays session creation, and a mid-turn replace/toggle only lands
           // on the next turn (the turn below runs on this snapshot).
           await this.mcp?.whenReady()
+          // A resumed/forked session re-enters the worktree its transcript says
+          // it is in, before any tool can run in the launch checkout.
+          if (this.worktreeReady) await this.worktreeReady
           // Everything a preset can override was captured before the awaits.
           // Build the effective list with THAT profile and return the exact
           // snapshot runTurn will use, rather than reading live fields again.
@@ -2827,7 +2918,7 @@ export class NativeSession implements NativeSessionCore {
               maxTurns: turnProfile?.maxTurns,
               turnStats,
               tasks: this.tasks,
-              cwd: this.opts.cwd,
+              cwd: () => this.workingCwd,
               // Main-turn tool roots (spec §5.4): the validated own root is
               // writable, own + claude compat roots readable. Live read so a
               // mid-turn settings change tracks the broker's exemption roots.

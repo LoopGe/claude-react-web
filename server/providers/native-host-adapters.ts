@@ -25,12 +25,18 @@ import { createMemoryReader } from './native-host-memory.js'
 import { createAutoMemoryPort, resolveMemoryRoots } from './native-host-auto-memory.js'
 import type { UploadStore } from '../upload-store.js'
 import { resolveNativeStateDir } from './native/session-log/paths.js'
-import type { NativeAutoMemoryPort, NativeConfigPort, NativeHostPorts, NativeMemoryPort } from './native/ports.js'
+import type { NativeAutoMemoryPort, NativeConfigPort, NativeHostPorts, NativeMemoryPort, NativeWorktreePort } from './native/ports.js'
 import { digestOfImageRef } from '../../shared/image-attachment.js'
 import { AttachmentStoreError } from '../../shared/attachment-store-error.js'
-import { promises as fs } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import { attachmentRoot, objectPathOf } from '../attachment-paths.js'
 import { HttpError } from '../errors.js'
+import { dirname, join, resolve, sep } from 'node:path'
+import {
+  branchExists, createWorktree, getGitCommonDir, listWorktrees,
+  pruneWorktrees, removeWorktreeDir, runGit, tryCaptureGitHead,
+} from '../git.js'
+import { withRepoLock } from '../session-worktree.js'
 
 /** Bare lowercase sha256 — the shape a store-backed attachment id must carry. */
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/
@@ -169,6 +175,93 @@ export function createNativeHostPorts(deps: NativeHostPortsDeps = {}): NativeHos
     },
     memory: deps.memory ?? createMemoryReader(),
     autoMemory: deps.autoMemory ?? createAutoMemoryPort({ stateDir }),
+    worktree: createWorktreePort(),
+  }
+}
+
+/** The CLI's per-segment worktree-name grammar, enforced again host-side: the
+ *  tool validates for the MODEL, this validates the filesystem path we are
+ *  about to build (`..` would escape `.claude/worktrees`). */
+const WORKTREE_NAME_RE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/
+
+async function repoTopLevel(cwd: string): Promise<string | null> {
+  const r = await runGit(cwd, ['rev-parse', '--show-toplevel'], { allowAnyExitCode: true, noOptionalLocks: true })
+  const top = r.stdout.trim()
+  return r.exitCode === 0 && top !== '' ? top : null
+}
+
+/** Real git implementation of the worktree port. Every mutating call runs
+ *  under the per-common-dir lock (worktree add/remove/prune race on it). */
+export function createWorktreePort(): NativeWorktreePort {
+  return {
+    async list(cwd) {
+      const top = await repoTopLevel(cwd)
+      if (top === null) return null
+      const entries = await listWorktrees(top)
+      return entries.map((entry) => ({ path: entry.path, branch: entry.branch }))
+    },
+
+    async create(cwd, name) {
+      if (!WORKTREE_NAME_RE.test(name) || name.split('/').includes('..')) {
+        throw new Error(`invalid worktree name: ${name}`)
+      }
+      const top = await repoTopLevel(cwd)
+      if (top === null) throw new Error(`EnterWorktree needs a git repository: ${cwd} is not inside one`)
+      const head = await tryCaptureGitHead(top)
+      if (head === undefined) throw new Error(`EnterWorktree needs a repository with at least one commit: ${top}`)
+      const worktreePath = join(top, '.claude', 'worktrees', name)
+      if (existsSync(worktreePath)) throw new Error(`a worktree already exists at ${worktreePath}`)
+      const base = `worktree-${name.replaceAll('/', '-')}`
+      const branch = (await branchExists(top, base)) ? `${base}-${Date.now()}` : base
+      await fs.mkdir(dirname(worktreePath), { recursive: true })
+      await withRepoLock(await getGitCommonDir(top), () => createWorktree(top, worktreePath, branch, head, true))
+      return { path: worktreePath, branch }
+    },
+
+    async adopt(cwd, path) {
+      const top = await repoTopLevel(cwd)
+      if (top === null) throw new Error(`EnterWorktree needs a git repository: ${cwd} is not inside one`)
+      const managedRoot = resolve(join(top, '.claude', 'worktrees'))
+      const target = resolve(path)
+      if (!target.startsWith(managedRoot + sep)) {
+        throw new Error(`switching is limited to worktrees this repository manages under ${managedRoot}; spawn an Agent with cwd set to any other directory instead`)
+      }
+      const entries = await listWorktrees(top)
+      const match = entries.find((entry) => resolve(entry.path) === target)
+      if (!match) throw new Error(`git lists no worktree at ${target}`)
+      return { path: match.path, branch: match.branch }
+    },
+
+    async inspect(worktreePath, mainCwd) {
+      const status = await runGit(worktreePath, ['status', '--porcelain'], { noOptionalLocks: true })
+      const dirtyFiles = status.stdout.split('\n').filter((line) => line.trim() !== '').slice(0, 50)
+      let unmergedCommits = 0
+      const mainHead = await runGit(mainCwd, ['rev-parse', 'HEAD'], { allowAnyExitCode: true, noOptionalLocks: true })
+      if (mainHead.exitCode === 0 && mainHead.stdout.trim() !== '') {
+        const count = await runGit(
+          worktreePath,
+          ['rev-list', '--count', 'HEAD', `^${mainHead.stdout.trim()}`],
+          { allowAnyExitCode: true },
+        )
+        const parsed = Number.parseInt(count.stdout.trim(), 10)
+        if (Number.isFinite(parsed) && parsed > 0) unmergedCommits = parsed
+      }
+      return { dirtyFiles, unmergedCommits }
+    },
+
+    async remove(mainCwd, worktreePath, branch, force) {
+      await withRepoLock(await getGitCommonDir(mainCwd), async () => {
+        if (force) {
+          await removeWorktreeDir(mainCwd, worktreePath)
+        } else {
+          await runGit(mainCwd, ['worktree', 'remove', worktreePath], { timeoutMs: 30_000 })
+        }
+        if (branch !== null) {
+          await runGit(mainCwd, ['branch', '-D', branch], { allowAnyExitCode: true })
+        }
+        await pruneWorktrees(mainCwd).catch(() => { /* best-effort registration cleanup */ })
+      })
+    },
   }
 }
 

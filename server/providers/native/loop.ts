@@ -55,6 +55,12 @@ export interface PersistedToolResult {
   classifierContext?: string
 }
 
+/** The working directory NOW: a getter-backed session cwd (EnterWorktree
+ *  switches it between tool calls) or a fixed string for nested runs. */
+function liveCwd(deps: LoopDeps): string {
+  return typeof deps.cwd === 'function' ? deps.cwd() : deps.cwd
+}
+
 export interface LoopDeps {
   /** One API round. `thinking`/`outputFormat` are OPTIONAL per-request
    *  overrides: the production supplier (native-session streamFor →
@@ -80,8 +86,11 @@ export interface LoopDeps {
    *  which emit no terminal result and never need an abort settlement. */
   turnStats?: TurnStats
   tasks: NativeTaskManager
-  /** The session's working directory; every ToolContext is built from it. */
-  cwd: string
+  /** The session's working directory; every ToolContext is built from it —
+   *  LIVE (a getter) so a mid-turn EnterWorktree/ExitWorktree changes where the
+   *  very next tool call runs, exactly as the CLI chdirs. A plain string is
+   *  the nested/one-shot runner shape. */
+  cwd: string | (() => string)
   /** Main-turn auto-memory containment roots for tool path validation
    *  (Read/Write/Edit). A LIVE getter so a mid-turn memory-settings change
    *  aligns with the permission broker's live exemption roots (both read the
@@ -332,7 +341,7 @@ export async function runTurn(
       if (deps.dispatchHook && !signal.aborted) {
         const stopDecision = await deps.dispatchHook('Stop', {
           session_id: ctx.sessionId,
-          cwd: deps.cwd,
+          cwd: liveCwd(deps),
           hook_event_name: 'Stop',
           stop_hook_active: stopHookActive,
           last_assistant_message: finalText,
@@ -421,7 +430,7 @@ export async function runTurn(
       if (deps.dispatchHook) {
         const hookDecision = await deps.dispatchHook('PreToolUse', {
           session_id: ctx.sessionId,
-          cwd: deps.cwd,
+          cwd: liveCwd(deps),
           hook_event_name: 'PreToolUse',
           tool_name: call.name,
           tool_input: input,
@@ -491,7 +500,7 @@ export async function runTurn(
         tool.validate?.(toolInput as never)
         const execute = (taskSignal: AbortSignal) =>
           tool.run(toolInput as never, {
-            cwd: deps.cwd,
+            cwd: liveCwd(deps),
             signal: taskSignal,
             toolUseId: call.id,
             historyKey: ctx.parentToolUseId ?? 'main',
@@ -540,7 +549,7 @@ export async function runTurn(
         const event = toolThrew ? 'PostToolUseFailure' : 'PostToolUse'
         const postDecision = await deps.dispatchHook(event, {
           session_id: ctx.sessionId,
-          cwd: deps.cwd,
+          cwd: liveCwd(deps),
           hook_event_name: event,
           tool_name: call.name,
           tool_input: toolInput,
