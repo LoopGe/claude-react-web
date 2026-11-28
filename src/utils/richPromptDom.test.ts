@@ -2,11 +2,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   CHIP_ATTR,
-  CHIP_CLASS,
+  CHIP_SELECTOR,
   MENTION_CHIP_ATTR,
-  MENTION_CHIP_CLASS,
+  MENTION_CHIP_SELECTOR,
   QUOTE_CHIP_ATTR,
   QUOTE_CHIP_CLASS,
+  QUOTE_CHIP_SELECTOR,
   QUOTE_REMOVE_ATTR,
   domRepresentsValue,
   renderTokens,
@@ -28,7 +29,7 @@ describe('renderTokens', () => {
     host.appendChild(
       renderTokens(document, [{ kind: 'ref', id: 7, label: '[Pasted text #7 +2 lines]' }]),
     )
-    const chip = host.querySelector(`.${CHIP_CLASS}`)!
+    const chip = host.querySelector(CHIP_SELECTOR)!
     expect(chip).not.toBeNull()
     expect(chip.getAttribute(CHIP_ATTR)).toBe('7')
     expect(chip.getAttribute('contenteditable')).toBe('false')
@@ -190,7 +191,7 @@ describe('mention chips', () => {
         { kind: 'mention', text: '@src/a.ts', path: 'src/a.ts', dir: false },
       ]),
     )
-    const chip = host.querySelector(`.${MENTION_CHIP_CLASS}`)!
+    const chip = host.querySelector(MENTION_CHIP_SELECTOR)!
     expect(chip).not.toBeNull()
     expect(chip.getAttribute('contenteditable')).toBe('false')
     expect(chip.getAttribute('data-dir')).toBe('0')
@@ -206,7 +207,7 @@ describe('mention chips', () => {
         { kind: 'mention', text: '@"my dir/"', path: 'my dir', dir: true },
       ]),
     )
-    const chip = host.querySelector(`.${MENTION_CHIP_CLASS}`)!
+    const chip = host.querySelector(MENTION_CHIP_SELECTOR)!
     expect(chip.getAttribute('data-dir')).toBe('1')
     expect(decodeURIComponent(chip.getAttribute(MENTION_CHIP_ATTR)!)).toBe('my dir')
     expect(chip.textContent).toBe('@"my dir/"')
@@ -326,7 +327,7 @@ describe('quote chips — display ≠ serialization bridge', () => {
   it('renders a quote as a non-editable chip carrying the EXACT run, displaying the decoded excerpt', () => {
     const run = '> a\n> b'
     host.appendChild(renderTokens(document, [{ kind: 'quote', text: run }]))
-    const chip = host.querySelector(`.${QUOTE_CHIP_CLASS}`)!
+    const chip = host.querySelector(QUOTE_CHIP_SELECTOR)!
     expect(chip).not.toBeNull()
     expect(chip.getAttribute('contenteditable')).toBe('false')
     // The serialization is the exact blockquote run…
@@ -468,7 +469,7 @@ describe('domRepresentsValue quote caret gate', () => {
     const settled = tokenize('> a\n> b\n')
     host.replaceChildren(renderTokens(document, settled))
     expect(domRepresentsValue(host, settled, 8)).toBe(true)
-    expect(host.querySelector(`.${QUOTE_CHIP_CLASS}`)).not.toBeNull()
+    expect(host.querySelector(QUOTE_CHIP_SELECTOR)).not.toBeNull()
   })
 
   it('settles a quote chip when the caret rests before it (start-exclusive)', () => {
@@ -476,6 +477,6 @@ describe('domRepresentsValue quote caret gate', () => {
     host.replaceChildren(renderTokens(document, tokens))
     // caret at offset 1 (inside leading prose, before the run) → run stays a chip.
     expect(domRepresentsValue(host, tokens, 1)).toBe(true)
-    expect(host.querySelector(`.${QUOTE_CHIP_CLASS}`)).not.toBeNull()
+    expect(host.querySelector(QUOTE_CHIP_SELECTOR)).not.toBeNull()
   })
 })

@@ -171,7 +171,7 @@ function QuestionItemView({
   return (
     <div className={`question-inline-item ${skipped ? 'skipped' : ''}`}>
       <div className="question-inline-item-header">
-        {question.header && <span className="question-chip">{question.header}</span>}
+        {question.header && <span className="pill question-chip">{question.header}</span>}
         <span className="question-index">Q{index + 1}</span>
         {isMulti && <span className="question-mode">multi-select</span>}
         {skipped && <span className="question-inline-skipped-badge">Skipped</span>}

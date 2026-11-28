@@ -220,6 +220,17 @@
   --space-5: 20px;
   --space-6: 24px;
   --space-8: 32px;
+  /* Pill anatomy composites (message-card pill unification): the two padding
+     tiers (.pill / .pill--bar in messages.css) and the semantic tint
+     percentages every variant color-mixes with. Radius and font-size
+     deliberately ride --radius-* / --fs-* directly so skins that override
+     those (brutalist --radius-pill: 0) keep applying. The 1px bar padding is
+     an intentional off-grid hairline (badge vertical breathing, see the
+     spacing note above). */
+  --pill-pad: var(--space-0-5) var(--space-2);
+  --pill-pad-bar: 1px var(--space-1-5);
+  --pill-tint: 14%;
+  --pill-border-tint: 35%;
   /* Control-geometry tokens: fixed small dimensions for icons, status dots,
      badge thumbs, scrollbar bars — the DOT/ICON/BAR sizes that keep recurring
      as width/height. Kept as a SEPARATE family from --space-* (which is about

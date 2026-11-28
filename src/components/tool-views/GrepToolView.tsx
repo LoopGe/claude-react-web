@@ -36,34 +36,34 @@ export const GrepToolView = memo(function GrepToolView({ input, toolUseId, searc
   const chips = (
     <>
       {(glob || type) && (
-        <span className="tool-chip tool-chip-accent">
+        <span className="pill tool-chip tool-chip-accent">
           {glob ? `glob:${glob}` : `type:${type}`}
         </span>
       )}
       {path && <CopyablePathChip path={path} />}
       {outputMode && outputMode !== 'files_with_matches' && (
-        <span className="tool-chip">{outputMode}</span>
+        <span className="pill tool-chip">{outputMode}</span>
       )}
       {caseInsensitive && (
         <HoverHint label="Case insensitive" side="top">
-          <span className="tool-chip">-i</span>
+          <span className="pill tool-chip">-i</span>
         </HoverHint>
       )}
       {multiline && (
         <HoverHint label="Multiline mode" side="top">
-          <span className="tool-chip">multiline</span>
+          <span className="pill tool-chip">multiline</span>
         </HoverHint>
       )}
       {context != null
-        ? <span className="tool-chip">±{context}</span>
+        ? <span className="pill tool-chip">±{context}</span>
         : (before != null || after != null) && (
-            <span className="tool-chip">
+            <span className="pill tool-chip">
               {before != null ? `-B${before}` : ''}
               {before != null && after != null ? ' ' : ''}
               {after != null ? `-A${after}` : ''}
             </span>
           )}
-      {headLimit != null && <span className="tool-chip">head:{headLimit}</span>}
+      {headLimit != null && <span className="pill tool-chip">head:{headLimit}</span>}
     </>
   )
 

@@ -53,9 +53,9 @@ export const BashToolView = memo(function BashToolView({ input, toolName, toolUs
 
   const chips = (
     <>
-      {inBackground && <span className="tool-chip tool-chip-accent">background</span>}
+      {inBackground && <span className="pill tool-chip tool-chip-accent">background</span>}
       {timeoutMs != null && (
-        <span className="tool-chip" title="Timeout in milliseconds">
+        <span className="pill tool-chip" title="Timeout in milliseconds">
           {formatBashTimeout(timeoutMs)}
         </span>
       )}

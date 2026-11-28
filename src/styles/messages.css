@@ -1,3 +1,31 @@
+/* --- Shared pill anatomy (T2 status pill / T3 working-bar pill) --------
+   One box model for every metadata capsule in the transcript. DOM composes
+   the base onto each site: `class="pill tool-chip tool-chip-accent"`,
+   `class="pill pill--bar working-timer"`. The semantic classes keep ONLY
+   color / background / text-case deltas — pill-anatomy.test.ts pins that
+   split, so the pre-unification drift (4 radii, 7 paddings, 6 tint values
+   across one transcript) cannot creep back. background/color are
+   deliberately ABSENT from the base: chat.css loads before messages.css,
+   and the T3 members' colors live there — a base-declared background would
+   win the cascade and repaint them. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--pill-pad);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.pill--bar {
+  padding: var(--pill-pad-bar);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  border: none;
+}
 .msg.tool { background: var(--msg-tool-bg); color: var(--msg-tool-fg); border-style: dashed; border-color: var(--msg-tool-border); }
 .msg.tool-result { background: var(--msg-tool-result-bg); border-color: var(--msg-tool-result-border); }
 /* Subagent assistant turns — same silhouette as a regular assistant card
@@ -1993,12 +2021,7 @@
 }
 .perm-badge {
   background: var(--bg-elev-2);
-  border: 1px solid var(--border);
   color: var(--accent-text);
-  font-family: var(--mono);
-  font-size: var(--fs-sm);
-  padding: 3px 8px;
-  border-radius: var(--radius-xs);
 }
 .perm-preview {
   background: var(--bg);
@@ -2906,26 +2929,17 @@
 }
 
 /* --- Shared tool-input chip ------------------------------------------
-   Tiny pill used by Bash/Read/Grep/Task views for modifier flags. Kept
-   close to the body font-size so a row of chips lines up against the
-   command/pattern text without crowding it. */
+   Tiny pill used by Bash/Read/Grep/Task views for modifier flags. The box
+   is the .pill base (render sites compose it); this class is now the
+   neutral surface + ink of that family, with semantic variants below. */
 .tool-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 7px;
-  font-size: var(--fs-2xs);
-  font-family: var(--mono);
   color: var(--fg-muted);
   background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  white-space: nowrap;
-  letter-spacing: 0.02em;
 }
 .tool-chip-accent {
   color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--accent) var(--pill-border-tint), var(--border));
+  background: color-mix(in srgb, var(--accent) var(--pill-tint), var(--bg-elev-2));
 }
 /* Copyable path chip (Grep / Glob `in <path>`): a <button> styled as a chip
    that copies the resolved absolute path on click. Resets button chrome so it
@@ -2944,8 +2958,8 @@ button.tool-chip.tool-chip-copyable:focus-visible {
 }
 button.tool-chip.tool-chip-copyable.copied {
   color: var(--ok-text);
-  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
-  background: color-mix(in srgb, var(--ok) 8%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--ok) var(--pill-border-tint), var(--border));
+  background: color-mix(in srgb, var(--ok) var(--pill-tint), var(--bg-elev-2));
 }
 
 /* --- Bash inline view ------------------------------------------------ */
@@ -3157,21 +3171,17 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   color: var(--fg-muted);
 }
 .task-mutation-verb {
-  padding: 1px 7px;
-  font-family: var(--mono);
   font-weight: 600;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border);
 }
 .task-mutation-verb.verb-create {
   color: var(--ok-text);
-  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
-  background: color-mix(in srgb, var(--ok) 16%, var(--bg-elev));
+  border-color: color-mix(in srgb, var(--ok) var(--pill-border-tint), var(--border));
+  background: color-mix(in srgb, var(--ok) var(--pill-tint), var(--bg-elev));
 }
 .task-mutation-verb.verb-update {
   color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
+  border-color: color-mix(in srgb, var(--accent) var(--pill-border-tint), var(--border));
+  background: color-mix(in srgb, var(--accent) var(--pill-tint), var(--bg-elev));
 }
 .task-mutation-id {
   font-family: var(--mono);
@@ -3180,30 +3190,27 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   text-transform: none;
   letter-spacing: 0;
 }
+/* The uppercase header row imposes its casing/spacing on the chip — the base's
+   letter-spacing is re-zeroed here so `in_progress` reads as authored. */
 .task-mutation-status {
-  padding: 1px 7px;
-  font-family: var(--mono);
-  font-size: var(--fs-2xs);
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border);
   background: var(--bg-elev-2);
   text-transform: lowercase;
   letter-spacing: 0;
 }
 .task-mutation-status.status-completed {
   color: var(--ok-text);
-  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
-  background: color-mix(in srgb, var(--ok) 8%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--ok) var(--pill-border-tint), var(--border));
+  background: color-mix(in srgb, var(--ok) var(--pill-tint), var(--bg-elev-2));
 }
 .task-mutation-status.status-in_progress {
   color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--accent) var(--pill-border-tint), var(--border));
+  background: color-mix(in srgb, var(--accent) var(--pill-tint), var(--bg-elev-2));
 }
 .task-mutation-status.status-deleted {
   color: var(--danger-text);
-  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
-  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--danger) var(--pill-border-tint), var(--border));
+  background: color-mix(in srgb, var(--danger) var(--pill-tint), var(--bg-elev-2));
 }
 .task-mutation-owner {
   font-family: var(--mono);
@@ -3482,12 +3489,8 @@ details.decision-card > summary > .decision-card-header {
 .question-chip {
   background: var(--bg-elev-2);
   color: var(--accent-text);
-  padding: 2px 7px;
-  border-radius: var(--radius-pill);
-  font-family: var(--mono);
   text-transform: none;
   letter-spacing: 0;
-  font-size: var(--fs-xs);
   /* Header chips come straight from the model and can be path-like mono
      tokens; without a wrap rule a long chip refuses to shrink as a flex
      item (min-width: auto) and stretches the whole .question-header row. */
@@ -3953,15 +3956,11 @@ details.question-inline-card .question-inline-body {
 }
 .findings-card-title { font-weight: 600; }
 .findings-level-badge {
-  padding: var(--space-0-5) var(--space-2);
-  font-size: var(--fs-2xs);
-  font-family: var(--mono);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
+  background: color-mix(in srgb, var(--accent) var(--pill-tint), var(--bg-elev));
   color: var(--accent-text);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-color: color-mix(in srgb, var(--accent) var(--pill-border-tint), transparent);
 }
 .findings-count {
   margin-left: auto;
@@ -4005,42 +4004,44 @@ details.question-inline-card .question-inline-body {
 .finding-row.findings-outcome-fixed {
   box-shadow: inset 3px 0 0 color-mix(in srgb, var(--ok) 60%, transparent);
 }
-/* Findings chips compose the shared .tool-chip base (padding / mono / radius /
- * nowrap) and only add the uppercase + tighter sizing that distinguishes a
- * verdict/outcome pill. The verdict/outcome classes below override the base's
- * colour / bg / border. */
+/* Findings chips compose the shared .pill base and only add the uppercase
+ * that distinguishes a verdict/outcome pill. The verdict/outcome classes
+ * below override the base border's colour; their fills mix transparent (not
+ * --border) bottoms so the row/card ground shows through. Muted chips stay
+ * slightly under the --pill-tint/--pill-border-tint tier on purpose — the
+ * neutral states must not compete with the severity rails' full-saturation
+ * red/amber/green (finding-row inset shadows right above). */
 .findings-chip {
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: var(--fs-2xs);
 }
 .findings-verdict-confirmed {
-  background: color-mix(in srgb, var(--danger) 14%, var(--bg-elev));
+  background: color-mix(in srgb, var(--danger) var(--pill-tint), var(--bg-elev));
   color: var(--danger-text);
-  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  border-color: color-mix(in srgb, var(--danger) var(--pill-border-tint), transparent);
 }
 .findings-verdict-plausible {
-  background: color-mix(in srgb, var(--warn) 18%, var(--bg-elev));
+  background: color-mix(in srgb, var(--warn) var(--pill-tint), var(--bg-elev));
   color: var(--warn-text);
-  border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+  border-color: color-mix(in srgb, var(--warn) var(--pill-border-tint), transparent);
 }
 .findings-verdict-none {
-  background: color-mix(in srgb, var(--fg-muted) 16%, transparent);
+  background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
   color: var(--fg-muted);
   border-color: color-mix(in srgb, var(--fg-muted) 30%, transparent);
 }
 .findings-outcome-fixed {
-  background: color-mix(in srgb, var(--ok) 16%, var(--bg-elev));
+  background: color-mix(in srgb, var(--ok) var(--pill-tint), var(--bg-elev));
   color: var(--ok-text);
-  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+  border-color: color-mix(in srgb, var(--ok) var(--pill-border-tint), transparent);
 }
 .findings-outcome-skipped {
-  background: color-mix(in srgb, var(--fg-muted) 16%, transparent);
+  background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
   color: var(--fg-muted);
   border-color: color-mix(in srgb, var(--fg-muted) 30%, transparent);
 }
 .findings-outcome-none {
-  background: color-mix(in srgb, var(--fg-muted) 16%, transparent);
+  background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
   color: var(--fg-muted);
   border-color: color-mix(in srgb, var(--fg-muted) 30%, transparent);
 }

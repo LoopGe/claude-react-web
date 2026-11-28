@@ -291,7 +291,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
         ) : (
           <>
             <div className="perm-summary">
-              <span className="perm-badge">{request.displayName ?? request.toolName}</span>
+              <span className="pill perm-badge">{request.displayName ?? request.toolName}</span>
             </div>
             {request.mcpServer && (
               // SDK 0.3.274 provenance: trust the SOURCE, not the name.

@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { createRef, useState } from 'react'
 import { render, fireEvent, createEvent } from '@testing-library/react'
 import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
-import { QUOTE_CHIP_ATTR, QUOTE_CHIP_CLASS, QUOTE_REMOVE_ATTR, MENTION_CHIP_CLASS } from '../utils/richPromptDom'
+import { QUOTE_CHIP_ATTR,
+  QUOTE_CHIP_SELECTOR, QUOTE_REMOVE_ATTR, MENTION_CHIP_SELECTOR } from '../utils/richPromptDom'
 import { placeCaretAtOffset, offsetOf } from './richPromptCaret'
 import { quoteTextOf, formatQuoteText } from '../utils/quote-text'
 import { pasteAtCaret } from './richPromptApi'
@@ -55,7 +56,7 @@ describe('RichPromptInput quote chip', () => {
       <RichPromptInput value={'see\n\n> a\n> b\n\nnow'} onChange={vi.fn()} ariaLabel="Q" />,
     )
     const el = editor(container)
-    const chip = el.querySelector(`.${QUOTE_CHIP_CLASS}`)!
+    const chip = el.querySelector(QUOTE_CHIP_SELECTOR)!
     expect(chip).not.toBeNull()
     expect(chip.getAttribute('contenteditable')).toBe('false')
     expect(chip.getAttribute(QUOTE_CHIP_ATTR)).toBe('> a\n> b')
@@ -75,7 +76,7 @@ describe('RichPromptInput quote chip', () => {
     expect(onChange).toHaveBeenLastCalledWith('> q')
     rerender(<RichPromptInput value="> q" onChange={onChange} ariaLabel="Q" />)
     // caret at the run end → whole run stays editable text, no atomic chip.
-    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)).toBeNull()
+    expect(el.querySelector(QUOTE_CHIP_SELECTOR)).toBeNull()
     expect(el.textContent).toBe('> q')
   })
 
@@ -88,7 +89,7 @@ describe('RichPromptInput quote chip', () => {
     typeText(el, '> q\n')
     expect(onChange).toHaveBeenLastCalledWith('> q\n')
     rerender(<RichPromptInput value={'> q\n'} onChange={onChange} ariaLabel="Q" />)
-    const chip = el.querySelector(`.${QUOTE_CHIP_CLASS}`)!
+    const chip = el.querySelector(QUOTE_CHIP_SELECTOR)!
     expect(chip).not.toBeNull()
     expect(chip.getAttribute(QUOTE_CHIP_ATTR)).toBe('> q')
   })
@@ -99,7 +100,7 @@ describe('RichPromptInput quote chip', () => {
       <RichPromptInput value={'a\n\n> q\n\nb'} onChange={onChange} ariaLabel="Q" />,
     )
     const el = editor(container)
-    el.querySelector(`.${QUOTE_CHIP_CLASS}`)!.remove()
+    el.querySelector(QUOTE_CHIP_SELECTOR)!.remove()
     fireEvent.input(el)
     expect(onChange).toHaveBeenCalledWith('a\n\n\n\nb')
   })
@@ -115,7 +116,7 @@ describe('RichPromptInput quote chip', () => {
     fireEvent.click(btn)
     expect(onChange).toHaveBeenCalledWith('a\n\n\n\nb')
     // The chip is gone from the rebuilt DOM.
-    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)).toBeNull()
+    expect(el.querySelector(QUOTE_CHIP_SELECTOR)).toBeNull()
   })
 
   it('copies the exact Markdown blockquote (not the decoded excerpt) when the selection touches a quote chip', () => {
@@ -123,7 +124,7 @@ describe('RichPromptInput quote chip', () => {
       <RichPromptInput value={'a\n\n> a\n> b\n\nz'} onChange={vi.fn()} ariaLabel="Q" />,
     )
     const el = editor(container)
-    const chip = el.querySelector(`.${QUOTE_CHIP_CLASS}`)!
+    const chip = el.querySelector(QUOTE_CHIP_SELECTOR)!
     // Select across the whole chip.
     const range = el.ownerDocument.createRange()
     range.setStartBefore(chip)
@@ -141,8 +142,8 @@ describe('RichPromptInput quote chip', () => {
       <RichPromptInput value={'@src/a.ts\n\n> q'} onChange={vi.fn()} ariaLabel="Q" />,
     )
     const el = editor(container)
-    expect(el.querySelector(`.${MENTION_CHIP_CLASS}`)).not.toBeNull()
-    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)).not.toBeNull()
+    expect(el.querySelector(MENTION_CHIP_SELECTOR)).not.toBeNull()
+    expect(el.querySelector(QUOTE_CHIP_SELECTOR)).not.toBeNull()
   })
 })
 
@@ -204,7 +205,7 @@ describe('RichPromptInput insertQuoteAtCaret (select-to-quote insert)', () => {
     const { el, handle, onChange } = mount('')
     handle.insertQuoteAtCaret('hello')
     expect(onChange).toHaveBeenLastCalledWith('> hello\n')
-    const chip = el.querySelector(`.${QUOTE_CHIP_CLASS}`)!
+    const chip = el.querySelector(QUOTE_CHIP_SELECTOR)!
     expect(chip).not.toBeNull()
     expect(chip.getAttribute(QUOTE_CHIP_ATTR)).toBe('> hello')
   })
@@ -214,7 +215,7 @@ describe('RichPromptInput insertQuoteAtCaret (select-to-quote insert)', () => {
     placeCaretAtOffset(el, 'hello world'.length)
     handle.insertQuoteAtCaret('q')
     expect(onChange).toHaveBeenLastCalledWith('hello world\n> q\n')
-    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> q')
+    expect(el.querySelector(QUOTE_CHIP_SELECTOR)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> q')
   })
 
   it('inserts before existing prose with a blank-line separator', () => {
@@ -222,7 +223,7 @@ describe('RichPromptInput insertQuoteAtCaret (select-to-quote insert)', () => {
     placeCaretAtOffset(el, 0)
     handle.insertQuoteAtCaret('q')
     expect(onChange).toHaveBeenLastCalledWith('> q\n\nprose')
-    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)).not.toBeNull()
+    expect(el.querySelector(QUOTE_CHIP_SELECTOR)).not.toBeNull()
   })
 
   it('appends at the draft end when the editor has no live caret (blurred)', () => {
@@ -231,14 +232,14 @@ describe('RichPromptInput insertQuoteAtCaret (select-to-quote insert)', () => {
     el.ownerDocument.getSelection()!.removeAllRanges()
     handle.insertQuoteAtCaret('q')
     expect(onChange).toHaveBeenLastCalledWith('draft\n> q\n')
-    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)).not.toBeNull()
+    expect(el.querySelector(QUOTE_CHIP_SELECTOR)).not.toBeNull()
   })
 
   it('formats a multi-line selection as one multi-line quote run', () => {
     const { el, handle, onChange } = mount('')
     handle.insertQuoteAtCaret('line one\nline two')
     expect(onChange).toHaveBeenLastCalledWith('> line one\n> line two\n')
-    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> line one\n> line two')
+    expect(el.querySelector(QUOTE_CHIP_SELECTOR)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> line one\n> line two')
   })
 
   it('inserts at the remembered mid-draft caret once the selection leaves the editor', () => {
@@ -250,7 +251,7 @@ describe('RichPromptInput insertQuoteAtCaret (select-to-quote insert)', () => {
     el.ownerDocument.getSelection()!.removeAllRanges()
     handle.insertQuoteAtCaret('q')
     expect(onChange).toHaveBeenLastCalledWith('hello\n> q\n\n world')
-    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> q')
+    expect(el.querySelector(QUOTE_CHIP_SELECTOR)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> q')
   })
 
   it('tracks the latest caret, not the first remembered one', () => {
@@ -290,7 +291,7 @@ describe('RichPromptInput insertQuoteAtCaret (select-to-quote insert)', () => {
     expect(el.getAttribute('contenteditable')).toBe('false')
     ref.current!.insertQuoteAtCaret('q')
     expect(onChange).not.toHaveBeenCalled()
-    expect(el.querySelector(`.${QUOTE_CHIP_CLASS}`)).toBeNull()
+    expect(el.querySelector(QUOTE_CHIP_SELECTOR)).toBeNull()
   })
 })
 

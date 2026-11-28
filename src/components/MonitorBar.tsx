@@ -279,7 +279,7 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing, session
                     <span className="monitor-text truncate">
                       <span className="monitor-text-shimmer">{m.description}</span>
                     </span>
-                    {m.persistent && <span className="tool-chip tool-chip-accent">persistent</span>}
+                    {m.persistent && <span className="pill tool-chip tool-chip-accent">persistent</span>}
                   </li>
                 ))}
               </ul>

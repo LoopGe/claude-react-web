@@ -217,7 +217,7 @@ export function ElicitationDialog({ open = true, request, onDecide }: Props) {
           <span aria-hidden style={{ display: 'inline-flex' }}><IconShield size={16} /></span>
           {heading}
         </h3>
-        <span className="question-chip" title={`MCP server: ${request.serverName}`}>
+        <span className="pill question-chip" title={`MCP server: ${request.serverName}`}>
           {request.serverName}
         </span>
       </div>

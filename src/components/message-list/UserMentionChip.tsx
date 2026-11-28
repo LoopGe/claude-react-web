@@ -40,12 +40,12 @@ export function UserMentionChip({
   if (consumed < text.length) label.push(text.slice(consumed))
 
   if (!link) {
-    return <span className="msg-mention-chip" title={path}>{label}</span>
+    return <span className="chip-inline msg-mention-chip" title={path}>{label}</span>
   }
   return (
     <button
       type="button"
-      className="msg-mention-chip"
+      className="chip-inline msg-mention-chip"
       title={path}
       onClick={() => openMentionResource(link.openResource, link.sessionId, link.baseDir, path)}
     >

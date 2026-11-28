@@ -2672,16 +2672,29 @@ button.msg-file-chip {
   font-variant-numeric: tabular-nums;
 }
 
-/* @file/@folder mention chip inline in a sent user message. Same surface
-   vocabulary as the file chip above; mono + smaller so the `@path` token reads
-   as a reference inside the prose. The button variant (a resource link context
-   is in scope) adds the click affordance; the plain span stays inert. */
-.msg-mention-chip {
+/* --- Shared inline prose chip (T1) -------------------------------------
+   The text-flow chip family: sent mentions / quotes + the composer's paste /
+   mention / quote chips. Surface only (tight square-ish radius, hairline
+   border, weight 600, baseline ride) — deliberately NOT pill-shaped: these
+   sit inside prose, wrap long paths and must follow the line box. Per-class
+   rules keep their own ground: msg-elev tokens in the composer, bg-elev in
+   a sent bubble. .pill-anatomy.test.ts pins members off radius/padding. */
+.chip-inline {
   display: inline-block;
   max-width: 100%;
   padding: 0 var(--space-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-3xs);
+  vertical-align: baseline;
+  user-select: none;
+  font-weight: 600;
+}
+
+/* @file/@folder mention chip inline in a sent user message. Same surface
+   vocabulary as the file chip above; mono + smaller so the `@path` token reads
+   as a reference inside the prose. The button variant (a resource link context
+   is in scope) adds the click affordance; the plain span stays inert. */
+.msg-mention-chip {
   background: var(--bg-elev);
   color: var(--fg);
   font-family: var(--mono);
@@ -2691,7 +2704,6 @@ button.msg-file-chip {
      (pre-wrap keeps any literal spaces; anywhere breaks the unbroken run). */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  vertical-align: baseline;
 }
 
 button.msg-mention-chip {
@@ -2837,38 +2849,21 @@ button.msg-mention-chip:hover {
      if a caller sets it; idles at the final state otherwise. */
   animation: item-enter var(--motion-duration-base) var(--motion-ease-enter) both;
 }
-/* Elapsed-time label and retry pill share one chip anatomy (mono digits,
-   pill radius, tight padding). Font-variant-numeric: tabular-nums keeps
-   digits from jumping around as seconds tick over — the badge width stays
-   constant. */
-.working-timer,
-.working-retry-pill {
-  font-family: var(--mono);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  font-variant-numeric: tabular-nums;
-  padding: 1px 6px;
-  border-radius: var(--radius-pill);
-}
+/* Working-bar pills (timer / token rate / retry / swarm) share the
+   .pill--bar anatomy from messages.css (mono, tabular digits, tight
+   borderless pill). tabular-nums keeps digits from jumping around as
+   seconds tick over — the badge width stays constant. */
 .working-timer {
   color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
+  background: color-mix(in srgb, var(--accent) var(--pill-tint), var(--bg-elev));
   text-transform: none;
 }
 /* Live output token rate badge, shown next to the working timer.
-   Uses a muted style to avoid competing with the timer's accent colour. */
+   Uses a muted transparent-ground fill to avoid competing with the timer's
+   accent colour (the one bar member that intentionally skips bg-elev). */
 .working-rate {
   color: var(--fg-muted);
-  font-family: var(--mono);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  font-variant-numeric: tabular-nums;
-  background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
-  padding: 1px 6px;
-  border-radius: var(--radius-pill);
-  white-space: nowrap;
+  background: color-mix(in srgb, var(--fg-muted) var(--pill-tint), transparent);
 }
 /* The background-task pill that used to live on the working bar moved into
    the composer bar (.composer-tasks in chat.css) — the bar only mounts
@@ -2937,12 +2932,10 @@ button.msg-mention-chip:hover {
    pill renders to the right of the timer / token-rate chips and shows ONLY
    the wait time + attempt count ("26s 7/10"); the phase label keeps its own
    slot. Amber — the same warn tier the old transcript divider used, so the
-   color carries the severity. Chip anatomy is shared with .working-timer
-   above. */
+   color carries the severity. Chip anatomy comes from .pill--bar. */
 .working-retry-pill {
   color: var(--warn-text);
-  background: color-mix(in srgb, var(--warn) 14%, var(--bg-elev));
-  white-space: nowrap;
+  background: color-mix(in srgb, var(--warn) var(--pill-tint), var(--bg-elev));
   /* Same entrance crossfade as the phase label (keyed remounts in the bar
      replay it) — without this the pill pops in with a hard snap. */
   animation: item-enter var(--motion-duration-base) var(--motion-ease-enter) both;
@@ -3013,28 +3006,21 @@ button.msg-mention-chip:hover {
   flex-shrink: 0;
 }
 /* ?? Subagent swarm pill + popover ????????????????????????????????????
-   Deliberately styled as a chip (same dots, radius, accent tint) so it reads
-   as the bar's subagent widget rather than a different one. */
+   Deliberately styled as a chip (same dots, accent tint, .pill--bar box) so
+   it reads as the bar's subagent widget rather than a different one. The
+   pre-unification border is gone: hover/open feedback rides the background
+   step-up (the bar family is borderless), and the button's font comes from
+   .pill--bar (mono fs-sm 500), no longer from `font: inherit`. */
 .subagent-swarm {
-  display: inline-flex;
-  align-items: center;
   gap: var(--space-1-5);
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
-  border-radius: var(--radius-pill);
-  padding: 2px 8px 2px 7px;
-  font: inherit;
-  font-size: var(--fs-sm);
-  font-family: var(--mono);
+  background: color-mix(in srgb, var(--accent) var(--pill-tint), var(--bg-elev));
   color: var(--fg-muted);
-  white-space: nowrap;
   cursor: pointer;
   animation: chip-enter var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 .subagent-swarm:hover,
 .subagent-swarm-open {
   background: color-mix(in srgb, var(--accent) 22%, var(--bg-elev));
-  border-color: var(--accent);
 }
 .subagent-swarm-count {
   color: var(--accent-text);
@@ -3065,7 +3051,6 @@ button.msg-mention-chip:hover {
    calms the bar, so it stops reading as active in-turn work. */
 .subagent-swarm-waiting {
   background: color-mix(in srgb, var(--fg-muted) 8%, var(--bg-elev));
-  border-color: color-mix(in srgb, var(--fg-muted) 24%, var(--border));
 }
 .subagent-swarm-waiting .subagent-swarm-count {
   color: var(--fg);
@@ -4260,15 +4245,10 @@ button.msg-mention-chip:hover {
 }
 
 .pasted-text-chip {
-  display: inline-block;
-  padding: 0 var(--space-1);
-  border: 1px solid var(--msg-user-border);
-  border-radius: var(--radius-3xs);
+  border-color: var(--msg-user-border);
   background: var(--msg-user-bg);
   color: var(--msg-user-header-fg);
-  font-weight: 600;
   white-space: pre;
-  user-select: none;
 }
 
 /* @file/@folder mention chip in the composer — same visual family as the
@@ -4276,19 +4256,13 @@ button.msg-mention-chip:hover {
    onMentionClick; the editor carries data-mention-click only then, so the
    pointer/hover affordance never promises a click that does nothing. */
 .file-mention-chip {
-  display: inline-block;
-  max-width: 100%;
-  padding: 0 var(--space-1);
-  border: 1px solid var(--msg-user-border);
-  border-radius: var(--radius-3xs);
+  border-color: var(--msg-user-border);
   background: var(--msg-user-bg);
   color: var(--msg-user-header-fg);
-  font-weight: 600;
   /* Same overflow fence as the sent chip: a long path wraps inside the chip
      rather than overflowing the editor's clipped box. */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  user-select: none;
 }
 
 [data-mention-click] .file-mention-chip {
@@ -4299,26 +4273,22 @@ button.msg-mention-chip:hover {
   background: var(--btn-hover-bg);
 }
 
-/* Blockquote quote chip — same visual family as the paste/mention chips it sits
-   beside, shared by the composer's atomic chip (plain DOM, renderTokens) and the
-   sent-message QuotePreview. The container shows a DECODED excerpt clipped to one
-   line; the exact `> …` run lives in data-quote-text (the serialization), never
-   in the rendered text. Colors ride the msg-user token family, which is defined
-   per theme, so both themes are covered without new hex values. */
+/* Blockquote quote chip — same .chip-inline family as the paste/mention chips
+   it sits beside, shared by the composer's atomic chip (plain DOM,
+   renderTokens) and the sent-message QuotePreview. The container shows a
+   DECODED excerpt clipped to one line; the exact `> …` run lives in
+   data-quote-text (the serialization), never in the rendered text. Colors ride
+   the msg-user token family, which is defined per theme, so both themes are
+   covered without new hex values. inline-flex: it owns marker/remove/text
+   children the other prose chips never have. */
 .quote-chip {
   display: inline-flex;
   align-items: center;
   gap: var(--space-0-5);
   box-sizing: border-box;
-  max-width: 100%;
-  padding: 0 var(--space-1);
-  border: 1px solid var(--msg-user-border);
-  border-radius: var(--radius-3xs);
+  border-color: var(--msg-user-border);
   background: var(--msg-user-bg);
   color: var(--msg-user-header-fg);
-  font-weight: 600;
-  vertical-align: baseline;
-  user-select: none;
 }
 
 .quote-chip-marker,

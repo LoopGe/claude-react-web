@@ -128,7 +128,7 @@ export const EditToolView = memo(function EditToolView({ input, toolUseId, searc
       .join('\n\n')
 
   const chips = Array.isArray(edits) && edits.length > 1 ? (
-    <span className="tool-chip">{edits.length} edits</span>
+    <span className="pill tool-chip">{edits.length} edits</span>
   ) : null
 
   // Default-collapsed: the card header (file path) plus a quiet +N −M stat
@@ -198,7 +198,7 @@ export const WriteToolView = memo(function WriteToolView({ input, toolUseId, sea
     <ToolCard
       icon={<IconFileText />}
       title={filePath ? <FilePathTitle path={filePath} badge="new file" /> : 'write'}
-      chips={<span className="tool-chip">{totalLines} line{totalLines === 1 ? '' : 's'}</span>}
+      chips={<span className="pill tool-chip">{totalLines} line{totalLines === 1 ? '' : 's'}</span>}
       toolUseId={toolUseId}
       copyValue={() => content}
       copyLabel="Copy file content"
@@ -249,12 +249,12 @@ export function NotebookEditToolView({ input, toolUseId, searchQuery, activeMatc
 
   const chips = (
     <>
-      <span className={`tool-chip tool-chip-${editMode === 'delete' ? 'danger' : 'accent'}`}>
+      <span className={`pill tool-chip tool-chip-${editMode === 'delete' ? 'danger' : 'accent'}`}>
         {editMode}
       </span>
-      {cellId && <span className="tool-chip">cell {cellId}</span>}
-      {cellType && <span className="tool-chip">{cellType}</span>}
-      {!isDelete && <span className="tool-chip">{totalLines} line{totalLines === 1 ? '' : 's'}</span>}
+      {cellId && <span className="pill tool-chip">cell {cellId}</span>}
+      {cellType && <span className="pill tool-chip">{cellType}</span>}
+      {!isDelete && <span className="pill tool-chip">{totalLines} line{totalLines === 1 ? '' : 's'}</span>}
     </>
   )
 

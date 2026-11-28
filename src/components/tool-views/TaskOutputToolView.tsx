@@ -37,7 +37,7 @@ export function TaskOutputToolView({ input, toolUseId, searchQuery, activeMatchI
   // raw ms is preserved in the title for copy/debug.
   const timeoutChip =
     timeout != null ? (
-      <span className="tool-chip" title={`${timeout}ms`}>
+      <span className="pill tool-chip" title={`${timeout}ms`}>
         {timeout >= 1000
           ? `${(timeout / 1000).toFixed(timeout % 1000 === 0 ? 0 : 1)}s`
           : `${timeout}ms`}
@@ -46,8 +46,8 @@ export function TaskOutputToolView({ input, toolUseId, searchQuery, activeMatchI
 
   const chips = (
     <>
-      {block === true && <span className="tool-chip tool-chip-accent">blocking</span>}
-      {block === false && <span className="tool-chip">non-blocking</span>}
+      {block === true && <span className="pill tool-chip tool-chip-accent">blocking</span>}
+      {block === false && <span className="pill tool-chip">non-blocking</span>}
       {timeoutChip}
     </>
   )

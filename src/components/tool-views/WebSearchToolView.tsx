@@ -31,14 +31,14 @@ export function WebSearchToolView({ input, toolUseId, searchQuery, activeMatchId
     <>
       {allowed.length > 0 && (
         <HoverHint label="Allowed domains" side="top">
-          <span className="tool-chip tool-chip-accent">
+          <span className="pill tool-chip tool-chip-accent">
             only: {allowed.join(', ')}
           </span>
         </HoverHint>
       )}
       {blocked.length > 0 && (
         <HoverHint label="Blocked domains" side="top">
-          <span className="tool-chip">
+          <span className="pill tool-chip">
             block: {blocked.join(', ')}
           </span>
         </HoverHint>

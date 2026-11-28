@@ -60,7 +60,7 @@ export function SkillToolView({ input, toolUseId, searchQuery, activeMatchIdx }:
   const isRunning = record?.status === 'running'
 
   const chips = namespace ? (
-    <span className="tool-chip tool-chip-accent" title="Skill namespace">{namespace}</span>
+    <span className="pill tool-chip tool-chip-accent" title="Skill namespace">{namespace}</span>
   ) : null
 
   return (

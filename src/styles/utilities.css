@@ -1062,13 +1062,13 @@
  * and other destructive markers. */
 .tool-chip-danger {
   color: var(--danger-text);
-  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
-  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--danger) var(--pill-border-tint), var(--border));
+  background: color-mix(in srgb, var(--danger) var(--pill-tint), var(--bg-elev-2));
 }
 .tool-chip-success {
   color: var(--ok-text);
-  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
-  background: color-mix(in srgb, var(--ok) 8%, var(--bg-elev-2));
+  border-color: color-mix(in srgb, var(--ok) var(--pill-border-tint), var(--border));
+  background: color-mix(in srgb, var(--ok) var(--pill-tint), var(--bg-elev-2));
 }
 
 /* NotebookEdit "deleted" pill, now inside the body of a ToolCard. */

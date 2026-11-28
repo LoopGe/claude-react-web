@@ -48,7 +48,7 @@ export function SendMessageToolView({ input, toolUseId, searchQuery, activeMatch
   const hasSearch = Boolean(searchQuery?.trim())
 
   const chips = summary ? (
-    <span className="tool-chip" title={summary}>{truncate(summary, 80)}</span>
+    <span className="pill tool-chip" title={summary}>{truncate(summary, 80)}</span>
   ) : null
 
   return (

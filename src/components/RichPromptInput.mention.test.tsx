@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, fireEvent } from '@testing-library/react'
 import { RichPromptInput } from './RichPromptInput'
-import { MENTION_CHIP_ATTR, MENTION_CHIP_CLASS } from '../utils/richPromptDom'
+import { MENTION_CHIP_ATTR, MENTION_CHIP_SELECTOR } from '../utils/richPromptDom'
 import { placeCaretAtOffset } from './richPromptCaret'
 
 // RTL cleanup is registered globally in src/test-setup.ts (globals: false means
@@ -35,7 +35,7 @@ describe('RichPromptInput mention chipification', () => {
     rerender(<RichPromptInput value="@sr" onChange={onChange} ariaLabel="M" />)
 
     // The forming word stays ordinary text: no atomic chip under the caret.
-    expect(el.querySelector(`.${MENTION_CHIP_CLASS}`)).toBeNull()
+    expect(el.querySelector(MENTION_CHIP_SELECTOR)).toBeNull()
     expect(el.textContent).toBe('@sr')
 
     // Backspace deletes ONE character (text), not the whole mention (chip).
@@ -55,14 +55,14 @@ describe('RichPromptInput mention chipification', () => {
     placeCaretAtOffset(el, 1)
     typeText(el, '@sr')
     rerender(<RichPromptInput value="@sr" onChange={onChange} ariaLabel="M" />)
-    expect(el.querySelector(`.${MENTION_CHIP_CLASS}`)).toBeNull()
+    expect(el.querySelector(MENTION_CHIP_SELECTOR)).toBeNull()
 
     // Insert a space: the caret now sits past the mention's end → it settles.
     typeText(el, '@sr ')
     expect(onChange).toHaveBeenLastCalledWith('@sr ')
     rerender(<RichPromptInput value="@sr " onChange={onChange} ariaLabel="M" />)
 
-    const chip = el.querySelector(`.${MENTION_CHIP_CLASS}`)
+    const chip = el.querySelector(MENTION_CHIP_SELECTOR)
     expect(chip).not.toBeNull()
     expect(decodeURIComponent(chip!.getAttribute(MENTION_CHIP_ATTR)!)).toBe('sr')
     expect(chip!.getAttribute('data-dir')).toBe('0')
@@ -83,7 +83,7 @@ describe('RichPromptInput mention chipification', () => {
     typeText(el, 'x @sr ')
     placeCaretAtOffset(el, 2) // start of '@sr', not forming it
     rerender(<RichPromptInput value="x @sr " onChange={onChange} ariaLabel="M" />)
-    const chip = el.querySelector(`.${MENTION_CHIP_CLASS}`)
+    const chip = el.querySelector(MENTION_CHIP_SELECTOR)
     expect(chip).not.toBeNull()
     expect(el.textContent).toBe('x @sr ')
   })
@@ -102,7 +102,7 @@ describe('RichPromptInput mention chipification', () => {
     expect(onChange).toHaveBeenLastCalledWith('@src/a.ts ')
     rerender(<RichPromptInput value="@src/a.ts " onChange={onChange} ariaLabel="M" />)
 
-    const chip = el.querySelector(`.${MENTION_CHIP_CLASS}`)
+    const chip = el.querySelector(MENTION_CHIP_SELECTOR)
     expect(chip).not.toBeNull()
     expect(decodeURIComponent(chip!.getAttribute(MENTION_CHIP_ATTR)!)).toBe('src/a.ts')
     expect(chip!.getAttribute('data-dir')).toBe('0')
@@ -118,7 +118,7 @@ describe('RichPromptInput mention chipification', () => {
       <RichPromptInput value='see @"my dir/" now' onChange={vi.fn()} ariaLabel="M" />,
     )
     const el = editor(container)
-    const chip = el.querySelector(`.${MENTION_CHIP_CLASS}`)
+    const chip = el.querySelector(MENTION_CHIP_SELECTOR)
     expect(chip).not.toBeNull()
     expect(decodeURIComponent(chip!.getAttribute(MENTION_CHIP_ATTR)!)).toBe('my dir')
     expect(chip!.getAttribute('data-dir')).toBe('1')
@@ -131,7 +131,7 @@ describe('RichPromptInput mention chipification', () => {
       <RichPromptInput value="see @src/a.ts now" onChange={vi.fn()} ariaLabel="M" onMentionClick={onMentionClick} />,
     )
     const el = editor(container)
-    fireEvent.click(el.querySelector(`.${MENTION_CHIP_CLASS}`)!)
+    fireEvent.click(el.querySelector(MENTION_CHIP_SELECTOR)!)
     expect(onMentionClick).toHaveBeenCalledTimes(1)
     expect(onMentionClick).toHaveBeenCalledWith({ path: 'src/a.ts', dir: false })
   })
@@ -142,7 +142,7 @@ describe('RichPromptInput mention chipification', () => {
       <RichPromptInput value='@"my dir/" ' onChange={vi.fn()} ariaLabel="M" onMentionClick={onMentionClick} />,
     )
     const el = editor(container)
-    fireEvent.click(el.querySelector(`.${MENTION_CHIP_CLASS}`)!)
+    fireEvent.click(el.querySelector(MENTION_CHIP_SELECTOR)!)
     expect(onMentionClick).toHaveBeenCalledWith({ path: 'my dir', dir: true })
   })
 
@@ -163,7 +163,7 @@ describe('RichPromptInput mention chipification', () => {
       <RichPromptInput value="a @src/a.ts b" onChange={onChange} ariaLabel="M" />,
     )
     const el = editor(container)
-    el.querySelector(`.${MENTION_CHIP_CLASS}`)!.remove()
+    el.querySelector(MENTION_CHIP_SELECTOR)!.remove()
     fireEvent.input(el)
     expect(onChange).toHaveBeenCalledWith('a  b')
   })

@@ -49,7 +49,7 @@ export const MonitorDetailPopover = memo(function MonitorDetailPopover({ detail,
       <div className="monitor-detail-head">
         <span className="monitor-detail-status">Running</span>
         {detail.taskId !== undefined && <span className="monitor-detail-id">{detail.taskId}</span>}
-        {detail.persistent && <span className="tool-chip tool-chip-accent">persistent</span>}
+        {detail.persistent && <span className="pill tool-chip tool-chip-accent">persistent</span>}
       </div>
       <div className="monitor-detail-subject">{detail.description}</div>
       {detail.command && <pre className="monitor-detail-cmd">{detail.command}</pre>}

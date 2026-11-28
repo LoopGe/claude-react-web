@@ -79,7 +79,7 @@ export function UserDialog({ open = true, request, onDecide }: Props) {
           {isRefusalFallback ? 'Model refused the request' : `Dialog: ${request.dialogKind}`}
         </h3>
         {payload?.apiRefusalCategory && (
-          <span className="question-chip" title={`API refusal category: ${payload.apiRefusalCategory}`}>
+          <span className="pill question-chip" title={`API refusal category: ${payload.apiRefusalCategory}`}>
             {payload.apiRefusalCategory}
           </span>
         )}

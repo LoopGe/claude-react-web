@@ -76,10 +76,10 @@ export function TaskMutationView({ input, toolUseId, searchQuery, activeMatchIdx
 
   const chips = (
     <>
-      <span className={`task-mutation-verb verb-${verb}`}>{verb}</span>
+      <span className={`pill task-mutation-verb verb-${verb}`}>{verb}</span>
       {idLabel && !headingIsTaskIdFallback && <span className="task-mutation-id">#{idLabel}</span>}
       {status && (
-        <span className={`task-mutation-status status-${status}`} title={`Status: ${status}`}>
+        <span className={`pill task-mutation-status status-${status}`} title={`Status: ${status}`}>
           {status}
         </span>
       )}

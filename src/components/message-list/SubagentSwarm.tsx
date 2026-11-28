@@ -141,7 +141,7 @@ export const SubagentSwarmPill = memo(function SubagentSwarmPill({
       <button
         type="button"
         ref={triggerRef}
-        className={`subagent-swarm${open ? ' subagent-swarm-open' : ''}${allWaiting ? ' subagent-swarm-waiting' : ''}`}
+        className={`pill pill--bar subagent-swarm${open ? ' subagent-swarm-open' : ''}${allWaiting ? ' subagent-swarm-waiting' : ''}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={a11yLabel}

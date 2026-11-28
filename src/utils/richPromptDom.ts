@@ -27,7 +27,12 @@ import { quoteTextOf } from './quote-text'
 
 /** Marks a chip element and carries the reference id it stands for. */
 export const CHIP_ATTR = 'data-pasted-ref'
-export const CHIP_CLASS = 'pasted-text-chip'
+// The base classes carry the shared chip anatomy (.chip-inline in chat.css);
+// the per-kind class keeps its semantic surface (color/data hooks). Selector
+// constants below exist because a multi-token class value cannot feed
+// `.${X_CLASS}` concatenation (it becomes a descendant selector).
+export const CHIP_CLASS = 'chip-inline pasted-text-chip'
+export const CHIP_SELECTOR = '.pasted-text-chip'
 
 /**
  * Marks an `@file`/`@folder` mention chip. `MENTION_CHIP_ATTR` carries the
@@ -37,7 +42,8 @@ export const CHIP_CLASS = 'pasted-text-chip'
  * truth and the attrs only carry the parsed facts.
  */
 export const MENTION_CHIP_ATTR = 'data-file-mention'
-export const MENTION_CHIP_CLASS = 'file-mention-chip'
+export const MENTION_CHIP_CLASS = 'chip-inline file-mention-chip'
+export const MENTION_CHIP_SELECTOR = '.file-mention-chip'
 const MENTION_DIR_ATTR = 'data-dir'
 
 /**
@@ -49,7 +55,8 @@ const MENTION_DIR_ATTR = 'data-dir'
  * `QUOTE_REMOVE_ATTR` marks the composer-only whole-run removal button.
  */
 export const QUOTE_CHIP_ATTR = 'data-quote-text'
-export const QUOTE_CHIP_CLASS = 'quote-chip'
+export const QUOTE_CHIP_CLASS = 'chip-inline quote-chip'
+export const QUOTE_CHIP_SELECTOR = '.quote-chip'
 export const QUOTE_REMOVE_ATTR = 'data-quote-remove'
 
 /** Shared quote-mark icon geometry (DSH QuotePreview parity). Exported so the

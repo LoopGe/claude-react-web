@@ -380,7 +380,7 @@ function QuestionBlock({ index, question, value, onSingle, onMulti, otherActive,
   return (
     <div className="question-block">
       <div className="question-header">
-        {question.header && <span className="question-chip">{question.header}</span>}
+        {question.header && <span className="pill question-chip">{question.header}</span>}
         <span className="question-index">Q{index + 1}</span>
         {isMulti && <span className="question-mode">multi-select</span>}
       </div>

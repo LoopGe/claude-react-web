@@ -24,13 +24,13 @@ export function TodoWriteView({ input, toolUseId, searchQuery, activeMatchIdx }:
   }
   const chips: ReactNode[] = []
   if (counts.in_progress > 0) chips.push(
-    <span key="ip" className="tool-chip tool-chip-accent">{counts.in_progress} active</span>,
+    <span key="ip" className="pill tool-chip tool-chip-accent">{counts.in_progress} active</span>,
   )
   if (counts.pending > 0) chips.push(
-    <span key="p" className="tool-chip">{counts.pending} pending</span>,
+    <span key="p" className="pill tool-chip">{counts.pending} pending</span>,
   )
   if (counts.completed > 0) chips.push(
-    <span key="c" className="tool-chip tool-chip-success">{counts.completed} done</span>,
+    <span key="c" className="pill tool-chip tool-chip-success">{counts.completed} done</span>,
   )
 
   return (

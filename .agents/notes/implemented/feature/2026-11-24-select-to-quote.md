@@ -39,8 +39,9 @@ DSH 式原子 chip（解码 excerpt 显示）；选区源 = prose + 工具输出
   非折叠选区、投影、定位（上方优先、夹可见滚动边界、避 composer）、clear/Escape/pointerdown/blur dismiss。
 - **已发送渲染**：quote 段渲染 inert `QuotePreview` chip（无 ×；截断 excerpt 开 portalled
   HoverPopover），inline 于 `UserProseRun`，面向段落分隔符塌成一个空格。composer chip 是纯 DOM
-  （桥 React-free、每次 reconcile 重建）配 native `title`；已发送 chip 是 React——共享 `.quote-chip*`
-  主题变量类与 mark。
+  （桥 React-free、每次 reconcile 重建）配 native `title`；已发送 chip 是 React——共享 `.chip-inline`
+  基础 anatomy（见 [pill unification](../simplification/2026-11-28-message-pill-unification.md)）+
+  `.quote-chip*` 主题变量类与 mark。
 
 完整接口、桥扩展、不透明 threading、测试见
 [选中即引用设计](../../../../docs/superpowers/specs/2026-11-24-select-to-quote-design.md)。

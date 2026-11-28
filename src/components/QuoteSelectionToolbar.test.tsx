@@ -4,7 +4,8 @@ import { useRef, useState } from 'react'
 import { render, fireEvent, act } from '@testing-library/react'
 import { QuoteSelectionToolbar } from './QuoteSelectionToolbar'
 import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
-import { QUOTE_CHIP_ATTR, QUOTE_CHIP_CLASS, serializeTokens } from '../utils/richPromptDom'
+import { QUOTE_CHIP_ATTR,
+  QUOTE_CHIP_SELECTOR, serializeTokens } from '../utils/richPromptDom'
 import { joinTokens } from '../utils/pastedText'
 import { placeCaretAtOffset } from './richPromptCaret'
 import { TEXT_INTERACTION_SOURCE } from '../utils/text-selection'
@@ -157,7 +158,7 @@ describe('QuoteSelectionToolbar click inserts a composer quote chip', () => {
     select(src)
     await selectionChange()
     fireEvent.click(button()!)
-    const chip = container.querySelector(`.${QUOTE_CHIP_CLASS}`)!
+    const chip = container.querySelector(QUOTE_CHIP_SELECTOR)!
     expect(chip).not.toBeNull()
     expect(chip.getAttribute(QUOTE_CHIP_ATTR)).toBe('> select me')
     expect(button()).toBeNull()
@@ -176,7 +177,7 @@ describe('QuoteSelectionToolbar click inserts a composer quote chip', () => {
     fireEvent.click(button()!)
     // The quote is spliced at offset 5 (after "hello"), NOT at the draft end.
     expect(joinTokens(serializeTokens(editorEl))).toBe('hello\n> select me\n\n world')
-    expect(container.querySelector(`.${QUOTE_CHIP_CLASS}`)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> select me')
+    expect(container.querySelector(QUOTE_CHIP_SELECTOR)!.getAttribute(QUOTE_CHIP_ATTR)).toBe('> select me')
   })
 })
 

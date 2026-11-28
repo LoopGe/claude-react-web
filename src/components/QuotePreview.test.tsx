@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, fireEvent, render } from '@testing-library/react'
 import { QuotePreview } from './QuotePreview'
-import { QUOTE_CHIP_CLASS } from '../utils/richPromptDom'
+import { QUOTE_CHIP_SELECTOR } from '../utils/richPromptDom'
 
 // HoverPopover needs matchMedia + ResizeObserver; mirror its own test harness.
 vi.stubGlobal('matchMedia', () => ({
@@ -47,7 +47,7 @@ afterEach(() => {
 describe('QuotePreview', () => {
   it('renders the DECODED excerpt (no > markers) with a quote mark', () => {
     const { container } = render(<QuotePreview text={'> a\n> b'} />)
-    const chip = container.querySelector(`.${QUOTE_CHIP_CLASS}`)!
+    const chip = container.querySelector(QUOTE_CHIP_SELECTOR)!
     expect(chip).not.toBeNull()
     const text = chip.querySelector('.quote-chip-text')!
     expect(text.textContent).toBe('a\nb')
@@ -59,7 +59,7 @@ describe('QuotePreview', () => {
     expect(container.querySelector('[data-quote-remove]')).toBeNull()
     expect(container.querySelector('button')).toBeNull()
     expect(container.querySelector('.quote-chip-marker')).not.toBeNull()
-    expect(container.querySelector(`.${QUOTE_CHIP_CLASS}`)!.hasAttribute('data-removable')).toBe(false)
+    expect(container.querySelector(QUOTE_CHIP_SELECTOR)!.hasAttribute('data-removable')).toBe(false)
   })
 
   it('shows a remove button for the removable variant and calls onRemove on click', () => {
@@ -67,7 +67,7 @@ describe('QuotePreview', () => {
     const { container } = render(
       <QuotePreview text="> q" removal={{ label: 'Remove quote', onRemove }} />,
     )
-    const chip = container.querySelector(`.${QUOTE_CHIP_CLASS}`)!
+    const chip = container.querySelector(QUOTE_CHIP_SELECTOR)!
     expect(chip.hasAttribute('data-removable')).toBe(true)
     const btn = container.querySelector('button.quote-chip-remove')!
     expect(btn).not.toBeNull()
@@ -78,7 +78,7 @@ describe('QuotePreview', () => {
 
   it('opens a full-text popover only when the excerpt is clipped', () => {
     const { container } = render(<QuotePreview text={'> a very long quoted line'} />)
-    const chip = container.querySelector(`.${QUOTE_CHIP_CLASS}`)! as HTMLElement
+    const chip = container.querySelector(QUOTE_CHIP_SELECTOR)! as HTMLElement
     const source = chip.querySelector('.quote-chip-text')! as HTMLElement
 
     // Not clipped → hover does not open a popover.

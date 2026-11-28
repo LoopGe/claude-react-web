@@ -127,7 +127,7 @@ function RetryPill({ msg }: { msg: SdkMessage }) {
   const waitText = `${seconds}s`
   const attemptText = maxRetries > 0 ? `${attempt}/${maxRetries}` : `${attempt}`
   return (
-    <span className="working-retry-pill">
+    <span className="pill pill--bar working-retry-pill">
       {/* Static kind word, screen-reader-only: the live region announces
           changed CONTENT (not the bar's aria-label), so without this the
           only announcement on state entry would be the bare "1/3" fraction.
@@ -296,10 +296,10 @@ export const WorkingBubble = memo(function WorkingBubble({
         // The turn is active whenever this renders, so it always ticks; the
         // mount-time fallback covers the first frame, before the server has
         // stamped a start.
-        <ElapsedTimer startedAt={startedAt} live fallbackToMount className="working-timer" />
+        <ElapsedTimer startedAt={startedAt} live fallbackToMount className="pill pill--bar working-timer" />
       )}
       {!waiting && !idle && estimateTok == null && tokenRate != null && tokenRate > 0 && (
-        <span className="working-rate">
+        <span className="pill pill--bar working-rate">
           {countRate} tok/s
         </span>
       )}
@@ -307,7 +307,7 @@ export const WorkingBubble = memo(function WorkingBubble({
           silent), so the SDK's own token estimate is the only signal. "~"
           marks it as an approximation of the current thinking block. */}
       {!waiting && !idle && estimateTok != null && (
-        <span className="working-rate">
+        <span className="pill pill--bar working-rate">
           ~{formatTokens(estimateTok)} tok
         </span>
       )}

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, cleanup, fireEvent, createEvent } from '@testing-library/react'
 import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
-import { CHIP_CLASS } from '../utils/richPromptDom'
+import { CHIP_SELECTOR } from '../utils/richPromptDom'
 import { selectionOffsets, placeCaretIn, selectAll } from './richPromptApi'
 
 afterEach(() => cleanup())
@@ -79,7 +79,7 @@ describe('RichPromptInput', () => {
         ariaLabel="Message"
       />,
     )
-    const chip = container.querySelector(`.${CHIP_CLASS}`)!
+    const chip = container.querySelector(CHIP_SELECTOR)!
     expect(chip).not.toBeNull()
     expect(chip.getAttribute('data-pasted-ref')).toBe('2')
     expect(chip.getAttribute('contenteditable')).toBe('false')
@@ -94,7 +94,7 @@ describe('RichPromptInput', () => {
       <RichPromptInput value="a [Pasted text #1] b" onChange={onChange} ariaLabel="Message" />,
     )
     const el = editor(container)
-    el.querySelector(`.${CHIP_CLASS}`)!.remove()
+    el.querySelector(CHIP_SELECTOR)!.remove()
     fireEvent.input(el)
     expect(onChange).toHaveBeenCalledWith('a  b')
   })
@@ -128,7 +128,7 @@ describe('RichPromptInput', () => {
         ariaLabel="M"
       />,
     )
-    const chip = container.querySelector(`.${CHIP_CLASS}`)
+    const chip = container.querySelector(CHIP_SELECTOR)
     expect(chip).not.toBeNull()
     expect(chip!.getAttribute('data-pasted-ref')).toBe('1')
   })

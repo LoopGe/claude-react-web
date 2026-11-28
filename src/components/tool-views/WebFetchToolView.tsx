@@ -50,7 +50,7 @@ export function WebFetchToolView({ input, toolUseId, searchQuery, activeMatchIdx
         label="URL scheme is not in the http/https/mailto/ftp allowlist; rendered as plain text to avoid javascript: / data: URL execution."
         side="top"
       >
-        <span className="tool-chip">
+        <span className="pill tool-chip">
           unsafe scheme
         </span>
       </HoverHint>

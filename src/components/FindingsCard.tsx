@@ -84,20 +84,20 @@ function verdictClass(v: Verdict | null): string {
  *  - No outcome: row + chip carry the verdict. */
 function resolveFinding(f: ParsedFinding): { rowClass: string; chips: ReactNode[] } {
   if (f.outcome === 'fixed') {
-    return { rowClass: 'findings-outcome-fixed', chips: [<span key="o" className="tool-chip findings-chip findings-outcome-fixed">fixed</span>] }
+    return { rowClass: 'findings-outcome-fixed', chips: [<span key="o" className="pill findings-chip findings-outcome-fixed">fixed</span>] }
   }
   if (f.outcome === 'no_change_needed') {
-    return { rowClass: 'findings-verdict-none', chips: [<span key="o" className="tool-chip findings-chip findings-outcome-none">no change needed</span>] }
+    return { rowClass: 'findings-verdict-none', chips: [<span key="o" className="pill findings-chip findings-outcome-none">no change needed</span>] }
   }
   const vChip = (
-    <span key="v" className={`tool-chip findings-chip ${verdictClass(f.verdict)}`}>
+    <span key="v" className={`pill findings-chip ${verdictClass(f.verdict)}`}>
       {(f.verdict ?? 'finding').toLowerCase()}
     </span>
   )
   if (f.outcome === 'skipped') {
     return {
       rowClass: verdictClass(f.verdict),
-      chips: [vChip, <span key="s" className="tool-chip findings-chip findings-outcome-skipped">skipped</span>],
+      chips: [vChip, <span key="s" className="pill findings-chip findings-outcome-skipped">skipped</span>],
     }
   }
   return { rowClass: verdictClass(f.verdict), chips: [vChip] }
@@ -115,7 +115,7 @@ export const FindingsCard = memo(function FindingsCard({ input }: Props) {
       <div className="findings-card-header">
         <IconClipboardList size={14} />
         <span className="findings-card-title">Code review findings</span>
-        {levelLabel && <span className="findings-level-badge">{levelLabel}</span>}
+        {levelLabel && <span className="pill findings-level-badge">{levelLabel}</span>}
         <span className="findings-count">{findings.length} finding{findings.length === 1 ? '' : 's'}</span>
       </div>
 

@@ -173,7 +173,7 @@ export function CopyablePathChip({ path }: { path: string }) {
   return (
     <button
       type="button"
-      className={`tool-chip tool-chip-copyable${copied ? ' copied' : ''}`}
+      className={`pill tool-chip tool-chip-copyable${copied ? ' copied' : ''}`}
       title={title}
       onClick={onClick}
     >
